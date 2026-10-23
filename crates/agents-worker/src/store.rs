@@ -7,6 +7,8 @@ use agents_core::{AgentConfig, ModelConfig, Plan, Provider, SessionRecord, Sessi
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{D1PreparedStatement, Env, Error, Result, wasm_bindgen::JsValue};
 
+const VERIFIED_SUBSCRIPTIONS_SQL: &str = "SELECT subscription_json AS payload FROM subscription_snapshots WHERE account_id=? AND product_id='agents'";
+
 pub struct Store<'a> {
     env: &'a Env,
 }
@@ -238,16 +240,26 @@ impl<'a> Store<'a> {
         Ok(self.statement("SELECT CAST(budget_microusd AS TEXT) AS budget_microusd,CAST(spent_microusd AS TEXT) AS spent_microusd,CAST(reserved_microusd AS TEXT) AS reserved_microusd FROM usage_accounts WHERE account_id=?", &[owner.into()])?.first(None).await?.unwrap_or_default())
     }
 
-    pub async fn account_plan(&self, owner: &str) -> Result<Plan> {
-        let now = now_seconds();
-        let rows = self.statement("SELECT subscription_json AS payload FROM subscription_snapshots WHERE account_id=? AND valid_until>CAST(? AS INTEGER)", &[owner.into(),now.to_string().into()])?.all().await?.results::<JsonRow>()?;
-        let subscriptions: Vec<Subscription> = rows
+    /// Billing grants expire at their own period end, not at the refresh hint.
+    /// The current issuer has no subscription cancellation/revocation surface.
+    pub async fn subscriptions(&self, owner: &str) -> Result<Vec<Subscription>> {
+        let rows = self
+            .statement(VERIFIED_SUBSCRIPTIONS_SQL, &[owner.into()])?
+            .all()
+            .await?
+            .results::<JsonRow>()?;
+        Ok(rows
             .into_iter()
             .map(|r| decode::<Vec<Subscription>>(&r.payload))
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
-            .collect();
+            .collect())
+    }
+
+    pub async fn account_plan(&self, owner: &str) -> Result<Plan> {
+        let now = now_seconds();
+        let subscriptions = self.subscriptions(owner).await?;
         let policy = PlanPolicy::default();
         Ok(match billing::resolve_tier(&subscriptions, now, &policy) {
             billing::BillingTier::Free => Plan::Free,

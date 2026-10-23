@@ -1,13 +1,9 @@
 //! Verified entitlement funding. SQL owns replay, expiry, and concurrent grant arithmetic.
-use agents_auth::billing::{self, PlanPolicy, Subscription};
+use agents_auth::billing::{self, PlanPolicy};
 use serde::Deserialize;
 use wasm_bindgen::JsValue;
 use worker::{Env, Error, Result};
 
-#[derive(Deserialize)]
-struct Snapshot {
-    subscription_json: String,
-}
 #[derive(Deserialize)]
 struct Window {
     period_start: i64,
@@ -28,16 +24,11 @@ WHERE NOT EXISTS(SELECT 1 FROM allowance_windows WHERE account_id=?1 AND period_
 AND COALESCE((SELECT MAX(period_start) FROM allowance_windows WHERE account_id=?1),-1)=CAST(?7 AS INTEGER)";
 
 /// Call on authentication and immediately before run admission. No user-supplied amounts.
-/// A missing/expired verified snapshot grants Free only; entitlement failures never mint paid credit.
+/// A missing/expired grant selects Free; upstream refresh freshness never expires a paid grant.
 pub async fn sync(env: &Env, account: &str) -> Result<()> {
     let now = (js_sys::Date::now() / 1000.0) as i64;
     let db = env.d1("DB")?;
-    let snapshot: Option<Snapshot> = db.prepare("SELECT subscription_json FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents' AND valid_until>CAST(?2 AS INTEGER)")
-        .bind(&[account.into(),now.to_string().into()])?.first(None).await?;
-    let subscriptions: Vec<Subscription> = snapshot
-        .map(|s| serde_json::from_str(&s.subscription_json))
-        .transpose()?
-        .unwrap_or_default();
+    let subscriptions = crate::store::Store::new(env).subscriptions(account).await?;
     let policy = PlanPolicy::default();
     let tier = billing::resolve_tier(&subscriptions, now, &policy);
     let subsidy = if tier == billing::BillingTier::Free {

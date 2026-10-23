@@ -16,7 +16,7 @@ and its actual
 `GET /v1/me` returns `{account, subscriptions}`. Each grant has `product_id`,
 `plan_id`, `status`, Unix-second `current_period_start` / `current_period_end`,
 and `entitlements`. Active means `start <= now < end`; plan names never authorize
-anything. Unknown, expired, or unavailable grants retain Free limits.
+anything. Missing or expired grants retain Free limits. A temporarily unavailable refresh does not invalidate a previously verified, still-active grant.
 
 The initial production catalog inspection on 2026-10-23 found `platform-monthly`
 (`platform.access`) and amail products, not an Agents plan. Agents onboarding now
@@ -28,6 +28,38 @@ environment-specific deployment work. A requested or staging-registered plan is
 not proof of production activation. Subscribe owns activation; Agents does not
 introduce a payment provider.
 
+## Refresh freshness is not grant validity
+
+All authorization consumers use `Store::subscriptions`: the dashboard account response,
+SDK/API-key quota admission, and monthly allowance reconciliation. The persisted legacy
+`subscription_snapshots.valid_until` name is only a refresh-freshness hint; it is not an
+entitlement expiry. The grant itself authorizes only while its product, tier, status and
+`current_period_start <= server_now < current_period_end` match local policy. Browser
+logout removes the browser session, not an independently issued platform API key or its
+subscription grant. A paid SDK-only user therefore remains paid after the five-minute
+snapshot refresh deadline and does not need an open dashboard to retain a 30-day grant.
+
+This policy is based on the actual upstream contract inspected on 2026-10-23 at revision
+[`b7f6deb857dbedc87d23a00d118a3305c1b09fb1`](https://github.com/kleedaisuki/moesegfault-subscriptions/tree/b7f6deb857dbedc87d23a00d118a3305c1b09fb1): the Billing
+OpenAPI and route table expose account/profile reads, activation-code issuance/redemption,
+and amail-specific spending authorizations, but **no subscription cancellation, revocation,
+refund, or subscription-change webhook**. Subscription rows have no revoked state;
+`repository::subscriptions` computes `active` versus `expired` from their period end.
+The activation trigger can extend the granted period; it does not provide early revocation.
+The `/v1/authorizations/*` revocation operations concern amail authorization capabilities,
+not the subscription grant. See the linked upstream route, repository and migration sources.
+
+Human OIDC calls refresh Billing snapshots when their access token is available. An API key
+is not forwarded to Billing and does not impersonate an OAuth bearer credential. Without
+an authenticated push/reconciliation contract, Agents cannot discover a renewal beyond its
+last verified grant end or promise instant reaction to an out-of-band administrator database
+edit. A future cancellation or revocation capability requires an explicit trusted event feed,
+service credential or delegated refresh design; it must not be approximated by revoking paid
+SDK access every five minutes or relaxing Identity audience checks.
+
+Regression evidence is in `tests/test_subscription_snapshots_sql.py` (actual shared SQL,
+API-key use after browser logout, refresh deadlines, tenant isolation and idempotent funding)
+and the Rust `sdk_only_paid_grant_survives_refresh_ttl_but_not_subscription_expiry` test.
 ## Local policy
 
 `agents_auth::billing::PlanPolicy` is local entitlement-to-limit policy, not an

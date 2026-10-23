@@ -479,6 +479,37 @@ mod tests {
         grant.product_id = "unrelated".into();
         assert_eq!(limits(&[grant], 15, &policy), policy.free);
     }
+    #[test]
+    fn sdk_only_paid_grant_survives_refresh_ttl_but_not_subscription_expiry() {
+        let fetched_at = 1_000;
+        let refresh_after = fetched_at + 300;
+        let end = fetched_at + 30 * 86_400;
+        let grant = Subscription {
+            id: "paid-grant".into(),
+            product_id: "agents".into(),
+            plan_id: "agents-pro".into(),
+            status: "active".into(),
+            current_period_start: fetched_at,
+            current_period_end: end,
+            entitlements: vec!["agents.access".into(), "agents.tier.pro".into()],
+        };
+        let policy = PlanPolicy::default();
+        for now in [refresh_after + 1, fetched_at + 86_400, end - 1] {
+            assert_eq!(
+                resolve_tier(std::slice::from_ref(&grant), now, &policy),
+                BillingTier::Pro
+            );
+            assert_eq!(
+                limits(std::slice::from_ref(&grant), now, &policy),
+                policy.paid
+            );
+        }
+        assert_eq!(
+            resolve_tier(std::slice::from_ref(&grant), end, &policy),
+            BillingTier::Free
+        );
+        assert_eq!(limits(&[grant], end, &policy), policy.free);
+    }
     fn subscription(id: &str, tier: &str) -> Subscription {
         Subscription {
             id: id.into(),

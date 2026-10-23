@@ -631,16 +631,9 @@ pub async fn handle_account(
 
 async fn account_response(env: &Env, context: &AuthContext) -> Result<Response> {
     crate::allowances::sync(env, &context.account_id).await?;
-    let db = env.d1("DB")?;
-    let row = db.prepare("SELECT subscription_json FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents' AND valid_until>?2")
-        .bind(&[context.account_id.clone().into(),now().into()])?.first::<Value>(None).await?;
-    let subscriptions: Vec<agents_auth::billing::Subscription> = row
-        .and_then(|r| {
-            r["subscription_json"]
-                .as_str()
-                .and_then(|s| serde_json::from_str(s).ok())
-        })
-        .unwrap_or_default();
+    let subscriptions = crate::store::Store::new(env)
+        .subscriptions(&context.account_id)
+        .await?;
     let policy = agents_auth::billing::PlanPolicy::default();
     let limits = agents_auth::billing::limits(&subscriptions, now(), &policy);
     let tier = agents_auth::billing::resolve_tier(&subscriptions, now(), &policy);
@@ -703,6 +696,20 @@ async fn api_keys(req: &mut Request, env: &Env, context: &AuthContext) -> Result
 pub struct ProviderCredential {
     pub provider: String,
     pub api_key: String,
+}
+
+pub async fn provider_identity(env: &Env, account_id: &str, credential_id: &str) -> Result<String> {
+    let row = env
+        .d1("DB")?
+        .prepare("SELECT provider FROM provider_keys WHERE account_id=?1 AND id=?2")
+        .bind(&[account_id.into(), credential_id.into()])?
+        .first::<Value>(None)
+        .await?
+        .ok_or_else(|| failure("provider_key_not_found"))?;
+    match row["provider"].as_str() {
+        Some(provider @ ("openrouter" | "deepseek")) => Ok(provider.to_owned()),
+        _ => Err(failure("invalid_provider")),
+    }
 }
 
 pub async fn provider_credential(

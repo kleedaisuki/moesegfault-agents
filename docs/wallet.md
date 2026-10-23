@@ -1,7 +1,7 @@
 # Allowance wallet
 
 `allowances::sync` accepts only an authenticated account ID, reads server-owned,
-unexpired verified Billing snapshots, and resolves the reviewed `PlanPolicy`.
+verified Billing grants through `Store::subscriptions`, and resolves the reviewed `PlanPolicy` using each grant's own active period. A snapshot refresh deadline never expires a paid grant or requires SDK-only users to keep a browser signed in. See [the refresh/validity boundary](billing.md#refresh-freshness-is-not-grant-validity).
 Client request bodies cannot select a funding amount. Free receives $1 per UTC
 calendar month; Go / Plus / Pro receive $8 / $18 / $180 per paid window.
 
