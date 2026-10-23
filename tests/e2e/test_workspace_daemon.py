@@ -70,16 +70,7 @@ def test_snapshot_restore_tamper_rollback_and_restart(daemon, execute):
     daemon.json("POST", "/v1/restore", archive, headers={"x-snapshot-sha256": digest})
     assert execute("cat nested/state; test ! -e after-checkpoint")["stdout"] == marker
     assert execute("test ! -e after-checkpoint; test $(stat -c %a nested/state) = 600")["exit_code"] == 0
-    subprocess.run(["docker", "restart", daemon.container_name], check=True, capture_output=True)
-    for _ in range(100):
-        try:
-            if daemon.request("GET", "/health")[0] == 200:
-                break
-        except (OSError, ConnectionError):
-            pass
-        time.sleep(0.1)
-    else:
-        pytest.fail("daemon failed to recover after restart")
+    daemon.restart()
     assert execute("cat nested/state")["stdout"] == marker
 
 

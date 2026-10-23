@@ -118,12 +118,32 @@ Windows / Python 3.14.6 / OpenAI SDK 2.6.1 / pytest 8.4.2:
 
 ```text
 python -m pytest tests/e2e -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest
-2 passed, 29 skipped
+4 passed, 29 skipped
 ```
 
-The two passes validate only the harness against canonical nonstream/SSE wire
-fixtures, including the official SDK's raw session-header and streaming APIs.
+The four passes validate only the harness: canonical nonstream/SSE wire fixtures
+for the official SDK, a simulated ephemeral Docker port change across restart,
+and diagnostic redaction. They do not establish actual container success.
 Fourteen deployed cases skipped because no test origin/API key was supplied;
 fifteen daemon cases skipped because no Linux Docker image was supplied. Docker
 is not installed on this development host. No deployed-platform or daemon
 acceptance success is claimed by these results.
+
+## First Linux container CI and restart harness correction
+
+The initial Linux Docker job in [CI run 39974777922](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/39974777922)
+ran real daemon HTTP tests: ten passed, then the snapshot/restore/restart journey
+failed to reconnect, followed by four connection-refused failures against the
+shared fixture. Restore and mode checks had already succeeded before restart.
+The logs did not preserve container state or the post-restart host-port mapping,
+so they do not by themselves prove a daemon startup failure or a changed port.
+
+The fixture previously cached Docker's ephemeral loopback port forever. It now
+re-inspects `NetworkSettings.Ports` while waiting for startup/restart, bounds
+health requests, and requires a changed daemon `boot_id` before asserting data
+survived. A portable regression simulates port 32768 changing to 32769; a second
+check proves diagnostic filtering omits tokens and user commands. On failure the
+fixture reports only selected Docker state fields, observed loopback ports and
+allowlisted structured daemon event metadata, never `Config.Env` or raw logs.
+The next Linux CI run must establish whether this resolves the actual restart
+failure; these harness tests alone are not a substitute for that run.
