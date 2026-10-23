@@ -1,3 +1,16 @@
+//! Workspace publication and physical release have independent commit points.
+//!
+//! `workspace:release-intent` is written only after a successful checkpoint and
+//! before destroy. It captures the original clock and lease identity. A saved
+//! destroy acknowledgement supplies the known clock end; a stopped container
+//! without that acknowledgement leaves its financial hold unresolved. Neither
+//! ledger errors nor missing exit timestamps undo confirmed physical release.
+//! The completed outcome is saved before active pointers are detached, and
+//! retries finish detachment using the saved identities. Pending accounting is
+//! retained under `workspace:release-accounting:<id>` for reconciliation. No
+//! intent plus an unexpectedly stopped dirty incarnation is a data-recovery
+//! error, not a successful archive. The session owner serializes these flows.
+
 use std::time::Duration;
 
 use agents_auth::billing::Resource;
@@ -24,6 +37,7 @@ const PORT: u16 = 8080;
 const BATCH_TOOLS: u64 = 8;
 const BATCH_BYTES: u64 = 64 * 1024 * 1024;
 const CONTAINER_CLOCK: &str = "workspace:container-clock";
+const RELEASE_INTENT: &str = "workspace:release-intent";
 
 /// A session DO is the sole writer. Its caller must serialize workspace operations,
 /// including checkpoint/release, against tool execution.
@@ -45,6 +59,33 @@ pub struct CheckpointStats {
     pub r2_write_operations: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReleaseOutcome {
+    pub checkpoint: CheckpointStats,
+    pub accounting_pending: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ReleaseIntent {
+    id: String,
+    checkpoint: CheckpointStats,
+    clock: UsageClock,
+    lease_id: Option<String>,
+    destroyed_at_ms: Option<u64>,
+    outcome: Option<ReleaseOutcome>,
+}
+
+impl ReleaseIntent {
+    fn completed_outcome(&self, running: bool) -> Result<Option<ReleaseOutcome>> {
+        if running && self.outcome.is_some() {
+            return Err(Error::RustError(
+                "workspace_release_generation_conflict".into(),
+            ));
+        }
+        Ok(self.outcome.clone())
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Manifest {
     format_version: u8,
@@ -57,7 +98,7 @@ struct Manifest {
     created_at_ms: u64,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct UsageClock {
     quantity: u64,
     since_ms: u64,
@@ -307,6 +348,18 @@ impl<'a> Workspace<'a> {
     /// Reconcile a process incarnation, not just DO memory: a live container may
     /// outlast an evicted DO, and must never be overwritten by an older snapshot.
     pub async fn restore_if_needed(&self) -> Result<()> {
+        if self
+            .state
+            .storage()
+            .get::<ReleaseIntent>(RELEASE_INTENT)
+            .await?
+            .is_some()
+        {
+            // Finish detachment even if the previous request died after saving
+            // its outcome. Never inherit another incarnation's release journal.
+            self.release().await?;
+            self.state.storage().delete(RELEASE_INTENT).await?;
+        }
         let container = self.container()?;
         if !container.running() {
             if let Some(old) = self
@@ -565,6 +618,10 @@ impl<'a> Workspace<'a> {
         if !self.container()?.running() {
             return Ok(CheckpointStats::default());
         }
+        self.checkpoint_active().await
+    }
+
+    async fn checkpoint_active(&self) -> Result<CheckpointStats> {
         self.arm_usage().await?;
         let mut status = ensure_success(self.request(Method::Get, "/v1/status", None, &[]).await?)?;
         let dirty = status.json::<Value>().await?["dirty_bytes"]
@@ -711,34 +768,124 @@ impl<'a> Workspace<'a> {
         Ok(stats)
     }
 
-    /// Never release a dirty workspace when publication fails. DO alarm retry
-    /// policy belongs to the session owner, which must keep this call serialized.
-    pub async fn release(&self) -> Result<CheckpointStats> {
-        let stats = self.checkpoint().await?;
+    /// Data publication precedes a durable release intent. Once stopped, billing
+    /// uncertainty must retain its hold without preventing physical completion.
+    pub async fn release(&self) -> Result<ReleaseOutcome> {
+        let storage = self.state.storage();
+        let mut intent = match storage.get::<ReleaseIntent>(RELEASE_INTENT).await? {
+            Some(intent) => intent,
+            None => {
+                let clock = storage
+                    .get::<UsageClock>(CONTAINER_CLOCK)
+                    .await?
+                    .unwrap_or_default();
+                let running = self.container()?.running();
+                validate_checkpoint_source(running, &clock)?;
+                let checkpoint = if running {
+                    let checkpoint = self.checkpoint_active().await?;
+                    self.arm_usage().await?;
+                    checkpoint
+                } else {
+                    CheckpointStats::default()
+                };
+                let intent = ReleaseIntent {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    checkpoint,
+                    clock: storage
+                        .get::<UsageClock>(CONTAINER_CLOCK)
+                        .await?
+                        .unwrap_or_default(),
+                    lease_id: self.lease().current().await?.map(|lease| lease.id),
+                    destroyed_at_ms: None,
+                    outcome: None,
+                };
+                storage.put(RELEASE_INTENT, &intent).await?;
+                intent
+            }
+        };
+        if let Some(outcome) = intent.completed_outcome(self.container()?.running())? {
+            self.detach_release(&intent).await?;
+            return Ok(outcome);
+        }
         if self.container()?.running() {
-            self.arm_usage().await?;
-            self.container()?.destroy(None).await?;
-            self.finish_container_clock().await?;
-            self.state
-                .storage()
-                .put("workspace:container-clock", UsageClock::default())
-                .await?;
-        } else if self
-            .state
-            .storage()
-            .get::<UsageClock>("workspace:container-clock")
-            .await?
-            .is_some_and(|clock| clock.quantity != 0)
-        {
+            match self.container()?.destroy(None).await {
+                Ok(()) => {
+                    intent.destroyed_at_ms = Some(worker::Date::now().as_millis());
+                    storage.put(RELEASE_INTENT, &intent).await?;
+                }
+                Err(error) if self.container()?.running() => return Err(error),
+                Err(_) => {} // Confirmed stopped, but no trustworthy exit time.
+            }
+        }
+        if self.container()?.running() {
             return Err(Error::RustError(
-                "workspace_container_exit_unreconciled".into(),
+                "workspace_release_stop_unconfirmed".into(),
             ));
         }
-        if let Some(lease) = self.lease().current().await? {
-            self.lease().settle(&lease.id).await?;
-            self.lease().clear().await?;
+        let accounting_pending = self.release_accounting(&intent).await.is_err();
+        let outcome = ReleaseOutcome {
+            checkpoint: intent.checkpoint.clone(),
+            accounting_pending,
+        };
+        intent.outcome = Some(outcome.clone());
+        // Save the physical result before clearing pointers. Every subsequent
+        // retry returns the same status and completes any interrupted detachment.
+        storage.put(RELEASE_INTENT, &intent).await?;
+        self.detach_release(&intent).await?;
+        Ok(outcome)
+    }
+
+    async fn release_accounting(&self, intent: &ReleaseIntent) -> Result<()> {
+        let Some(lease_id) = &intent.lease_id else {
+            return if intent.clock.quantity == 0 {
+                Ok(())
+            } else {
+                Err(Error::RustError("workspace_release_lease_missing".into()))
+            };
+        };
+        let leases = self.lease();
+        if intent.clock.quantity != 0 {
+            let (Some(end), Some(event)) = (intent.destroyed_at_ms, &intent.clock.event) else {
+                // Leave the original observation and reservation held.
+                return Err(Error::RustError("workspace_release_clock_unknown".into()));
+            };
+            leases
+                .meter(lease_id)
+                .await?
+                .record_wall_time(event, Resource::Container, intent.clock.since_ms, end)
+                .await?;
         }
-        Ok(stats)
+        leases.settle(lease_id).await
+    }
+
+    async fn detach_release(&self, intent: &ReleaseIntent) -> Result<()> {
+        let storage = self.state.storage();
+        if intent
+            .outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.accounting_pending)
+        {
+            storage
+                .put(
+                    &format!("workspace:release-accounting:{}", intent.id),
+                    intent,
+                )
+                .await?;
+        }
+        if let Some(clock) = storage.get::<UsageClock>(CONTAINER_CLOCK).await? {
+            if clock.run == intent.clock.run
+                && clock.event == intent.clock.event
+                && clock.since_ms == intent.clock.since_ms
+            {
+                storage.put(CONTAINER_CLOCK, UsageClock::default()).await?;
+            }
+        }
+        if let Some(lease) = self.lease().current().await? {
+            if intent.lease_id.as_deref() == Some(lease.id.as_str()) {
+                self.lease().clear().await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn cancel(&self, execution_id: &str) -> Result<()> {
@@ -749,6 +896,15 @@ impl<'a> Workspace<'a> {
         )?;
         Ok(())
     }
+}
+
+fn validate_checkpoint_source(running: bool, clock: &UsageClock) -> Result<()> {
+    if !running && clock.quantity != 0 {
+        return Err(Error::RustError(
+            "workspace_container_exit_before_checkpoint".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn ensure_success(response: Response) -> Result<Response> {
@@ -851,5 +1007,73 @@ mod tests {
                 vec![byte; 32]
             );
         }
+    }
+
+    #[test]
+    fn completed_release_retries_return_the_saved_pending_status() {
+        let mut intent = ReleaseIntent {
+            id: "release-1".into(),
+            checkpoint: CheckpointStats::default(),
+            clock: UsageClock::default(),
+            lease_id: None,
+            destroyed_at_ms: None,
+            outcome: None,
+        };
+        assert!(intent.completed_outcome(true).unwrap().is_none());
+        intent.outcome = Some(ReleaseOutcome {
+            checkpoint: CheckpointStats::default(),
+            accounting_pending: true,
+        });
+        assert!(
+            intent
+                .completed_outcome(false)
+                .unwrap()
+                .unwrap()
+                .accounting_pending
+        );
+        assert!(intent.completed_outcome(true).is_err());
+    }
+
+    #[test]
+    fn a_stopped_active_clock_requires_a_prior_checkpoint_intent() {
+        let active = UsageClock {
+            quantity: 1,
+            ..UsageClock::default()
+        };
+        assert!(validate_checkpoint_source(false, &active).is_err());
+        assert!(validate_checkpoint_source(true, &active).is_ok());
+        assert!(validate_checkpoint_source(false, &UsageClock::default()).is_ok());
+    }
+    #[test]
+    fn pending_release_journal_preserves_original_clock_without_inventing_an_end() {
+        let intent = ReleaseIntent {
+            id: "release-1".into(),
+            checkpoint: CheckpointStats {
+                archive_bytes: 123,
+                ..CheckpointStats::default()
+            },
+            clock: UsageClock {
+                quantity: 1,
+                since_ms: 42,
+                run: Some("lease-1".into()),
+                event: Some("clock-1".into()),
+                end_ms: None,
+            },
+            lease_id: Some("lease-1".into()),
+            destroyed_at_ms: None,
+            outcome: Some(ReleaseOutcome {
+                checkpoint: CheckpointStats::default(),
+                accounting_pending: true,
+            }),
+        };
+        let restored: ReleaseIntent =
+            serde_json::from_str(&serde_json::to_string(&intent).unwrap()).unwrap();
+        assert_eq!(restored.clock.since_ms, 42);
+        assert_eq!(restored.clock.event.as_deref(), Some("clock-1"));
+        assert_eq!(restored.lease_id.as_deref(), Some("lease-1"));
+        assert_eq!(restored.destroyed_at_ms, None);
+        assert_eq!(restored.clock.end_ms, None);
+        assert!(restored.outcome.unwrap().accounting_pending);
+        assert_eq!(restored.checkpoint.archive_bytes, 123);
     }
 }

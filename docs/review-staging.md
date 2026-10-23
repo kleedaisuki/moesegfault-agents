@@ -192,3 +192,75 @@ the owning agent, not independently rerun here).
 
 After this additional paid-API fix, no unresolved substantive issue remains in
 the review scope. Real authenticated staging acceptance remains required.
+
+## Bounded platform-boundary review (2026-10-24, HEAD 9e48e3e)
+
+Scope: remaining Worker/JS/DO/Container boundary and cleanup recovery only. No
+production source change or full build. Read the pinned worker-rs 0.8.7 binding
+contracts and actual-WASM harness coverage; the latter exercises D1, auth, alarms,
+SSE and idle archival, but does not instantiate a Cloudflare Container.
+
+### P1: Successful container destroy can strand archival on retry
+
+Location at this HEAD: `workspace.rs:716-741`, specifically destroy at 720,
+clock finalization at 721, and `workspace_container_exit_unreconciled` at 734.
+
+Release destroys the container before finalizing/clearing the persisted allocation
+clock. If destroy succeeds but the response is lost, or the DO is replaced before
+clock finalization, a retry sees a stopped container and nonzero clock quantity.
+It returns `workspace_container_exit_unreconciled`. No branch clears or transfers
+that clock on a subsequent release attempt, so retrying has the same result.
+Session archival remains pending and explicit resume is refused indefinitely.
+
+Preserving an unknown financial interval is appropriate; making an already
+stopped container's cleanup wait forever for that interval is not. Separate
+physical release completion from uncertain accounting, as already done for
+execution concurrency. Persist a release phase/intent and allow a confirmed
+stopped container to complete archival while retaining the unknown interval and
+hold for reconciliation. Do not invent a precise stop time from retry time.
+
+Regression: inject failure immediately after successful destroy and before clock
+finalization; retry must complete archival without restarting the container or
+forgiving the unresolved spend. The current actual-WASM and daemon-only Docker
+journeys do not cover this DO-to-Cloudflare-Container fault boundary.
+
+Root notified. Other inspected startup option names (`env`, `enableInternet`),
+getTcpPort dispatch and DO batch-storage map types match the pinned SDK bindings;
+no additional concrete ABI finding was established in this bounded pass.
+
+### Release P1 resolution — independently re-reviewed
+
+**Resolved in the current working-tree patch by source inspection and seven
+focused native tests.** The original finding above is retained as rationale.
+No further blocking residual was found within this release-recovery scope.
+
+- `release` checkpoints before durably writing `ReleaseIntent`, which captures
+  the original clock and lease identity before destroy can occur.
+- A successful destroy acknowledgement saves its timestamp. If recovery instead
+  sees an already-stopped container without a saved acknowledgement, accounting
+  remains pending; retry time is not invented as its actual stop time.
+- `ReleaseOutcome` is durably saved before detaching active pointers. Interrupted
+  detachment retries against the same original identities. Unknown accounting
+  retains the intent under `workspace:release-accounting:<id>` and its hold.
+- Session archival consumes physical completion independently of settlement:
+  `complete_archive` requires Closed and clears `archive_pending`, preserving
+  history and exposing `billing_pending`/`resource_reconciliation_pending`.
+- Before a later container incarnation starts, `restore_if_needed` completes old
+  detachment and deletes the old active release journal. A new container cannot
+  inherit or be stopped by its predecessor's completed release intent.
+- Without any post-checkpoint release intent, an unexpectedly stopped active
+  incarnation remains a data-recovery error, not a falsely successful archive.
+
+Executed independently from cached native artifacts (no full build):
+
+```text
+cargo test -p agents-worker workspace::tests --lib --locked
+6 passed
+cargo test -p agents-worker committed_archive_finishes_despite_financial_hold_without_losing_history --lib --locked
+1 passed
+```
+
+These cover saved pending outcomes, generation-conflict rejection, original
+clock/lease retention across serialization, checkpoint-source guards, and the
+actual Session archive completion transition. They do not simulate Cloudflare's
+real destroy-response loss or establish deployed Container fault-injection E2E.

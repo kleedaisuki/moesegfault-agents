@@ -39,6 +39,10 @@ Only accepted user input advances `last_input_at_ms`. Model tokens, tool calls, 
 
 A normal archive checkpoints the workspace, writes an immutable conversation export, registers its retained-byte clock, commits `Closed`, and releases the Container. A persisted `archive_pending` phase makes release retryable after a crash. A successfully closed session can be explicitly resumed using `POST /v1/sessions/{id}/resume`; D1 readmits it under live-session quotas and the DO preserves its exact pinned prefix and workspace. The explicit resume gesture starts a new idle window.
 
+Physical release has its own durable receipt after checkpoint publication. A successful stop acknowledgement pins the end timestamp; if the stop is confirmed but its acknowledgement was lost, no exit time is invented. The original clock, lease and uncertainty remain in an accounting journal with their budget hold. A saved release outcome is replayed before detaching the old active clock/lease, allowing a later workspace generation without accidentally destroying or charging it as the old one.
+
+Once the archive is committed and the Container is confirmed stopped, financial reconciliation does not keep `archive_pending` true. The session remains closed/resumable, with `billing_pending` and `last_error: resource_reconciliation_pending` visible to its owner. Snapshot failure or an unexpected stopped active clock without a prior checkpoint/release intent remains a data-recovery error, not a fabricated successful archive. Unit tests cover the production state guards and serialized recovery receipt; they do not claim to inject a real Cloudflare Container host failure.
+
 Workspace compute stays warm behind an independent funded lease, not an active-run quota slot. See [runtime-workspaces.md](runtime-workspaces.md) for renewal, snapshot streaming and tool boot fences.
 
 ## Prompt-cache and compaction invariants

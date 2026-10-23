@@ -86,6 +86,21 @@ struct PersistedSession {
     measured_messages: usize,
 }
 
+impl PersistedSession {
+    fn complete_archive(&mut self, accounting_pending: bool) -> Result<()> {
+        if self.record.status != SessionStatus::Closed {
+            return Err(Error::RustError("archive_not_committed".into()));
+        }
+        self.archive_pending = false;
+        if accounting_pending {
+            self.last_error = Some("resource_reconciliation_pending".into());
+        } else if self.last_error.as_deref() == Some("workspace_checkpoint_pending") {
+            self.last_error = None;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 struct ChatRequest {
     messages: Vec<Message>,
@@ -190,6 +205,8 @@ impl DurableObject for Session {
                 value["context_tokens"] = json!(data.input_tokens);
                 value["compact_count"] = json!(data.compact_count);
                 value["context_window"] = json!(data.record.pinned.model.context_window);
+                value["billing_pending"] =
+                    json!(data.last_error.as_deref() == Some("resource_reconciliation_pending"));
                 value["last_error"] = json!(data.last_error);
                 value["checkpoint_pending"] = json!(data.checkpoint_error.is_some());
                 value["checkpoint_error"] = json!(data.checkpoint_error);
@@ -1269,15 +1286,26 @@ impl SessionInner {
                 .set_alarm(util::alarm_at(util::now_ms() + 1000))
                 .await?;
         }
+        let mut accounting_pending = false;
         if record.pinned.workspace {
-            workspace.release().await?;
+            accounting_pending = workspace.release().await?.accounting_pending;
         }
-        meter.settle_run().await?;
+        if meter.settle_run().await.is_err() {
+            accounting_pending = true;
+        }
         if let Some(generation) = prepared.archive_backstop_generation {
-            crate::cleanup::release_unused(&self.env, &record.owner_id, &record.id, generation)
-                .await?;
+            if crate::cleanup::release_unused(&self.env, &record.owner_id, &record.id, generation)
+                .await
+                .is_err()
+            {
+                accounting_pending = true;
+            }
         }
-        self.data.borrow_mut().as_mut().unwrap().archive_pending = false;
+        self.data
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .complete_archive(accounting_pending)?;
         self.persist().await?;
         self.state.storage().delete_alarm().await?;
         util::emit("session.archived", json!({"session_id":record.id}));
@@ -1721,5 +1749,27 @@ mod tests {
             "json_decode"
         );
         assert_eq!(error_family(&Error::BodyUsed), "platform_error");
+    }
+    #[test]
+    fn committed_archive_finishes_despite_financial_hold_without_losing_history() {
+        let mut data = state();
+        data.record.status = SessionStatus::Closed;
+        data.archive_pending = true;
+        data.journal.push(Message::text("user", "preserved"));
+        let pinned = data.record.pinned.prefix_hash();
+        data.complete_archive(true).unwrap();
+        assert!(!data.archive_pending);
+        assert_eq!(data.record.status, SessionStatus::Closed);
+        assert_eq!(
+            data.last_error.as_deref(),
+            Some("resource_reconciliation_pending")
+        );
+        assert_eq!(data.journal[0].content, "preserved");
+        assert_eq!(data.record.pinned.prefix_hash(), pinned);
+        let mut uncommitted = state();
+        uncommitted.archive_pending = true;
+        assert!(uncommitted.complete_archive(true).is_err());
+        assert!(uncommitted.archive_pending);
+        assert_eq!(uncommitted.record.status, SessionStatus::Idle);
     }
 }
