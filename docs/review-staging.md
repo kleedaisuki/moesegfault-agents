@@ -264,3 +264,78 @@ These cover saved pending outcomes, generation-conflict rejection, original
 clock/lease retention across serialization, checkpoint-source guards, and the
 actual Session archive completion transition. They do not simulate Cloudflare's
 real destroy-response loss or establish deployed Container fault-injection E2E.
+
+## Independent allowance transition review (2026-10-24)
+
+Scope: `allowances.rs`, allowance/vintage triggers, migration
+`0009_authoritative_paid_allowance.sql`, [wallet](wallet.md) and [pricing](pricing.md)
+contracts. No live D1 access, fund issuance, provider calls or production edits.
+The staging-observed $48.744159 calendar-prorated Pro balance was accepted as
+supplied context and reproduced by the owner's production-SQL October fixture.
+
+### Findings resolved before the reviewed patch stabilized
+
+A lower currently verified tier could not repair a legacy Free-anchored higher
+nominal tier: its replacement delta was negative and failed a constraint. An
+intermediate proposed floor (`target = max(nominal, spent + holds)`) avoided debt
+but converted a held upper bound into spendable credit: a 9-million hold under
+an 8-million Go entitlement yielded 9 million available after release. This was
+independently reproduced in SQLite; that approach was discarded, not shipped as
+the reviewed solution.
+
+The final model eliminates that refund exception:
+
+- Ordinary Free-to-first-paid and same/higher-tier legacy repair retain the
+  existing funding identity and immutable reservation vintages. The replacement
+  journal records the old fields, verified paid anchor/end/source, target and
+  offset. Prior actual spending/holds remain inside that paid cap.
+- A legacy window whose **nominal high-water tier** exceeds the currently verified
+  tier retires as an old source. The new paid window receives its normal current
+  entitlement; old holds keep old vintages, and their unused refunds burn rather
+  than enter the new wallet. No signed correction or synthetic hold-floor grant
+  is needed.
+- Paid-to-paid same-cycle upgrades retain prorated high-water semantics, using
+  the authoritative paid anchor rather than the former Free calendar anchor.
+- Paid expiry burns its unused allowance. Free subsidy is capped at $1 per UTC
+  calendar month total: returning to Free within a month already funded before
+  the upgrade need not grant another dollar. A new UTC month grants normally.
+
+### Independent verification
+
+`tests/test_allowance_conservation_sql.py` is a reviewer-owned verification
+artifact using the actual extracted production GRANT/REPLACE SQL and all current
+migrations, not an alternate wallet implementation. Its 108 state sequences vary
+first-paid/same-tier legacy/lower-tier retirement, actual spend, pending holds,
+zero/partial settlement, replay, and settlement before/after rollover. It also
+checks an old 9-million hold under a new 8-million Go window and concurrent
+credentials using two SQLite connections: exactly one replacement journal event
+and one target allowance result.
+
+Executed locally:
+
+```text
+python -m unittest discover -s tests -p test_allowance_conservation_sql.py -v
+1 property-sequence test passed (108 sequences plus explicit hold/concurrency checks)
+python -m unittest discover -s tests -p test_allowance_sql.py -v
+15 passed
+python -m unittest discover -s tests -p test_subscription_snapshots_sql.py -v
+4 passed
+```
+
+Migration 0009 is additive and does not rewrite existing financial provenance
+merely on application. Replacement journal insertion, wallet delta and window
+handoff share SQLite statement atomicity; retries cannot partially commit the
+handoff. Do not remove the journal or undo financial rows as an application
+rollback mechanism. An older binary does not understand the corrected paid-anchor
+proration, so rollback acceptance must not promise identical funding semantics;
+prefer a forward fix once a replacement is committed.
+
+**Conclusion:** no current blocking conservation, replay, concurrency, old-hold
+refund or paid-expiry issue was found in this bounded final model. These are
+local SQL/state-transition results, not proof that staging has been migrated or
+that its existing balance has already been repaired.
+
+Final cheap compatibility sweep: `python -m unittest discover -s tests -p
+ 'test_*sql.py' -q` — **60 passed in 1.549 seconds**, including the new independent
+conservation sequence test. No full Rust/WASM build was run by this financial
+review pass.
