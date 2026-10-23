@@ -46,4 +46,47 @@ The server calls Billing `GET /v1/me` with the client-bound access token and sto
 
 ## Verification
 
+### JavaScript/D1 integer boundary incident
+
+The first real staging authenticated request exposed an ABI error which native Rust and
+SQLite-only tests cannot detect. With wasm-bindgen 0.2.129, `i64.into()` and `u64.into()`
+construct JavaScript **BigInt**, while Cloudflare D1 accepts JavaScript Number but not
+BigInt. A fresh API key had `last_used_at=NULL`, so its first authenticated request took
+the timestamp-update path and failed with HTTP 500 before normal product handling.
+Invalid keys still correctly returned 401, which made unauthenticated smoke checks
+insufficient to reveal the failure. Manually avoiding the timestamp update was only a
+diagnostic experiment, not a fix.
+
+The same real-WASM journey also caught a second platform boundary: Fetch's
+`Response.redirect()` produces immutable response headers. Appending a BFF login or
+callback cookie therefore fails at runtime even though Rust compilation succeeds.
+Both BFF redirects now construct a normal mutable empty response with status 302 and
+an explicit Location, then append the session/login cookies and security headers.
+This follows the [Fetch response-header guard contract](https://fetch.spec.whatwg.org/#dom-response-redirect)
+without buffering or changing the redirect's body semantics.
+
+A third boundary is the Rust SDK's alarm argument, not JavaScript's `setAlarm` contract:
+in worker-rs 0.8.7, `ScheduledTime::from(i64)` means a **relative offset** in milliseconds.
+Passing an epoch timestamp silently adds it to the current epoch again. AuthSession now
+constructs an explicit JavaScript Date and `ScheduledTime::new(date)` for its absolute
+expiry; it does not infer units from the numeric magnitude. See the pinned
+[`ScheduledTime` SDK implementation](https://docs.rs/worker/0.8.7/worker/struct.ScheduledTime.html).
+The real-WASM auth journey creates a short-lived browser session, arms the actual DO
+alarm through authentication, and observes physical D1 deletion within five seconds.
+Request-time expiry rejection alone cannot make that regression pass.
+
+All auth D1 timestamp bindings now use the checked `d1_integer` adapter, which rejects
+values outside the exact JavaScript integer range and explicitly constructs `JsValue`
+with `from_f64`. Refresh-version increments remain SQLite-side. Money continues to use
+decimal-string bindings with SQLite INTEGER casts, never this timestamp adapter.
+See [wasm-bindgen number mappings](https://rustwasm.github.io/docs/wasm-bindgen/reference/types/numbers.html)
+and [the D1 type-conversion contract](https://developers.cloudflare.com/d1/worker-api/).
+
+`tests/worker/http.test.mjs` runs the actual compiled Rust Worker in Miniflare/workerd
+against the real migrations. Its fresh-key test forces `last_used_at=NULL`; the shared
+`auth-journey.mjs` extends that boundary coverage to browser-session expiry, key creation
+and revocation, BYOK creation/update, OIDC transaction insertion and single-use callback
+claim, and local logout. These are WASM ABI tests, not a replacement for a deployed human
+OIDC and rotating-refresh acceptance journey. No synthetic key or cookie is logged.
+
 `cargo test -p agents-auth --lib` covers real RS256 signature verification, issuer/audience/time/purpose rejection, callback mix-up and browser-binding defenses, origin-safe return paths, ciphertext integrity and owner/purpose isolation, and exact-money accounting properties. `python -m unittest discover -s tests -p test_billing_sql.py` covers actual SQL transactions/triggers, concurrent budget admission, replay and large integer precision. Worker native/WASM checks verify platform integration. Environment acceptance must additionally demonstrate a human login, concurrent refresh, API-key/BYOK management, expired-session logout and shared-sector subscription recognition against the registered staging clients; unit tests do not substitute for that journey.

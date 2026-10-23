@@ -83,6 +83,12 @@ fn cookie(req: &Request, name: &str) -> Option<String> {
 fn cookie_wire(name: &str, token: &str, age: i64) -> String {
     format!("{name}={token}; Path=/; Max-Age={age}; Secure; HttpOnly; SameSite=Lax")
 }
+fn redirect_response(url: url::Url) -> Result<Response> {
+    // Fetch Response.redirect() has immutable headers; BFF redirects must set cookies.
+    let mut response = Response::empty()?.with_status(302);
+    response.headers_mut().set("Location", url.as_str())?;
+    Ok(response)
+}
 fn secure_response(mut response: Response) -> Result<Response> {
     response.headers_mut().set("Cache-Control", "no-store")?;
     response
@@ -377,7 +383,7 @@ pub async fn handle_auth(mut req: Request, env: &Env) -> Result<Response> {
             ))?;
             env.d1("DB")?.prepare("INSERT INTO oidc_transactions(state_hash,payload_encrypted,expires_at,created_at) VALUES(?1,?2,?3,?4)")
                 .bind(&[hash_secret(&tx.state).into(),payload.into(),d1_integer(tx.expires_at)?,d1_integer(now())?])?.run().await?;
-            let mut response = Response::redirect(redirect)?;
+            let mut response = redirect_response(redirect)?;
             response.headers_mut().append(
                 "Set-Cookie",
                 &cookie_wire(LOGIN_COOKIE, &tx.browser_binding, 300),
@@ -550,7 +556,7 @@ async fn callback(req: &Request, env: &Env) -> Result<Response> {
     env.d1("DB")?.prepare("INSERT INTO browser_sessions(token_hash,account_id,tokens_encrypted,csrf_hash,expires_at,created_at) VALUES(?1,?2,?3,?4,?5,?6)")
         .bind(&[hash_secret(&session_token).into(),account_id.into(),sealed.into(),hash_secret(&csrf).into(),d1_integer(expires_at)?,d1_integer(now())?])?.run().await?;
     let mut response =
-        Response::redirect(format!("{}{}", setting(env, "APP_ORIGIN")?, tx.return_to).parse()?)?;
+        redirect_response(format!("{}{}", setting(env, "APP_ORIGIN")?, tx.return_to).parse()?)?;
     response.headers_mut().append(
         "Set-Cookie",
         &cookie_wire(SESSION_COOKIE, &session_token, expires_at - now()),
@@ -845,9 +851,14 @@ async fn session_request(mut req: Request, env: &Env, storage: &Storage) -> Resu
     let db = env.d1("DB")?;
     let row = db.prepare("SELECT account_id,tokens_encrypted,csrf_hash,expires_at FROM browser_sessions WHERE token_hash=?1 AND expires_at>?2")
         .bind(&[hash.into(),d1_integer(now())?])?.first::<BrowserSession>(None).await?.ok_or_else(||failure("unauthorized"))?;
-    if storage.get_alarm().await?.is_none() {
+    let expiry_ms = row
+        .expires_at
+        .checked_mul(1000)
+        .ok_or_else(|| failure("invalid_session_expiry"))?;
+    if storage.get_alarm().await? != Some(expiry_ms) {
         storage.put("session_hash", hash).await?;
-        storage.set_alarm(row.expires_at * 1000).await?;
+        let deadline = js_sys::Date::new(&d1_integer(expiry_ms)?);
+        storage.set_alarm(ScheduledTime::new(deadline)).await?;
     }
     let decrypted = crypto(unseal(
         &encryption_key(env)?,

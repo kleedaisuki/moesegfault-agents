@@ -115,7 +115,22 @@ impl DurableObject for Session {
         let loaded = data.clone();
         let storage = state.storage();
         let _init = state.block_concurrency_while(async move {
-            *loaded.borrow_mut() = load_state(&storage).await?;
+            let restored = load_state(&storage).await?;
+            if let Some(data) = &restored {
+                match alarm_deadline(data, util::now_ms()) {
+                    Some(expected) => {
+                        if storage
+                            .get_alarm()
+                            .await?
+                            .is_none_or(|actual| i128::from(actual) > i128::from(expected))
+                        {
+                            storage.set_alarm(util::alarm_at(expected)).await?;
+                        }
+                    }
+                    None => storage.delete_alarm().await?,
+                }
+            }
+            *loaded.borrow_mut() = restored;
             Ok(())
         });
         Self {
@@ -388,7 +403,7 @@ impl DurableObject for Session {
             inner
                 .state
                 .storage()
-                .set_alarm((util::now_ms() + 1000) as i64)
+                .set_alarm(util::alarm_at(util::now_ms() + 1000))
                 .await?;
             return Response::ok("maintenance");
         }
@@ -474,19 +489,15 @@ impl SessionInner {
     }
 
     async fn arm_alarm(&self) -> Result<()> {
-        let data = self.snapshot()?;
-        if data.record.status == SessionStatus::Closed
-            && !data.archive_pending
-            && !data.archive_preparing
-        {
-            return self.state.storage().delete_alarm().await;
+        match alarm_deadline(&self.snapshot()?, util::now_ms()) {
+            Some(deadline) => {
+                self.state
+                    .storage()
+                    .set_alarm(util::alarm_at(deadline))
+                    .await
+            }
+            None => self.state.storage().delete_alarm().await,
         }
-        let at = if data.run.is_some() || data.archive_pending || data.archive_preparing {
-            util::now_ms() + 10
-        } else {
-            data.record.idle_deadline_ms().max(util::now_ms() + 1000)
-        };
-        self.state.storage().set_alarm(at as i64).await
     }
 
     fn append(&self, messages: Vec<Message>) -> Result<u64> {
@@ -800,7 +811,7 @@ impl SessionInner {
         self.persist().await?;
         self.state
             .storage()
-            .set_alarm((util::now_ms() + 600_000) as i64)
+            .set_alarm(util::alarm_at(util::now_ms() + 600_000))
             .await?;
         let definitions = tool_definitions(record);
         let sender = self.events.borrow().clone();
@@ -1028,7 +1039,7 @@ impl SessionInner {
         self.persist().await?;
         self.state
             .storage()
-            .set_alarm((util::now_ms() + 600_000) as i64)
+            .set_alarm(util::alarm_at(util::now_ms() + 600_000))
             .await?;
         let summary = bounded_provider(provider::complete(config, &summary_input, &[])).await?;
         {
@@ -1249,7 +1260,7 @@ impl SessionInner {
             self.persist().await?;
             self.state
                 .storage()
-                .set_alarm((util::now_ms() + 1000) as i64)
+                .set_alarm(util::alarm_at(util::now_ms() + 1000))
                 .await?;
         }
         if record.pinned.workspace {
@@ -1401,6 +1412,19 @@ fn safe_error_code(error: &Error) -> String {
         }
     }
     "run_failed".into()
+}
+
+fn alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
+    if data.record.status == SessionStatus::Closed
+        && !data.archive_pending
+        && !data.archive_preparing
+    {
+        return None;
+    }
+    if data.run.is_some() || data.archive_pending || data.archive_preparing {
+        return Some(now.saturating_add(10));
+    }
+    Some(data.record.idle_deadline_ms().max(now.saturating_add(1000)))
 }
 
 fn replay_terminal(run: &RunState) -> Option<std::result::Result<Value, String>> {
@@ -1559,5 +1583,19 @@ mod tests {
             replay_terminal(&failed),
             Some(Err("provider_outcome_unknown".into()))
         );
+    }
+    #[test]
+    fn durable_phase_owns_alarm_deadline_and_closed_state_cancels_it() {
+        let mut data = state();
+        data.record.last_input_at_ms = 100;
+        assert_eq!(alarm_deadline(&data, 100), Some(600100));
+        assert_eq!(alarm_deadline(&data, 700000), Some(701000));
+        data.archive_preparing = true;
+        assert_eq!(alarm_deadline(&data, 700000), Some(700010));
+        data.archive_preparing = false;
+        data.record.status = SessionStatus::Closed;
+        assert_eq!(alarm_deadline(&data, 700000), None);
+        data.archive_pending = true;
+        assert_eq!(alarm_deadline(&data, 700000), Some(700010));
     }
 }

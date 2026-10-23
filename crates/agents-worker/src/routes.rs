@@ -45,13 +45,30 @@ pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     } else {
         dispatch(req, &route).await
     };
-    let mut response = match response {
+    let response = match response {
         Ok(response) => response,
         Err(error) => error_response(&error)?,
     };
+    let mut response = own_headers(response);
     trace.inject(response.headers_mut())?;
     response.headers_mut().set("Vary", "Origin")?;
-    response.headers_mut().set("Cache-Control", "no-store")?;
+    let event_stream = response
+        .headers()
+        .get("Content-Type")?
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+        });
+    response.headers_mut().set(
+        "Cache-Control",
+        if event_stream {
+            "no-store, no-transform"
+        } else {
+            "no-store"
+        },
+    )?;
     if let Some(origin) = cors {
         response
             .headers_mut()
@@ -80,6 +97,13 @@ pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         json!({"trace_id":trace.trace_id(),"status":response.status_code(),"duration_ms":util::now_ms().saturating_sub(started_at)}),
     );
     Ok(response)
+}
+
+fn own_headers(response: Response) -> Response {
+    // Fetch/DO responses carry immutable guards. Headers::clone allocates a new
+    // JS Headers; with_headers moves the original body without consuming or teeing it.
+    let headers = response.headers().clone();
+    response.with_headers(headers)
 }
 
 pub(crate) fn error_response(error: &worker::Error) -> Result<Response> {
@@ -805,7 +829,7 @@ async fn run(
     messages: Vec<Message>,
     stream: bool,
 ) -> Result<Response> {
-    let mut response = forward(
+    let response = forward(
         env,
         session,
         Method::Post,
@@ -813,6 +837,7 @@ async fn run(
         Some(json!({"messages":messages,"stream":stream})),
     )
     .await?;
+    let mut response = own_headers(response);
     response
         .headers_mut()
         .set("X-Agents-Session", &session.id)?;
