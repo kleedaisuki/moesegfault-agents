@@ -22,6 +22,10 @@ time to first token (TTFT). Headers do not prove inference started. Total includ
 durable terminal handling and stream completion. Compare distributions and failure
 rates, not only a favorable request. Three samples locate large stalls; their p95
 is a nearest-rank maximum, not a statistically reliable tail estimate.
+Probe schema 2 first resolves the SDK's lazy completion resource, records that in
+`sdk_setup_ms`, and then starts request timing. `client_total_ms` retains setup plus
+the complete request. Schema 1 included this setup in all request-relative timings;
+do not compare the two schemas as if an SDK-initialization change sped up the server.
 
 ### Reproduce bounded staging probes
 
@@ -208,9 +212,9 @@ HTTP timeout or retry side-effecting prompt submissions automatically.
    apparently faster UI substantially more expensive. Cost and tail latency are
    separate guardrails, not afterthoughts.
 
-No production benchmark or staging end-to-end speedup is claimed by the local
-SQL/probe-instrumentation results above. Record real staging runs here when the
-matching deployed revision and dedicated credentials are available.
+The local SQL/probe-instrumentation results above do not establish a production
+benchmark or a staging speedup. The deployed staging observations below establish
+an initial real baseline, not a before/after optimization claim.
 
 ### Deployed public dashboard assets, 2026-10-24
 
@@ -233,6 +237,85 @@ without network revalidation. HTML, stable `appearance.js`, login, and private
 API data are not included. Source scope and build copying are tested; recheck the
 served staging header after the next deployment before claiming this live fix.
 The original artifact is `.cache/perf/staging-public-assets.json`.
+
+Read-back against deployed `156d641` at 00:54 Singapore time confirmed the fix:
+JS/CSS/both fonts return `public, max-age=31536000, immutable`, while HTML retains
+`public, max-age=0, must-revalidate`. The after artifact is
+`.cache/perf/staging-156d641-assets.json`. This proves the deployed browser cache
+policy; the HTTP client used here does not emulate a browser's disk cache, so no
+repeat-visit FCP improvement is invented from these requests.
+
+### Real Flash SDK and release CLI baseline, 2026-10-24
+
+Target: staging commit `156d64171d379407bfbe8947c00420de2580ab4c`, 00:54–01:02
+Singapore time. Client: Windows 11 x86-64, Python 3.14.6, OpenAI SDK 2.6.1 and
+httpx 0.28.1. One authorized secondary Free account, concurrency one, no request
+retries and no workspace allocation. The primary account was reserved for release
+acceptance. Total inference probe budget used: nine user turns / twelve upstream
+model calls across three sessions. Every session closed and every probe agent was
+deleted; cleanup failures were zero. A subsequent source-history check confirmed
+exactly one actual `time` call and matching tool result in each closed session.
+
+The first schema-1 sample recorded cold first text/total 5.671/7.440 s, warm
+3.427/4.941 s, and the time-tool path 6.280/8.749 s. All three reported zero cached
+tokens. Keep those observations; they are not replaced by a more favorable run.
+A separate immediate, network-free SDK fixture showed first resource access
+415 ms versus under 1 ms for subsequent clients in that process, motivating the
+explicit schema-2 initialization accounting rather than attributing it to DOs.
+
+Two additional real schema-2 repetitions, request-relative seconds:
+
+| Journey | Headers | First event | First text | Complete | Cached / prompt tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| New session A | 1.617 | 2.088 | 4.517 | 6.800 | 0 / 332 |
+| Continue A | 0.210 | 0.774 | 2.883 | 4.715 | 0 / 343 |
+| Time tool A | 0.155 | 0.639 | 7.998 | 9.943 | 0 / 888 |
+| New session B | 1.081 | 1.607 | 3.595 | 5.460 | 0 / 336 |
+| Continue B | 0.228 | 0.671 | 2.437 | 4.098 | 256 / 347 |
+| Time tool B | 0.201 | 0.649 | 5.650 | 7.402 | 640 / 883 |
+
+SDK setup was 287 ms on the first schema-2 call and at most 0.003 ms thereafter.
+The `client_total_ms` field includes that setup. New-session timing still includes
+connection establishment and session creation; it does not isolate a DO cold start.
+The time-tool rows include two provider inferences. Output/reasoning token counts
+vary even for a short answer, so the cache-hit row does not establish that caching
+caused its latency difference. Actual cached usage was observed on a continuation
+and tool path, while other equivalent opportunities remained misses.
+
+Six pooled warm GET observations per endpoint across these runs and the CLI probe:
+
+| Management route | Nearest-rank p50 | Observed range |
+| --- | ---: | ---: |
+| `/v1/account` | 241 ms | 201–441 ms |
+| `/v1/agents` | 162 ms | 134–403 ms |
+| `/v1/sessions` | 144 ms | 127–155 ms |
+| `/v1/models` | 144 ms | 124–513 ms |
+
+The release Windows CLI from package run `39987439746`, source `5fcaa90` (no CLI
+code changes through staging `156d641`), was checksum-verified. The executable's
+SHA-256 is `88a2b7778c590c986597a3d08b0ec3c7745fd2f2a7a7c85598ef4ead67fbf946`.
+Three fresh processes measured `--help` at 23.5/24.2/28.9 ms and authenticated
+`agents list` at 599/1,062/2,003 ms. This uses the supported `MAGENTS_API_KEY`
+environment path, not interactive OIDC, refresh, or OS-credential-store latency.
+
+An alternating three-pair control on the same authenticated GET measured new
+httpx clients at 480/700/1,401 ms request time versus reused clients at
+178/168/160 ms (separate client construction 30–34 ms). Thus the CLI's small
+process-startup time is not the dominant observed list-command delay; new-connection
+paths are materially slower here. DNS, TLS, proxy/route and server coldness were
+not individually traced. Retain the CLI's existing client reuse; do not introduce
+a background daemon or transport rewrite from three network-sensitive samples.
+
+Artifacts: `.cache/perf/staging-156d641-model.json`,
+`staging-156d641-model-v2.json`, `staging-156d641-cli.json`,
+`staging-156d641-connection-reuse.json`, `staging-156d641-tools-check.json`, and
+`sdk-lazy-init.json` in the same directory. They contain timings, usage and safe
+counts, not prompts, outputs, API keys or session identifiers.
+
+Workspace performance remains deliberately unmeasured here: primary acceptance
+exposed a container/cleanup timeout under investigation. Healthy model/CLI results
+do not establish workspace restore or release readiness, and the secondary account
+was not risked on a speculative six-turn workspace probe.
 
 ## Primary sources and implications
 

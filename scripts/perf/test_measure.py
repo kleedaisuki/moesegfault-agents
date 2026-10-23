@@ -50,6 +50,28 @@ def test_first_text_is_observed_before_stream_completion():
     assert "ready" not in json.dumps(metrics)
 
 
+def test_sdk_lazy_resource_initialization_is_separate_from_request_time():
+    def respond(_request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream", "x-agents-session": "session"}, stream=DelayedStream())
+
+    with OpenAI(api_key="fixture-only", base_url="http://127.0.0.1/v1", http_client=httpx.Client(transport=httpx.MockTransport(respond))) as sdk:
+        class DelayedSdk:
+            accesses = 0
+
+            @property
+            def chat(self):
+                self.accesses += 1
+                time.sleep(.04)
+                return sdk.chat
+
+        wrapped = DelayedSdk()
+        _, metrics = measure.stream_turn(wrapped, "agent")
+    assert wrapped.accesses == 1
+    assert metrics["sdk_setup_ms"] >= 35
+    assert metrics["headers_ms"] < metrics["sdk_setup_ms"]
+    assert metrics["client_total_ms"] >= metrics["sdk_setup_ms"] + metrics["total_ms"] - 1
+
+
 @pytest.mark.parametrize("origin", ["https://agents.moesegfault.dev", "http://agents-staging.moesegfault.dev", "https://agents-staging.moesegfault.dev.evil.test", "https://user@agents-staging.moesegfault.dev", "https://agents-staging.moesegfault.dev/path"])
 def test_nonstaging_origins_are_refused(origin):
     with pytest.raises(argparse.ArgumentTypeError):
@@ -109,6 +131,7 @@ def test_executable_journey_records_only_metrics_and_cleans_up():
         ], env={**os.environ, "MAGENTS_TEST_API_KEY": "fixture-only-key"}, capture_output=True, timeout=30)
         assert result.returncode == 0, result.stderr.decode()
         report = json.loads(output.read_text(encoding="utf-8"))
+        assert report["schema"] == 2
         assert len(report["management"]) == 4
         assert len(report["inference"]["samples"]) == 1
         assert report["cleanup_failures"] == 0

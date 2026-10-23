@@ -47,11 +47,14 @@ def elapsed(start):
 
 
 def stream_turn(sdk, agent, session=None, prompt="Reply with exactly: ready", on_session=None):
+    client_started = time.perf_counter()
+    create = sdk.chat.completions.with_streaming_response.create
+    sdk_setup_ms = elapsed(client_started)
     start = time.perf_counter()
     times = {"first_event_ms": None, "first_text_ms": None}
     chunks, characters, usage, finish = 0, 0, None, False
     headers = {"x-agents-session": session} if session else {}
-    with sdk.chat.completions.with_streaming_response.create(
+    with create(
         model=agent, messages=[{"role": "user", "content": prompt}],
         stream=True, extra_headers=headers,
     ) as response:
@@ -81,7 +84,8 @@ def stream_turn(sdk, agent, session=None, prompt="Reply with exactly: ready", on
                 }
     if not finish or not characters:
         raise RuntimeError("incomplete_stream")
-    return session, {**times, "total_ms": elapsed(start), "chunks": chunks,
+    return session, {**times, "total_ms": elapsed(start), "sdk_setup_ms": sdk_setup_ms,
+                     "client_total_ms": elapsed(client_started), "chunks": chunks,
                      "characters": characters, "usage": usage}
 
 
@@ -137,7 +141,7 @@ def inference(http, sdk, args, report):
         for flow in ["cold_session", "warm_turn", "harness_tool"]:
             report["inference"][flow] = {
                 metric: summary([sample[flow][metric] for sample in report["inference"]["samples"]])
-                for metric in ["headers_ms", "first_event_ms", "first_text_ms", "total_ms"]
+                for metric in ["headers_ms", "first_event_ms", "first_text_ms", "total_ms", "sdk_setup_ms", "client_total_ms"]
             }
     finally:
         cleanup_failures = 0
@@ -225,14 +229,15 @@ def main():
     if not token:
         raise SystemExit("Set MAGENTS_TEST_API_KEY for a dedicated staging account")
     report = {
-        "schema": 1, "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "schema": 2, "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "origin": args.origin, "platform": platform.platform(), "python": platform.python_version(),
         "openai": importlib.metadata.version("openai"), "httpx": httpx.__version__,
         "samples": args.samples, "concurrency": 1,
         "git_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "notes": ["First management request is excluded from warm distribution; DNS/TLS coldness is not forced.",
                   "Small sample p95 is descriptive, not a statistically reliable SLO.",
-                  "Cold session does not imply cold upstream provider cache or cold Worker isolate."],
+                  "Cold session does not imply cold upstream provider cache or cold Worker isolate.",
+                  "Schema 2 times request metrics after SDK resource initialization; sdk_setup_ms is separate and client_total_ms includes both."],
     }
     try:
         with httpx.Client(base_url=args.origin, headers={"Authorization": "Bearer " + token}, timeout=180, follow_redirects=False) as http:
