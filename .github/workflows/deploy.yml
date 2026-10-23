@@ -1,0 +1,107 @@
+name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+        required: true
+      source_run:
+        description: Successful CI run ID for this exact commit
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Require successful CI for this exact source
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN}" > .ci-run.json
+          node --input-type=module -e 'import fs from "node:fs";const r=JSON.parse(fs.readFileSync(".ci-run.json"));if(r.head_sha!==process.env.GITHUB_SHA||r.conclusion!=="success"||r.path!==".github/workflows/ci.yml"||r.event==="pull_request")throw Error("CI source/run is not approved for deployment");'
+          rm .ci-run.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Require environment-paired credentials before changing infrastructure
+        env:
+          IDENTITY_CLIENT_PRIVATE_JWK: ${{ inputs.environment == 'staging' && secrets.STAGING_IDENTITY_CLIENT_PRIVATE_JWK || inputs.environment == 'production' && secrets.PRODUCTION_IDENTITY_CLIENT_PRIVATE_JWK || '' }}
+          DATA_ENCRYPTION_KEY: ${{ inputs.environment == 'staging' && secrets.STAGING_DATA_ENCRYPTION_KEY || inputs.environment == 'production' && secrets.PRODUCTION_DATA_ENCRYPTION_KEY || '' }}
+        run: |
+          test -n "$IDENTITY_CLIENT_PRIVATE_JWK" || { echo 'Missing registered client signing key'; exit 1; }
+          test -n "$DATA_ENCRYPTION_KEY" || { echo 'Missing data-encryption key'; exit 1; }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: worker
+          path: crates/agents-worker/build/worker
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: dashboard
+          path: apps/dashboard/dist
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: container/Dockerfile
+          load: true
+          tags: magents-workspace:${{ github.sha }}
+          cache-from: type=gha,scope=workspace
+      - name: Publish tested container before changing Worker code
+        run: npx wrangler containers push "magents-workspace:${GITHUB_SHA}"
+      - name: Render immutable deployment configuration
+        run: node scripts/deploy-config.mjs
+      - name: Migrate only the selected environment
+        run: npx wrangler d1 migrations apply DB --remote --env "$DEPLOY_ENVIRONMENT" --config .temp/deploy.json
+      - name: Deploy source and immutable container
+        run: npx wrangler deploy --env "$DEPLOY_ENVIRONMENT" --config .temp/deploy.json
+      - name: Sync environment-paired credentials
+        env:
+          IDENTITY_CLIENT_PRIVATE_JWK: ${{ inputs.environment == 'staging' && secrets.STAGING_IDENTITY_CLIENT_PRIVATE_JWK || inputs.environment == 'production' && secrets.PRODUCTION_IDENTITY_CLIENT_PRIVATE_JWK || '' }}
+          DATA_ENCRYPTION_KEY: ${{ inputs.environment == 'staging' && secrets.STAGING_DATA_ENCRYPTION_KEY || inputs.environment == 'production' && secrets.PRODUCTION_DATA_ENCRYPTION_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: node scripts/worker-secrets.mjs "$DEPLOY_ENVIRONMENT"
+      - name: Enforce opt-in diagnostic retention
+        run: npx wrangler r2 bucket lifecycle set "moesegfault-agents-diagnostics-${DEPLOY_ENVIRONMENT}" --file deploy/r2-diagnostics-lifecycle.json --force
+      - name: Public deployed boundary smoke
+        run: |
+          if [ "$DEPLOY_ENVIRONMENT" = staging ]; then host=agents-staging.moesegfault.dev; else host=agents.moesegfault.dev; fi
+          curl --fail --retry 5 --retry-delay 5 "https://${host}/healthz"
+          status=$(curl -s -o /dev/null -w '%{http_code}' "https://${host}/v1/agents")
+          test "$status" = 401
+      - name: Authenticated user journey
+        if: inputs.environment == 'staging'
+        env:
+          MAGENTS_TEST_API_ORIGIN: https://agents-staging.moesegfault.dev
+          MAGENTS_TEST_API_KEY: ${{ secrets.STAGING_SMOKE_API_KEY }}
+          MAGENTS_TEST_OTHER_API_KEY: ${{ secrets.STAGING_SECONDARY_API_KEY }}
+          MAGENTS_TEST_INFERENCE: '1'
+          MAGENTS_TEST_WORKSPACE: '1'
+          MAGENTS_TEST_QUOTA: '1'
+        run: |
+          test -n "$MAGENTS_TEST_API_KEY" || { echo 'No staging smoke credential; full user journey not run'; exit 0; }
+          python3 -m venv .cache/e2e-venv
+          .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
+          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_deployed.py -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest

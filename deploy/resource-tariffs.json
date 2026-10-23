@@ -1,0 +1,61 @@
+{
+  "version": "2026-10-23-platform-v1",
+  "tariffs": [
+    {
+      "resource": "container",
+      "unit": "wall_ms",
+      "microusd_numerator": 1,
+      "quantity_denominator": 100,
+      "price_version": "2026-10-23-platform-v1"
+    },
+    {
+      "resource": "durable_object",
+      "unit": "wall_ms",
+      "microusd_numerator": 1,
+      "quantity_denominator": 500,
+      "price_version": "2026-10-23-platform-v1"
+    },
+    {
+      "resource": "worker",
+      "unit": "wall_ms",
+      "microusd_numerator": 1,
+      "quantity_denominator": 10000,
+      "price_version": "2026-10-23-platform-v1"
+    },
+    {
+      "resource": "r2_operation",
+      "unit": "class_a",
+      "microusd_numerator": 45,
+      "quantity_denominator": 10,
+      "price_version": "2026-10-23-platform-v1"
+    },
+    {
+      "resource": "r2_operation",
+      "unit": "class_b",
+      "microusd_numerator": 36,
+      "quantity_denominator": 100,
+      "price_version": "2026-10-23-platform-v1"
+    },
+    {
+      "resource": "r2_storage",
+      "unit": "byte_ms",
+      "microusd_numerator": 15000,
+      "quantity_denominator": 2592000000000000000,
+      "price_version": "2026-10-23-platform-v1"
+    },
+    {
+      "resource": "d1",
+      "unit": "rows_read",
+      "microusd_numerator": 1,
+      "quantity_denominator": 1000,
+      "price_version": "2026-10-23-platform-v1"
+    },
+    {
+      "resource": "d1",
+      "unit": "rows_written",
+      "microusd_numerator": 1,
+      "quantity_denominator": 1,
+      "price_version": "2026-10-23-platform-v1"
+    }
+  ]
+}

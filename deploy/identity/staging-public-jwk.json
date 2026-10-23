@@ -1,0 +1,9 @@
+{
+  "kty": "EC",
+  "x": "QxppSGNYvsrRgUZkcfiqO88-zLM_XXN972c1x4QvcUw",
+  "y": "STc9XIinVHs_YbCcaw9QqHL3rUUUcHgCUg04ON1YHGA",
+  "crv": "P-256",
+  "kid": "agents-dashboard-staging-2026-10",
+  "alg": "ES256",
+  "use": "sig"
+}

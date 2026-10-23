@@ -1,0 +1,35 @@
+{
+  "client_id": "agents-dashboard-staging",
+  "display_name": "moeSegFault Agents dashboard (staging)",
+  "client_type": "confidential",
+  "token_endpoint_auth_method": "private_key_jwt",
+  "sector_identifier": "subscribe-staging.moesegfault.dev",
+  "subject_salt_revision": 1,
+  "redirect_uris": [
+    {
+      "uri": "https://adash-staging.moesegfault.dev/auth/callback",
+      "match_mode": "exact"
+    }
+  ],
+  "post_logout_redirect_uris": [
+    {
+      "uri": "https://adash-staging.moesegfault.dev/"
+    }
+  ],
+  "scopes": [
+    "openid",
+    "profile",
+    "offline_access"
+  ],
+  "public_jwks": [
+    {
+      "kty": "EC",
+      "x": "QxppSGNYvsrRgUZkcfiqO88-zLM_XXN972c1x4QvcUw",
+      "y": "STc9XIinVHs_YbCcaw9QqHL3rUUUcHgCUg04ON1YHGA",
+      "crv": "P-256",
+      "kid": "agents-dashboard-staging-2026-10",
+      "alg": "ES256",
+      "use": "sig"
+    }
+  ]
+}

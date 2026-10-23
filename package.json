@@ -1,0 +1,16 @@
+{
+  "name": "moesegfault-agents-deployment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:worker": "cd crates/agents-worker && worker-build --release",
+    "build:dashboard": "npm --prefix apps/dashboard run build",
+    "dev": "wrangler dev --env staging",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "test:tooling": "node --test scripts/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.152.0"
+  }
+}

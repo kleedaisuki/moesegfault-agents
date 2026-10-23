@@ -1,0 +1,224 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "moesegfault-agents-local",
+  "main": "crates/agents-worker/build/worker/shim.mjs",
+  "compatibility_date": "2026-10-23",
+  "workers_dev": false,
+  "upload_source_maps": true,
+  "build": {
+    "command": "npm run build:worker"
+  },
+  "assets": {
+    "directory": "apps/dashboard/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/auth/*",
+      "/v1/*",
+      "/health",
+      "/healthz"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Session",
+        "AuthSession"
+      ]
+    }
+  ],
+  "env": {
+    "staging": {
+      "name": "moesegfault-agents-staging",
+      "routes": [
+        {
+          "pattern": "agents-staging.moesegfault.dev",
+          "custom_domain": true
+        },
+        {
+          "pattern": "adash-staging.moesegfault.dev",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "APP_ORIGIN": "https://adash-staging.moesegfault.dev",
+        "ALLOWED_ORIGIN": "https://adash-staging.moesegfault.dev",
+        "IDENTITY_ISSUER": "https://identity-staging.moesegfault.dev",
+        "IDENTITY_WEB_CLIENT_ID": "agents-dashboard-staging",
+        "IDENTITY_NATIVE_CLIENT_ID": "magents-staging",
+        "IDENTITY_NATIVE_REDIRECT_URI": "http://127.0.0.1/callback",
+        "IDENTITY_REDIRECT_URI": "https://adash-staging.moesegfault.dev/auth/callback",
+        "IDENTITY_CLIENT_KID": "agents-dashboard-staging-2026-10",
+        "BILLING_API_ORIGIN": "https://billing-staging.moesegfault.dev",
+        "BILLING_PRODUCT_ID": "agents",
+        "SUBSCRIBE_URL": "https://subscribe-staging.moesegfault.dev",
+        "DEFAULT_PROVIDER": "openrouter",
+        "DEFAULT_MODEL": "deepseek/deepseek-v4.1-flash-1017",
+        "BILLING_MODE": "test",
+        "RUN_RESOURCE_RESERVATION_MICROUSD": "20000",
+        "MODEL_REGISTRY_JSON": "[{\"provider\":\"openrouter\",\"model\":\"deepseek/deepseek-v4.1-flash-1017\",\"context_window\":1048576,\"max_output_tokens\":8192},{\"provider\":\"openrouter\",\"model\":\"openai/gpt-4.1-mini\",\"context_window\":1047576,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-flash\",\"context_window\":1000000,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-v4-pro\",\"context_window\":1000000,\"max_output_tokens\":8192}]",
+        "MODEL_PRICING_JSON": "{\"openrouter/openai/gpt-4.1-mini\":{\"input_microusd_per_million\":400000,\"cached_input_microusd_per_million\":100000,\"output_microusd_per_million\":1600000,\"revision\":\"openrouter-2026-10-23\"},\"openrouter/deepseek/deepseek-v4.1-flash-1017\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"openrouter-2026-10-23\"}}",
+        "RESOURCE_PRICING_JSON": "{\"version\":\"2026-10-23-platform-v1\",\"tariffs\":[{\"resource\":\"container\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"durable_object\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":500,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"worker\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":10000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_a\",\"microusd_numerator\":45,\"quantity_denominator\":10,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_b\",\"microusd_numerator\":36,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_storage\",\"unit\":\"byte_ms\",\"microusd_numerator\":15000,\"quantity_denominator\":2592000000000000000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_read\",\"microusd_numerator\":1,\"quantity_denominator\":1000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_written\",\"microusd_numerator\":1,\"quantity_denominator\":1,\"price_version\":\"2026-10-23-platform-v1\"}]}",
+        "FREE_GRANT_BUDGET_MICROUSD_PER_DAY": "10000000"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "moesegfault-agents-staging",
+          "database_id": "f52d24b2-90eb-4156-8048-33c1da11b181",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "WORKSPACES",
+          "bucket_name": "moesegfault-agents-workspaces-staging"
+        },
+        {
+          "binding": "CONVERSATIONS",
+          "bucket_name": "moesegfault-agents-conversations-staging"
+        },
+        {
+          "binding": "DIAGNOSTICS",
+          "bucket_name": "moesegfault-agents-diagnostics-staging"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "SESSIONS",
+            "class_name": "Session"
+          },
+          {
+            "name": "AUTH_SESSIONS",
+            "class_name": "AuthSession"
+          }
+        ]
+      },
+      "containers": [
+        {
+          "class_name": "Session",
+          "image": "./container/Dockerfile",
+          "image_build_context": ".",
+          "instance_type": "basic",
+          "max_instances": 5,
+          "rollout_active_grace_period": 900,
+          "observability": {
+            "logs": {
+              "enabled": true
+            }
+          }
+        }
+      ],
+      "triggers": {
+        "crons": [
+          "*/15 * * * *"
+        ]
+      }
+    },
+    "production": {
+      "name": "moesegfault-agents-production",
+      "routes": [
+        {
+          "pattern": "agents.moesegfault.dev",
+          "custom_domain": true
+        },
+        {
+          "pattern": "adash.moesegfault.dev",
+          "custom_domain": true
+        }
+      ],
+      "vars": {
+        "ENVIRONMENT": "production",
+        "APP_ORIGIN": "https://adash.moesegfault.dev",
+        "ALLOWED_ORIGIN": "https://adash.moesegfault.dev",
+        "IDENTITY_ISSUER": "https://identity.moesegfault.dev",
+        "IDENTITY_WEB_CLIENT_ID": "agents-dashboard",
+        "IDENTITY_NATIVE_CLIENT_ID": "magents",
+        "IDENTITY_NATIVE_REDIRECT_URI": "http://127.0.0.1/callback",
+        "IDENTITY_REDIRECT_URI": "https://adash.moesegfault.dev/auth/callback",
+        "IDENTITY_CLIENT_KID": "agents-dashboard-production-2026-10",
+        "BILLING_API_ORIGIN": "https://billing.moesegfault.dev",
+        "BILLING_PRODUCT_ID": "agents",
+        "SUBSCRIBE_URL": "https://subscribe.moesegfault.dev",
+        "DEFAULT_PROVIDER": "openrouter",
+        "DEFAULT_MODEL": "deepseek/deepseek-v4.1-flash-1017",
+        "BILLING_MODE": "live",
+        "RUN_RESOURCE_RESERVATION_MICROUSD": "20000",
+        "MODEL_REGISTRY_JSON": "[{\"provider\":\"openrouter\",\"model\":\"deepseek/deepseek-v4.1-flash-1017\",\"context_window\":1048576,\"max_output_tokens\":8192},{\"provider\":\"openrouter\",\"model\":\"openai/gpt-4.1-mini\",\"context_window\":1047576,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-flash\",\"context_window\":1000000,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-v4-pro\",\"context_window\":1000000,\"max_output_tokens\":8192}]",
+        "MODEL_PRICING_JSON": "{\"openrouter/openai/gpt-4.1-mini\":{\"input_microusd_per_million\":400000,\"cached_input_microusd_per_million\":100000,\"output_microusd_per_million\":1600000,\"revision\":\"openrouter-2026-10-23\"},\"openrouter/deepseek/deepseek-v4.1-flash-1017\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"openrouter-2026-10-23\"}}",
+        "RESOURCE_PRICING_JSON": "{\"version\":\"2026-10-23-platform-v1\",\"tariffs\":[{\"resource\":\"container\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"durable_object\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":500,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"worker\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":10000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_a\",\"microusd_numerator\":45,\"quantity_denominator\":10,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_b\",\"microusd_numerator\":36,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_storage\",\"unit\":\"byte_ms\",\"microusd_numerator\":15000,\"quantity_denominator\":2592000000000000000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_read\",\"microusd_numerator\":1,\"quantity_denominator\":1000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_written\",\"microusd_numerator\":1,\"quantity_denominator\":1,\"price_version\":\"2026-10-23-platform-v1\"}]}",
+        "FREE_GRANT_BUDGET_MICROUSD_PER_DAY": "100000000"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "moesegfault-agents-production",
+          "database_id": "4b7789d6-538f-40d1-a658-138d1688214c",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "WORKSPACES",
+          "bucket_name": "moesegfault-agents-workspaces-production"
+        },
+        {
+          "binding": "CONVERSATIONS",
+          "bucket_name": "moesegfault-agents-conversations-production"
+        },
+        {
+          "binding": "DIAGNOSTICS",
+          "bucket_name": "moesegfault-agents-diagnostics-production"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "SESSIONS",
+            "class_name": "Session"
+          },
+          {
+            "name": "AUTH_SESSIONS",
+            "class_name": "AuthSession"
+          }
+        ]
+      },
+      "containers": [
+        {
+          "class_name": "Session",
+          "image": "./container/Dockerfile",
+          "image_build_context": ".",
+          "instance_type": "basic",
+          "max_instances": 20,
+          "rollout_active_grace_period": 900,
+          "observability": {
+            "logs": {
+              "enabled": true
+            }
+          }
+        }
+      ],
+      "triggers": {
+        "crons": [
+          "*/15 * * * *"
+        ]
+      }
+    }
+  }
+}

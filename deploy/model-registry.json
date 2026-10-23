@@ -1,0 +1,26 @@
+[
+  {
+    "provider": "openrouter",
+    "model": "deepseek/deepseek-v4.1-flash-1017",
+    "context_window": 1048576,
+    "max_output_tokens": 8192
+  },
+  {
+    "provider": "openrouter",
+    "model": "openai/gpt-4.1-mini",
+    "context_window": 1047576,
+    "max_output_tokens": 8192
+  },
+  {
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "context_window": 1000000,
+    "max_output_tokens": 8192
+  },
+  {
+    "provider": "deepseek",
+    "model": "deepseek-v4-pro",
+    "context_window": 1000000,
+    "max_output_tokens": 8192
+  }
+]

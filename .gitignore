@@ -16,3 +16,4 @@
 *.pem
 *.key
 *.log
+/.ci-run.json

@@ -1,0 +1,12 @@
+{
+  "client_id": "magents-staging",
+  "display_name": "magents (staging)",
+  "client_type": "native",
+  "token_endpoint_auth_method": "none",
+  "sector_identifier": "subscribe-staging.moesegfault.dev",
+  "subject_salt_revision": 1,
+  "redirect_uris": [{"uri": "http://127.0.0.1/callback", "match_mode": "native_loopback_any_port"}],
+  "post_logout_redirect_uris": [],
+  "scopes": ["openid", "profile", "offline_access"],
+  "public_jwks": []
+}

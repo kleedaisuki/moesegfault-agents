@@ -1,0 +1,14 @@
+{
+  "openrouter/openai/gpt-4.1-mini": {
+    "input_microusd_per_million": 400000,
+    "cached_input_microusd_per_million": 100000,
+    "output_microusd_per_million": 1600000,
+    "revision": "openrouter-2026-10-23"
+  },
+  "openrouter/deepseek/deepseek-v4.1-flash-1017": {
+    "input_microusd_per_million": 300000,
+    "cached_input_microusd_per_million": 6000,
+    "output_microusd_per_million": 1200000,
+    "revision": "openrouter-2026-10-23"
+  }
+}
