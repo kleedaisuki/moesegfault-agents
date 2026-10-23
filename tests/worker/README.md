@@ -70,3 +70,24 @@ is now also tested: one trusted-endpoint call, zero redirect-target calls, and a
 typed 502 error. The callback's Node Request `redirect` property cannot substitute
 for that behavioral assertion because Miniflare reconstructs it as `follow` at
 the host-service boundary.
+
+## Native transport platform contract
+
+`node --test tests/worker/transport.test.mjs` does not require a Rust build. It
+uses a test-only JavaScript Worker and a real workerd service binding to verify
+that a native Request's AbortSignal cancels both stalled response headers and
+stalled body consumption. Successful bodies remain usable. A negative control
+drops the signal and demonstrates that the 40 ms deadline no longer interrupts
+the 1,200 ms body stall. This validates the platform mechanism, not the compiled
+Rust workspace transport, Bash process cancellation, or dispatch recovery.
+
+## Resume wire-format and retry contract
+
+The compiled-Worker journey archives an unfunded, workspace-disabled session,
+resumes it, and repeats the same public resume request. The pinned prefix remains
+unchanged; only the first resume advances input revision/time. Public session
+listing must still deserialize, and D1 JSON types for revision/time must be
+`integer`, not `real`. During mocked model execution, a resume request must return
+409 without changing D1's admission/snapshot state. CI `39989070343`'s artifact
+reproduces the original first-resume HTTP 500 with this fixture; acceptance of the
+repair requires a newly compiled artifact.

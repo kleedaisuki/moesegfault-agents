@@ -222,27 +222,23 @@ impl DurableObject for Session {
                 if inner.running.get() || inner.closing.get() || inner.snapshot()?.archive_pending {
                     return util::json_error(409, "session_busy", "Session is busy");
                 }
-                let old = inner.snapshot()?;
-                if old.record.id != record.id
-                    || old.record.owner_id != record.owner_id
-                    || old.record.pinned != record.pinned
-                {
-                    return util::json_error(
-                        409,
-                        "pinned_context_changed",
-                        "Cannot change a session's pinned configuration",
-                    );
+                let changed = {
+                    let mut data = inner.data.borrow_mut();
+                    match apply_resume(data.as_mut().unwrap(), record) {
+                        Ok(changed) => changed,
+                        Err(code) => {
+                            return util::json_error(
+                                409,
+                                code,
+                                "Session resume conflicts with its current state",
+                            );
+                        }
+                    }
+                };
+                if changed {
+                    inner.persist().await?;
+                    inner.arm_alarm().await?;
                 }
-                {
-                    let mut current = inner.data.borrow_mut();
-                    let current = current.as_mut().unwrap();
-                    current.record = record;
-                    current.archive_preparing = false;
-                    current.archive_funding = None;
-                    current.archive_backstop_generation = None;
-                }
-                inner.persist().await?;
-                inner.arm_alarm().await?;
                 Response::from_json(&inner.snapshot()?.record)
             }
             (Method::Post, "/steer") => {
@@ -1685,6 +1681,43 @@ fn replay_terminal(run: &RunState) -> Option<std::result::Result<Value, String>>
         .or_else(|| run.terminal_error.clone().map(Err))
 }
 
+fn apply_resume(
+    data: &mut PersistedSession,
+    admitted: SessionRecord,
+) -> std::result::Result<bool, &'static str> {
+    let old = &data.record;
+    if old.id != admitted.id
+        || old.owner_id != admitted.owner_id
+        || old.agent_id != admitted.agent_id
+        || old.pinned != admitted.pinned
+        || old.created_at_ms != admitted.created_at_ms
+        || old.workspace_snapshot != admitted.workspace_snapshot
+    {
+        return Err("pinned_context_changed");
+    }
+    if data.run.is_some()
+        || data.archive_pending
+        || data.archive_preparing
+        || !data.pending.is_empty()
+        || admitted.status != SessionStatus::Idle
+    {
+        return Err("session_busy");
+    }
+    if old.status == SessionStatus::Idle && old == &admitted {
+        return Ok(false);
+    }
+    if old.status != SessionStatus::Closed
+        || old.input_revision.checked_add(1) != Some(admitted.input_revision)
+        || admitted.last_input_at_ms < old.last_input_at_ms
+    {
+        return Err("stale_resume");
+    }
+    data.record = admitted;
+    data.archive_funding = None;
+    data.archive_backstop_generation = None;
+    Ok(true)
+}
+
 fn execution_key(run: &str, round: u64, call: &str) -> String {
     format!("{}:{run}:{round}:{}:{call}", run.len(), call.len())
 }
@@ -1726,6 +1759,61 @@ mod tests {
             archive_started_at_ms: None,
             measured_messages: 1,
         }
+    }
+
+    #[test]
+    fn resume_after_lost_ack_reuses_the_exact_admission() {
+        let mut data = state();
+        data.record.status = SessionStatus::Closed;
+        data.record.input_revision = 7;
+        let pinned = data.record.pinned.clone();
+        let mut admitted = data.record.clone();
+        admitted.status = SessionStatus::Idle;
+        admitted.input_revision = 8;
+        admitted.last_input_at_ms += 10;
+        assert!(apply_resume(&mut data, admitted.clone()).unwrap());
+        let saved = serde_json::to_string(&data).unwrap();
+        let mut restored: PersistedSession = serde_json::from_str(&saved).unwrap();
+        assert!(!apply_resume(&mut restored, admitted.clone()).unwrap());
+        assert_eq!(restored.record, admitted);
+        assert_eq!(restored.record.pinned, pinned);
+        assert_eq!(restored.record.input_revision, 8);
+    }
+
+    #[test]
+    fn stale_or_running_resume_never_replaces_live_state() {
+        let mut data = state();
+        data.record.status = SessionStatus::Closed;
+        let mut admitted = data.record.clone();
+        admitted.status = SessionStatus::Idle;
+        admitted.input_revision += 1;
+        assert!(apply_resume(&mut data, admitted.clone()).unwrap());
+        data.record
+            .append_user_input(admitted.last_input_at_ms + 1)
+            .unwrap();
+        let newer = data.record.clone();
+        assert!(apply_resume(&mut data, admitted.clone()).is_err());
+        assert_eq!(data.record, newer);
+        data.record.status = SessionStatus::Running;
+        let running = data.record.clone();
+        assert!(apply_resume(&mut data, admitted).is_err());
+        assert_eq!(data.record, running);
+    }
+
+    #[test]
+    fn resume_never_repins_the_existing_session() {
+        let mut data = state();
+        data.record.status = SessionStatus::Closed;
+        let before = data.record.clone();
+        let mut admitted = before.clone();
+        admitted.status = SessionStatus::Idle;
+        admitted.input_revision += 1;
+        admitted.pinned.instructions.push_str("mutation");
+        assert_eq!(
+            apply_resume(&mut data, admitted).unwrap_err(),
+            "pinned_context_changed"
+        );
+        assert_eq!(data.record, before);
     }
 
     #[test]

@@ -124,7 +124,8 @@ impl<'a> Store<'a> {
     }
 
     pub async fn list_sessions(&self, owner: &str) -> Result<Vec<SessionRecord>> {
-        self.list("SELECT config_snapshot_json AS payload FROM sessions WHERE account_id=? ORDER BY created_at DESC,id LIMIT 1000", owner).await
+        self.statement("SELECT config_snapshot_json AS payload FROM sessions WHERE account_id=? ORDER BY created_at DESC,id LIMIT 1000", &[owner.into()])?
+            .all().await?.results::<JsonRow>()?.into_iter().map(|row| decode_session(&row.payload)).collect()
     }
 
     pub async fn list_agent_sessions(
@@ -137,17 +138,19 @@ impl<'a> Store<'a> {
             .await?
             .results::<JsonRow>()?
             .into_iter()
-            .map(|row| decode(&row.payload))
+            .map(|row| decode_session(&row.payload))
             .collect()
     }
 
     pub async fn get_session(&self, owner: &str, id: &str) -> Result<Option<SessionRecord>> {
-        self.get(
+        self.statement(
             "SELECT config_snapshot_json AS payload FROM sessions WHERE account_id=? AND id=?",
-            owner,
-            id,
-        )
-        .await
+            &[owner.into(), id.into()],
+        )?
+        .first::<JsonRow>(None)
+        .await?
+        .map(|row| decode_session(&row.payload))
+        .transpose()
     }
 
     pub async fn create_session(
@@ -224,7 +227,9 @@ impl<'a> Store<'a> {
     pub async fn resume_session(&self, owner: &str, id: &str, max_sessions: u32) -> Result<bool> {
         self.ensure_unblocked(owner).await?;
         crate::allowances::sync(self.env, owner).await?;
-        self.changed("UPDATE sessions SET status='active',closed_at=NULL,last_input_at=?,config_snapshot_json=json_set(config_snapshot_json,'$.status','idle','$.last_input_at_ms',?,'$.input_revision',CAST(json_extract(config_snapshot_json,'$.input_revision') AS INTEGER)+1) WHERE account_id=? AND id=? AND status='closed' AND (SELECT COUNT(*) FROM sessions WHERE account_id=? AND status!='closed') < ? RETURNING id", &[number(worker::Date::now().as_millis())?,number(worker::Date::now().as_millis())?,owner.into(),id.into(),owner.into(),max_sessions.into()]).await
+        let now = number(worker::Date::now().as_millis())?;
+        // D1 binds JS numbers as REAL; JSON has no column affinity to restore integers.
+        self.changed("UPDATE sessions SET status='active',closed_at=NULL,last_input_at=CAST(? AS INTEGER),config_snapshot_json=json_set(config_snapshot_json,'$.status','idle','$.last_input_at_ms',CAST(? AS INTEGER),'$.input_revision',CAST(json_extract(config_snapshot_json,'$.input_revision') AS INTEGER)+1) WHERE account_id=? AND id=? AND status='closed' AND (SELECT COUNT(*) FROM sessions WHERE account_id=? AND status!='closed') < ? RETURNING id", &[now.clone(),now,owner.into(),id.into(),owner.into(),max_sessions.into()]).await
     }
 
     pub async fn account(&self, owner: &str) -> Result<Option<Account>> {
@@ -618,6 +623,65 @@ fn decode<T: DeserializeOwned>(value: &str) -> Result<T> {
     serde_json::from_str(value).map_err(|error| Error::RustError(error.to_string()))
 }
 
+fn decode_session(value: &str) -> Result<SessionRecord> {
+    if let Ok(session) = serde_json::from_str::<SessionRecord>(value) {
+        return Ok(session);
+    }
+    let mut value: serde_json::Value = serde_json::from_str(value)?;
+    if let Some(serde_json::Value::Number(number)) = value.get("last_input_at_ms") {
+        if number.as_u64().is_none() {
+            value["last_input_at_ms"] = legacy_timestamp(&number.to_string())?.into();
+        }
+    }
+    serde_json::from_value(value).map_err(|error| Error::RustError(error.to_string()))
+}
+
+/// Historical D1 JSON writes bound integral milliseconds as REAL. Accept only
+/// exact decimal integers representable by that JavaScript binding, not rounded f64s.
+fn legacy_timestamp(value: &str) -> Result<u64> {
+    let (mantissa, exponent) = value.split_once(['e', 'E']).unwrap_or((value, "0"));
+    let exponent = exponent
+        .parse::<i64>()
+        .map_err(|_| fail("invalid_session_timestamp"))?;
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty()
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|b| b.is_ascii_digit())
+    {
+        return Err(fail("invalid_session_timestamp"));
+    }
+    let digits = format!("{whole}{fraction}");
+    let digits = digits.trim_start_matches('0');
+    if digits.is_empty() {
+        return Ok(0);
+    }
+    let position = (digits.len() as i64)
+        .checked_add(exponent)
+        .and_then(|n| n.checked_sub(fraction.len() as i64))
+        .ok_or_else(|| fail("invalid_session_timestamp"))?;
+    if !(1..=16).contains(&position) {
+        return Err(fail("invalid_session_timestamp"));
+    }
+    let position = position as usize;
+    let integer = if position < digits.len() {
+        if digits[position..].bytes().any(|b| b != b'0') {
+            return Err(fail("invalid_session_timestamp"));
+        }
+        digits[..position].to_owned()
+    } else {
+        format!("{digits}{}", "0".repeat(position - digits.len()))
+    };
+    let timestamp = integer
+        .parse::<u64>()
+        .map_err(|_| fail("invalid_session_timestamp"))?;
+    if timestamp > 9_007_199_254_740_991 {
+        return Err(fail("invalid_session_timestamp"));
+    }
+    Ok(timestamp)
+}
+
 fn number(value: u64) -> Result<JsValue> {
     if value > 9_007_199_254_740_991 {
         return Err(Error::RustError(
@@ -630,6 +694,91 @@ fn number(value: u64) -> Result<JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn session_json(timestamp: &str) -> String {
+        let agent =
+            serde_json::from_value::<agents_core::CreateAgent>(serde_json::json!({"name":"test"}))
+                .unwrap()
+                .into_config("a".into(), "owner".into(), 1);
+        let record = SessionRecord {
+            id: "s".into(),
+            owner_id: "owner".into(),
+            agent_id: "a".into(),
+            status: SessionStatus::Idle,
+            created_at_ms: 1,
+            last_input_at_ms: 0,
+            input_revision: 1,
+            pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
+            workspace_snapshot: None,
+        };
+        encode(&record).unwrap().replace(
+            "\"last_input_at_ms\":0",
+            &format!("\"last_input_at_ms\":{timestamp}"),
+        )
+    }
+
+    #[test]
+    fn legacy_session_timestamp_normalizes_only_exact_safe_integers() {
+        for (literal, expected) in [
+            ("1792776157970.0", 1_792_776_157_970),
+            ("1.792776157970e12", 1_792_776_157_970),
+            ("9007199254740991.0", 9_007_199_254_740_991),
+            ("0.0000", 0),
+        ] {
+            let session = decode_session(&session_json(literal)).unwrap();
+            assert_eq!(session.last_input_at_ms, expected, "{literal}");
+            let canonical = serde_json::to_value(session).unwrap();
+            assert_eq!(canonical["last_input_at_ms"].as_u64(), Some(expected));
+        }
+        for literal in [
+            "-1.0",
+            "0.1",
+            "1792776157970.0000000001",
+            "9007199254740990.5",
+            "9007199254740992.0",
+            "1e309",
+            "NaN",
+            "null",
+            "\"1792776157970.0\"",
+        ] {
+            assert!(decode_session(&session_json(literal)).is_err(), "{literal}");
+        }
+    }
+
+    #[test]
+    fn session_compatibility_does_not_coerce_other_fields_or_generic_json() {
+        let legacy = session_json("1792776157970.0");
+        for (before, after) in [
+            ("\"created_at_ms\":1", "\"created_at_ms\":1.0"),
+            ("\"input_revision\":1", "\"input_revision\":1.0"),
+            ("\"compaction_percent\":80", "\"compaction_percent\":80.0"),
+        ] {
+            assert!(legacy.contains(before));
+            assert!(decode_session(&legacy.replace(before, after)).is_err());
+        }
+        assert!(decode::<SessionRecord>(&legacy).is_err());
+        assert_eq!(
+            decode_session(&session_json("18446744073709551615"))
+                .unwrap()
+                .last_input_at_ms,
+            u64::MAX
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn every_legacy_safe_integral_timestamp_roundtrips(timestamp in 0u64..=9_007_199_254_740_991) {
+            let session = decode_session(&session_json(&format!("{timestamp}.000000"))).unwrap();
+            prop_assert_eq!(session.last_input_at_ms,timestamp);
+        }
+
+        #[test]
+        fn fractional_timestamps_below_float_precision_are_never_rounded(timestamp in 0u64..=9_007_199_254_740_991) {
+            let fractional = format!("{timestamp}.0000000001");
+            prop_assert!(legacy_timestamp(&fractional).is_err());
+        }
+    }
 
     #[test]
     fn cleanup_generation_follows_archives_not_each_append_or_run() {

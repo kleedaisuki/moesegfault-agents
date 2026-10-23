@@ -713,39 +713,38 @@ async fn session_route(
         (Method::Delete, None) => forward(env, &session, Method::Delete, "/close", None).await,
         (Method::Post, Some("resume")) => {
             let store = Store::new(env);
-            let limits = store.account_plan(owner).await?.limits();
-            if !store
-                .resume_session(owner, id, limits.max_concurrent_sessions)
-                .await?
-            {
-                return util::json_error(
-                    409,
-                    "session_not_resumable",
-                    "Session is already active or your plan's session limit has been reached",
-                );
-            }
-            let Some(resumed) = store.get_session(owner, id).await? else {
-                return util::json_error(404, "not_found", "Session not found");
+            let resumed = if session.status == SessionStatus::Closed {
+                let limits = store.account_plan(owner).await?.limits();
+                let admitted = store
+                    .resume_session(owner, id, limits.max_concurrent_sessions)
+                    .await?;
+                let Some(current) = store.get_session(owner, id).await? else {
+                    return util::json_error(404, "not_found", "Session not found");
+                };
+                if !admitted && current.status != SessionStatus::Idle {
+                    return util::json_error(
+                        409,
+                        "session_not_resumable",
+                        "Session is busy or your plan's session limit has been reached",
+                    );
+                }
+                current
+            } else {
+                session
             };
-            let result = forward(
+            if resumed.status != SessionStatus::Idle {
+                return util::json_error(409, "session_busy", "Session is busy");
+            }
+            // Admission survives an unknown forwarding outcome. A retry reconciles
+            // the same pinned revision instead of releasing a possibly active slot.
+            forward(
                 env,
                 &resumed,
                 Method::Post,
                 "/resume",
                 Some(serde_json::to_value(&resumed)?),
             )
-            .await;
-            match result {
-                Ok(response) if response.status_code() < 300 => Ok(response),
-                Ok(response) => {
-                    store.close_session(owner, id, util::now_ms()).await?;
-                    Ok(response)
-                }
-                Err(error) => {
-                    store.close_session(owner, id, util::now_ms()).await?;
-                    Err(error)
-                }
-            }
+            .await
         }
         (Method::Post, Some("messages")) => {
             let append: Append = match body(&mut req).await {

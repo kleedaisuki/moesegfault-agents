@@ -67,6 +67,15 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
         assert.equal(input.stream, true);
         assert.equal(input.model, 'test-model');
         assert.ok(input.tools.some(tool => tool.function.name === 'time'));
+        if (providerCalls === 1) {
+          const before = await db.prepare('SELECT status,last_input_at,config_snapshot_json FROM sessions WHERE id=?1').bind(input.session_id).first();
+          const rejected = await mf.dispatchFetch(`https://agents.test/v1/sessions/${input.session_id}/resume`, {
+            method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: '{}',
+          });
+          assert.equal(rejected.status, 409, 'Resume must reject an executing run, not roll back its quota admission');
+          const after = await db.prepare('SELECT status,last_input_at,config_snapshot_json FROM sessions WHERE id=?1').bind(input.session_id).first();
+          assert.deepEqual(after, before);
+        }
         assert.ok(providerCalls <= 2, 'A completed answer must not cause another inference');
         const first = providerCalls === 1;
         if (!first) {
@@ -140,6 +149,26 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     await t.test('read a live DO session through HTTP', () => request('GET', `/v1/sessions/${session.id}`));
     await t.test('close a DO session through HTTP', () => request('DELETE', `/v1/sessions/${session.id}`));
     assert.equal((await db.prepare('SELECT status FROM sessions WHERE id=?1').bind(session.id).first()).status, 'closed');
+    await t.test('archived session resumes once and the same public retry is idempotent', async () => {
+      const resumed = await request('POST', `/v1/sessions/${session.id}/resume`, {});
+      assert.equal(resumed.status, 'idle');
+      assert.deepEqual(resumed.pinned, session.pinned);
+      assert.equal(resumed.input_revision, session.input_revision + 1);
+      assert.ok(Number.isSafeInteger(resumed.last_input_at_ms));
+      assert.ok(resumed.last_input_at_ms >= session.last_input_at_ms);
+      const retried = await request('POST', `/v1/sessions/${session.id}/resume`, {});
+      assert.equal(retried.status, 'idle');
+      assert.deepEqual(retried.pinned, resumed.pinned);
+      assert.equal(retried.input_revision, resumed.input_revision);
+      assert.equal(retried.last_input_at_ms, resumed.last_input_at_ms);
+      const listed = (await request('GET', '/v1/sessions')).data.find(row => row.id === session.id);
+      assert.equal(listed.input_revision, resumed.input_revision);
+      assert.equal(listed.last_input_at_ms, resumed.last_input_at_ms);
+      assert.deepEqual(listed.pinned, session.pinned);
+      const types = await db.prepare("SELECT json_type(config_snapshot_json,'$.last_input_at_ms') AS input_time,json_type(config_snapshot_json,'$.input_revision') AS revision FROM sessions WHERE id=?1").bind(session.id).first();
+      assert.deepEqual(types, { input_time: 'integer', revision: 'integer' });
+    });
+    await request('DELETE', `/v1/sessions/${session.id}`);
     await request('DELETE', `/v1/agents/${agent.id}`);
     await request('GET', `/v1/agents/${agent.id}`, undefined, 404);
     await db.prepare("UPDATE api_keys SET revoked_at=1 WHERE id='key'").run();
