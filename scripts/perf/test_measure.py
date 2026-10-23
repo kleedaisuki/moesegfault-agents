@@ -82,7 +82,7 @@ def test_executable_journey_records_only_metrics_and_cleans_up():
                 content = b"".join(DelayedStream())
                 headers.update({"Content-Type": "text/event-stream", "x-agents-session": "fixture-session"})
             elif self.command == "POST":
-                content = b'{"id":"fixture-agent"}'
+                content = b'{"id":"fixture-agent","model":{"provider":"openrouter","model":"fixture-model"}}'
             else:
                 content = b'{"data":[]}'
             self.send_response(200)

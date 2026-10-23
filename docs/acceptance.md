@@ -145,5 +145,32 @@ survived. A portable regression simulates port 32768 changing to 32769; a second
 check proves diagnostic filtering omits tokens and user commands. On failure the
 fixture reports only selected Docker state fields, observed loopback ports and
 allowlisted structured daemon event metadata, never `Config.Env` or raw logs.
-The next Linux CI run must establish whether this resolves the actual restart
-failure; these harness tests alone are not a substitute for that run.
+The portable harness checks did not establish the fix by themselves. The real
+Linux execution below closes that specific acceptance gap.
+
+## Confirmed Linux Docker CI (2026-10-23)
+
+[CI run 39977237486](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/39977237486)
+executed the real Docker daemon journeys on main commit
+`100ee6303987d78c941207e81664f6b133fd01ab`. Its
+[container job 120494989954](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/39977237486/job/120494989954)
+completed successfully at 23:21 Singapore time (15:21 UTC):
+
+```text
+Daemon restart: loopback port 32768 -> 32769; process boot changed
+15 passed in 2.85s
+```
+
+This directly observes the ephemeral host-port change, rather than assuming it
+from the earlier connection-refused trace. Re-resolving the endpoint reconnects
+to a new supervisor process, after which the test verifies restored file contents
+survived the restart. All fifteen real container cases pass, including the
+previously unreachable escaping-link, detached-process, 64 MiB read-only dirty
+tracking, and hardlink ownership journeys. The elapsed time is pytest execution
+time, not image build time or a performance benchmark.
+
+The same commit's native Rust, Worker release packaging, dashboard and tooling
+jobs also succeeded. These results establish container protocol and build
+acceptance for that exact revision. They do **not** establish deployed Identity
+login, billing, Cloudflare Container/R2 lifecycle or production readiness; the
+separate deployed release evidence listed above remains required.

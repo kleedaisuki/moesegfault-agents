@@ -113,13 +113,16 @@ def inference(http, sdk, args, report):
         "name": "perf-" + uuid.uuid4().hex[:12],
         "tools": ["time", "bash"] if args.workspace else ["time"],
         "workspace": args.workspace,
-        "model": {"provider": args.provider, "model": args.model},
         "instructions": "Follow the request precisely. Keep answers short. Use time or bash whenever explicitly requested. Never invent tool results.",
         "compaction_percent": 80,
     }
-    agent = api_json(http, "POST", "/v1/agents", config)["id"]
+    if args.model:
+        config["model"] = {"provider": args.provider, "model": args.model}
+    created = api_json(http, "POST", "/v1/agents", config)
+    agent = created["id"]
     sessions = []
-    report["inference"] = {"model": args.model, "provider": args.provider, "samples": []}
+    selected = created["model"]
+    report["inference"] = {"model": selected["model"], "provider": selected["provider"], "samples": []}
     try:
         for _ in range(args.samples):
             session, cold = stream_turn(sdk, agent, on_session=sessions.append)
@@ -198,8 +201,8 @@ def arguments():
     parser.add_argument("--samples", type=int, default=3, help="1-20 repeated journeys; each inference sample makes 3 billed turns")
     parser.add_argument("--inference", action="store_true", help="Explicitly authorize bounded real billed model calls")
     parser.add_argument("--workspace", action="store_true", help="With --inference, add 3 billed bash turns/sample: cold, warm, archive/restore")
-    parser.add_argument("--provider", choices=["deepseek", "openrouter"], default="deepseek")
-    parser.add_argument("--model", default="deepseek-flash")
+    parser.add_argument("--provider", choices=["deepseek", "openrouter"], help="Override together with --model; omitted uses the server's default")
+    parser.add_argument("--model", help="Registered upstream model; omitted uses the server's default")
     parser.add_argument("--cli", help="Built magents executable; measures help and authenticated agents list")
     parser.add_argument("--output", default=".cache/perf/latest.json")
     args = parser.parse_args()
@@ -207,6 +210,8 @@ def arguments():
         parser.error("--samples must be 1-20")
     if args.workspace and not args.inference:
         parser.error("--workspace requires --inference")
+    if bool(args.provider) != bool(args.model):
+        parser.error("--provider and --model must be supplied together")
     output = (ROOT / args.output).resolve()
     if not output.is_relative_to(ROOT / ".cache"):
         parser.error("--output must stay in the repository .cache directory")

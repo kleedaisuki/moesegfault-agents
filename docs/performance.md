@@ -35,7 +35,8 @@ export MAGENTS_TEST_API_ORIGIN=https://agents-staging.moesegfault.dev
 # Supply MAGENTS_TEST_API_KEY through the environment / secret store.
 .cache/e2e-venv/bin/python scripts/perf/measure.py --samples 3
 .cache/e2e-venv/bin/python scripts/perf/measure.py --samples 3 --inference \
-  --provider deepseek --model deepseek-flash --output .cache/perf/after.json
+  --provider openrouter --model deepseek/deepseek-v4.1-flash-1017 \
+  --output .cache/perf/after.json
 # Optional workspace lifecycle adds three more billed bash turns per sample.
 .cache/e2e-venv/bin/python scripts/perf/measure.py --samples 1 --inference --workspace \
   --output .cache/perf/workspace.json
@@ -52,6 +53,12 @@ dedicated funded staging account, not a user's real workspace. SDK retries are
 disabled so failures and retry delays are not concealed. No prompt, output, key,
 session ID, JWT or response body is persisted. The artifact records package,
 platform and repository revisions; preserve the deployed commit alongside it.
+With no model flags the server default is used and its normalized model/provider
+are recorded from the created configuration. The 2026-10-23 staging default is
+OpenRouter's `deepseek/deepseek-v4.1-flash-1017`, with registered input/cache/output
+prices of $0.30/$0.006/$1.20 per million tokens (`openrouter-2026-10-23`). The direct
+DeepSeek registry entry is not by itself evidence of configured platform-funded
+pricing or a provisioned direct-provider secret; do not benchmark it by assumption.
 
 For comparable before/after results alternate revisions or use repeated A/B runs
 close together from the same client. Neither a fresh session nor a fresh HTTP
@@ -149,19 +156,26 @@ assets verified locally (decimal kB; Vite's gzip estimates):
 
 | Asset | Before i18n/theme work | After i18n/theme + lazy panels + font CSS narrowing |
 | --- | ---: | ---: |
-| Main JS, gzip | 86.08 kB | 106.26 kB |
-| Main CSS, gzip | 6.77 kB | 4.01 kB |
-| Access JS, gzip, deferred | in main | 1.77 kB |
+| Main JS, gzip | 86.08 kB | 110.54 kB |
+| Main CSS, gzip | 6.77 kB | 4.19 kB |
+| Skills JS, gzip, deferred | not present | 1.33 kB |
+| Access JS, gzip, deferred | in main | 1.76 kB |
 | Usage JS, gzip, deferred | in main | 1.20 kB |
 | All emitted font files, uncompressed | 127.58 kB | 61.77 kB |
 
-Internationalization adds about 20 kB compressed to the main JS: this is an
+Internationalization/streaming/skills add about 24 kB compressed to the main JS: this is an
 explicit feature trade-off, not a claim that every bundle shrank. Emitted fonts
 are **not equivalent to transferred fonts**: CSS `unicode-range` can already defer
 unused subsets, so the smaller output directory alone does not prove faster FCP.
 Browser request traces and real network emulation are needed for that conclusion.
 The owner reports six Chromium journeys across English/Chinese, light/dark and
 320/360/1280 px viewports, with one account fetch through the full navigation flow.
+Idle submissions now consume incremental SSE through `eventsource-parser`; partial
+text renders before the completion marker and active polling pauses while attached.
+Concurrent steering remains a queued content append, not a second execution. The
+19 client unit tests include fragmented UTF-8 SSE, partial rendering, truncation
+and errors. This establishes the streaming mechanism, not a quantified live TTFT
+improvement over the previous terminal-snapshot-only display.
 
 Selected-session polling is 2 seconds when running and 5/15/30 seconds as idle
 input age increases, and stops on closed/401/403/404. For a visible session already
