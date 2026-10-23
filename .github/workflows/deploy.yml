@@ -100,6 +100,7 @@ jobs:
           MAGENTS_TEST_INFERENCE: '1'
           MAGENTS_TEST_WORKSPACE: '1'
           MAGENTS_TEST_QUOTA: '1'
+          MAGENTS_TEST_COMPACTION: '1'
         run: |
           test -n "$MAGENTS_TEST_API_KEY" || { echo 'No staging smoke credential; full user journey not run'; exit 0; }
           python3 -m venv .cache/e2e-venv

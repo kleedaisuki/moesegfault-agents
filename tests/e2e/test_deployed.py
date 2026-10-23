@@ -3,6 +3,7 @@ import concurrent.futures
 import os
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import pytest
 from openai import OpenAI
@@ -177,6 +178,78 @@ def test_workspace_archive_release_resume_restore(deployed, inference, managed_a
     # Check a new actual tool result, not the model recalling the old write prompt.
     results = [message for message in restored["messages"][before:] if message["role"] == "tool"]
     assert any(marker in str(message["content"]) for message in results)
+
+
+@pytest.fixture
+def compaction_ready(deployed):
+    if os.getenv("MAGENTS_TEST_COMPACTION") != "1":
+        pytest.skip("bounded real-provider compaction requires MAGENTS_TEST_COMPACTION=1 with a dedicated funded staging key")
+    assert urlsplit(deployed.origin).hostname == "agents-staging.moesegfault.dev", "billable compaction acceptance is staging-only"
+
+
+def assert_complete_tool_groups(messages):
+    pending = set()
+    seen = set()
+    for message in messages:
+        if message["role"] == "tool":
+            call_id = message["tool_call_id"]
+            assert call_id in pending, "tool result must match an unresolved preceding call"
+            pending.remove(call_id)
+            continue
+        assert not pending, "a tool-call group must complete before the next conversational message"
+        calls = message.get("tool_calls", [])
+        if calls:
+            assert message["role"] == "assistant"
+            for call in calls:
+                assert call["id"] and call["id"] not in seen, "tool call IDs must be unique"
+                seen.add(call["id"])
+                pending.add(call["id"])
+    assert not pending, "completed source journal must not leave orphaned tool calls"
+
+
+def test_real_provider_compaction_preserves_pin_and_source_journal(deployed, inference, compaction_ready, managed_agent):
+    agent, sessions = managed_agent
+    # Use the normal registered Flash model and a percentage, never client-side
+    # context-window overrides or a tokenizer approximation as the test oracle.
+    assert "flash" in agent["model"]["model"].lower()
+    assert agent["model"]["context_window"] in (1_000_000, 1_048_576)
+    deployed.json("PUT", "/v1/agents/" + agent["id"], {
+        "name": agent["name"], "model": agent["model"], "tools": ["time"],
+        "instructions": "Reply very briefly. For a source payload, acknowledge with ACK and do not repeat it. "
+                        "For a current-time request, call the time tool exactly once and report the result briefly.",
+        "compaction_percent": 1,
+    })
+    session = deployed.json("POST", f"/v1/agents/{agent['id']}/sessions", {}, expected=201)
+    session_id = session["id"]
+    sessions.append(session_id)
+    pinned = session["pinned"]
+    marker = uuid.uuid4().hex
+    payload = (f"Source payload starts {marker}. Preserve this as conversation data; reply ACK only.\n"
+               + " alpha beta gamma delta" * 3500
+               + f"\nSource payload ends {marker}.")
+    initial = inference.chat.completions.create(
+        model=agent["id"], messages=[{"role": "user", "content": payload}],
+        extra_headers={"x-agents-session": session_id},
+    )
+    assert initial.usage is not None
+    # Provider-reported input counts are authoritative. The fixed corpus bounds
+    # this journey to roughly 12–20k tokens rather than a million-token probe.
+    assert 10_500 <= initial.usage.prompt_tokens <= 20_000, "real corpus must cross the 1% threshold without an oversized billable probe"
+    before = deployed.json("GET", "/v1/sessions/" + session_id)
+    assert before["compact_count"] == 0
+    assert before["pinned"] == pinned
+    assert any(message["role"] == "user" and message["content"] == payload for message in before["messages"])
+    inference.chat.completions.create(
+        model=agent["id"], messages=[{"role": "user", "content": "Call the time tool now and briefly report the current UTC time."}],
+        extra_headers={"x-agents-session": session_id},
+    )
+    after = deployed.json("GET", "/v1/sessions/" + session_id)
+    assert after["compact_count"] >= 1
+    assert after["pinned"] == pinned
+    assert after["messages"][:len(before["messages"])] == before["messages"]
+    assert any(message["role"] == "user" and message["content"] == payload for message in after["messages"])
+    assert any(call["function"]["name"] == "time" for message in after["messages"] for call in message.get("tool_calls", []))
+    assert_complete_tool_groups(after["messages"])
 
 
 def test_free_configuration_quota_is_atomic(deployed):
