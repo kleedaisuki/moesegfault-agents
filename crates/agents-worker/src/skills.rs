@@ -213,8 +213,11 @@ async fn write(
         revision.clone().into(),
         now.into(),
     ])?;
+    let prune = db.prepare("DELETE FROM skill_versions WHERE account_id=?1 AND name=?2 AND version != (SELECT version FROM skills WHERE account_id=?1 AND name=?2)")
+        .bind(&[owner.into(), name.into()])?;
     // D1 batch is transactional: a quota/race failure cannot leave an orphan version.
-    let results = match db.batch(vec![insert, head]).await {
+    // Session snapshots own historical instructions; the registry needs only its head.
+    let results = match db.batch(vec![insert, head, prune]).await {
         Ok(results) => results,
         Err(error) => {
             let message = error.to_string();

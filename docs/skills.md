@@ -18,7 +18,7 @@ account's skill names through the existing `skills` array.
 | POST | `/v1/skills` | `{name,instructions}`; returns skill, 201 |
 | GET | `/v1/skills/{name}` | Skill including full text |
 | PUT | `/v1/skills/{name}` | `{instructions}`; returns skill, 200 |
-| DELETE | `/v1/skills/{name}` | Deletes account entry and version history, 204 |
+| DELETE | `/v1/skills/{name}` | Deletes account entry and current content, 204 |
 
 A skill response is `{name,version,instructions,source}`. `source` is `account`
 or `deployment`; `version` is server-generated. Bodies reject unknown properties,
@@ -41,17 +41,22 @@ sources deterministically by name. Defaults cannot contain duplicate names.
 `0006_skills_registry.sql` separates mutable account heads (`skills`) from
 immutable content versions (`skill_versions`). A version is the lowercase
 SHA-256 digest of `magents.skill.v1\0`, the name, `\0`, and exact instruction
-UTF-8 bytes. Reverting to identical content reuses its version. Changing whitespace
-is a real content change. D1 transactional batches create version/head together;
+UTF-8 bytes. Reverting to identical content reproduces its version. Changing whitespace
+is a real content change. D1 transactional batches create version/head together
+and prune superseded content after changing the head;
 quota errors and conflicting creation do not leak orphan versions.
 This uses [D1's transactional batch contract](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch),
 not a Worker-side transaction spanning awaits.
 
 All database access binds the authenticated account ID. Composite foreign keys
 prevent even accidental cross-account head references. Version records cannot
-be updated. Deletion removes account heads/history; account erasure cascades
-through both. History is user data, not telemetry or a temporary cache; it is
-never included in diagnostic logs.
+be updated. Only the current version is retained per name, bounding the registry
+to 50 content rows per account regardless of update frequency. The current head
+and content are user data. Superseded registry content is intermediate state,
+removed inside the same write transaction, not a hidden forever-growing history.
+Historical selected instructions live in session snapshots, whose existing
+retention policy applies independently. Deletion removes account heads/content;
+account erasure cascades through both. Instructions never enter diagnostic logs.
 
 At **new session creation**, the runtime resolves the account's requested names,
 overriding deployment defaults, and copies each complete
@@ -72,7 +77,8 @@ selected instructions, not every account skill's potentially large text.
 create/list/update/delete on the migrated SQLite schema, account isolation,
 cross-account reference rejection, quota rollback, immutable versions, concurrent
 delete/update ordering, account erasure, UTF-8 bounds, and randomized version
-revisits. Worker tests check input/schema injection and digest determinism.
+revisits across 1,000 updates with constant registry row count. Worker tests check
+input/schema injection and digest determinism.
 Run `python -m unittest discover -s tests -p 'test_*sql.py' -v`; the existing CI
 discovers the registry tests automatically. Worker unit/compile checks run in CI.
 The `agents-core` property test

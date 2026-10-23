@@ -12,8 +12,8 @@ SOURCE = (ROOT / "crates/agents-worker/src/skills.rs").read_text(encoding="utf-8
 SQL = re.findall(r'"((?:SELECT|INSERT|UPDATE|DELETE) [^"\n]+)"', SOURCE)
 
 
-def query(prefix):
-    matches = [sql for sql in SQL if sql.startswith(prefix)]
+def query(prefix, exact=False):
+    matches = [sql for sql in SQL if sql == prefix or (not exact and sql.startswith(prefix))]
     assert len(matches) == 1, (prefix, matches)
     return matches[0]
 
@@ -25,7 +25,8 @@ VERSION = query("INSERT OR IGNORE INTO skill_versions")
 CREATE = query("INSERT INTO skills")
 UPDATE = query("UPDATE skills SET")
 DELETE = query("DELETE FROM skills")
-DELETE_VERSIONS = query("DELETE FROM skill_versions")
+DELETE_VERSIONS = query("DELETE FROM skill_versions WHERE account_id=?1 AND name=?2", exact=True)
+PRUNE = query("DELETE FROM skill_versions WHERE account_id=?1 AND name=?2 AND version")
 
 
 def digest(name, instructions):
@@ -49,6 +50,7 @@ class SkillsSqlTests(unittest.TestCase):
         with self.db:
             self.db.execute(VERSION, (owner, name, version, instructions, 0, int(create)))
             result = self.db.execute(CREATE if create else UPDATE, (owner, name, version, 0)).fetchall()
+            self.db.execute(PRUNE, (owner, name))
         return result
 
     def delete(self, owner, name):
@@ -107,16 +109,13 @@ class SkillsSqlTests(unittest.TestCase):
         rng = random.Random(20261023)
         self.write("alice", "review", "original instructions")
         pin = tuple(self.db.execute(LIST, ("alice",)).fetchone())
-        # Session serialization stores value snapshots; every historical version
-        # remains the same even when the mutable account head revisits old content.
-        seen = {pin[1]: pin[2]}
-        for i in range(100):
-            text = f"revision-{rng.randrange(25)}"
+        # Sessions own value snapshots, so registry revisions need not accumulate.
+        for i in range(1000):
+            text = f"revision-{rng.randrange(10000)}"
             self.write("alice", "review", text, False)
             revision = digest("review", text)
-            seen[revision] = text
-            for version, expected in seen.items():
-                self.assertEqual(self.db.execute("SELECT instructions FROM skill_versions WHERE account_id=? AND name=? AND version=?", ("alice", "review", version)).fetchone(), (expected,))
+            self.assertEqual(self.db.execute("SELECT version,instructions FROM skill_versions WHERE account_id=? AND name=?", ("alice", "review")).fetchall(), [(revision, text)])
+            self.assertEqual(self.db.execute("SELECT COUNT(*) FROM skills WHERE account_id='alice'").fetchone(), (1,))
             self.assertEqual(pin, ("review", digest("review", "original instructions"), "original instructions"))
         self.delete("alice", "review")
         self.assertEqual(pin[2], "original instructions")
