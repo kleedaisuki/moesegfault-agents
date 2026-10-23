@@ -13,6 +13,7 @@ agents-auth = { path = "../agents-auth" }
 worker = { version = "0.8.7", features = ["d1"] }
 serde.workspace = true
 serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
 futures = "0.3"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
@@ -22,3 +23,6 @@ sha2.workspace = true
 console_error_panic_hook = "0.1"
 eventsource-stream = "0.2"
 url = "2"
+
+[dev-dependencies]
+proptest = "1"

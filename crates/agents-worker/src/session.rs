@@ -1,5 +1,6 @@
 use crate::{
     provider::{self, Completion, Message, ProviderConfig, Usage},
+    session_storage::{read_chunks, write_chunks},
     store::Store,
     tools, util,
     workspace::Workspace,
@@ -1279,61 +1280,16 @@ async fn save_state(storage: &Storage, data: &PersistedSession) -> Result<()> {
     storage.put("journal:count", data.journal.len()).await
 }
 
-async fn write_chunks(storage: &Storage, key: &str, bytes: &[u8]) -> Result<()> {
-    let generation = uuid::Uuid::new_v4().simple().to_string();
-    let chunks = bytes.chunks(256 * 1024).collect::<Vec<_>>();
-    for (index, chunk) in chunks.iter().enumerate() {
-        storage
-            .put(&format!("{key}:{generation}:{index}"), &chunk.to_vec())
-            .await?;
-    }
-    let old = storage.get::<StateIndex>(key).await?;
-    storage
-        .put(
-            key,
-            StateIndex {
-                generation: generation.clone(),
-                chunks: chunks.len(),
-            },
-        )
-        .await?;
-    if let Some(old) = old {
-        for index in 0..old.chunks {
-            storage
-                .delete(&format!("{key}:{}:{index}", old.generation))
-                .await?;
-        }
-    }
-    Ok(())
-}
-#[derive(Serialize, Deserialize)]
-struct StateIndex {
-    generation: String,
-    chunks: usize,
-}
-async fn read_chunks(storage: &Storage, key: &str) -> Result<Option<Vec<u8>>> {
-    let Some(index) = storage.get::<StateIndex>(key).await? else {
-        return Ok(None);
-    };
-    let mut bytes = vec![];
-    for n in 0..index.chunks {
-        let chunk = storage
-            .get::<Vec<u8>>(&format!("{key}:{}:{n}", index.generation))
-            .await?
-            .ok_or_else(|| Error::RustError("session_chunk_missing".into()))?;
-        bytes.extend(chunk);
-    }
-    Ok(Some(bytes))
-}
 async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
     let Some(bytes) = read_chunks(storage, STATE_KEY).await? else {
         return Ok(None);
     };
     let mut data: PersistedSession = serde_json::from_slice(&bytes)?;
-    for n in 0..data.journal_count {
-        let bytes = read_chunks(storage, &format!("journal:{n}"))
-            .await?
-            .ok_or_else(|| Error::RustError("journal_entry_missing".into()))?;
+    let keys = (0..data.journal_count)
+        .map(|n| format!("journal:{n}"))
+        .collect::<Vec<_>>();
+    for bytes in crate::session_storage::read_many(storage, &keys).await? {
+        let bytes = bytes.ok_or_else(|| Error::RustError("journal_entry_missing".into()))?;
         data.journal.push(serde_json::from_slice(&bytes)?);
     }
     Ok(Some(data))
