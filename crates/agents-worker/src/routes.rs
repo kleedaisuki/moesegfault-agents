@@ -237,7 +237,7 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
 async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
     let path = req.path();
     if path == "/healthz" && req.method() == Method::Get {
-        return Response::from_json(&json!({"status":"ok"}));
+        return util::health(env);
     }
     if let Some(ip) = req.headers().get("CF-Connecting-IP")? {
         use sha2::{Digest, Sha256};

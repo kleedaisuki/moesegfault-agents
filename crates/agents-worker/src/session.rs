@@ -655,7 +655,12 @@ impl SessionInner {
                 .worker_duration_ms = util::now_ms().saturating_sub(run.started_at_ms);
             util::emit(
                 "run.started",
-                json!({"session_id":record.id,"run_id":run.id}),
+                crate::telemetry::run_provenance(
+                    record,
+                    &run.id,
+                    &util::build_id(&self.env),
+                    trace.trace_id(),
+                ),
             );
             if let Some(tx) = self.events.borrow().as_ref() {
                 send_chunk(
@@ -755,7 +760,7 @@ impl SessionInner {
             self.persist().await?;
             util::emit(
                 "provider.completed",
-                json!({"session_id":record.id,"run_id":run.id,"round":run.round,"input_tokens":completion.usage.prompt_tokens,"output_tokens":completion.usage.completion_tokens,"cached_tokens":completion.usage.cached_tokens}),
+                json!({"session_id":record.id,"run_id":run.id,"trace_id":trace.trace_id(),"round":run.round,"input_tokens":completion.usage.prompt_tokens,"output_tokens":completion.usage.completion_tokens,"cached_tokens":completion.usage.cached_tokens,"usage_reported":completion.usage.reported}),
             );
             if completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty() {
                 return Ok(self.snapshot()?.run.as_ref().unwrap().terminal.clone());
@@ -784,7 +789,7 @@ impl SessionInner {
                         let code = safe_error_code(&failure);
                         util::emit(
                             "tool.failed",
-                            json!({"session_id":record.id,"run_id":run.id,"tool_name":tool,"error_code":code,"outcome":error_family(&error)}),
+                            json!({"session_id":record.id,"run_id":run.id,"trace_id":trace.trace_id(),"round":run.round,"tool_call_id":call.id,"tool_name":tool,"error_code":code,"outcome":error_family(&error)}),
                         );
                         complete_failed_tool_group(
                             self.data.borrow_mut().as_mut().unwrap(),
@@ -810,12 +815,21 @@ impl SessionInner {
                     .as_mut()
                     .unwrap()
                     .record
-                    .workspace_snapshot = metadata;
+                    .workspace_snapshot = metadata.clone();
             }
             self.persist().await?;
+            if let Some(snapshot) = metadata
+                .as_ref()
+                .filter(|snapshot| Some(*snapshot) != data.record.workspace_snapshot.as_ref())
+            {
+                util::emit(
+                    "session.checkpoint",
+                    crate::telemetry::checkpoint_provenance(&record.id, Some(&run.id), snapshot),
+                );
+            }
             util::emit(
                 "tool.completed",
-                json!({"session_id":record.id,"run_id":run.id,"tool_name":call.function.name}),
+                json!({"session_id":record.id,"run_id":run.id,"trace_id":trace.trace_id(),"round":run.round,"tool_call_id":call.id,"tool_name":call.function.name}),
             );
             return Ok(None);
         }
@@ -1232,6 +1246,15 @@ impl SessionInner {
             if record.pinned.workspace {
                 workspace.checkpoint().await?;
                 let metadata = workspace.snapshot_metadata().await?;
+                if let Some(snapshot) = metadata
+                    .as_ref()
+                    .filter(|snapshot| Some(*snapshot) != record.workspace_snapshot.as_ref())
+                {
+                    util::emit(
+                        "session.checkpoint",
+                        crate::telemetry::checkpoint_provenance(&record.id, None, snapshot),
+                    );
+                }
                 self.data
                     .borrow_mut()
                     .as_mut()
@@ -1332,7 +1355,10 @@ impl SessionInner {
             .complete_archive(accounting_pending)?;
         self.persist().await?;
         self.state.storage().delete_alarm().await?;
-        util::emit("session.archived", json!({"session_id":record.id}));
+        util::emit(
+            "session.archived",
+            json!({"session_id":record.id,"agent_id":record.agent_id,"build_id":util::build_id(&self.env)}),
+        );
         Ok(())
     }
 }

@@ -7,6 +7,49 @@ use worker::{Env, Headers, Request, Response};
 pub const MAX_DIAGNOSTIC_BYTES: usize = 16 * 1024;
 pub const DIAGNOSTIC_RETENTION_DAYS: u32 = 7;
 
+/// Deployment metadata is a Git SHA, never an arbitrary environment string.
+pub fn validated_build_id(value: Option<&str>) -> &str {
+    match value {
+        Some(value) if value.len() == 40 && hex(value.as_bytes()) => value,
+        _ => "unknown",
+    }
+}
+
+pub fn run_provenance(
+    record: &agents_core::SessionRecord,
+    run_id: &str,
+    build_id: &str,
+    trace_id: &str,
+) -> Value {
+    let registry_version = record.pinned.tools.first().map_or("none", |first| {
+        if record
+            .pinned
+            .tools
+            .iter()
+            .all(|tool| tool.version == first.version)
+        {
+            first.version.as_str()
+        } else {
+            "mixed"
+        }
+    });
+    json!({
+        "agent_id":record.agent_id,"session_id":record.id,"run_id":run_id,
+        "build_id":validated_build_id(Some(build_id)),"trace_id":trace_id,
+        "config_revision":record.pinned.agent_revision,"prefix_hash":record.pinned.prefix_hash(),
+        "registry_version":registry_version
+    })
+}
+
+pub fn checkpoint_provenance(
+    session_id: &str,
+    run_id: Option<&str>,
+    snapshot: &agents_core::WorkspaceSnapshot,
+) -> Value {
+    json!({"session_id":session_id,"run_id":run_id,"snapshot_id":snapshot.sha256,
+        "workspace_revision":snapshot.generation.to_string(),"snapshot_bytes":snapshot.archive_bytes})
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TraceContext {
     trace_id: String,
@@ -115,6 +158,7 @@ pub fn sanitize_fields(fields: Value) -> Value {
                 | "status"
                 | "attempt"
                 | "count"
+                | "config_revision"
         );
         let identifier = matches!(
             key.as_str(),
@@ -406,6 +450,90 @@ impl Drop for NativeSpan {
 mod tests {
     use super::*;
     const VALID: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    #[test]
+    fn deployment_build_id_is_only_a_full_validated_git_sha() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(validated_build_id(Some(sha)), sha);
+        for invalid in [
+            None,
+            Some("unknown"),
+            Some("abc123"),
+            Some("private instructions"),
+            Some("0123456789ABCDEF0123456789ABCDEF01234567"),
+            Some("0123456789abcdef0123456789abcdef01234567\n"),
+        ] {
+            assert_eq!(validated_build_id(invalid), "unknown");
+        }
+    }
+    #[test]
+    fn run_provenance_joins_pinned_inputs_and_build_without_logging_their_contents() {
+        let agent = serde_json::from_value::<agents_core::CreateAgent>(json!({
+            "name":"private display name", "instructions":"private instructions and user content"
+        }))
+        .unwrap()
+        .into_config("agent_123".into(), "private-owner-subject".into(), 0);
+        let tool = agents_core::RegisteredTool {
+            name: "time".into(),
+            version: "pinned-v1".into(),
+            execution: agents_core::ToolExecution::Harness,
+            description: "private tool description".into(),
+            parameters: json!({"type":"object"}),
+        };
+        let record = agents_core::SessionRecord {
+            id: "session_123".into(),
+            owner_id: agent.owner_id.clone(),
+            agent_id: agent.id.clone(),
+            status: agents_core::SessionStatus::Running,
+            created_at_ms: 0,
+            last_input_at_ms: 0,
+            input_revision: 1,
+            pinned: agents_core::PinnedContext::resolve(&agent, vec![tool], vec![]),
+            workspace_snapshot: None,
+        };
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let fields = sanitize_fields(run_provenance(
+            &record,
+            "run_123",
+            sha,
+            "0123456789abcdef0123456789abcdef",
+        ));
+        assert_eq!(fields["build_id"], sha);
+        assert_eq!(fields["agent_id"], "agent_123");
+        assert_eq!(fields["session_id"], "session_123");
+        assert_eq!(fields["run_id"], "run_123");
+        assert_eq!(fields["config_revision"], 1);
+        assert_eq!(fields["registry_version"], "pinned-v1");
+        assert_eq!(fields["prefix_hash"], record.pinned.prefix_hash());
+        assert_eq!(fields["prefix_hash"].as_str().unwrap().len(), 64);
+        assert!(!fields.to_string().contains("private"));
+        assert!(fields.get("config_hash").is_none());
+    }
+    #[test]
+    fn checkpoint_provenance_retains_only_snapshot_references_and_counters() {
+        let snapshot = agents_core::WorkspaceSnapshot {
+            generation: 3,
+            manifest_key: "private/path/manifest.json".into(),
+            sha256: "ab".repeat(32),
+            format_version: 1,
+            created_at_ms: 0,
+            logical_bytes: 123,
+            archive_bytes: 45,
+            entries: 2,
+        };
+        let fields = sanitize_fields(checkpoint_provenance(
+            "session_123",
+            Some("run_123"),
+            &snapshot,
+        ));
+        assert_eq!(
+            fields,
+            json!({"session_id":"session_123","run_id":"run_123",
+            "snapshot_id":"ab".repeat(32),"workspace_revision":"3","snapshot_bytes":45})
+        );
+        let maintenance = sanitize_fields(checkpoint_provenance("session_123", None, &snapshot));
+        assert!(maintenance.get("run_id").is_none());
+        assert!(!maintenance.to_string().contains("private"));
+    }
     #[test]
     fn traceparent_validation() {
         assert!(TraceContext::parse(VALID).is_some());

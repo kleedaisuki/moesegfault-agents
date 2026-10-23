@@ -47,16 +47,43 @@ request.completed -> run.started -> provider.completed -> tool.completed
                                                         -> session.archived
 ```
 
-Failure paths use stable `error_code` values, not exception messages. Instrument each
-retry with `attempt`, each turn with `turn` and monotonic session events with `sequence`.
-Include `duration_ms`, input/output/cache token counters and whether usage was reported
-when known; unknown usage must not become a zero-cost observation.
+Failure paths use stable `error_code` values, not exception messages. The sanitizer
+also accepts bounded counters such as `attempt`, `turn`, and `sequence`; acceptance
+does not mean that every producer emits those fields. Do not infer complete retry
+or event-sequence coverage from the sanitizer allowlist. Unknown usage must not
+become a zero-cost observation.
 
-Provenance is a chain of machine references: `request_id`, `agent_id`, `session_id`,
-`run_id`, `tool_call_id`, `snapshot_id` / `workspace_revision`, `registry_version`,
-`prefix_hash`, `config_hash`, and `build_id`. Configuration and fixed-prefix hashes
-identify immutable pinned session inputs without logging their contents. IDs and
-hashes are not authorization: retrieval always checks the authenticated owner.
+The implemented provenance chain uses the following sources:
+
+| Boundary / event | Fields actually emitted | Source |
+| --- | --- | --- |
+| Deployment render | `env.<target>.vars.BUILD_ID` | Validated full lowercase 40-character `GITHUB_SHA`; the same SHA tags the container image |
+| `GET /healthz` | `status`, `build_id` | Worker `BUILD_ID`; absent/invalid local configuration returns `unknown`, never arbitrary environment text |
+| `run.started` | `agent_id`, `session_id`, `run_id`, `trace_id`, `build_id`, `config_revision`, `prefix_hash`, `registry_version` | Owned session record, active run, application trace, deployment variable, and immutable pinned context |
+| `provider.completed` | `session_id`, `run_id`, `trace_id`, `round`, input/output/cache tokens, `usage_reported` | Persisted provider completion and its owning run |
+| `tool.completed` / `tool.failed` | `session_id`, `run_id`, `trace_id`, `round`, `tool_call_id`, `tool_name`; failure also has a stable error code/outcome | Active completion/tool dispatch; run plus round disambiguates provider IDs reused by later completions |
+| `session.checkpoint` | `session_id`, optional `run_id`, `snapshot_id`, `workspace_revision`, `snapshot_bytes` | Observed change in committed snapshot metadata after a tool or archive checkpoint; archive maintenance has no active run |
+| `session.archived` | `session_id`, `agent_id`, `build_id` | Completed session archival and current Worker deployment |
+
+`prefix_hash` is the existing SHA-256 of canonical serialized `PinnedContext`: it
+covers pinned model/budgets, instructions, resolved tools/skills, agent revision,
+and compaction/workspace settings. It identifies the complete pinned configuration,
+not provider-rendered token/KV bytes and not conversation history. Hashing occurs at
+run start, not on every provider token. There is no separate emitted `config_hash`;
+that name is only allowlisted, and must not be presented as implemented coverage.
+`registry_version` comes from the pinned tool versions, not the currently deployed
+registry: it is their common version, `mixed` when versions differ, or `none` for an
+empty tool set. Individual pinned skill content/versions are covered by the hash.
+
+An operator can start with `run_id`, find its `run.started`, identify the Worker Git
+commit and pinned context digest/revision, then join provider/tool events and any
+snapshot metadata by run/session IDs. An archived workspace is joined through its
+session ID and snapshot digest/generation. The health endpoint identifies the
+current deployment; a run-start event identifies the deployment that actually
+admitted that run, which can differ after a rollout. No additional provenance table
+or history copy is introduced. Events remain sampled operational observations,
+can repeat after retries, and are not authoritative financial or execution records.
+IDs and hashes are not authorization: retrieval always checks the authenticated owner.
 Never emit prompts, instructions, skill contents, file paths, bash commands, tool
 output, full provider responses, BYOK credentials, cookies or authorization headers.
 Avoid identity subjects in operational logs; ownership belongs in authorized records.
@@ -112,12 +139,18 @@ payload and obtain affirmative consent before making the request.
 ## Verification and operational checks
 
 Module tests cover invalid/non-ASCII trace headers, zero IDs, future versions, child
-correlation, unknown-field redaction, negative counters and diagnostic consent. A real
+correlation, unknown-field redaction, negative counters, diagnostic consent, validated
+build IDs, and content-free run/checkpoint metadata. Deployment-render tests assert
+that staging and production receive the exact image SHA as `BUILD_ID`, preserve
+other variables, and reject malformed/missing identities. A real
 deployment smoke test should start a session, execute a workspace command, checkpoint,
 archive and restore. Use its application trace ID to find the native Worker/DO/storage
 operations. Check that a recognizable secret in prompt/command/output does not appear
 in console event payloads or diagnostics. Verify lifecycle deletion with a short-lived
 test prefix before enabling production retention. Never test by uploading real keys.
+For a deployment, verify `/healthz.build_id` matches its checked-out Git SHA, then
+inspect a real `run.started` and its joined provider/tool/snapshot references. Unit
+tests and a WASM check do not establish that Cloudflare has ingested those events.
 
 ## Sources and engineering rationale
 

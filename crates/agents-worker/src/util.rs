@@ -1,5 +1,14 @@
 use serde_json::json;
-use worker::{Response, Result};
+use worker::{Env, Response, Result};
+
+pub fn build_id(env: &Env) -> String {
+    let configured = env.var("BUILD_ID").ok().map(|value| value.to_string());
+    crate::telemetry::validated_build_id(configured.as_deref()).to_owned()
+}
+
+pub fn health(env: &Env) -> Result<Response> {
+    Response::from_json(&json!({"status":"ok","build_id":build_id(env)}))
+}
 
 pub fn now_ms() -> u64 {
     worker::Date::now().as_millis()
