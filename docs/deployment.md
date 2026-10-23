@@ -57,6 +57,8 @@ Cloudflare references: [Containers deployment](https://developers.cloudflare.com
 
 `cargo check --target wasm32-unknown-unknown` is not a substitute for the full `worker-build` binding pass. With wasm-bindgen 0.2.129, `strip=true` removes the externref table required for catch wrappers and the release binding generator fails. Keep `strip="debuginfo"`, which preserves those symbols; see [workers-rs issue 1014](https://github.com/cloudflare/workers-rs/issues/1014). Native checks and browser journeys passed the first CI run while this packaging boundary failed, so the Worker artifact remains an explicit release gate.
 
+Worker-build 0.8.7's `build/worker/shim.mjs` also exports `../index.js`. Preserve the **entire `build` directory** when uploading/downloading the verified artifact, not only `build/worker`. CI runs a Wrangler dry-run bundle check after worker-build so transitive JavaScript/Wasm dependencies are validated before an image is pushed or a Worker is changed.
+
 ## Request abuse controls
 
 Native Workers Rate Limiting bindings protect ingress before database authentication, then bound per-account requests and mutations. Staging and production use distinct namespaces. Initial per-60-second limits are 2,400 requests per hashed ingress IP, 1,200 per authenticated account, and 120 account mutations. Responses include `429 request_rate_exceeded` and `Retry-After`. These are inexpensive, approximate per-Cloudflare-location abuse controls, **not** globally exact financial or concurrency admission; D1's atomic constraints remain authoritative for those. Normal management-plane operations are included in the bounded service surface rather than generating a recursive ledger event for every management/ledger query.

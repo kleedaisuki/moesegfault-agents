@@ -10,7 +10,8 @@ const secrets = Object.fromEntries(
 for (const required of ['IDENTITY_CLIENT_PRIVATE_JWK', 'DATA_ENCRYPTION_KEY']) {
   if (!secrets[required]) throw new Error(`Missing ${required}; refusing an unusable deployment`);
 }
-const result = spawnSync('npx', ['wrangler', 'secret', 'bulk', '--env', environment], {
+const config = process.env.DEPLOY_CONFIG ?? 'wrangler.jsonc';
+const result = spawnSync('npx', ['wrangler', 'secret', 'bulk', '--env', environment, '--config', config], {
   input: JSON.stringify(secrets), encoding: 'utf8', shell: process.platform === 'win32',
 });
 if (result.stdout) process.stdout.write(result.stdout);
