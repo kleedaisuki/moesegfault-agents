@@ -23,4 +23,4 @@ sha2 = "0.10"
 [profile.release]
 lto = true
 opt-level = "s"
-strip = true
+strip = "debuginfo"

@@ -52,3 +52,7 @@ Two explicitly synthetic staging principals were provisioned for automated accep
 Use `tests/e2e` and the concrete checklist in `docs/acceptance.md`. Required evidence includes real account login/logout/refresh, account isolation, SDK time and bash calls, streaming, live steering, pinned-prefix behavior, percentage compaction, archive/resume/R2 restoration, concurrent quota admission and model/resource ledger reconciliation. Absent credentials or skipped tests are not production acceptance.
 
 Cloudflare references: [Containers deployment](https://developers.cloudflare.com/containers/guides/deploy/), [R2 object lifecycles](https://developers.cloudflare.com/r2/buckets/object-lifecycles/), [Workers tracing](https://developers.cloudflare.com/observability/traces/workers-tracing/).
+
+## Build boundary learned from the first CI run
+
+`cargo check --target wasm32-unknown-unknown` is not a substitute for the full `worker-build` binding pass. With wasm-bindgen 0.2.129, `strip=true` removes the externref table required for catch wrappers and the release binding generator fails. Keep `strip="debuginfo"`, which preserves those symbols; see [workers-rs issue 1014](https://github.com/cloudflare/workers-rs/issues/1014). Native checks and browser journeys passed the first CI run while this packaging boundary failed, so the Worker artifact remains an explicit release gate.
