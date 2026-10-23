@@ -41,6 +41,12 @@ struct RunState {
     compaction_in_flight: bool,
     #[serde(default)]
     pending_compaction: Option<Completion>,
+    #[serde(default)]
+    terminal: Option<Value>,
+    #[serde(default)]
+    terminal_error: Option<String>,
+    #[serde(default)]
+    ended_at_ms: Option<u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -65,6 +71,12 @@ struct PersistedSession {
     journal_count: usize,
     #[serde(default)]
     archive_pending: bool,
+    #[serde(default)]
+    archive_preparing: bool,
+    #[serde(default)]
+    archive_funding: Option<crate::cleanup::CleanupHold>,
+    #[serde(default)]
+    archive_backstop_generation: Option<u64>,
     #[serde(default)]
     archive_key: Option<String>,
     #[serde(default)]
@@ -140,6 +152,9 @@ impl DurableObject for Session {
                     journal: vec![],
                     journal_count: 0,
                     archive_pending: false,
+                    archive_preparing: false,
+                    archive_funding: None,
+                    archive_backstop_generation: None,
                     archive_key: None,
                     archive_started_at_ms: None,
                     measured_messages: 1,
@@ -154,6 +169,7 @@ impl DurableObject for Session {
                 value["messages"] = serde_json::to_value(&data.journal)?;
                 value["pending_messages"] = serde_json::to_value(&data.pending)?;
                 value["context_tokens"] = json!(data.input_tokens);
+                value["compact_count"] = json!(data.compact_count);
                 value["context_window"] = json!(data.record.pinned.model.context_window);
                 value["last_error"] = json!(data.last_error);
                 value["checkpoint_pending"] = json!(data.checkpoint_error.is_some());
@@ -178,7 +194,14 @@ impl DurableObject for Session {
                         "Cannot change a session's pinned configuration",
                     );
                 }
-                inner.data.borrow_mut().as_mut().unwrap().record = record;
+                {
+                    let mut current = inner.data.borrow_mut();
+                    let current = current.as_mut().unwrap();
+                    current.record = record;
+                    current.archive_preparing = false;
+                    current.archive_funding = None;
+                    current.archive_backstop_generation = None;
+                }
                 inner.persist().await?;
                 inner.arm_alarm().await?;
                 Response::from_json(&inner.snapshot()?.record)
@@ -195,7 +218,7 @@ impl DurableObject for Session {
                         "content must contain 1 to 262144 bytes",
                     );
                 }
-                if inner.closing.get() {
+                if inner.closing.get() || inner.snapshot()?.archive_preparing {
                     return util::json_error(409, "session_closing", "Session is being archived");
                 }
                 if inner.snapshot()?.record.status == SessionStatus::Closed {
@@ -223,7 +246,10 @@ impl DurableObject for Session {
                 Response::from_json(&json!({"queued":true,"input_revision":revision}))
             }
             (Method::Post, "/run") => {
-                if inner.snapshot()?.run.is_some() || inner.closing.get() {
+                if inner.snapshot()?.run.is_some()
+                    || inner.closing.get()
+                    || inner.snapshot()?.archive_preparing
+                {
                     return util::json_error(
                         409,
                         "session_busy",
@@ -326,7 +352,7 @@ impl DurableObject for Session {
             return Response::ok("busy");
         }
         let snapshot = inner.snapshot()?;
-        if snapshot.archive_pending {
+        if snapshot.archive_pending || snapshot.archive_preparing {
             inner.running.set(false);
             inner.archive(true).await?;
         } else if snapshot.run.is_some() {
@@ -404,10 +430,13 @@ impl SessionInner {
 
     async fn arm_alarm(&self) -> Result<()> {
         let data = self.snapshot()?;
-        if data.record.status == SessionStatus::Closed && !data.archive_pending {
+        if data.record.status == SessionStatus::Closed
+            && !data.archive_pending
+            && !data.archive_preparing
+        {
             return self.state.storage().delete_alarm().await;
         }
-        let at = if data.run.is_some() || data.archive_pending {
+        let at = if data.run.is_some() || data.archive_pending || data.archive_preparing {
             util::now_ms() + 10
         } else {
             data.record.idle_deadline_ms().max(util::now_ms() + 1000)
@@ -451,6 +480,9 @@ impl SessionInner {
             provider_in_flight: false,
             compaction_in_flight: false,
             pending_compaction: None,
+            terminal: None,
+            terminal_error: None,
+            ended_at_ms: None,
         });
         Ok(id)
     }
@@ -468,6 +500,9 @@ impl SessionInner {
     async fn observed_step(&self) -> Result<Option<Value>> {
         let data = self.snapshot()?;
         let run = data.run.as_ref().unwrap();
+        if let Some(terminal) = replay_terminal(run) {
+            return terminal.map(Some).map_err(Error::RustError);
+        }
         if !run.admitted {
             return self.step().await;
         }
@@ -621,13 +656,24 @@ impl SessionInner {
                 r.pending_completion = None;
                 r.round += 1;
             }
+            if completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty() {
+                let value = self.completion_value(&completion.message)?;
+                self.data
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .run
+                    .as_mut()
+                    .unwrap()
+                    .terminal = Some(value);
+            }
             self.persist().await?;
             util::emit(
                 "provider.completed",
                 json!({"session_id":record.id,"run_id":run.id,"round":run.round,"input_tokens":completion.usage.prompt_tokens,"output_tokens":completion.usage.completion_tokens,"cached_tokens":completion.usage.cached_tokens}),
             );
             if completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty() {
-                return Ok(Some(self.completion_value(&completion.message)?));
+                return Ok(self.snapshot()?.run.as_ref().unwrap().terminal.clone());
             }
             return Ok(None);
         }
@@ -744,10 +790,36 @@ impl SessionInner {
     }
 
     async fn finish(&self, result: std::result::Result<Value, String>) -> Result<()> {
+        let saved = self.snapshot()?;
+        let known = saved.run.as_ref().unwrap().terminal.clone();
+        let mut accounting_pending = result.is_err() && known.is_some();
+        let result = match (result, known) {
+            (Err(_), Some(value)) => Ok(value),
+            (result, _) => result,
+        };
+        let needs_end = saved.run.as_ref().unwrap().ended_at_ms.is_none();
+        if needs_end {
+            {
+                let mut current = self.data.borrow_mut();
+                let run = current.as_mut().unwrap().run.as_mut().unwrap();
+                run.ended_at_ms = Some(util::now_ms());
+                run.terminal_error = result.as_ref().err().cloned();
+            }
+            // This boundary precedes settlement. A finalized reservation must
+            // never be charged a fresh persistence observation on recovery.
+            self.persist().await?;
+        }
         let data = self.snapshot()?;
         let run = data.run.as_ref().unwrap();
         let mut result = result;
         if run.admitted {
+            crate::metering::end_execution(
+                &self.env.d1("DB")?,
+                &data.record.owner_id,
+                &run.id,
+                run.ended_at_ms.unwrap(),
+            )
+            .await?;
             let meter = crate::resources::ResourceMeter::new(
                 &self.env,
                 &data.record.owner_id,
@@ -755,7 +827,7 @@ impl SessionInner {
                 &run.id,
             )?;
             let worker_end = if run.worker_attached {
-                util::now_ms()
+                run.ended_at_ms.unwrap()
             } else {
                 run.started_at_ms + run.worker_duration_ms
             };
@@ -770,7 +842,10 @@ impl SessionInner {
                 .is_err()
                 || meter.settle_run().await.is_err()
             {
-                result = Err("resource_reconciliation_pending".into());
+                accounting_pending = true;
+                if let Ok(value) = &mut result {
+                    value["agents_billing_status"] = json!("reconciliation_pending");
+                }
             }
         }
         {
@@ -778,7 +853,11 @@ impl SessionInner {
             let current = current.as_mut().unwrap();
             current.run = None;
             current.record.status = SessionStatus::Idle;
-            current.last_error = result.as_ref().err().cloned();
+            current.last_error = if accounting_pending {
+                Some("resource_reconciliation_pending".into())
+            } else {
+                result.as_ref().err().cloned()
+            };
         }
         // Steering accepted while settlement was in flight becomes a fresh run,
         // never an acknowledged message left stranded in an idle session.
@@ -983,127 +1062,157 @@ impl SessionInner {
         if data.record.status == SessionStatus::Closed && !data.archive_pending {
             return Ok(());
         }
-        if data.archive_pending {
-            if data.record.pinned.workspace {
-                self.workspace(&data.record).release().await?;
-            }
-            let id = format!("archive_{}_{}", data.record.id, data.record.input_revision);
-            crate::resources::ResourceMeter::new(
-                &self.env,
-                &data.record.owner_id,
-                &data.record.id,
-                &id,
-            )?
-            .settle_run()
-            .await?;
-            self.data.borrow_mut().as_mut().unwrap().archive_pending = false;
+        if data.run.is_some() {
+            return Err(Error::RustError("active_run".into()));
+        }
+        let record = &data.record;
+        let workspace = self.workspace(record);
+        // Pin-only sessions contain no paid work or workspace data. Their DO
+        // journal is already durable; closing must not require a funded wallet.
+        if data.journal.is_empty()
+            && record.workspace_snapshot.is_none()
+            && workspace.cleanup_funding().await?.is_none()
+        {
+            self.data.borrow_mut().as_mut().unwrap().record.status = SessionStatus::Closed;
             self.persist().await?;
             self.state.storage().delete_alarm().await?;
             return Ok(());
         }
-        if data.run.is_some() {
-            return Err(Error::RustError("active_run".into()));
-        }
-        let revision = data.record.input_revision;
-        if data.record.pinned.workspace {
-            self.workspace(&data.record).ensure_compute_lease().await?;
-            self.workspace(&data.record).checkpoint().await?;
-            let metadata = self.workspace(&data.record).snapshot_metadata().await?;
-            self.data
-                .borrow_mut()
-                .as_mut()
-                .unwrap()
-                .record
-                .workspace_snapshot = metadata;
-        }
-        let key = format!(
-            "accounts/{}/sessions/{}/archives/{}.json",
-            data.record.owner_id, data.record.id, data.record.input_revision
-        );
-        let reservation_id = format!("archive_{}_{}", data.record.id, data.record.input_revision);
-        crate::reconcile::maintenance_reservation(
-            &self.env,
-            &data.record.owner_id,
-            &data.record.id,
-            &reservation_id,
-        )
-        .await?;
-        let meter = crate::resources::ResourceMeter::new(
-            &self.env,
-            &data.record.owner_id,
-            &data.record.id,
-            &reservation_id,
-        )?;
-        let started = {
-            let mut current = self.data.borrow_mut();
-            let current = current.as_mut().unwrap();
-            if current.archive_key.as_deref() != Some(key.as_str()) {
-                current.archive_started_at_ms = Some(util::now_ms());
+        if data.archive_funding.is_none() {
+            let generation = Store::new(&self.env)
+                .cleanup_generation(&record.owner_id, &record.id)
+                .await?;
+            let backstop =
+                crate::cleanup::load(&self.env, &record.owner_id, &record.id, generation).await?;
+            let lease = workspace.cleanup_funding().await?;
+            let uses_lease = lease.is_some();
+            let funding = match lease.or(backstop.clone()) {
+                Some(funding) => funding,
+                // Compatibility for pre-cleanup-admission sessions only. New
+                // paid work reserves its tiny export hold before inference.
+                None => {
+                    crate::cleanup::ensure(&self.env, &record.owner_id, &record.id, generation)
+                        .await?
+                }
+            };
+            {
+                let mut current = self.data.borrow_mut();
+                let current = current.as_mut().unwrap();
+                current.archive_funding = Some(funding);
+                current.archive_preparing = true;
+                current.archive_backstop_generation = if uses_lease && backstop.is_some() {
+                    Some(generation)
+                } else {
+                    None
+                };
             }
-            current.archive_key = Some(key.clone());
-            current.archive_started_at_ms.unwrap_or_else(util::now_ms)
-        };
-        self.persist().await?;
-        let bytes = serde_json::to_vec(
-            &json!({"session":self.snapshot()?.record,"events":self.snapshot()?.journal,"active_context":self.snapshot()?.messages}),
-        )?;
-        meter
-            .require_observation("conversation.put", Resource::R2Operation, "class_a")
-            .await?;
-        self.env
-            .bucket("CONVERSATIONS")?
-            .put(&key, bytes.clone())
-            .execute()
-            .await?;
-        crate::reconcile::register_storage_object(
-            &self.env,
-            &data.record.owner_id,
-            &data.record.id,
-            &key,
-            bytes.len() as u64,
-            started,
-        )
-        .await?;
-        meter
-            .record_observation("conversation.put", Resource::R2Operation, "class_a", 1)
-            .await?;
-        let event = "conversation.pointer";
-        meter.require_d1(event).await?;
-        let result = self
-            .env
-            .d1("DB")?
-            .prepare("UPDATE sessions SET conversation_r2_key=? WHERE account_id=? AND id=?")
-            .bind(&[
-                wasm_bindgen::JsValue::from_str(&key),
-                wasm_bindgen::JsValue::from_str(&data.record.owner_id),
-                wasm_bindgen::JsValue::from_str(&data.record.id),
-            ])?
-            .run()
-            .await?;
-        meter.record_d1(event, &result).await?;
-        {
-            let mut current = self.data.borrow_mut();
-            let current = current.as_mut().unwrap();
-            if force {
-                current.record.status = SessionStatus::Closed;
-            } else if !current.record.close_if_idle(util::now_ms(), revision) {
-                return Ok(());
-            }
-            current.archive_pending = true;
+            self.persist().await?;
         }
-        self.persist().await?;
-        self.state
-            .storage()
-            .set_alarm((util::now_ms() + 1000) as i64)
+        let prepared = self.snapshot()?;
+        let funding = prepared.archive_funding.as_ref().unwrap();
+        let meter = crate::resources::ResourceMeter::with_pricing(
+            &self.env,
+            &record.owner_id,
+            &record.id,
+            &funding.id,
+            funding.pricing.clone(),
+        )?;
+        if !prepared.archive_pending {
+            // Cleanup spends the already-funded warm lease. Do not demand a new
+            // lease merely because its renewal margin is near at an empty wallet.
+            if record.pinned.workspace {
+                workspace.checkpoint().await?;
+                let metadata = workspace.snapshot_metadata().await?;
+                self.data
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .record
+                    .workspace_snapshot = metadata;
+            }
+            let key = format!(
+                "accounts/{}/sessions/{}/archives/{}.json",
+                record.owner_id, record.id, record.input_revision
+            );
+            let started = {
+                let mut current = self.data.borrow_mut();
+                let current = current.as_mut().unwrap();
+                if current.archive_key.as_deref() != Some(key.as_str()) {
+                    current.archive_started_at_ms = Some(util::now_ms());
+                }
+                current.archive_key = Some(key.clone());
+                current.archive_started_at_ms.unwrap_or_else(util::now_ms)
+            };
+            self.persist().await?;
+            let bytes = serde_json::to_vec(
+                &json!({"session":self.snapshot()?.record,"events":self.snapshot()?.journal,"active_context":self.snapshot()?.messages}),
+            )?;
+            meter
+                .require_observation("conversation.put", Resource::R2Operation, "class_a")
+                .await?;
+            self.env
+                .bucket("CONVERSATIONS")?
+                .put(&key, bytes.clone())
+                .execute()
+                .await?;
+            crate::reconcile::register_storage_object(
+                &self.env,
+                &record.owner_id,
+                &record.id,
+                &key,
+                bytes.len() as u64,
+                started,
+            )
             .await?;
-        if data.record.pinned.workspace {
-            self.workspace(&data.record).release().await?;
+            meter
+                .record_observation("conversation.put", Resource::R2Operation, "class_a", 1)
+                .await?;
+            let event = "conversation.pointer";
+            meter.require_d1(event).await?;
+            let result = self
+                .env
+                .d1("DB")?
+                .prepare("UPDATE sessions SET conversation_r2_key=? WHERE account_id=? AND id=?")
+                .bind(&[
+                    wasm_bindgen::JsValue::from_str(&key),
+                    wasm_bindgen::JsValue::from_str(&record.owner_id),
+                    wasm_bindgen::JsValue::from_str(&record.id),
+                ])?
+                .run()
+                .await?;
+            meter.record_d1(event, &result).await?;
+            {
+                let mut current = self.data.borrow_mut();
+                let current = current.as_mut().unwrap();
+                if force {
+                    current.record.status = SessionStatus::Closed;
+                } else if !current
+                    .record
+                    .close_if_idle(util::now_ms(), record.input_revision)
+                {
+                    return Ok(());
+                }
+                current.archive_pending = true;
+                current.archive_preparing = false;
+            }
+            self.persist().await?;
+            self.state
+                .storage()
+                .set_alarm((util::now_ms() + 1000) as i64)
+                .await?;
+        }
+        if record.pinned.workspace {
+            workspace.release().await?;
         }
         meter.settle_run().await?;
+        if let Some(generation) = prepared.archive_backstop_generation {
+            crate::cleanup::release_unused(&self.env, &record.owner_id, &record.id, generation)
+                .await?;
+        }
         self.data.borrow_mut().as_mut().unwrap().archive_pending = false;
         self.persist().await?;
         self.state.storage().delete_alarm().await?;
-        util::emit("session.archived", json!({"session_id":data.record.id}));
+        util::emit("session.archived", json!({"session_id":record.id}));
         Ok(())
     }
 }
@@ -1286,6 +1395,13 @@ fn safe_error_code(error: &Error) -> String {
     "run_failed".into()
 }
 
+fn replay_terminal(run: &RunState) -> Option<std::result::Result<Value, String>> {
+    run.terminal
+        .clone()
+        .map(Ok)
+        .or_else(|| run.terminal_error.clone().map(Err))
+}
+
 fn execution_key(run: &str, round: u64, call: &str) -> String {
     format!("{}:{run}:{round}:{}:{call}", run.len(), call.len())
 }
@@ -1320,6 +1436,9 @@ mod tests {
             journal: vec![],
             journal_count: 0,
             archive_pending: false,
+            archive_preparing: false,
+            archive_funding: None,
+            archive_backstop_generation: None,
             archive_key: None,
             archive_started_at_ms: None,
             measured_messages: 1,
@@ -1395,6 +1514,42 @@ mod tests {
         assert_eq!(
             safe_error_code(&Error::RustError("token secret /workspace/private".into())),
             "run_failed"
+        );
+    }
+    #[test]
+    fn terminal_recovery_retains_answer_usage_and_never_dispatches_another_round() {
+        let result = json!({"id":"run_x","choices":[{"message":{"role":"assistant","content":"complete"}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}});
+        let run = RunState {
+            id: "run_x".into(),
+            round: 1,
+            admitted: true,
+            total: Usage::default(),
+            pending_completion: None,
+            started_at_ms: 1,
+            worker_attached: true,
+            worker_duration_ms: 0,
+            step: 3,
+            traceparent: None,
+            provider_in_flight: false,
+            compaction_in_flight: false,
+            pending_compaction: None,
+            terminal: Some(result.clone()),
+            terminal_error: None,
+            ended_at_ms: Some(12),
+        };
+        let restored: RunState =
+            serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
+        assert_eq!(replay_terminal(&restored), Some(Ok(result)));
+        assert_eq!(restored.round, 1);
+        assert_eq!(restored.ended_at_ms, Some(12));
+        let failed = RunState {
+            terminal: None,
+            terminal_error: Some("provider_outcome_unknown".into()),
+            ..restored
+        };
+        assert_eq!(
+            replay_terminal(&failed),
+            Some(Err("provider_outcome_unknown".into()))
         );
     }
 }

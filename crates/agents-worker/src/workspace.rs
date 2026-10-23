@@ -84,6 +84,17 @@ impl<'a> Workspace<'a> {
         }
     }
 
+    pub async fn cleanup_funding(&self) -> Result<Option<crate::cleanup::CleanupHold>> {
+        Ok(self
+            .lease()
+            .current()
+            .await?
+            .map(|lease| crate::cleanup::CleanupHold {
+                id: lease.id,
+                pricing: lease.pricing,
+            }))
+    }
+
     pub fn for_run(mut self, run: &str) -> Self {
         self.run = Some(run.into());
         self

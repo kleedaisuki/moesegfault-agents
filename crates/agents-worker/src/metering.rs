@@ -85,7 +85,7 @@ pub async fn reserve_run(
     if !key.starts_with("run:") {
         return Err(fail("invalid_run_key"));
     }
-    reserve_inner(
+    let row = reserve_inner(
         db,
         account,
         session,
@@ -96,7 +96,28 @@ pub async fn reserve_run(
         now,
         Some(max_runs),
     )
-    .await
+    .await?;
+    #[derive(Deserialize)]
+    struct Execution {
+        execution_finished_at: Option<String>,
+    }
+    let execution: Execution = db.prepare("SELECT CAST(execution_finished_at AS TEXT) AS execution_finished_at FROM usage_reservations WHERE id=? AND account_id=?")
+        .bind(&[text(&row.id),text(account)])?.first(None).await?
+        .ok_or_else(||fail("reservation_not_found"))?;
+    if execution.execution_finished_at.is_some() {
+        return Err(fail("execution_already_finished"));
+    }
+    Ok(row)
+}
+
+/// Release execution capacity without changing a still-uncertain financial hold.
+pub async fn end_execution(db: &D1Database, account: &str, run: &str, ended_ms: u64) -> Result<()> {
+    if ended_ms > i64::MAX as u64 {
+        return Err(fail("invalid_execution_timestamp"));
+    }
+    db.prepare("UPDATE usage_reservations SET execution_finished_at=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND idempotency_key LIKE 'run:%' AND execution_finished_at IS NULL")
+        .bind(&[text(&ended_ms.to_string()),text(run),text(account)])?.run().await?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -115,7 +136,7 @@ async fn reserve_inner(
     if key.is_empty() || hash.is_empty() {
         return Err(fail("invalid_idempotency_key"));
     }
-    db.prepare("INSERT INTO usage_reservations (id, account_id, session_id, idempotency_key, request_hash, reserved_microusd, state, created_at, updated_at) SELECT ?,?,?,?,?,CAST(? AS INTEGER),'reserved',CAST(? AS INTEGER),CAST(? AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM usage_reservations WHERE account_id=? AND idempotency_key=?) AND (? IS NULL OR (SELECT COUNT(*) FROM usage_reservations WHERE account_id=? AND state='reserved' AND idempotency_key LIKE 'run:%') < CAST(? AS INTEGER))")
+    db.prepare("INSERT INTO usage_reservations (id, account_id, session_id, idempotency_key, request_hash, reserved_microusd, state, created_at, updated_at) SELECT ?,?,?,?,?,CAST(? AS INTEGER),'reserved',CAST(? AS INTEGER),CAST(? AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM usage_reservations WHERE account_id=? AND idempotency_key=?) AND (? IS NULL OR (SELECT COUNT(*) FROM usage_reservations WHERE account_id=? AND state='reserved' AND execution_finished_at IS NULL AND idempotency_key LIKE 'run:%') < CAST(? AS INTEGER))")
         .bind(&[text(id),text(account),session.map(text).unwrap_or(JsValue::NULL),text(key),text(hash),text(&amount.to_string()),text(&now.to_string()),text(&now.to_string()),text(account),text(key),max_runs.map(|n|text(&n.to_string())).unwrap_or(JsValue::NULL),text(account),max_runs.map(|n|text(&n.to_string())).unwrap_or(JsValue::NULL)])?
         .run().await?;
     let row: ReservationRow = db

@@ -155,6 +155,7 @@ impl<'a> Store<'a> {
         max_sessions: u32,
     ) -> Result<bool> {
         self.ensure_unblocked(&session.owner_id).await?;
+        crate::allowances::sync(self.env, &session.owner_id).await?;
         if session.status == SessionStatus::Closed {
             return Err(Error::RustError("new session cannot be closed".into()));
         }
@@ -220,6 +221,7 @@ impl<'a> Store<'a> {
     /// Reopening is explicit admission, never a side effect of a stale DO write.
     pub async fn resume_session(&self, owner: &str, id: &str, max_sessions: u32) -> Result<bool> {
         self.ensure_unblocked(owner).await?;
+        crate::allowances::sync(self.env, owner).await?;
         self.changed("UPDATE sessions SET status='active',closed_at=NULL,last_input_at=?,config_snapshot_json=json_set(config_snapshot_json,'$.status','idle','$.last_input_at_ms',?,'$.input_revision',CAST(json_extract(config_snapshot_json,'$.input_revision') AS INTEGER)+1) WHERE account_id=? AND id=? AND status='closed' AND (SELECT COUNT(*) FROM sessions WHERE account_id=? AND status!='closed') < ? RETURNING id", &[number(worker::Date::now().as_millis())?,number(worker::Date::now().as_millis())?,owner.into(),id.into(),owner.into(),max_sessions.into()]).await
     }
 
@@ -269,6 +271,8 @@ impl<'a> Store<'a> {
         if self.get_session(owner, session).await?.is_none() {
             return Err(fail("session_not_found"));
         }
+        let generation = self.cleanup_generation(owner, session).await?;
+        crate::cleanup::ensure(self.env, owner, session, generation).await?;
         if model.provider != Provider::Byok {
             self.model_price(model.provider, &model.model)?;
         }
@@ -300,6 +304,22 @@ impl<'a> Store<'a> {
             return Err(fail("run_already_finalized"));
         }
         Ok(true)
+    }
+
+    pub async fn cleanup_generation(&self, owner: &str, session: &str) -> Result<u64> {
+        #[derive(Deserialize)]
+        struct Archive {
+            conversation_r2_key: Option<String>,
+        }
+        let row: Archive = self
+            .statement(
+                "SELECT conversation_r2_key FROM sessions WHERE account_id=? AND id=?",
+                &[owner.into(), session.into()],
+            )?
+            .first(None)
+            .await?
+            .ok_or_else(|| fail("session_not_found"))?;
+        archive_generation(owner, session, row.conversation_r2_key.as_deref())
     }
 
     pub async fn reserve_completion(
@@ -482,6 +502,15 @@ impl<'a> Store<'a> {
 fn now_seconds() -> i64 {
     (worker::Date::now().as_millis() / 1000) as i64
 }
+fn archive_generation(owner: &str, session: &str, key: Option<&str>) -> Result<u64> {
+    let Some(key) = key else { return Ok(0) };
+    let prefix = format!("accounts/{owner}/sessions/{session}/archives/");
+    key.strip_prefix(&prefix)
+        .and_then(|v| v.strip_suffix(".json"))
+        .and_then(|v| v.parse::<u64>().ok())
+        .and_then(|v| v.checked_add(1))
+        .ok_or_else(|| fail("invalid_archive_generation"))
+}
 fn money_from_text<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<i64, D::Error> {
@@ -589,6 +618,27 @@ fn number(value: u64) -> Result<JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_generation_follows_archives_not_each_append_or_run() {
+        assert_eq!(archive_generation("u", "s", None).unwrap(), 0);
+        assert_eq!(
+            archive_generation("u", "s", Some("accounts/u/sessions/s/archives/17.json")).unwrap(),
+            18
+        );
+        assert!(
+            archive_generation("u", "s", Some("accounts/other/sessions/s/archives/17.json"))
+                .is_err()
+        );
+        assert!(
+            archive_generation(
+                "u",
+                "s",
+                Some("accounts/u/sessions/s/archives/18446744073709551615.json")
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn public_tier_limits_match_verified_billing_policy() {
