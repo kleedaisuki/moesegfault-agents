@@ -48,6 +48,15 @@ thread_local! { static METADATA: RefCell<Option<Metadata>> = const { RefCell::ne
 fn now() -> i64 {
     (Date::now().as_millis() / 1000) as i64
 }
+// D1 accepts JavaScript Number, not wasm-bindgen's i64 -> BigInt conversion.
+// Monetary values use decimal strings elsewhere; these bounded values are times.
+fn d1_integer(value: i64) -> Result<wasm_bindgen::JsValue> {
+    const MAX_EXACT_INTEGER: i64 = 9_007_199_254_740_991;
+    if !(-MAX_EXACT_INTEGER..=MAX_EXACT_INTEGER).contains(&value) {
+        return Err(Error::RustError("d1_integer_out_of_range".into()));
+    }
+    Ok(wasm_bindgen::JsValue::from_f64(value as f64))
+}
 fn failure(code: &str) -> Error {
     Error::RustError(code.to_owned())
 }
@@ -235,7 +244,7 @@ pub async fn authenticate(req: &Request, env: &Env) -> Result<AuthContext> {
                 .is_none_or(|last| last <= used_at - 300)
             {
                 db.prepare("UPDATE api_keys SET last_used_at=?1 WHERE key_hash=?2 AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at<=?3)")
-                    .bind(&[used_at.into(), key_hash.into(), (used_at - 300).into()])?
+                    .bind(&[d1_integer(used_at)?, key_hash.into(), d1_integer(used_at - 300)?])?
                     .run()
                     .await?;
             }
@@ -324,9 +333,9 @@ async fn ensure_account(env: &Env, issuer: &str, subject: &str) -> Result<String
     // Bootstrap the principal and wallet atomically, including repair of a partially migrated account.
     db.batch(vec![
         db.prepare("INSERT INTO accounts(id,issuer,subject,created_at,updated_at) VALUES(?1,?2,?3,?4,?4) ON CONFLICT(issuer,subject) DO NOTHING")
-            .bind(&[id.into(), issuer.into(), subject.into(), created_at.into()])?,
+            .bind(&[id.into(), issuer.into(), subject.into(), d1_integer(created_at)?])?,
         db.prepare("INSERT INTO usage_accounts(account_id,updated_at) SELECT id,?3 FROM accounts WHERE issuer=?1 AND subject=?2 ON CONFLICT(account_id) DO NOTHING")
-            .bind(&[issuer.into(), subject.into(), created_at.into()])?,
+            .bind(&[issuer.into(), subject.into(), d1_integer(created_at)?])?,
     ]).await?;
     let row = lookup()?
         .first::<Value>(None)
@@ -367,7 +376,7 @@ pub async fn handle_auth(mut req: Request, env: &Env) -> Result<Response> {
                 &serde_json::to_vec(&tx)?,
             ))?;
             env.d1("DB")?.prepare("INSERT INTO oidc_transactions(state_hash,payload_encrypted,expires_at,created_at) VALUES(?1,?2,?3,?4)")
-                .bind(&[hash_secret(&tx.state).into(),payload.into(),tx.expires_at.into(),now().into()])?.run().await?;
+                .bind(&[hash_secret(&tx.state).into(),payload.into(),d1_integer(tx.expires_at)?,d1_integer(now())?])?.run().await?;
             let mut response = Response::redirect(redirect)?;
             response.headers_mut().append(
                 "Set-Cookie",
@@ -444,7 +453,7 @@ async fn callback(req: &Request, env: &Env) -> Result<Response> {
     let state_hash = hash_secret(state);
     // DELETE RETURNING is a single-use claim, including failed/denied callbacks.
     let row = env.d1("DB")?.prepare("DELETE FROM oidc_transactions WHERE state_hash=?1 AND expires_at>?2 RETURNING payload_encrypted")
-        .bind(&[state_hash.clone().into(),now().into()])?.first::<Value>(None).await?.ok_or_else(||failure("invalid_callback"))?;
+        .bind(&[state_hash.clone().into(),d1_integer(now())?])?.first::<Value>(None).await?.ok_or_else(||failure("invalid_callback"))?;
     let decrypted = crypto(unseal(
         &encryption_key(env)?,
         &format!("login:{state_hash}"),
@@ -539,7 +548,7 @@ async fn callback(req: &Request, env: &Env) -> Result<Response> {
     ))?;
     let expires_at = now() + SESSION_SECONDS;
     env.d1("DB")?.prepare("INSERT INTO browser_sessions(token_hash,account_id,tokens_encrypted,csrf_hash,expires_at,created_at) VALUES(?1,?2,?3,?4,?5,?6)")
-        .bind(&[hash_secret(&session_token).into(),account_id.into(),sealed.into(),hash_secret(&csrf).into(),expires_at.into(),now().into()])?.run().await?;
+        .bind(&[hash_secret(&session_token).into(),account_id.into(),sealed.into(),hash_secret(&csrf).into(),d1_integer(expires_at)?,d1_integer(now())?])?.run().await?;
     let mut response =
         Response::redirect(format!("{}{}", setting(env, "APP_ORIGIN")?, tx.return_to).parse()?)?;
     response.headers_mut().append(
@@ -572,7 +581,7 @@ async fn fetch_subscriptions(env: &Env, account_id: &str, access_token: &str) ->
     }
     let db = env.d1("DB")?;
     let existing = db.prepare("SELECT fetched_at FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents' AND fetched_at>?2")
-        .bind(&[account_id.into(),(now()-60).into()])?.first::<Value>(None).await?;
+        .bind(&[account_id.into(),d1_integer(now()-60)?])?.first::<Value>(None).await?;
     if existing.is_some() {
         return Ok(());
     }
@@ -601,7 +610,7 @@ async fn fetch_subscriptions(env: &Env, account_id: &str, access_token: &str) ->
         .filter(|s| s["product_id"] == "agents")
         .collect();
     db.prepare("INSERT INTO subscription_snapshots(account_id,product_id,subscription_json,fetched_at,valid_until) VALUES(?1,'agents',?2,?3,?4) ON CONFLICT(account_id,product_id) DO UPDATE SET subscription_json=excluded.subscription_json,fetched_at=excluded.fetched_at,valid_until=excluded.valid_until")
-        .bind(&[account_id.into(),serde_json::to_string(&relevant)?.into(),now().into(),(now()+300).into()])?.run().await?;
+        .bind(&[account_id.into(),serde_json::to_string(&relevant)?.into(),d1_integer(now())?,d1_integer(now()+300)?])?.run().await?;
     Ok(())
 }
 
@@ -671,7 +680,7 @@ async fn api_keys(req: &mut Request, env: &Env, context: &AuthContext) -> Result
             let key = format!("mag_{}", crypto(random_token())?);
             let prefix = &key[..12];
             let inserted = db.prepare("INSERT INTO api_keys(id,account_id,name,key_hash,key_prefix,created_at) SELECT ?1,?2,?3,?4,?5,?6 WHERE (SELECT COUNT(*) FROM api_keys WHERE account_id=?2 AND revoked_at IS NULL)<100 RETURNING id")
-                .bind(&[id.clone().into(),context.account_id.clone().into(),name.into(),hash_secret(&key).into(),prefix.into(),now().into()])?.first::<Value>(None).await?;
+                .bind(&[id.clone().into(),context.account_id.clone().into(),name.into(),hash_secret(&key).into(),prefix.into(),d1_integer(now())?])?.first::<Value>(None).await?;
             if inserted.is_none() {
                 return error_response("api_key_limit", 409);
             }
@@ -686,7 +695,7 @@ async fn api_keys(req: &mut Request, env: &Env, context: &AuthContext) -> Result
                 .strip_prefix("/v1/api-keys/")
                 .filter(|s| !s.is_empty() && !s.contains('/'))
                 .ok_or_else(|| failure("invalid_key_id"))?;
-            db.prepare("UPDATE api_keys SET revoked_at=?1 WHERE account_id=?2 AND id=?3 AND revoked_at IS NULL").bind(&[now().into(),context.account_id.clone().into(),id.into()])?.run().await?;
+            db.prepare("UPDATE api_keys SET revoked_at=?1 WHERE account_id=?2 AND id=?3 AND revoked_at IS NULL").bind(&[d1_integer(now())?,context.account_id.clone().into(),id.into()])?.run().await?;
             secure_response(Response::from_json(&json!({"ok":true}))?)
         }
         _ => error_response("not_found", 404),
@@ -776,7 +785,7 @@ async fn provider_keys(req: &mut Request, env: &Env, context: &AuthContext) -> R
         secret.as_bytes(),
     ))?;
     let row = db.prepare("INSERT INTO provider_keys(id,account_id,provider,key_encrypted,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(account_id,provider) DO UPDATE SET key_encrypted=excluded.key_encrypted,key_version=provider_keys.key_version+1,updated_at=excluded.updated_at RETURNING id,provider,updated_at")
-        .bind(&[id.into(),context.account_id.clone().into(),provider.into(),encrypted.into(),now().into()])?.first::<Value>(None).await?;
+        .bind(&[id.into(),context.account_id.clone().into(),provider.into(),encrypted.into(),d1_integer(now())?])?.first::<Value>(None).await?;
     secure_response(Response::from_json(&row)?)
 }
 
@@ -815,7 +824,7 @@ impl DurableObject for AuthSession {
             self.env
                 .d1("DB")?
                 .prepare("DELETE FROM browser_sessions WHERE token_hash=?1 AND expires_at<=?2")
-                .bind(&[hash.into(), now().into()])?
+                .bind(&[hash.into(), d1_integer(now())?])?
                 .run()
                 .await?;
         }
@@ -835,7 +844,7 @@ async fn session_request(mut req: Request, env: &Env, storage: &Storage) -> Resu
         .ok_or_else(|| failure("invalid_session"))?;
     let db = env.d1("DB")?;
     let row = db.prepare("SELECT account_id,tokens_encrypted,csrf_hash,expires_at FROM browser_sessions WHERE token_hash=?1 AND expires_at>?2")
-        .bind(&[hash.into(),now().into()])?.first::<BrowserSession>(None).await?.ok_or_else(||failure("unauthorized"))?;
+        .bind(&[hash.into(),d1_integer(now())?])?.first::<BrowserSession>(None).await?.ok_or_else(||failure("unauthorized"))?;
     if storage.get_alarm().await?.is_none() {
         storage.put("session_hash", hash).await?;
         storage.set_alarm(row.expires_at * 1000).await?;
@@ -1017,9 +1026,9 @@ async fn revoke_oauth(env: &Env, tokens: &Value) -> Result<()> {
 pub async fn cleanup_expired(env: &Env) -> Result<()> {
     let db = env.d1("DB")?;
     let cutoff = now();
-    let login = db.prepare("DELETE FROM oidc_transactions WHERE state_hash IN (SELECT state_hash FROM oidc_transactions WHERE expires_at<=?1 LIMIT 500)").bind(&[cutoff.into()])?;
-    let sessions = db.prepare("DELETE FROM browser_sessions WHERE token_hash IN (SELECT token_hash FROM browser_sessions WHERE expires_at<=?1 LIMIT 500)").bind(&[cutoff.into()])?;
-    let diagnostics = db.prepare("DELETE FROM diagnostic_reports WHERE id IN (SELECT id FROM diagnostic_reports WHERE expires_at<=?1 LIMIT 500)").bind(&[cutoff.into()])?;
+    let login = db.prepare("DELETE FROM oidc_transactions WHERE state_hash IN (SELECT state_hash FROM oidc_transactions WHERE expires_at<=?1 LIMIT 500)").bind(&[d1_integer(cutoff)?])?;
+    let sessions = db.prepare("DELETE FROM browser_sessions WHERE token_hash IN (SELECT token_hash FROM browser_sessions WHERE expires_at<=?1 LIMIT 500)").bind(&[d1_integer(cutoff)?])?;
+    let diagnostics = db.prepare("DELETE FROM diagnostic_reports WHERE id IN (SELECT id FROM diagnostic_reports WHERE expires_at<=?1 LIMIT 500)").bind(&[d1_integer(cutoff)?])?;
     db.batch(vec![login, sessions, diagnostics]).await?;
     Ok(())
 }

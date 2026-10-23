@@ -20,7 +20,9 @@ class Http:
         self.token = token
 
     def request(self, method, path, data=None, headers=None, authenticated=True, timeout=180):
-        values = {"Authorization": f"Bearer {self.token}"} if authenticated else {}
+        values = {"User-Agent": "magents-acceptance/0.1"}
+        if authenticated:
+            values["Authorization"] = f"Bearer {self.token}"
         if data is not None and not isinstance(data, bytes):
             data = json.dumps(data).encode()
             values["Content-Type"] = "application/json"
