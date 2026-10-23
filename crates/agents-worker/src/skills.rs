@@ -72,6 +72,11 @@ async fn owned(env: &Env, owner: &str) -> Result<Vec<RegisteredSkill>> {
         .bind(&[owner.into()])?.all().await?.results::<RegisteredSkill>()
 }
 
+async fn selected(env: &Env, owner: &str, names: &[String]) -> Result<Vec<RegisteredSkill>> {
+    env.d1("DB")?.prepare("SELECT v.name,v.version,v.instructions FROM skills s JOIN skill_versions v USING(account_id,name,version) WHERE s.account_id=?1 AND s.name IN (SELECT value FROM json_each(?2)) ORDER BY s.name")
+        .bind(&[owner.into(), serde_json::to_string(names)?.into()])?.all().await?.results::<RegisteredSkill>()
+}
+
 /// Resolve once on session creation; callers persist all returned bytes in PinnedContext.
 pub async fn resolve(env: &Env, owner: &str, names: &[String]) -> Result<Vec<RegisteredSkill>> {
     if names.is_empty() {
@@ -81,7 +86,10 @@ pub async fn resolve(env: &Env, owner: &str, names: &[String]) -> Result<Vec<Reg
         return Err(worker::Error::RustError("invalid_skill".into()));
     }
     let mut registry = std::collections::BTreeMap::new();
-    for skill in deployment(env)?.into_iter().chain(owned(env, owner).await?) {
+    for skill in deployment(env)?
+        .into_iter()
+        .chain(selected(env, owner, names).await?)
+    {
         registry.insert(skill.name.clone(), skill);
     }
     let mut selected = std::collections::BTreeMap::new();

@@ -1,6 +1,7 @@
 """Run production skill statements against migrated SQLite, not a parallel model."""
 from pathlib import Path
 import hashlib
+import json
 import random
 import re
 import sqlite3
@@ -18,6 +19,7 @@ def query(prefix):
 
 
 LIST = query("SELECT s.name,s.version,v.instructions")
+SELECTED = query("SELECT v.name,v.version,v.instructions")
 FIND = query("SELECT name FROM skills")
 VERSION = query("INSERT OR IGNORE INTO skill_versions")
 CREATE = query("INSERT INTO skills")
@@ -75,6 +77,14 @@ class SkillsSqlTests(unittest.TestCase):
         self.db.rollback()
         with self.assertRaisesRegex(sqlite3.IntegrityError, "FOREIGN KEY"):
             self.db.execute(CREATE, ("bob", "secret", version, 0))
+
+    def test_resolution_fetches_only_requested_account_owned_instructions(self):
+        for owner in ("alice", "bob"):
+            for name in ("a", "b", "c"):
+                self.write(owner, name, f"{owner}-{name}")
+        names = json.dumps(["a", "c", "a", "unknown"])
+        resolved = self.db.execute(SELECTED, ("alice", names)).fetchall()
+        self.assertEqual([(row[0], row[2]) for row in resolved], [("a", "alice-a"), ("c", "alice-c")])
 
     def test_quota_is_atomic_account_scoped_and_update_still_works(self):
         for i in range(50):
