@@ -54,6 +54,39 @@ answer = client.chat.completions.create(
 
 This implements the documented chat-completions subset, not every OpenAI API. See [HTTP contracts](docs/api.md) and [CLI](docs/cli.md).
 
+## Download magents
+
+Download the archive and matching `.sha256` from a [published release](https://github.com/kleedaisuki/moesegfault-agents/releases), when available. Before the first binary release, maintainers can run [Package magents](https://github.com/kleedaisuki/moesegfault-agents/actions/workflows/release-magents.yml) manually and download its 30-day Actions artifacts. A workflow file alone does not mean binaries have been published.
+
+| Platform | Archive |
+| --- | --- |
+| Linux x86_64, glibc 2.35+ (Ubuntu 22.04+) | `magents-VERSION-x86_64-unknown-linux-gnu.tar.gz` |
+| Windows x86_64 | `magents-VERSION-x86_64-pc-windows-msvc.zip` |
+
+For Actions downloads, unzip the artifact wrapper first. Verify the inner archive before extracting it:
+
+```sh
+# Linux; run in the directory containing the archive and its .sha256 file.
+sha256sum --check magents-*.tar.gz.sha256
+tar -xzf magents-VERSION-x86_64-unknown-linux-gnu.tar.gz
+./magents --version
+./magents --api-url https://agents-staging.moesegfault.dev auth login
+```
+
+```powershell
+# Windows; replace VERSION with the version you downloaded.
+$archive = 'magents-VERSION-x86_64-pc-windows-msvc.zip'
+$expected = ((Get-Content "$archive.sha256" -Raw).Trim() -split '\s+')[0]
+if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Checksum mismatch' }
+Expand-Archive -LiteralPath $archive -DestinationPath magents
+.\magents\magents.exe --version
+.\magents\magents.exe --api-url https://agents-staging.moesegfault.dev auth login
+```
+
+Move the verified binary to a directory on your `PATH` if desired. Interactive login uses Windows Credential Manager or Linux Secret Service; Linux desktop users need a running, unlocked Secret Service implementation such as GNOME Keyring or KWallet and a session D-Bus. There is no plaintext credential fallback. Headless environments can supply `MAGENTS_API_KEY` for API-key-authorized operations; account/skill/provider-key management still requires human login. macOS binary distribution is not included yet; build from source with `cargo install --locked --path crates/magents` when Rust and the platform keychain are available.
+
+Each archive includes the license and `BUILD-INFO.json` with the actual Cargo version, source commit, target, and workflow run. Checksums detect corruption, not publisher authenticity; these initial binaries are not code-signed. Manual runs never create or modify releases. A `published` release triggers native builds and attaches assets only when its tag exactly matches the package version (`vVERSION`), without overwriting existing assets.
+
 ## Invariants
 
 - Instructions, resolved tool schemas and skills are pinned when a session is created. Configuration changes affect new sessions, not existing cache prefixes.
