@@ -105,6 +105,11 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
         );
     }
     match text {
+        "invalid_provider_model" => (
+            400,
+            "invalid_provider_model",
+            "Model is not registered for the selected provider credential",
+        ),
         "unknown_skill" | "invalid_skill" => (
             400,
             "invalid_skill",
@@ -318,14 +323,38 @@ pub fn model_registry(env: &Env) -> Result<Vec<ModelConfig>> {
     Ok(models)
 }
 
-fn normalize_model(env: &RouteContext<'_>, model: &mut ModelConfig) -> Result<bool> {
-    // The server owns token budgets, including BYOK: clients cannot inflate context limits.
+pub(crate) async fn normalize_model(
+    env: &Env,
+    owner: &str,
+    model: &mut ModelConfig,
+) -> Result<bool> {
+    let provider = if model.provider == Provider::Byok {
+        let Some(id) = model.credential_id.as_deref() else {
+            return Ok(false);
+        };
+        match auth::provider_identity(env, owner, id).await {
+            Ok(name) => match name.as_str() {
+                "openrouter" => Provider::OpenRouter,
+                "deepseek" => Provider::DeepSeek,
+                _ => return Ok(false),
+            },
+            Err(worker::Error::RustError(code))
+                if code == "provider_key_not_found" || code == "invalid_provider" =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        model.provider
+    };
     let registry = model_registry(env)?;
-    let found = registry.iter().find(|entry| {
-        entry.model == model.model
-            && (entry.provider == model.provider || model.provider == Provider::Byok)
-    });
-    let Some(entry) = found else { return Ok(false) };
+    let Some(entry) = registry
+        .iter()
+        .find(|entry| registered_model(entry, provider, &model.model))
+    else {
+        return Ok(false);
+    };
     model.context_window = entry.context_window;
     model.max_output_tokens = entry.max_output_tokens;
     if model.provider != Provider::Byok {
@@ -334,10 +363,22 @@ fn normalize_model(env: &RouteContext<'_>, model: &mut ModelConfig) -> Result<bo
     Ok(true)
 }
 
+fn registered_model(entry: &ModelConfig, provider: Provider, model: &str) -> bool {
+    entry.provider == provider && entry.model == model
+}
+
 async fn pin(
     env: &RouteContext<'_>,
     agent: &AgentConfig,
 ) -> Result<std::result::Result<PinnedContext, &'static str>> {
+    if agent.model.provider == Provider::Byok {
+        let mut model = agent.model.clone();
+        if !normalize_model(env, &agent.owner_id, &mut model).await? {
+            return Ok(Err(
+                "Model is not registered for the selected provider credential",
+            ));
+        }
+    }
     let registry = tools::registered_tools(agent.workspace);
     let mut resolved = Vec::new();
     for name in &agent.tools {
@@ -422,8 +463,10 @@ async fn agents(
             if let Err(message) = input.validate() {
                 return Ok(bad_request(message));
             }
-            if !normalize_model(env, &mut input.model)? {
-                return Ok(bad_request("Model is not registered on this service"));
+            if !normalize_model(env, owner, &mut input.model).await? {
+                return Ok(bad_request(
+                    "Model is not registered for the selected provider",
+                ));
             }
             let now = util::now_ms();
             let mut agent = input.into_config(
@@ -840,5 +883,38 @@ mod tests {
             .extra
             .insert("instructions".into(), json!("override"));
         assert!(validate_messages(&[forged]).is_err());
+    }
+    #[test]
+    fn registered_models_are_bound_to_the_credential_provider() {
+        let openrouter = ModelConfig {
+            provider: Provider::OpenRouter,
+            model: "deepseek/deepseek-v4.1-flash-1017".into(),
+            ..Default::default()
+        };
+        assert!(registered_model(
+            &openrouter,
+            Provider::OpenRouter,
+            &openrouter.model
+        ));
+        assert!(!registered_model(
+            &openrouter,
+            Provider::DeepSeek,
+            &openrouter.model
+        ));
+        let direct = ModelConfig {
+            provider: Provider::DeepSeek,
+            model: "deepseek-flash".into(),
+            ..Default::default()
+        };
+        assert!(registered_model(
+            &direct,
+            Provider::DeepSeek,
+            "deepseek-flash"
+        ));
+        assert!(!registered_model(
+            &direct,
+            Provider::OpenRouter,
+            "deepseek-flash"
+        ));
     }
 }

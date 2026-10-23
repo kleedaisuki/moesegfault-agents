@@ -590,6 +590,12 @@ impl SessionInner {
             crate::resources::ResourceMeter::new(&self.env, &record.owner_id, &record.id, &run.id)?;
         meter.preflight(record.pinned.workspace)?;
         if !run.admitted {
+            if record.pinned.model.provider == agents_core::Provider::Byok {
+                let mut model = record.pinned.model.clone();
+                if !crate::routes::normalize_model(&self.env, &record.owner_id, &mut model).await? {
+                    return Err(Error::RustError("invalid_provider_model".into()));
+                }
+            }
             store
                 .admit_run(&record.owner_id, &record.id, &run.id, &record.pinned.model)
                 .await?;
@@ -1383,6 +1389,8 @@ fn safe_error_code(error: &Error) -> String {
         "compaction_outcome_unknown",
         "tool_outcome_unknown",
         "provider_usage_missing",
+        "provider_key_not_found",
+        "invalid_provider_model",
         "provider_cost_missing",
         "resource_reconciliation_pending",
         "context_budget_exceeded",
