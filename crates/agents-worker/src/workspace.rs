@@ -19,8 +19,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::{JsCast, JsValue};
 use worker::{
-    Container, Delay, Env, Error, Headers, Method, RequestInit, Response, ResponseBody, Result,
-    State,
+    Container, Delay, Env, Error, Headers, Method, RequestInit, ResponseBody, Result, State,
 };
 
 use crate::{
@@ -30,8 +29,11 @@ use crate::{
 
 #[path = "workspace_lease.rs"]
 mod lease;
+#[path = "workspace_transport.rs"]
+mod transport;
 
 use lease::ComputeLease;
+use transport::{Deadline, TimedResponse};
 
 const PORT: u16 = 8080;
 const BATCH_TOOLS: u64 = 8;
@@ -314,7 +316,30 @@ impl<'a> Workspace<'a> {
         path: &str,
         body: Option<JsValue>,
         extra: &[(&str, &str)],
-    ) -> Result<Response> {
+    ) -> Result<TimedResponse> {
+        let budget = if matches!(path, "/v1/snapshot" | "/v1/restore") {
+            120_000
+        } else {
+            10_000
+        };
+        self.request_until(
+            method,
+            path,
+            body,
+            extra,
+            worker::Date::now().as_millis().saturating_add(budget),
+        )
+        .await
+    }
+
+    async fn request_until(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<JsValue>,
+        extra: &[(&str, &str)],
+        expires_ms: u64,
+    ) -> Result<TimedResponse> {
         let trace = self.trace.as_ref().map(TraceContext::child);
         let _span = NativeSpan::start("workspace.request", trace.as_ref());
         let headers = Headers::new();
@@ -329,18 +354,40 @@ impl<'a> Workspace<'a> {
         init.with_method(method)
             .with_headers(headers)
             .with_body(body);
-        self.container()?
-            .get_tcp_port(PORT)?
-            .fetch(format!("http://workspace{path}"), Some(init))
-            .await
+        let deadline = Deadline::new(expires_ms)?;
+        let native = web_sys::RequestInit::from(&init);
+        native.set_signal(Some(&deadline.signal()));
+        let request = worker::Request::from(web_sys::Request::new_with_str_and_init(
+            &format!("http://workspace{path}"),
+            &native,
+        )?);
+        let response = deadline
+            .wait(self.container()?.get_tcp_port(PORT)?.fetch_request(request))
+            .await?;
+        Ok(TimedResponse { response, deadline })
     }
 
-    async fn json_request(&self, method: Method, path: &str, value: &Value) -> Result<Response> {
-        self.request(
+    async fn json_request(
+        &self,
+        method: Method,
+        path: &str,
+        value: &Value,
+    ) -> Result<TimedResponse> {
+        let budget = if path == "/v1/exec" {
+            value["timeout_ms"]
+                .as_u64()
+                .unwrap_or(120_000)
+                .min(600_000)
+                .saturating_add(10_000)
+        } else {
+            10_000
+        };
+        self.request_until(
             method,
             path,
             Some(JsValue::from_str(&value.to_string())),
             &[("Content-Type", "application/json")],
+            worker::Date::now().as_millis().saturating_add(budget),
         )
         .await
     }
@@ -412,14 +459,27 @@ impl<'a> Workspace<'a> {
         self.ensure_compute_lease().await?;
         self.arm_usage().await?;
         let mut health = None;
-        for _ in 0..60 {
-            if let Ok(mut response) = self.request(Method::Get, "/health", None, &[]).await {
+        let ready_until = worker::Date::now().as_millis().saturating_add(30_000);
+        while worker::Date::now().as_millis() < ready_until {
+            let probe_until = worker::Date::now()
+                .as_millis()
+                .saturating_add(5_000)
+                .min(ready_until);
+            if let Ok(mut response) = self
+                .request_until(Method::Get, "/health", None, &[], probe_until)
+                .await
+            {
                 if response.status_code() == 200 {
                     health = Some(response.json::<Value>().await?);
                     break;
                 }
             }
-            Delay::from(Duration::from_millis(500)).await;
+            Delay::from(Duration::from_millis(
+                ready_until
+                    .saturating_sub(worker::Date::now().as_millis())
+                    .min(500),
+            ))
+            .await;
         }
         let health = health.ok_or_else(|| {
             Error::RustError("Workspace did not become ready in 30 seconds".into())
@@ -546,7 +606,7 @@ impl<'a> Workspace<'a> {
                     let response = self.recover_execution(&id, &args).await?;
                     if response.status_code() != 200 {
                         return Err(Error::RustError(format!(
-                            "Bash result uncertain; execution {id} must not be retried automatically: {error}"
+                            "tool_outcome_unknown: execution {id} must not be retried automatically: {error}"
                         )));
                     }
                     response
@@ -554,7 +614,10 @@ impl<'a> Workspace<'a> {
             }
         };
         let mut response = ensure_success(response)?;
-        let mut result: Value = response.json().await?;
+        let mut result: Value = response
+            .json()
+            .await
+            .map_err(|_| Error::RustError("tool_outcome_unknown".into()))?;
         let mut status = ensure_success(self.request(Method::Get, "/v1/status", None, &[]).await?)?;
         let status: Value = status.json().await?;
         let dirty = status["dirty_bytes"]
@@ -580,16 +643,39 @@ impl<'a> Workspace<'a> {
         Ok(result)
     }
 
-    async fn recover_execution(&self, id: &str, args: &Value) -> Result<Response> {
-        let polls = args["timeout_ms"].as_u64().unwrap_or(120_000).min(600_000) / 500 + 20;
-        for _ in 0..polls {
-            let response = self
-                .request(Method::Get, &format!("/v1/exec/{id}"), None, &[])
-                .await?;
+    async fn recover_execution(&self, id: &str, args: &Value) -> Result<TimedResponse> {
+        let end = worker::Date::now().as_millis().saturating_add(
+            args["timeout_ms"]
+                .as_u64()
+                .unwrap_or(120_000)
+                .min(600_000)
+                .saturating_add(10_000),
+        );
+        while worker::Date::now().as_millis() < end {
+            let probe_until = worker::Date::now()
+                .as_millis()
+                .saturating_add(10_000)
+                .min(end);
+            let response = match self
+                .request_until(
+                    Method::Get,
+                    &format!("/v1/exec/{id}"),
+                    None,
+                    &[],
+                    probe_until,
+                )
+                .await
+            {
+                Ok(response) => response,
+                Err(_) => return Err(Error::RustError("tool_outcome_unknown".into())),
+            };
             if response.status_code() != 202 {
                 return Ok(response);
             }
-            Delay::from(Duration::from_millis(500)).await;
+            Delay::from(Duration::from_millis(
+                end.saturating_sub(worker::Date::now().as_millis()).min(500),
+            ))
+            .await;
         }
         Err(Error::RustError(format!(
             "Bash result uncertain; execution {id} is still running and must not be replayed"
@@ -653,7 +739,7 @@ impl<'a> Workspace<'a> {
             uuid::Uuid::new_v4()
         );
         let bucket = self.env.bucket("WORKSPACES")?;
-        let (_, body) = response.into_parts();
+        let (_, body, deadline) = response.into_parts();
         let ResponseBody::Stream(stream) = body else {
             return Err(Error::RustError(
                 "Workspace snapshot is not streamable".into(),
@@ -664,10 +750,8 @@ impl<'a> Workspace<'a> {
         let archive_write = self.require_r2("class_a").await?;
         crate::checkpoint_gc::record_upload_intent(self.env, &self.owner, &self.session, &key)
             .await?;
-        let uploaded = bucket
-            .put(&key, stream)
-            .sha256(checksum)
-            .execute()
+        let uploaded = deadline
+            .wait(bucket.put(&key, stream).sha256(checksum).execute())
             .await?
             .ok_or_else(|| Error::RustError("Workspace snapshot upload rejected".into()))?;
         crate::reconcile::register_storage_object(
@@ -907,7 +991,7 @@ fn validate_checkpoint_source(running: bool, clock: &UsageClock) -> Result<()> {
     Ok(())
 }
 
-fn ensure_success(response: Response) -> Result<Response> {
+fn ensure_success(response: TimedResponse) -> Result<TimedResponse> {
     if (200..300).contains(&response.status_code()) {
         return Ok(response);
     }
@@ -917,7 +1001,7 @@ fn ensure_success(response: Response) -> Result<Response> {
     )))
 }
 
-async fn snapshot_response(mut response: Response) -> Result<Response> {
+async fn snapshot_response(mut response: TimedResponse) -> Result<TimedResponse> {
     if response.status_code() != 422 {
         return ensure_success(response);
     }
