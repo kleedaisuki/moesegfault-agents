@@ -1,7 +1,7 @@
 use agents_auth::billing::{ReservationState, Resource};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
-use worker::{Env, Error, Result, State};
+use worker::{Env, Error, Result, State, Storage};
 
 use crate::{
     metering,
@@ -20,6 +20,43 @@ pub(super) struct Lease {
     created_ms: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LeaseWire {
+    Json(String),
+    Legacy(Lease),
+}
+
+impl LeaseWire {
+    fn decode(self) -> Result<Lease> {
+        match self {
+            Self::Json(json) => {
+                serde_json::from_str(&json).map_err(|_| fail("workspace_lease_corrupt"))
+            }
+            Self::Legacy(lease) => Ok(lease),
+        }
+    }
+}
+
+fn encode_lease(lease: &Lease) -> Result<String> {
+    // The default JS serializer rejects integers above 2^53-1. Whole-document
+    // JSON text preserves exact tariffs and money without changing their types
+    // or the canonical Lease representation used by reservation hashes.
+    Ok(serde_json::to_string(lease)?)
+}
+
+async fn read_lease(storage: &Storage, key: &str) -> Result<Option<Lease>> {
+    storage
+        .get::<LeaseWire>(key)
+        .await?
+        .map(LeaseWire::decode)
+        .transpose()
+}
+
+async fn write_lease(storage: &Storage, key: &str, lease: &Lease) -> Result<()> {
+    storage.put(key, encode_lease(lease)?).await
+}
+
 pub(super) struct Renewal {
     pub previous: Option<Lease>,
     pub next: Lease,
@@ -34,7 +71,7 @@ pub(super) struct ComputeLease<'a> {
 
 impl ComputeLease<'_> {
     pub async fn current(&self) -> Result<Option<Lease>> {
-        self.state.storage().get("workspace:lease").await
+        read_lease(&self.state.storage(), "workspace:lease").await
     }
 
     pub async fn prepare(&self) -> Result<Option<Renewal>> {
@@ -47,7 +84,7 @@ impl ComputeLease<'_> {
             return Ok(None);
         }
         let storage = self.state.storage();
-        let mut candidate = storage.get::<Lease>("workspace:lease-next").await?;
+        let mut candidate = read_lease(&storage, "workspace:lease-next").await?;
         if candidate
             .as_ref()
             .is_some_and(|next| previous.as_ref().is_some_and(|old| old.id == next.id))
@@ -109,7 +146,7 @@ impl ComputeLease<'_> {
                         .ok_or_else(|| fail("workspace_resource_budget_overflow"))?,
                     created_ms: now,
                 };
-                storage.put("workspace:lease-next", &lease).await?;
+                write_lease(&storage, "workspace:lease-next", &lease).await?;
                 lease
             }
         };
@@ -129,23 +166,18 @@ impl ComputeLease<'_> {
         if row.state != ReservationState::Reserved {
             return Err(fail("workspace_lease_already_finalized"));
         }
-        storage
-            .put(&format!("workspace:lease:{}", next.id), &next)
-            .await?;
+        write_lease(&storage, &format!("workspace:lease:{}", next.id), &next).await?;
         Ok(Some(Renewal { previous, next }))
     }
 
     pub async fn activate(&self, lease: &Lease) -> Result<()> {
-        self.state.storage().put("workspace:lease", lease).await?;
+        write_lease(&self.state.storage(), "workspace:lease", lease).await?;
         self.state.storage().delete("workspace:lease-next").await?;
         Ok(())
     }
 
     pub async fn meter<'a>(&'a self, id: &'a str) -> Result<ResourceMeter<'a>> {
-        let lease = self
-            .state
-            .storage()
-            .get::<Lease>(&format!("workspace:lease:{id}"))
+        let lease = read_lease(&self.state.storage(), &format!("workspace:lease:{id}"))
             .await?
             .ok_or_else(|| fail("workspace_lease_missing"))?;
         ResourceMeter::with_pricing(self.env, self.owner, self.session, id, lease.pricing)
@@ -173,6 +205,70 @@ fn renew_due(expires_ms: u64, now_ms: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agents_auth::billing::ResourceTariff;
+
+    fn lease_fixture() -> Lease {
+        Lease {
+            id: "codec-regression".into(),
+            expires_ms: 1_800_000,
+            pricing: ResourcePricing {
+                version: "test-v1".into(),
+                tariffs: vec![ResourceTariff {
+                    resource: Resource::R2Storage,
+                    unit: "byte_ms".into(),
+                    microusd_numerator: 15_000,
+                    quantity_denominator: 2_592_000_000_000_000_000,
+                    price_version: "test-v1".into(),
+                }],
+            },
+            amount: 9_007_199_254_740_993,
+            created_ms: 1,
+        }
+    }
+
+    #[test]
+    fn json_storage_preserves_large_tariffs_and_money_without_changing_hashes() {
+        let lease = lease_fixture();
+        let canonical = serde_json::to_string(&lease).unwrap();
+        let wire: LeaseWire =
+            serde_json::from_value(serde_json::Value::String(encode_lease(&lease).unwrap()))
+                .unwrap();
+        let decoded = wire.decode().unwrap();
+        assert_eq!(
+            decoded.pricing.tariffs[0].quantity_denominator,
+            2_592_000_000_000_000_000
+        );
+        assert_eq!(decoded.amount, 9_007_199_254_740_993);
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), canonical);
+        assert_eq!(
+            agents_auth::hash_secret(&serde_json::to_string(&decoded).unwrap()),
+            agents_auth::hash_secret(&canonical)
+        );
+    }
+
+    #[test]
+    fn legacy_structured_leases_remain_readable() {
+        let mut lease = lease_fixture();
+        lease.pricing.tariffs[0].quantity_denominator = 1000;
+        lease.amount = 38_000;
+        let legacy = serde_json::to_value(&lease).unwrap();
+        let wire: LeaseWire = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(wire.decode().unwrap()).unwrap(),
+            legacy
+        );
+    }
+
+    #[test]
+    fn corrupt_lease_storage_is_rejected() {
+        for invalid in ["not json", "[]", "{}", "null"] {
+            assert!(LeaseWire::Json(invalid.into()).decode().is_err());
+        }
+        assert!(
+            serde_json::from_value::<LeaseWire>(serde_json::json!({"id":"incomplete"})).is_err()
+        );
+        assert!(serde_json::from_value::<LeaseWire>(serde_json::json!(42)).is_err());
+    }
 
     #[test]
     fn renewal_funds_idle_and_one_bounded_step_before_expiry() {
