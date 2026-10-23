@@ -603,6 +603,8 @@ impl<'a> Workspace<'a> {
         // Native streams bypass WASM memory. R2 verifies the compressed digest
         // before the manifest becomes visible, retaining the last good snapshot.
         let archive_write = self.require_r2("class_a").await?;
+        crate::checkpoint_gc::record_upload_intent(self.env, &self.owner, &self.session, &key)
+            .await?;
         let uploaded = bucket
             .put(&key, stream)
             .sha256(checksum)
@@ -692,10 +694,7 @@ impl<'a> Workspace<'a> {
                     )
                     .await?
                 }
-                Err(error) => worker::console_error!(
-                    "workspace superseded snapshot cleanup deferred: {}",
-                    error
-                ),
+                Err(_) => crate::util::emit("checkpoint.gc_deferred", serde_json::json!({})),
             }
         }
         ensure_success(

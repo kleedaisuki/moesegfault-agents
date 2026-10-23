@@ -1,5 +1,6 @@
 mod allowances;
 mod auth;
+mod checkpoint_gc;
 mod cleanup;
 mod metering;
 mod provider;
@@ -27,6 +28,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
 #[event(scheduled)]
 pub async fn scheduled(_event: ScheduledEvent, env: Env, ctx: ScheduleContext) {
     ctx.wait_until(async move {
+        if auth::cleanup_expired(&env).await.is_err() {
+            util::emit("auth.cleanup_failed", serde_json::json!({}));
+        }
+        if checkpoint_gc::run(&env).await.is_err() {
+            util::emit("checkpoint.gc_deferred", serde_json::json!({}));
+        }
         if reconcile::run(env).await.is_err() {
             util::emit("storage.reconciliation_failed", serde_json::json!({}));
         }

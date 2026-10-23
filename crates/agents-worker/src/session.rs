@@ -139,6 +139,9 @@ impl DurableObject for Session {
                     return util::json_error(409, "already_initialized", "Session already exists");
                 }
                 let record: SessionRecord = req.json().await?;
+                if inner.data.borrow().is_some() {
+                    return util::json_error(409, "already_initialized", "Session already exists");
+                }
                 let prefix = system_prefix(&record);
                 *inner.data.borrow_mut() = Some(PersistedSession {
                     record,
@@ -183,6 +186,9 @@ impl DurableObject for Session {
                     return util::json_error(409, "session_busy", "Session is busy");
                 }
                 let record: SessionRecord = req.json().await?;
+                if inner.running.get() || inner.closing.get() || inner.snapshot()?.archive_pending {
+                    return util::json_error(409, "session_busy", "Session is busy");
+                }
                 let old = inner.snapshot()?;
                 if old.record.id != record.id
                     || old.record.owner_id != record.owner_id
@@ -246,6 +252,7 @@ impl DurableObject for Session {
                 Response::from_json(&json!({"queued":true,"input_revision":revision}))
             }
             (Method::Post, "/run") => {
+                let input: ChatRequest = req.json().await?;
                 if inner.snapshot()?.run.is_some()
                     || inner.closing.get()
                     || inner.snapshot()?.archive_preparing
@@ -256,7 +263,6 @@ impl DurableObject for Session {
                         "Use the steering endpoint while a task is running",
                     );
                 }
-                let input: ChatRequest = req.json().await?;
                 if input.messages.is_empty()
                     || input.messages.iter().any(|m| {
                         m.role != "user"
@@ -330,8 +336,38 @@ impl DurableObject for Session {
                     }
                 }
             }
+            (Method::Post, "/checkpoint-gc") => {
+                let value: Value = req.json().await?;
+                let Some(key) = value.get("object_key").and_then(Value::as_str) else {
+                    return util::json_error(400, "invalid_gc_candidate", "object_key is required");
+                };
+                let data = inner.snapshot()?;
+                if inner.running.get()
+                    || inner.closing.get()
+                    || data.run.is_some()
+                    || data.archive_preparing
+                    || data.archive_pending
+                {
+                    return util::json_error(
+                        409,
+                        "session_busy",
+                        "Checkpoint maintenance waits for an idle session",
+                    );
+                }
+                inner.closing.set(true);
+                let result = crate::checkpoint_gc::collect(
+                    &inner.env,
+                    &data.record.owner_id,
+                    &data.record.id,
+                    key,
+                )
+                .await;
+                inner.closing.set(false);
+                result?;
+                Response::from_json(&json!({"ok":true}))
+            }
             (Method::Delete, "/close") => {
-                if inner.snapshot()?.run.is_some() {
+                if inner.closing.get() || inner.snapshot()?.run.is_some() {
                     return util::json_error(
                         409,
                         "session_busy",
@@ -347,6 +383,14 @@ impl DurableObject for Session {
 
     async fn alarm(&self) -> Result<Response> {
         let inner = &self.inner;
+        if inner.closing.get() {
+            inner
+                .state
+                .storage()
+                .set_alarm((util::now_ms() + 1000) as i64)
+                .await?;
+            return Response::ok("maintenance");
+        }
         if inner.running.replace(true) {
             inner.arm_alarm().await?;
             return Response::ok("busy");

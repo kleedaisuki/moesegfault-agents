@@ -27,7 +27,7 @@ Cloudflare sources:
 - [At-least-once alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
 - [Rust worker SDK](https://docs.rs/worker/0.8.7/worker/)
 
-Run phases journal a provider result *before* billing or executing its tool calls. Tool execution IDs combine run, response round and provider call ID: provider IDs such as `call_0` are not globally unique. Queued steering enters the active prompt only at a safe boundary after pending tool results. Accepted steering during final billing starts a new durable continuation rather than becoming stranded in an idle queue.
+Run phases journal a provider result *before* billing or executing its tool calls. A successful terminal OpenAI response (including usage), or a terminal error, is committed before asynchronous final settlement. Recovery replays that terminal result rather than dispatching another inference; the worker wall-time endpoint is pinned before settlement for idempotent accounting. Tool execution IDs combine run, response round and provider call ID: provider IDs such as `call_0` are not globally unique. Queued steering enters the active prompt only at a safe boundary after pending tool results. Accepted steering during final billing starts a new durable continuation rather than becoming stranded in an idle queue.
 
 The run safety ceiling is 128 model rounds; this is distinct from inactivity. Provider continuation fields, including DeepSeek reasoning and OpenRouter signed reasoning blocks, remain private conversation data and are preserved verbatim.
 
@@ -53,7 +53,13 @@ Cloudflare alarms are at least once, but generic model APIs do not provide a por
 
 The Container daemon's execution cache is process-local. The DO persists a boot-associated dispatch fence. An ambiguous command whose daemon has changed is not automatically replayed; the authenticated user/operator must inspect and recover it. This is a deliberate safety boundary, not an exactly-once claim for arbitrary bash/network side effects.
 
-Missing provider usage, missing OpenRouter actual cost, unconfigured tariffs, unobserved resource quantities and storage debt fail closed. OpenRouter cost is parsed from its raw JSON decimal using integer arithmetic (`serde_json/arbitrary_precision`). Direct DeepSeek platform-funded traffic requires an authoritative schedule-aware tariff; BYOK still pays observed platform resources.
+Missing provider usage, missing OpenRouter actual cost, unconfigured tariffs, unobserved resource quantities and storage debt fail closed. An ended execution is distinct from its still-reserved financial hold: `execution_finished_at` removes it from concurrency admission without releasing uncertain money. A known answer is still delivered with `agents_billing_status: reconciliation_pending` if financial measurements need recovery. OpenRouter cost is parsed from its raw JSON decimal using integer arithmetic (`serde_json/arbitrary_precision`). Direct DeepSeek platform-funded traffic requires an authoritative schedule-aware tariff; BYOK still pays observed platform resources.
+
+## Cleanup funding
+
+Before admitting paid work, reserve a session/archive-generation maintenance hold from fixed R2 PUT and bounded D1 row tariffs plus 25% safety, not the much larger run reservation. Its complete tariff snapshot and original allowance vintage survive deployment and monthly-credit rotation. A warm workspace's existing R2 safety budget is preferred for final export; the unused tiny backstop is then released with vintage-safe refund semantics. An empty current wallet must not require a fresh compute lease merely to checkpoint and release an already-funded workspace.
+
+Archive preparation persists the selected funding source before export and before changing the management pointer. A reset resumes that preparation and temporarily rejects new appends, rather than accidentally selecting the next archive generation or needing fresh credit. Pin-only sessions with no event journal/workspace data close using existing DO durability and require no R2 operation or maintenance funding.
 
 ## Remaining operational boundary
 
