@@ -179,6 +179,18 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "billing_unavailable",
             "Pricing for this resource is not configured; contact the service administrator",
         ),
+        "workspace_unavailable" | "workspace_state_encoding_failed" | "tool_outcome_unknown" => (
+            503,
+            "workspace_unavailable",
+            "The workspace is unavailable; inspect session diagnostics before retrying",
+        ),
+        "resource_pricing_not_configured"
+        | "resource_tariff_missing"
+        | "invalid_resource_pricing" => (
+            503,
+            "billing_unavailable",
+            "Resource pricing is unavailable; contact the service administrator",
+        ),
         "run_limit_exceeded" => (
             429,
             "run_limit_exceeded",
@@ -888,6 +900,13 @@ mod tests {
             ("csrf_failed", 403, "csrf_failed"),
             ("invalid_callback", 400, "invalid_callback"),
             ("unknown_skill", 400, "invalid_skill"),
+            ("workspace_unavailable", 503, "workspace_unavailable"),
+            (
+                "workspace_state_encoding_failed",
+                503,
+                "workspace_unavailable",
+            ),
+            ("resource_tariff_missing", 503, "billing_unavailable"),
             ("super_budget_exceeded_secret", 500, "internal_error"),
             ("provider returned HTTP 429 secret", 500, "internal_error"),
             ("private SQL and token detail", 500, "internal_error"),

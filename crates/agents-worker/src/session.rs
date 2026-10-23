@@ -767,10 +767,34 @@ impl SessionInner {
             let output = self.dispatch_tool(record, &execution_id, &call).await;
             let output = match output {
                 Ok(output) => output,
-                Err(error) if error.to_string().contains("tool_outcome_unknown") => {
-                    return Err(error);
-                }
-                Err(_) => json!({"error":"tool_execution_failed"}).to_string(),
+                Err(error) => match correctable_tool_error(&error) {
+                    Some(result) => result.to_string(),
+                    None => {
+                        let failure = tool_infrastructure_error(&error);
+                        let tool = if record
+                            .pinned
+                            .tools
+                            .iter()
+                            .any(|tool| tool.name == call.function.name)
+                        {
+                            call.function.name.as_str()
+                        } else {
+                            "unregistered"
+                        };
+                        let code = safe_error_code(&failure);
+                        util::emit(
+                            "tool.failed",
+                            json!({"session_id":record.id,"run_id":run.id,"tool_name":tool,"error_code":code,"outcome":error_family(&error)}),
+                        );
+                        complete_failed_tool_group(
+                            self.data.borrow_mut().as_mut().unwrap(),
+                            &call.id,
+                            &code,
+                        )?;
+                        self.persist().await?;
+                        return Err(failure);
+                    }
+                },
             };
             {
                 let mut current = self.data.borrow_mut();
@@ -1444,6 +1468,8 @@ fn safe_error_code(error: &Error) -> String {
         "budget_exceeded",
         "run_limit_exceeded",
         "resource_pricing_not_configured",
+        "workspace_state_encoding_failed",
+        "workspace_unavailable",
         "resource_tariff_missing",
         "model_price_unconfigured",
         "provider_outcome_unknown",
@@ -1468,6 +1494,110 @@ fn safe_error_code(error: &Error) -> String {
         }
     }
     "run_failed".into()
+}
+
+fn complete_failed_tool_group(
+    data: &mut PersistedSession,
+    failed_id: &str,
+    code: &str,
+) -> Result<()> {
+    if data.run.is_none() {
+        return Err(Error::RustError("run_not_active".into()));
+    }
+    let index = data
+        .messages
+        .iter()
+        .rposition(|message| message.role == "assistant")
+        .ok_or_else(|| Error::RustError("tool_group_missing".into()))?;
+    let ids = data.messages[index]
+        .tool_calls
+        .iter()
+        .filter(|call| {
+            !data.messages[index + 1..]
+                .iter()
+                .any(|message| message.tool_call_id.as_deref() == Some(call.id.as_str()))
+        })
+        .map(|call| call.id.clone())
+        .collect::<Vec<_>>();
+    if !ids.iter().any(|id| id == failed_id) {
+        return Err(Error::RustError("tool_group_stale".into()));
+    }
+    // Dispatch is serial. The failed call may have run; later unmatched calls
+    // were never dispatched. Close both kinds without inventing a successful result.
+    for id in ids {
+        let error = if id == failed_id {
+            json!({"code":code,"execution_status":"unknown","message":"No confirmed tool result is available. Inspect the workspace before retrying.","retryable":false})
+        } else {
+            json!({"code":"tool_not_executed","execution_status":"not_executed","message":"Cancelled because another tool invocation stopped the run.","retryable":false})
+        };
+        let result = Message::tool_result(&id, json!({"error":error}).to_string());
+        data.messages.push(result.clone());
+        data.journal.push(result);
+    }
+    data.run.as_mut().unwrap().terminal_error = Some(code.into());
+    Ok(())
+}
+
+fn correctable_tool_error(error: &Error) -> Option<Value> {
+    let Error::RustError(message) = error else {
+        return None;
+    };
+    let (code, message) = match message.as_str() {
+        "tool_not_pinned" => ("unknown_tool", "Use only tools registered in this session."),
+        "bash arguments must match the registered schema" => (
+            "invalid_tool_arguments",
+            "bash arguments must match the registered schema",
+        ),
+        "command must contain 1 to 65536 bytes" => (
+            "invalid_tool_arguments",
+            "command must contain 1 to 65536 bytes",
+        ),
+        "timeout_ms must be between 100 and 300000" => (
+            "invalid_tool_arguments",
+            "timeout_ms must be between 100 and 300000",
+        ),
+        "cwd must be relative to the workspace root" => (
+            "invalid_tool_arguments",
+            "cwd must be relative to the workspace root",
+        ),
+        "time arguments must be an empty object" => (
+            "invalid_tool_arguments",
+            "time arguments must be an empty object",
+        ),
+        _ => return None,
+    };
+    Some(json!({"error":{"code":code,"message":message,"retryable":true}}))
+}
+
+fn tool_infrastructure_error(error: &Error) -> Error {
+    let text = error.to_string();
+    let tokens = text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .collect::<Vec<_>>();
+    let code = if tokens.contains(&"budget_exceeded") {
+        "budget_exceeded"
+    } else if tokens.iter().any(|token| {
+        matches!(
+            *token,
+            "resource_pricing_not_configured"
+                | "resource_tariff_missing"
+                | "invalid_resource_pricing"
+                | "invalid_resource_tariff"
+                | "workspace_compute_tariff_invalid"
+        )
+    }) {
+        "resource_tariff_missing"
+    } else if text.contains("tool_outcome_unknown") || text.starts_with("Bash result uncertain") {
+        "tool_outcome_unknown"
+    } else if matches!(
+        error,
+        Error::SerdeWasmBindgenError(_) | Error::SerdeJsonError(_)
+    ) {
+        "workspace_state_encoding_failed"
+    } else {
+        "workspace_unavailable"
+    };
+    Error::RustError(code.into())
 }
 
 fn execution_phase(data: &PersistedSession) -> &'static str {
@@ -1771,5 +1901,88 @@ mod tests {
         assert!(uncommitted.complete_archive(true).is_err());
         assert!(uncommitted.archive_pending);
         assert_eq!(uncommitted.record.status, SessionStatus::Idle);
+    }
+    #[test]
+    fn tool_argument_errors_are_correctable_but_infrastructure_stops_the_run() {
+        let invalid = Error::RustError("cwd must be relative to the workspace root".into());
+        let result = correctable_tool_error(&invalid).unwrap();
+        assert_eq!(result["error"]["code"], "invalid_tool_arguments");
+        assert_eq!(result["error"]["retryable"], true);
+        let unavailable = Error::BindingError("private binding detail".into());
+        assert!(correctable_tool_error(&unavailable).is_none());
+        assert_eq!(
+            safe_error_code(&tool_infrastructure_error(&unavailable)),
+            "workspace_unavailable"
+        );
+        let budget = Error::RustError("D1_ERROR: budget_exceeded: SQLITE_CONSTRAINT".into());
+        assert_eq!(
+            safe_error_code(&tool_infrastructure_error(&budget)),
+            "budget_exceeded"
+        );
+        let unknown = Error::RustError("Bash result uncertain; private execution details".into());
+        assert_eq!(
+            safe_error_code(&tool_infrastructure_error(&unknown)),
+            "tool_outcome_unknown"
+        );
+        let corrupt = Error::SerdeJsonError(serde_json::from_str::<Value>("{").unwrap_err());
+        assert_eq!(
+            safe_error_code(&tool_infrastructure_error(&corrupt)),
+            "workspace_state_encoding_failed"
+        );
+    }
+    #[test]
+    fn fatal_tool_group_is_complete_and_terminal_across_restore_and_new_user_input() {
+        let mut data = state();
+        data.run=Some(serde_json::from_value(json!({"id":"old_run","round":1,"admitted":true,"total":Usage::default(),"pending_completion":null,"started_at_ms":0})).unwrap());
+        let call = |id: &str| provider::ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: provider::FunctionCall {
+                name: "bash".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let assistant = Message {
+            tool_calls: vec![call("done"), call("failed"), call("cancelled")],
+            ..Message::text("assistant", "")
+        };
+        data.messages.push(assistant.clone());
+        data.journal.push(assistant);
+        let done = Message::tool_result("done", "successful output");
+        data.messages.push(done.clone());
+        data.journal.push(done);
+        complete_failed_tool_group(&mut data, "failed", "tool_outcome_unknown").unwrap();
+        assert_eq!(data.journal.len(), 4);
+        assert!(unresolved_tool(&data.messages).is_none());
+        assert_eq!(
+            replay_terminal(data.run.as_ref().unwrap()),
+            Some(Err("tool_outcome_unknown".into()))
+        );
+        let mut restored: PersistedSession =
+            serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+        assert_eq!(
+            replay_terminal(restored.run.as_ref().unwrap()),
+            Some(Err("tool_outcome_unknown".into()))
+        );
+        restored.run = None;
+        restored.record.status = SessionStatus::Idle;
+        restored
+            .pending
+            .push(Message::text("user", "A new explicit instruction"));
+        restored.messages.append(&mut restored.pending);
+        assert!(unresolved_tool(&restored.messages).is_none());
+        let ids = restored
+            .messages
+            .iter()
+            .filter_map(|message| message.tool_call_id.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["done", "failed", "cancelled"]);
+        let failed: Value =
+            serde_json::from_str(restored.messages[3].content.as_str().unwrap()).unwrap();
+        let cancelled: Value =
+            serde_json::from_str(restored.messages[4].content.as_str().unwrap()).unwrap();
+        assert_eq!(failed["error"]["execution_status"], "unknown");
+        assert_eq!(cancelled["error"]["execution_status"], "not_executed");
+        assert_eq!(restored.messages.last().unwrap().role, "user");
     }
 }
