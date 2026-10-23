@@ -17,6 +17,7 @@ const MANIFEST: &str = ".magents-manifest.json";
 pub const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MANIFEST_LIMIT: u64 = 16 * 1024 * 1024;
 const EXTENSION_LIMIT: u64 = 64 * 1024;
+const MAX_MTIME: u64 = 253_402_300_799;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotMetadata {
@@ -803,16 +804,13 @@ fn timed_header(directory: bool, size: u64, mode: u32, modified: SystemTime) -> 
     header.set_mtime(
         modified
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_secs()),
+            .map_or(0, |duration| duration.as_secs().min(MAX_MTIME)),
     );
     header.set_cksum();
     header
 }
 fn restored_mtime(seconds: u64) -> Result<SystemTime> {
-    ensure!(
-        seconds <= 253_402_300_799,
-        "snapshot mtime exceeds year 9999"
-    );
+    ensure!(seconds <= MAX_MTIME, "snapshot mtime exceeds year 9999");
     UNIX_EPOCH
         .checked_add(Duration::from_secs(seconds))
         .context("snapshot mtime is not representable")
@@ -1134,6 +1132,38 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fifo_round_trips_without_opening_it_and_sockets_are_ephemeral() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::{
+            fs::{FileTypeExt, PermissionsExt},
+            net::UnixListener,
+        };
+        let temp = crate::test_dir();
+        let store = store(temp.path());
+        let original = store.current().unwrap();
+        create_fifo(&original.join("pipe"), 0o640).unwrap();
+        set_mode(&original.join("pipe"), 0o640).unwrap();
+        fs::write(original.join("data"), b"persisted").unwrap();
+        // A workspace path may exceed sockaddr_un's 108-byte limit; binding
+        // relative to an open directory keeps the fixture inside the repo.
+        let directory = File::open(&original).unwrap();
+        let socket_path = format!("/proc/self/fd/{}/ipc.sock", directory.as_raw_fd());
+        let _socket = UnixListener::bind(socket_path).unwrap();
+        let snapshot = store.create().unwrap();
+        assert_eq!(snapshot.metadata.entries, 2);
+        store
+            .restore(&snapshot.path, &snapshot.metadata.sha256)
+            .unwrap();
+        let restored = store.current().unwrap();
+        let metadata = fs::symlink_metadata(restored.join("pipe")).unwrap();
+        assert!(metadata.file_type().is_fifo());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o640);
+        assert!(!restored.join("ipc.sock").exists());
+        assert_eq!(fs::read(restored.join("data")).unwrap(), b"persisted");
     }
 
     #[cfg(target_os = "linux")]
