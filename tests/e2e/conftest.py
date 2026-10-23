@@ -42,6 +42,67 @@ class Http:
         return json.loads(body) if body else None
 
 
+def cleanup_deployed_agent(api, agent_id, session_ids, timeout=480):
+    """Drain owned runs through the public API before releasing their fixtures."""
+    deadline = time.monotonic() + timeout
+    failures = []
+    sessions = list(dict.fromkeys(session_ids))
+    try:
+        listing = api.json("GET", f"/v1/agents/{agent_id}/sessions", timeout=20)
+        sessions = list(dict.fromkeys(sessions + [row["id"] for row in listing["data"]]))
+    except Exception as error:
+        failures.append({"stage": "discover_sessions", "exception": type(error).__name__})
+    for session_id in sessions:
+        try:
+            failure = _cleanup_deployed_session(api, session_id, deadline)
+            if failure:
+                failures.append(failure)
+        except Exception as error:
+            failures.append({"stage": "session", "session_id": session_id,
+                             "exception": type(error).__name__})
+    try:
+        status, _, _ = api.request("DELETE", f"/v1/agents/{agent_id}",
+                                   timeout=max(1, min(30, deadline - time.monotonic())))
+        if status not in (200, 404):
+            failures.append({"stage": "agent", "agent_id": agent_id, "http_status": status})
+    except Exception as error:
+        failures.append({"stage": "agent", "agent_id": agent_id,
+                         "exception": type(error).__name__})
+    return failures
+
+
+def _cleanup_deployed_session(api, session_id, deadline):
+    path = f"/v1/sessions/{session_id}"
+    observed = {"stage": "session", "session_id": session_id}
+    while True:
+        remaining = deadline - time.monotonic()
+        try:
+            status, _, body = api.request("GET", path, timeout=max(1, min(20, remaining)))
+            observed["http_status"] = status
+            if status == 404:
+                return None
+            if status in (401, 403):
+                return observed
+            if status == 200:
+                state = json.loads(body)
+                observed["status"] = state.get("status")
+                observed["run_pending"] = state.get("run_id") is not None
+                if state.get("status") in ("idle", "closed") and state.get("run_id") is None:
+                    close_timeout = max(1, min(30, deadline - time.monotonic()))
+                    code, _, _ = api.request("DELETE", path, timeout=close_timeout)
+                    observed["http_status"] = code
+                    if code in (200, 404):
+                        return None
+                    if code not in (409, 429) and code < 500:
+                        return observed
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            observed["exception"] = type(error).__name__
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {**observed, "deadline_exceeded": True}
+        time.sleep(min(2, remaining))
+
+
 class DockerDaemon(Http):
     def __init__(self, name, token):
         super().__init__("http://127.0.0.1:1", token)

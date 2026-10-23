@@ -1,5 +1,6 @@
 """Real deployment journeys. No fixture creates an authentication bypass."""
 import concurrent.futures
+import json
 import os
 import time
 import uuid
@@ -8,7 +9,7 @@ from urllib.parse import urlsplit
 import pytest
 from openai import OpenAI
 
-from conftest import Http
+from conftest import Http, cleanup_deployed_agent
 
 
 @pytest.fixture
@@ -19,10 +20,12 @@ def managed_agent(deployed):
         "tools": ["time"], "compaction_percent": 73,
     }, expected=201)
     sessions = []
-    yield agent, sessions
-    for session in sessions:
-        deployed.json("DELETE", "/v1/sessions/" + session)
-    deployed.json("DELETE", "/v1/agents/" + agent["id"])
+    try:
+        yield agent, sessions
+    finally:
+        failures = cleanup_deployed_agent(deployed, agent["id"], sessions)
+        if failures:
+            pytest.fail("Fixture cleanup incomplete: " + json.dumps(failures, sort_keys=True), pytrace=False)
 
 
 @pytest.fixture
