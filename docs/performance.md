@@ -212,6 +212,28 @@ No production benchmark or staging end-to-end speedup is claimed by the local
 SQL/probe-instrumentation results above. Record real staging runs here when the
 matching deployed revision and dedicated credentials are available.
 
+### Deployed public dashboard assets, 2026-10-24
+
+A credential-free HTTP/1.1 probe at 00:25 Singapore time fetched only the staging
+HTML, its JS/CSS, and fonts. It made no account/API requests and did not compete
+with authenticated acceptance quotas. Actual compressed transfer sizes were
+109,114 B for `index-Mqk5BhS8.js` (350,493 B decoded) and 4,142 B for
+`index-DZ9Q8rn9.css` (16,167 B decoded); both Latin fonts totaled 61,768 B.
+
+Every fingerprinted asset had `Cache-Control: public, max-age=0, must-revalidate`.
+The first/second observed JS header times were 797.6/187.4 ms and CSS 286.2/92.6 ms,
+with reported edge MISS/HIT respectively. These are single observations on one
+pooled client, not a latency distribution or proof that cache state explains all
+of the difference. Cloudflare notes its cache-status header is not infallible.
+
+The fix is the narrow `public/_headers` rule: `/assets/*` receives
+`public, max-age=31536000, immutable`. Those URLs are content-hashed, so a changed
+deployment gets new URLs while repeat navigation can reuse unchanged bytes
+without network revalidation. HTML, stable `appearance.js`, login, and private
+API data are not included. Source scope and build copying are tested; recheck the
+served staging header after the next deployment before claiming this live fix.
+The original artifact is `.cache/perf/staging-public-assets.json`.
+
 ## Primary sources and implications
 
 - [Cloudflare Durable Object rules](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/)

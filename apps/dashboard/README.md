@@ -113,6 +113,15 @@ Latin subsets actually used by the UI (system CJK fallback). Do not interpret
 emitted font byte reductions as measured network savings: unicode-range already
 lets browsers defer unused subsets.
 
+`public/_headers` is copied into `dist/` and applies one-year immutable browser
+caching **only** to Vite's content-hashed `/assets/*` files. HTML and the stable
+`appearance.js` keep normal revalidation, and Worker-generated `/auth/*` and
+`/v1/*` responses retain their private/no-store policy. Never put mutable or
+user-generated files under this asset prefix. This uses the platform's supported
+[_headers mechanism](https://developers.cloudflare.com/workers/static-assets/headers/),
+not a second service worker or application cache. The rule works on the existing
+asset-first routes; it does not override headers on Worker-generated responses.
+
 The bounded six-journey Chromium suite includes en/light desktop, zh/dark desktop,
 zh/light 320px and en/dark 360px complete management journeys; all four plan names;
 registry creation/selection; streaming then steering; one-time key display;
