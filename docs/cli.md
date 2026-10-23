@@ -80,4 +80,3 @@ Key creation intentionally prints the one-time server response; redirect only in
 `cargo test -p magents` exercises the real binary against a loopback HTTP fixture through create, start, streamed run, steer, and close, checking authorization and session headers. The personalized skill lifecycle covers stdin creation, list/show, file-based update, and deletion; help is checked without authentication. Tests also cover offline diagnostics, upload consent, sensitive error suppression, truncated streams, origin boundaries, callback confusion/duplicate fields, and Clap command consistency. A registered Identity deployment and OS credential store are needed for the final real-browser login check; tests do not replace it.
 
 References: [openidconnect](https://docs.rs/openidconnect/latest/openidconnect/), [keyring](https://docs.rs/keyring/latest/keyring/v1/index.html), and [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252).
-
