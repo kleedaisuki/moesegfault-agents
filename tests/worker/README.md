@@ -59,3 +59,14 @@ session/accounting diagnostics on failure. Every mocked model round reports
 $0.00001 and the complete two-run journey asserts four ledger entries of exactly
 10 micro-USD each. After non-streaming and streaming runs, the test evicts the
 actual Session DO and checks that reconstruction preserves the message journal.
+
+The compiled artifact from CI `39985741803` isolated the next failure: workerd
+rejects constructing a Request with `redirect: "error"`; only `follow` and `manual`
+are supported. A diagnostic-only Request wrapper changing that option to `manual`
+made the complete happy path, streaming continuation, exact charges, and real DO
+eviction/reconstruction pass locally. This counterfactual is not acceptance of a
+new Rust build. The artifact was restored afterward. A real 302 provider response
+is now also tested: one trusted-endpoint call, zero redirect-target calls, and a
+typed 502 error. The callback's Node Request `redirect` property cannot substitute
+for that behavioral assertion because Miniflare reconstructs it as `follow` at
+the host-service boundary.

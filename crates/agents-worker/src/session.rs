@@ -1396,6 +1396,22 @@ where
 
 fn safe_error_code(error: &Error) -> String {
     let text = error.to_string();
+    let message = match error {
+        Error::RustError(message) => message.as_str(),
+        _ => text.as_str(),
+    };
+    if message
+        .strip_prefix("provider returned HTTP ")
+        .is_some_and(|status| {
+            status.len() == 3
+                && status.bytes().all(|b| b.is_ascii_digit())
+                && status
+                    .parse::<u16>()
+                    .is_ok_and(|code| (100..=599).contains(&code))
+        })
+    {
+        return "provider_http_error".into();
+    }
     for code in [
         "budget_exceeded",
         "run_limit_exceeded",
@@ -1599,6 +1615,16 @@ mod tests {
             "openrouter_cost_missing"
         );
         assert_eq!(
+            safe_error_code(&Error::RustError("provider returned HTTP 302".into())),
+            "provider_http_error"
+        );
+        assert_eq!(
+            safe_error_code(&Error::RustError(
+                "provider returned HTTP 302 secret".into()
+            )),
+            "run_failed"
+        );
+        assert_eq!(
             error_family(&Error::RustError("token secret /workspace/private".into())),
             "runtime_error"
         );
@@ -1656,5 +1682,44 @@ mod tests {
         assert_eq!(alarm_deadline(&data, 700000), None);
         data.archive_pending = true;
         assert_eq!(alarm_deadline(&data, 700000), Some(700010));
+    }
+    #[test]
+    fn diagnostic_phase_tracks_durable_boundaries_and_families_are_fixed_labels() {
+        let mut data = state();
+        assert_eq!(execution_phase(&data), "idle");
+        data.run=Some(serde_json::from_value(json!({"id":"run","round":0,"admitted":false,"total":Usage::default(),"pending_completion":null,"started_at_ms":0})).unwrap());
+        assert_eq!(execution_phase(&data), "admission");
+        data.run.as_mut().unwrap().admitted = true;
+        assert_eq!(execution_phase(&data), "model_request");
+        data.run.as_mut().unwrap().provider_in_flight = true;
+        assert_eq!(execution_phase(&data), "provider_recovery");
+        data.run.as_mut().unwrap().provider_in_flight = false;
+        let completion = Completion {
+            id: "mock".into(),
+            model: "test".into(),
+            message: Message::text("assistant", "done"),
+            finish_reason: "stop".into(),
+            usage: Usage::default(),
+        };
+        data.run.as_mut().unwrap().pending_completion = Some(completion.clone());
+        assert_eq!(execution_phase(&data), "model_accounting");
+        data.run.as_mut().unwrap().pending_completion = None;
+        data.run.as_mut().unwrap().compaction_in_flight = true;
+        assert_eq!(execution_phase(&data), "compaction_recovery");
+        data.run.as_mut().unwrap().pending_compaction = Some(completion);
+        assert_eq!(execution_phase(&data), "compaction_accounting");
+        data.run.as_mut().unwrap().terminal = Some(json!({"id":"run"}));
+        assert_eq!(execution_phase(&data), "finalization");
+        assert_eq!(
+            error_family(&Error::BindingError("private binding detail".into())),
+            "binding_error"
+        );
+        assert_eq!(
+            error_family(&Error::SerdeJsonError(
+                serde_json::from_str::<Value>("{").unwrap_err()
+            )),
+            "json_decode"
+        );
+        assert_eq!(error_family(&Error::BodyUsed), "platform_error");
     }
 }

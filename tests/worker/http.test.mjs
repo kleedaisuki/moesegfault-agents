@@ -18,6 +18,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
+  let redirectProvider = false;
+  let redirectTargetCalls = 0;
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const temp = await mkdtemp(path.join(root, '.temp/worker-integration-'));
   process.env.TMP = process.env.TEMP = process.env.TMPDIR = temp;
@@ -54,8 +56,13 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
+      if (request.url.startsWith('https://redirect-target.test/')) {
+        redirectTargetCalls++;
+        throw new Error('Provider redirect must never be followed');
+      }
       if (request.url === 'https://openrouter.ai/api/v1/chat/completions') {
         providerCalls++;
+        if (redirectProvider) return new Response(null, { status: 302, headers: { Location: 'https://redirect-target.test/steal' } });
         const input = await request.json();
         assert.equal(input.stream, true);
         assert.equal(input.model, 'test-model');
@@ -198,6 +205,21 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       assert.deepEqual(afterEviction.messages, beforeEviction.messages, 'DO reconstruction must bulk-load the persisted message codec without data loss');
       assert.deepEqual(afterEviction.pending_messages, beforeEviction.pending_messages);
       assert.equal(afterEviction.last_error, beforeEviction.last_error);
+      clearTimeout(timer);
+      const redirectedSession = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201);
+      redirectProvider = true;
+      providerCalls = 0;
+      const rejectedRedirect = await Promise.race([
+        mf.dispatchFetch('https://agents.test/v1/chat/completions', {
+          method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'X-Agents-Session': redirectedSession.id },
+          body: JSON.stringify({ model: agent.id, messages: [{ role: 'user', content: 'A provider redirect must fail closed.' }], stream: false }),
+        }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Provider redirect rejection stalled')), 8000); }),
+      ]);
+      assert.equal(providerCalls, 1);
+      assert.equal(redirectTargetCalls, 0, 'Never send provider credentials to a redirect target');
+      assert.equal(rejectedRedirect.status, 502);
+      assert.equal((await rejectedRedirect.json()).error.code, 'provider_error');
     } finally {
       clearTimeout(timer);
     }

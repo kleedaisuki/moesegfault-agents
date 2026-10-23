@@ -180,8 +180,9 @@ async fn send(
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        // A BYOK endpoint must not redirect bearer credentials to another host.
-        .with_redirect(RequestRedirect::Error)
+        // workerd has no "error" redirect mode. Manual returns 3xx for the
+        // non-success check below without forwarding bearer credentials.
+        .with_redirect(RequestRedirect::Manual)
         .with_body(Some(body.to_string().into()));
     let request = Request::new_with_init(&endpoint, &init)?;
     let response = Fetch::Request(request).send().await?;

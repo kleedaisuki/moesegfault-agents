@@ -185,6 +185,7 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "Your plan's concurrent run limit has been reached",
         ),
         "provider_usage_missing"
+        | "provider_http_error"
         | "openrouter_cost_missing"
         | "invalid_provider_usage"
         | "invalid provider event stream"
