@@ -103,17 +103,17 @@ export function UsagePage({ account }: { account: Account }) {
             </p>
           )}
         </div>
-        <a
-          className="button primary"
-          href={
-            account.subscription_url ?? "https://subscribe.moesegfault.dev/"
-          }
-          target="_blank"
-          rel="noreferrer"
-        >
-          {t("Manage subscription")}
-          <ArrowUpRight size={16} />
-        </a>
+        {account.subscription_url && (
+          <a
+            className="button primary"
+            href={account.subscription_url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t("Manage subscription")}
+            <ArrowUpRight size={16} />
+          </a>
+        )}
       </section>
       <p className="hint">
         {t(
