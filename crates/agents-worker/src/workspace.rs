@@ -23,6 +23,7 @@ use lease::ComputeLease;
 const PORT: u16 = 8080;
 const BATCH_TOOLS: u64 = 8;
 const BATCH_BYTES: u64 = 64 * 1024 * 1024;
+const CONTAINER_CLOCK: &str = "workspace:container-clock";
 
 /// A session DO is the sole writer. Its caller must serialize workspace operations,
 /// including checkpoint/release, against tool execution.
@@ -159,7 +160,8 @@ impl<'a> Workspace<'a> {
         }
     }
 
-    async fn finish_clock(&self, key: &str, resource: Resource) -> Result<()> {
+    async fn finish_container_clock(&self) -> Result<()> {
+        let key = CONTAINER_CLOCK;
         let storage = self.state.storage();
         let Some(mut clock) = storage.get::<UsageClock>(key).await? else {
             return Ok(());
@@ -174,7 +176,7 @@ impl<'a> Workspace<'a> {
         let lease = self.lease();
         let meter = lease.meter(run).await?;
         meter
-            .record_wall_time(event, resource, clock.since_ms, end)
+            .record_wall_time(event, Resource::Container, clock.since_ms, end)
             .await?;
         clock.since_ms = end;
         clock.run = None;
@@ -183,7 +185,8 @@ impl<'a> Workspace<'a> {
         storage.put(key, &clock).await
     }
 
-    async fn arm_clock(&self, key: &str, resource: Resource, unit: &str) -> Result<()> {
+    async fn arm_container_clock(&self) -> Result<()> {
+        let key = CONTAINER_CLOCK;
         let lease = self
             .lease()
             .current()
@@ -200,23 +203,24 @@ impl<'a> Workspace<'a> {
         if clock.run.as_deref() == Some(run) && clock.end_ms.is_none() {
             return Ok(());
         }
-        self.finish_clock(key, resource.clone()).await?;
+        self.finish_container_clock().await?;
         clock = storage.get::<UsageClock>(key).await?.unwrap_or_default();
-        let event = format!("workspace:{}:{}", unit, uuid::Uuid::new_v4());
+        let event = format!("workspace:container:{}", uuid::Uuid::new_v4());
         self.lease()
             .meter(run)
             .await?
-            .require_observation(&event, resource, unit)
+            .require_observation(&event, Resource::Container, "wall_ms")
             .await?;
         clock.run = Some(run.into());
         clock.event = Some(event);
         storage.put(key, &clock).await
     }
 
-    /// Arm a compute interval against the independent warm workspace lease.
+    /// Only allocation time belongs to the warm lease. Active harness DO time
+    /// belongs to SessionInner::observed_step; never meter it from this clock.
+    /// Idle controller overhead is included in the published workspace tariff.
     pub async fn arm_usage(&self) -> Result<()> {
-        self.arm_clock("workspace:container-clock", Resource::Container, "wall_ms")
-            .await
+        self.arm_container_clock().await
     }
 
     /// Renew only existing compute. Workspace-enabled time-only sessions never
@@ -233,8 +237,7 @@ impl<'a> Workspace<'a> {
         let Some(renewal) = leases.prepare().await? else {
             return Ok(());
         };
-        self.finish_clock("workspace:container-clock", Resource::Container)
-            .await?;
+        self.finish_container_clock().await?;
         if let Some(previous) = &renewal.previous {
             leases.settle(&previous.id).await?;
         }
@@ -245,8 +248,7 @@ impl<'a> Workspace<'a> {
     /// Close an observed interval without settling the independent warm lease.
     /// Normally release and lease renewal perform this automatically.
     pub async fn meter_usage(&self) -> Result<()> {
-        self.finish_clock("workspace:container-clock", Resource::Container)
-            .await
+        self.finish_container_clock().await
     }
 
     fn container(&self) -> Result<Container> {
@@ -716,8 +718,7 @@ impl<'a> Workspace<'a> {
         if self.container()?.running() {
             self.arm_usage().await?;
             self.container()?.destroy(None).await?;
-            self.finish_clock("workspace:container-clock", Resource::Container)
-                .await?;
+            self.finish_container_clock().await?;
             self.state
                 .storage()
                 .put("workspace:container-clock", UsageClock::default())

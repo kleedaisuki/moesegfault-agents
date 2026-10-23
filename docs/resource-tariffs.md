@@ -4,7 +4,7 @@ Revision: `2026-10-23-platform-v1`. Staging balances are synthetic test credit, 
 
 | Meter | Platform price | Measurement |
 | --- | ---: | --- |
-| Basic workspace allocation | $0.036 / running hour | Container running wall milliseconds, including retained idle allocation |
+| Basic workspace allocation | $0.036 / running hour | Container running wall milliseconds, including retained idle allocation and idle controller overhead |
 | Active harness orchestration | $0.0072 / hour | Observed active Durable Object operation wall milliseconds |
 | API orchestration | $0.00036 / hour | Observed Worker operation wall milliseconds |
 | R2 Class A | $4.50 / million operations | Actual PUT/multipart/list operations |
