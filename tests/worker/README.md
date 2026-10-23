@@ -26,7 +26,10 @@ resources are used. Runtime files stay under `.temp/worker-integration-*`.
 Coverage includes API-key authentication and revocation, first-use integer writes
 across wasm-bindgen/D1, browser-session crypto/AuthSession authentication, key and
 BYOK management, OIDC transaction creation/denial, logout, agent CRUD, session
-prefix pinning after agent edits, and DO status/close HTTP responses.
+prefix pinning after agent edits, DO status/close HTTP responses, and a complete
+non-streaming SDK-style inference -> harness time tool -> inference journey.
+The provider fixture emits real SSE over the Worker outbound fetch interface;
+the harness, tool execution, alarms, reservations, and settlement are not mocked.
 
 ## Regression evidence
 
@@ -37,3 +40,11 @@ The latter also passed actual AuthSession-based API-key creation/revocation and
 BYOK creation/update. Broader requests exposed immutable-header mutation in
 DO forwarding and the OIDC login redirect; these must remain failing assertions
 until the production fixes are compiled, not be changed into expected errors.
+
+An added continuation check reproduced the staging hang on the latter artifact:
+after eight seconds, provider calls, reservations, and ledger entries were all
+zero. Root-cause source inspection found that worker-rs `set_alarm(i64)` accepts
+an offset, while the application supplied epoch milliseconds. The scheduled
+alarm was therefore decades in the future. The test retains its bounded
+eight-second deadline and two-provider-call/settled-model-ledger assertions to
+verify the absolute-date scheduling repair end to end.

@@ -7,7 +7,7 @@ export function affected(files, all = false) {
   const global = matches(/^(Cargo\.(toml|lock)|rust-toolchain\.toml|\.github\/workflows\/)/);
   return {
     rust: global || matches(/^crates\//),
-    worker: global || matches(/^(crates\/(agents-worker|agents-core|agents-auth)\/|wrangler\.jsonc|package(-lock)?\.json)/),
+    worker: global || matches(/^(crates\/(agents-worker|agents-core|agents-auth)\/|tests\/worker\/|wrangler\.jsonc|package(-lock)?\.json)/),
     dashboard: matches(/^(apps\/dashboard\/|\.github\/workflows\/)/),
     container: global || matches(/^(crates\/workspace-daemon\/|container\/|tests\/e2e\/(test_workspace_daemon\.py|conftest\.py|requirements\.txt)|\.dockerignore)/),
     tooling: matches(/^(scripts\/|package(-lock)?\.json|wrangler\.jsonc|\.github\/)/),

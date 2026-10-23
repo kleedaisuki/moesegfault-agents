@@ -8,9 +8,11 @@
     "dev": "wrangler dev --env staging",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production",
-    "test:tooling": "node --test scripts/*.test.mjs"
+    "test:tooling": "node --test scripts/*.test.mjs",
+    "test:worker": "node --test tests/worker/*.test.mjs"
   },
   "devDependencies": {
+    "miniflare": "5.20261019.2-beta",
     "wrangler": "4.152.0"
   }
 }

@@ -14,13 +14,16 @@ export async function runAuthJourney({ mf, db, encryptionKey, origin }) {
     .bind(owner, 'https://identity.test', owner, now, now).run();
   await db.prepare('INSERT INTO usage_accounts(account_id,budget_microusd,updated_at) VALUES(?,1000000,?)')
     .bind(owner, now).run();
-  const nonce = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', key, nonce);
-  cipher.setAAD(Buffer.from(`session:${hash(cookie)}`));
-  const secrets = Buffer.from(JSON.stringify({ csrf_token: csrf, oauth: {}, access_expires_at: now + 3600 }));
-  const encrypted = Buffer.concat([Buffer.from([1]), nonce, cipher.update(secrets), cipher.final(), cipher.getAuthTag()]).toString('base64url');
-  await db.prepare('INSERT INTO browser_sessions(token_hash,account_id,tokens_encrypted,csrf_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)')
-    .bind(hash(cookie), owner, encrypted, hash(csrf), now + 3600, now).run();
+  async function seedSession(token, expiresAt) {
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, nonce);
+    cipher.setAAD(Buffer.from(`session:${hash(token)}`));
+    const secrets = Buffer.from(JSON.stringify({ csrf_token: csrf, oauth: {}, access_expires_at: now + 3600 }));
+    const encrypted = Buffer.concat([Buffer.from([1]), nonce, cipher.update(secrets), cipher.final(), cipher.getAuthTag()]).toString('base64url');
+    await db.prepare('INSERT INTO browser_sessions(token_hash,account_id,tokens_encrypted,csrf_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)')
+      .bind(hash(token), owner, encrypted, hash(csrf), expiresAt, now).run();
+  }
+  await seedSession(cookie, now + 3600);
   const headers = { Cookie: `__Host-magents_session=${cookie}`, Origin: origin, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' };
   async function request(path, method, body, expected) {
     const response = await mf.dispatchFetch(`${origin}${path}`, {
@@ -65,4 +68,20 @@ export async function runAuthJourney({ mf, db, encryptionKey, origin }) {
 
   await request('/auth/logout', 'POST', undefined, 200);
   assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM browser_sessions WHERE account_id=?').bind(owner).first('count'), 0);
+
+  // Observe the actual alarm side effect, not merely request-time expiry rejection.
+  // Treating an epoch as worker-rs' relative i64 offset would leave this row until 2083.
+  const shortCookie = randomBytes(32).toString('base64url');
+  const expiresAt = Math.floor(Date.now() / 1000) + 3;
+  await seedSession(shortCookie, expiresAt);
+  response = await mf.dispatchFetch(`${origin}/v1/api-keys`, {
+    headers: { Cookie: `__Host-magents_session=${shortCookie}`, Origin: origin },
+  });
+  assert.equal(response.status, 200, 'Short-lived session must arm its real AuthSession alarm');
+  const present = () => db.prepare('SELECT COUNT(*) AS count FROM browser_sessions WHERE token_hash=?').bind(hash(shortCookie)).first('count');
+  assert.equal(await present(), 1);
+  const limit = Date.now() + 5000;
+  while (await present() && Date.now() < limit) await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await present(), 0, 'AuthSession alarm must physically delete the expired row within five seconds');
+  assert.ok(Date.now() >= expiresAt * 1000, 'GC must not run before the absolute session expiry');
 }
