@@ -1,0 +1,24 @@
+[package]
+name = "agents-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+agents-core = { path = "../agents-core" }
+agents-auth = { path = "../agents-auth" }
+worker = { version = "0.8.7", features = ["d1"] }
+serde.workspace = true
+serde_json.workspace = true
+futures = "0.3"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+uuid = { version = "1", features = ["v4", "js"] }
+sha2.workspace = true
+console_error_panic_hook = "0.1"
+eventsource-stream = "0.2"
+url = "2"

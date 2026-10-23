@@ -1,0 +1,812 @@
+use agents_core::{
+    AgentConfig, CreateAgent, ModelConfig, PinnedContext, Provider, RegisteredTool, SessionRecord,
+    SessionStatus, ToolExecution,
+};
+use futures::StreamExt;
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use worker::{Context, Env, Method, Request, RequestInit, Response, Result};
+
+use crate::{auth, provider::Message, store::Store, telemetry::TraceContext, tools, util};
+
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+struct RouteContext<'a> {
+    env: &'a Env,
+    trace: &'a TraceContext,
+}
+
+impl std::ops::Deref for RouteContext<'_> {
+    type Target = Env;
+    fn deref(&self) -> &Env {
+        self.env
+    }
+}
+
+pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    let incoming_trace = req.headers().get("traceparent")?;
+    let trace = TraceContext::from_traceparent(incoming_trace.as_deref());
+    let route = RouteContext {
+        env: &env,
+        trace: &trace,
+    };
+    let _span = crate::telemetry::NativeSpan::start("agents.http", Some(&trace));
+    let started_at = util::now_ms();
+    let origin = req.headers().get("Origin")?;
+    let allowed = env.var("ALLOWED_ORIGIN").ok().map(|v| v.to_string());
+    let cors = origin
+        .as_ref()
+        .filter(|origin| allowed.as_ref() == Some(origin));
+    let response = if origin.is_some() && cors.is_none() {
+        util::json_error(403, "origin_not_allowed", "Origin is not allowed")
+    } else if req.method() == Method::Options {
+        Response::empty().map(|r| r.with_status(204))
+    } else {
+        dispatch(req, &route).await
+    };
+    let mut response = match response {
+        Ok(response) => response,
+        Err(error) => error_response(&error)?,
+    };
+    trace.inject(response.headers_mut())?;
+    response.headers_mut().set("Vary", "Origin")?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    if let Some(origin) = cors {
+        response
+            .headers_mut()
+            .set("Access-Control-Allow-Origin", origin)?;
+        response
+            .headers_mut()
+            .set("Access-Control-Allow-Credentials", "true")?;
+        response.headers_mut().set(
+            "Access-Control-Allow-Methods",
+            "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        )?;
+        response.headers_mut().set(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, X-CSRF-Token, X-Agents-Session, Idempotency-Key, traceparent",
+        )?;
+        response.headers_mut().set(
+            "Access-Control-Expose-Headers",
+            "X-Agents-Session, X-Agents-Run, traceparent",
+        )?;
+        response
+            .headers_mut()
+            .set("Access-Control-Max-Age", "600")?;
+    }
+    crate::telemetry::emit(
+        "request.completed",
+        json!({"trace_id":trace.trace_id(),"status":response.status_code(),"duration_ms":util::now_ms().saturating_sub(started_at)}),
+    );
+    Ok(response)
+}
+
+pub(crate) fn error_response(error: &worker::Error) -> Result<Response> {
+    let text = match error {
+        worker::Error::RustError(code) => code.clone(),
+        _ => error.to_string(),
+    };
+    let (status, code, message) = classify_error(&text);
+    util::json_error(status, code, message)
+}
+
+fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
+    // D1 wraps trigger failures in a database error. Match a complete error token,
+    // not arbitrary substrings, and never return the underlying error text.
+    if text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| token == "budget_exceeded")
+    {
+        return (
+            402,
+            "insufficient_credits",
+            "Insufficient credits; add credit before starting another run",
+        );
+    }
+    match text {
+        "unknown_skill" | "invalid_skill" => (
+            400,
+            "invalid_skill",
+            "A requested skill is unknown or invalid; check your skill registry",
+        ),
+        "unauthorized" | "authentication_failed" | "invalid_session" => (
+            401,
+            "authentication_error",
+            "A valid access token or API key is required",
+        ),
+        "csrf_failed" => (
+            403,
+            "csrf_failed",
+            "The request failed browser session validation; sign in again",
+        ),
+        "invalid_callback" | "invalid_state" | "invalid_id_token" | "invalid_access_token" => (
+            400,
+            "invalid_callback",
+            "The sign-in callback is invalid or expired; start sign-in again",
+        ),
+        "invalid_key_name" | "invalid_key_id" | "invalid_provider" | "invalid_provider_key" => (
+            400,
+            "invalid_request_error",
+            "The credential request is invalid",
+        ),
+        "provider_key_not_found" => (
+            404,
+            "provider_key_not_found",
+            "The configured provider key no longer exists",
+        ),
+        "identity_unavailable" => (
+            503,
+            "identity_unavailable",
+            "The identity service is temporarily unavailable",
+        ),
+        "insufficient_credits" | "resource_reservation_required" => (
+            402,
+            "insufficient_credits",
+            "Insufficient credits; add credit before starting another run",
+        ),
+        "model_price_unconfigured" | "invalid_model_price" | "invalid_resource_tariff" => (
+            402,
+            "billing_unavailable",
+            "Pricing for this resource is not configured; contact the service administrator",
+        ),
+        "run_limit_exceeded" => (
+            429,
+            "run_limit_exceeded",
+            "Your plan's concurrent run limit has been reached",
+        ),
+        "provider_usage_missing"
+        | "invalid_provider_usage"
+        | "invalid provider event stream"
+        | "invalid provider stream chunk"
+        | "provider stream ended before completion" => (
+            502,
+            "provider_error",
+            "The model provider returned an incomplete or invalid response",
+        ),
+        "idempotency_conflict" => (
+            409,
+            "idempotency_conflict",
+            "This request key was already used with different parameters",
+        ),
+        "session_not_found" => (404, "not_found", "Session not found"),
+        "context_budget_exceeded" => (
+            400,
+            "context_budget_exceeded",
+            "The request exceeds the pinned model's context budget",
+        ),
+        _ if text
+            .strip_prefix("provider returned HTTP ")
+            .is_some_and(|status| {
+                status.len() == 3 && status.bytes().all(|b| b.is_ascii_digit())
+            }) =>
+        {
+            (
+                502,
+                "provider_error",
+                "The model provider could not complete the request",
+            )
+        }
+        _ => (500, "internal_error", "The request could not be completed"),
+    }
+}
+
+async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
+    let path = req.path();
+    if path == "/healthz" && req.method() == Method::Get {
+        return Response::from_json(&json!({"status":"ok"}));
+    }
+    if path.starts_with("/auth/") {
+        return auth::handle_auth(req, env).await;
+    }
+    if !path.starts_with("/v1/") {
+        return util::json_error(404, "not_found", "Route not found");
+    }
+    let principal = match auth::authenticate(&req, env).await {
+        Ok(principal) => principal,
+        Err(error) => return error_response(&error),
+    };
+    let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+    if matches!(
+        segments.get(1),
+        Some(&"account" | &"api-keys" | &"provider-keys" | &"diagnostics")
+    ) {
+        return auth::handle_account(req, env, &principal).await;
+    }
+    let owner = &principal.account_id;
+    match segments.as_slice() {
+        ["v1", "skills"] => crate::skills::handle(req, env, &principal, None).await,
+        ["v1", "skills", name] => crate::skills::handle(req, env, &principal, Some(name)).await,
+        ["v1", "usage"] if req.method() == Method::Get => {
+            Response::from_json(&Store::new(env).usage_summary(owner).await?)
+        }
+        ["v1", "agents"] => agents(req, env, owner, None).await,
+        ["v1", "agents", id] => agents(req, env, owner, Some(id)).await,
+        ["v1", "agents", id, "sessions"] => agent_sessions(req, env, owner, id).await,
+        ["v1", "sessions", id] => session_route(req, env, owner, id, None).await,
+        ["v1", "sessions", id, action] => session_route(req, env, owner, id, Some(action)).await,
+        ["v1", "sessions"] if req.method() == Method::Get => Response::from_json(
+            &json!({"object":"list","data":Store::new(env).list_sessions(owner).await?}),
+        ),
+        ["v1", "models"] if req.method() == Method::Get => {
+            let data = Store::new(env).list_agents(owner).await?.into_iter().map(|agent| {
+                json!({"id":agent.id,"object":"model","created":agent.created_at_ms / 1000,"owned_by":owner})
+            }).collect::<Vec<_>>();
+            Response::from_json(
+                &json!({"object":"list","data":data,"available_models":model_registry(env)?}),
+            )
+        }
+        ["v1", "chat", "completions"] if req.method() == Method::Post => {
+            chat(req, env, owner).await
+        }
+        _ => util::json_error(404, "not_found", "Route not found"),
+    }
+}
+
+async fn body<T: DeserializeOwned>(req: &mut Request) -> std::result::Result<T, Response> {
+    let mut stream = req
+        .stream()
+        .map_err(|_| bad_request("Could not read JSON body"))?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| bad_request("Could not read JSON body"))?;
+        if chunk.len() > MAX_BODY_BYTES.saturating_sub(bytes.len()) {
+            return Err(
+                util::json_error(413, "body_too_large", "Body exceeds 1 MiB").expect("JSON error"),
+            );
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| bad_request("Request body is not valid for this endpoint"))
+}
+
+fn bad_request(message: &str) -> Response {
+    util::json_error(400, "invalid_request_error", message).expect("JSON error")
+}
+
+pub fn model_registry(env: &Env) -> Result<Vec<ModelConfig>> {
+    let models = match env.var("MODEL_REGISTRY_JSON") {
+        Ok(value) => serde_json::from_str::<Vec<ModelConfig>>(&value.to_string())
+            .map_err(|_| worker::Error::RustError("Invalid MODEL_REGISTRY_JSON".into()))?,
+        Err(_) => vec![ModelConfig::default()],
+    };
+    if models.is_empty()
+        || models.iter().any(|m| {
+            m.model.is_empty()
+                || m.context_window == 0
+                || m.max_output_tokens == 0
+                || m.max_output_tokens >= m.context_window
+        })
+    {
+        return Err(worker::Error::RustError(
+            "Model registry contains invalid limits".into(),
+        ));
+    }
+    Ok(models)
+}
+
+fn normalize_model(env: &RouteContext<'_>, model: &mut ModelConfig) -> Result<bool> {
+    // The server owns token budgets, including BYOK: clients cannot inflate context limits.
+    let registry = model_registry(env)?;
+    let found = registry.iter().find(|entry| {
+        entry.model == model.model
+            && (entry.provider == model.provider || model.provider == Provider::Byok)
+    });
+    let Some(entry) = found else { return Ok(false) };
+    model.context_window = entry.context_window;
+    model.max_output_tokens = entry.max_output_tokens;
+    if model.provider != Provider::Byok {
+        model.credential_id = None;
+    }
+    Ok(true)
+}
+
+async fn pin(
+    env: &RouteContext<'_>,
+    agent: &AgentConfig,
+) -> Result<std::result::Result<PinnedContext, &'static str>> {
+    let registry = tools::registered_tools(agent.workspace);
+    let mut resolved = Vec::new();
+    for name in &agent.tools {
+        let Some(tool) = registry.iter().find(|tool| tool.function.name == *name) else {
+            return Ok(Err("Unknown tool or bash requested without a workspace"));
+        };
+        if resolved
+            .iter()
+            .any(|tool: &RegisteredTool| tool.name == *name)
+        {
+            continue;
+        }
+        resolved.push(RegisteredTool {
+            name: name.clone(),
+            version: tools::REGISTRY_VERSION.into(),
+            execution: if tools::tool_kind(name) == Some(tools::ToolKind::Workspace) {
+                ToolExecution::Workspace
+            } else {
+                ToolExecution::Harness
+            },
+            description: tool.function.description.clone(),
+            parameters: tool.function.parameters.clone(),
+        });
+    }
+    let selected = crate::skills::resolve(env, &agent.owner_id, &agent.skills).await?;
+    Ok(Ok(PinnedContext::resolve(agent, resolved, selected)))
+}
+
+async fn agents(
+    mut req: Request,
+    env: &RouteContext<'_>,
+    owner: &str,
+    id: Option<&str>,
+) -> Result<Response> {
+    let store = Store::new(env);
+    match (req.method(), id) {
+        (Method::Get, None) => {
+            Response::from_json(&json!({"object":"list","data":store.list_agents(owner).await?}))
+        }
+        (Method::Get, Some(id)) => match store.get_agent(owner, id).await? {
+            Some(agent) => Response::from_json(&agent),
+            None => util::json_error(404, "not_found", "Agent not found"),
+        },
+        (Method::Post, None) | (Method::Put, Some(_)) | (Method::Patch, Some(_)) => {
+            let value: Value = match body(&mut req).await {
+                Ok(input) => input,
+                Err(response) => return Ok(response),
+            };
+            let Some(fields) = value.as_object() else {
+                return Ok(bad_request("Agent configuration must be an object"));
+            };
+            if fields.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "name"
+                        | "model"
+                        | "instructions"
+                        | "tools"
+                        | "skills"
+                        | "compaction_percent"
+                        | "workspace"
+                )
+            }) {
+                return Ok(bad_request("Unknown agent configuration field"));
+            }
+            let value = if req.method() == Method::Patch {
+                let Some(previous) = store.get_agent(owner, id.unwrap_or_default()).await? else {
+                    return util::json_error(404, "not_found", "Agent not found");
+                };
+                let mut merged = serde_json::to_value(previous)?;
+                for (key, value) in fields {
+                    merged[key] = value.clone();
+                }
+                merged
+            } else {
+                value
+            };
+            let mut input: CreateAgent = match serde_json::from_value(value) {
+                Ok(input) => input,
+                Err(_) => return Ok(bad_request("Invalid agent configuration")),
+            };
+            if let Err(message) = input.validate() {
+                return Ok(bad_request(message));
+            }
+            if !normalize_model(env, &mut input.model)? {
+                return Ok(bad_request("Model is not registered on this service"));
+            }
+            let now = util::now_ms();
+            let mut agent = input.into_config(
+                id.map(str::to_owned)
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                owner.into(),
+                now,
+            );
+            if let Err(message) = pin(env, &agent).await? {
+                return Ok(bad_request(message));
+            }
+            if let Some(id) = id {
+                let Some(previous) = store.get_agent(owner, id).await? else {
+                    return util::json_error(404, "not_found", "Agent not found");
+                };
+                agent.revision = previous
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| worker::Error::RustError("Agent revision exhausted".into()))?;
+                agent.created_at_ms = previous.created_at_ms;
+                if !store.update_agent(&agent).await? {
+                    return util::json_error(409, "conflict", "Agent changed concurrently");
+                }
+            } else {
+                let limits = store.account_plan(owner).await?.limits();
+                if !store.create_agent(&agent, limits.max_agents).await? {
+                    return util::json_error(
+                        429,
+                        "agent_limit",
+                        "Your plan's agent limit has been reached",
+                    );
+                }
+            }
+            Response::from_json(&agent)
+                .map(|response| response.with_status(if id.is_some() { 200 } else { 201 }))
+        }
+        (Method::Delete, Some(id)) => {
+            if !store.delete_agent(owner, id, util::now_ms()).await? {
+                return util::json_error(
+                    409,
+                    "agent_not_deletable",
+                    "Agent does not exist or still has active sessions",
+                );
+            }
+            Response::from_json(&json!({"id":id,"object":"agent.deleted","deleted":true}))
+        }
+        _ => util::json_error(405, "method_not_allowed", "Method not allowed"),
+    }
+}
+
+async fn create_session(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+) -> std::result::Result<SessionRecord, Response> {
+    match create_session_inner(env, owner, agent_id).await {
+        Ok(result) => result,
+        Err(error) => Err(error_response(&error).expect("JSON error")),
+    }
+}
+
+async fn create_session_inner(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    let store = Store::new(env);
+    let Some(agent) = store.get_agent(owner, agent_id).await? else {
+        return Ok(Err(util::json_error(404, "not_found", "Agent not found")?));
+    };
+    let pinned = match pin(env, &agent).await? {
+        Ok(pinned) => pinned,
+        Err(message) => return Ok(Err(bad_request(message))),
+    };
+    let now = util::now_ms();
+    let session = SessionRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        owner_id: owner.into(),
+        agent_id: agent_id.into(),
+        status: SessionStatus::Idle,
+        created_at_ms: now,
+        last_input_at_ms: now,
+        input_revision: 0,
+        pinned,
+        workspace_snapshot: None,
+    };
+    let namespace = env.durable_object("SESSIONS")?;
+    let do_id = namespace
+        .id_from_name(&format!("{}:{}", owner, session.id))?
+        .to_string();
+    let limits = store.account_plan(owner).await?.limits();
+    if !store
+        .create_session(&session, &do_id, limits.max_concurrent_sessions)
+        .await?
+    {
+        return Ok(Err(util::json_error(
+            429,
+            "session_limit",
+            "Your plan's session limit has been reached",
+        )?));
+    }
+    let result = forward(
+        env,
+        &session,
+        Method::Post,
+        "/init",
+        Some(serde_json::to_value(&session)?),
+    )
+    .await;
+    match result {
+        Ok(response) if response.status_code() < 300 => Ok(Ok(session)),
+        Ok(response) => {
+            store.close_session(owner, &session.id, now).await?;
+            Ok(Err(response))
+        }
+        Err(error) => {
+            store.close_session(owner, &session.id, now).await?;
+            Err(error)
+        }
+    }
+}
+
+async fn agent_sessions(
+    req: Request,
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+) -> Result<Response> {
+    if req.method() == Method::Post {
+        return match create_session(env, owner, agent_id).await {
+            Ok(session) => Response::from_json(&session).map(|response| response.with_status(201)),
+            Err(response) => Ok(response),
+        };
+    }
+    if req.method() == Method::Get {
+        let store = Store::new(env);
+        if store.get_agent(owner, agent_id).await?.is_none() {
+            return util::json_error(404, "not_found", "Agent not found");
+        }
+        let data = store.list_agent_sessions(owner, agent_id).await?;
+        return Response::from_json(&json!({"object":"list","data":data}));
+    }
+    util::json_error(405, "method_not_allowed", "Method not allowed")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Append {
+    #[serde(default)]
+    messages: Vec<Message>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Steer {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct Chat {
+    model: String,
+    messages: Vec<Message>,
+    #[serde(default)]
+    stream: bool,
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, Value>,
+}
+
+fn validate_messages(messages: &[Message]) -> std::result::Result<(), &'static str> {
+    if messages.is_empty() || messages.len() > 128 {
+        return Err("Supply between 1 and 128 user messages");
+    }
+    for message in messages {
+        if message.role != "user"
+            || !message.tool_calls.is_empty()
+            || message.tool_call_id.is_some()
+            || !message.extra.is_empty()
+        {
+            return Err(
+                "Only user messages may be appended; instructions and tool execution are managed by the server",
+            );
+        }
+        if !matches!(&message.content, Value::String(text) if !text.trim().is_empty()) {
+            return Err("Message content must be nonempty text");
+        }
+    }
+    Ok(())
+}
+
+async fn session_route(
+    mut req: Request,
+    env: &RouteContext<'_>,
+    owner: &str,
+    id: &str,
+    action: Option<&str>,
+) -> Result<Response> {
+    let Some(session) = Store::new(env).get_session(owner, id).await? else {
+        return util::json_error(404, "not_found", "Session not found");
+    };
+    match (req.method(), action) {
+        (Method::Get, None) => forward(env, &session, Method::Get, "/status", None).await,
+        (Method::Delete, None) => forward(env, &session, Method::Delete, "/close", None).await,
+        (Method::Post, Some("resume")) => {
+            let store = Store::new(env);
+            let limits = store.account_plan(owner).await?.limits();
+            if !store
+                .resume_session(owner, id, limits.max_concurrent_sessions)
+                .await?
+            {
+                return util::json_error(
+                    409,
+                    "session_not_resumable",
+                    "Session is already active or your plan's session limit has been reached",
+                );
+            }
+            let Some(resumed) = store.get_session(owner, id).await? else {
+                return util::json_error(404, "not_found", "Session not found");
+            };
+            let result = forward(
+                env,
+                &resumed,
+                Method::Post,
+                "/resume",
+                Some(serde_json::to_value(&resumed)?),
+            )
+            .await;
+            match result {
+                Ok(response) if response.status_code() < 300 => Ok(response),
+                Ok(response) => {
+                    store.close_session(owner, id, util::now_ms()).await?;
+                    Ok(response)
+                }
+                Err(error) => {
+                    store.close_session(owner, id, util::now_ms()).await?;
+                    Err(error)
+                }
+            }
+        }
+        (Method::Post, Some("messages")) => {
+            let append: Append = match body(&mut req).await {
+                Ok(input) => input,
+                Err(response) => return Ok(response),
+            };
+            if let Some(content) = append.content {
+                if !append.messages.is_empty()
+                    || append.stream
+                    || content.trim().is_empty()
+                    || content.len() > 65536
+                {
+                    return Ok(bad_request(
+                        "Supply content text or messages, not both; content accepts 1 to 65536 bytes",
+                    ));
+                }
+                return forward(
+                    env,
+                    &session,
+                    Method::Post,
+                    "/steer",
+                    Some(json!({"content":content})),
+                )
+                .await;
+            }
+            if let Err(message) = validate_messages(&append.messages) {
+                return Ok(bad_request(message));
+            }
+            run(env, &session, append.messages, append.stream).await
+        }
+        (Method::Post, Some("steer")) => {
+            let steer: Steer = match body(&mut req).await {
+                Ok(input) => input,
+                Err(response) => return Ok(response),
+            };
+            if steer.content.trim().is_empty() || steer.content.len() > 65536 {
+                return Ok(bad_request(
+                    "Steering content must contain 1 to 65536 bytes",
+                ));
+            }
+            forward(
+                env,
+                &session,
+                Method::Post,
+                "/steer",
+                Some(json!({"content":steer.content})),
+            )
+            .await
+        }
+        _ => util::json_error(405, "method_not_allowed", "Method not allowed"),
+    }
+}
+
+async fn chat(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
+    let session_id = req.headers().get("X-Agents-Session")?;
+    let input: Chat = match body(&mut req).await {
+        Ok(input) => input,
+        Err(response) => return Ok(response),
+    };
+    if let Err(message) = validate_messages(&input.messages) {
+        return Ok(bad_request(message));
+    }
+    if input.extra.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "stream_options" | "user" | "metadata" | "store"
+        )
+    }) {
+        return Ok(bad_request(
+            "Generation parameters, tools, and instructions are pinned by the agent configuration",
+        ));
+    }
+    let session = if let Some(id) = session_id {
+        let Some(session) = Store::new(env).get_session(owner, &id).await? else {
+            return util::json_error(404, "not_found", "Session not found");
+        };
+        if session.agent_id != input.model {
+            return Ok(bad_request(
+                "Session does not belong to the requested agent",
+            ));
+        }
+        session
+    } else {
+        match create_session(env, owner, &input.model).await {
+            Ok(session) => session,
+            Err(response) => return Ok(response),
+        }
+    };
+    run(env, &session, input.messages, input.stream).await
+}
+
+async fn run(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    messages: Vec<Message>,
+    stream: bool,
+) -> Result<Response> {
+    let mut response = forward(
+        env,
+        session,
+        Method::Post,
+        "/run",
+        Some(json!({"messages":messages,"stream":stream})),
+    )
+    .await?;
+    response
+        .headers_mut()
+        .set("X-Agents-Session", &session.id)?;
+    Ok(response)
+}
+
+async fn forward(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Response> {
+    let namespace = env.durable_object("SESSIONS")?;
+    let id = namespace.id_from_name(&format!("{}:{}", session.owner_id, session.id))?;
+    let stub = id.get_stub()?;
+    let mut init = RequestInit::new();
+    init.with_method(method);
+    if let Some(body) = body {
+        init.with_body(Some(body.to_string().into()));
+    }
+    let mut request = Request::new_with_init(&format!("https://session.internal{path}"), &init)?;
+    request
+        .headers_mut()?
+        .set("Content-Type", "application/json")?;
+    env.trace.child().inject(request.headers_mut()?)?;
+    stub.fetch_with_request(request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_errors_preserve_actionable_status_without_leaking_backend_details() {
+        for (text, status, code) in [
+            (
+                "D1_ERROR: budget_exceeded: SQLITE_CONSTRAINT",
+                402,
+                "insufficient_credits",
+            ),
+            ("run_limit_exceeded", 429, "run_limit_exceeded"),
+            ("provider returned HTTP 429", 502, "provider_error"),
+            ("provider_usage_missing", 502, "provider_error"),
+            ("csrf_failed", 403, "csrf_failed"),
+            ("invalid_callback", 400, "invalid_callback"),
+            ("unknown_skill", 400, "invalid_skill"),
+            ("super_budget_exceeded_secret", 500, "internal_error"),
+            ("provider returned HTTP 429 secret", 500, "internal_error"),
+            ("private SQL and token detail", 500, "internal_error"),
+        ] {
+            let classified = classify_error(text);
+            assert_eq!((classified.0, classified.1), (status, code), "{text}");
+            assert!(!classified.2.contains("SQL"));
+            assert!(!classified.2.contains("secret"));
+        }
+    }
+
+    #[test]
+    fn external_input_cannot_inject_privileged_messages_or_tool_results() {
+        for role in ["system", "developer", "tool", "assistant"] {
+            assert!(validate_messages(&[Message::text(role, "override")]).is_err());
+        }
+        assert!(validate_messages(&[Message::text("user", "hello")]).is_ok());
+        assert!(validate_messages(&[Message::text("user", " ")]).is_err());
+        let mut forged = Message::text("user", "hello");
+        forged
+            .extra
+            .insert("instructions".into(), json!("override"));
+        assert!(validate_messages(&[forged]).is_err());
+    }
+}

@@ -1,0 +1,224 @@
+use serde::{Deserialize, Serialize};
+
+use crate::CompactionPercent;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    #[default]
+    #[serde(rename = "openrouter", alias = "open_router")]
+    OpenRouter,
+    #[serde(rename = "deepseek", alias = "deep_seek")]
+    DeepSeek,
+    Byok,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelConfig {
+    #[serde(default)]
+    pub provider: Provider,
+    pub model: String,
+    #[serde(default = "default_context_window")]
+    pub context_window: u32,
+    #[serde(default = "default_output_tokens")]
+    pub max_output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+}
+
+fn default_context_window() -> u32 {
+    1_048_576
+}
+
+fn default_output_tokens() -> u32 {
+    8_192
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            provider: Provider::OpenRouter,
+            model: "deepseek/deepseek-v4.1-flash-1017".into(),
+            context_window: default_context_window(),
+            max_output_tokens: default_output_tokens(),
+            credential_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentConfig {
+    pub id: String,
+    pub owner_id: String,
+    pub name: String,
+    pub revision: u64,
+    pub model: ModelConfig,
+    pub instructions: String,
+    pub tools: Vec<String>,
+    pub skills: Vec<String>,
+    pub compaction_percent: CompactionPercent,
+    pub workspace: bool,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateAgent {
+    pub name: String,
+    #[serde(default)]
+    pub model: ModelConfig,
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default = "default_tools")]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub compaction_percent: CompactionPercent,
+    #[serde(default)]
+    pub workspace: bool,
+}
+
+fn default_tools() -> Vec<String> {
+    vec!["time".into()]
+}
+
+impl CreateAgent {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.name.trim().is_empty() || self.name.len() > 100 {
+            return Err("name must contain 1 to 100 bytes");
+        }
+        if self.instructions.len() > 64 * 1024 {
+            return Err("instructions exceed 64 KiB");
+        }
+        if self.model.model.is_empty()
+            || self.model.context_window == 0
+            || self.model.max_output_tokens >= self.model.context_window
+        {
+            return Err("invalid model context or output budget");
+        }
+        if self.model.provider == Provider::Byok && self.model.credential_id.is_none() {
+            return Err("BYOK requires credential_id");
+        }
+        Ok(())
+    }
+
+    pub fn into_config(self, id: String, owner_id: String, now_ms: u64) -> AgentConfig {
+        AgentConfig {
+            id,
+            owner_id,
+            name: self.name,
+            revision: 1,
+            model: self.model,
+            instructions: self.instructions,
+            tools: self.tools,
+            skills: self.skills,
+            compaction_percent: self.compaction_percent,
+            workspace: self.workspace,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Plan {
+    #[default]
+    Free,
+    Go,
+    Plus,
+    Pro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanLimits {
+    pub max_agents: u32,
+    pub max_concurrent_sessions: u32,
+    pub max_concurrent_runs: u32,
+}
+
+impl Plan {
+    /// The account service must enforce these with atomic admission, not list counts.
+    pub const fn limits(self) -> PlanLimits {
+        match self {
+            Self::Free => PlanLimits {
+                max_agents: 2,
+                max_concurrent_sessions: 2,
+                max_concurrent_runs: 1,
+            },
+            Self::Go => PlanLimits {
+                max_agents: 10,
+                max_concurrent_sessions: 5,
+                max_concurrent_runs: 2,
+            },
+            Self::Plus => PlanLimits {
+                max_agents: 30,
+                max_concurrent_sessions: 15,
+                max_concurrent_runs: 5,
+            },
+            Self::Pro => PlanLimits {
+                max_agents: 200,
+                max_concurrent_sessions: 100,
+                max_concurrent_runs: 20,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_limits_match_approved_subscription_tiers() {
+        for (plan, expected) in [
+            (Plan::Free, (2, 2, 1)),
+            (Plan::Go, (10, 5, 2)),
+            (Plan::Plus, (30, 15, 5)),
+            (Plan::Pro, (200, 100, 20)),
+        ] {
+            let limits = plan.limits();
+            assert_eq!(
+                (
+                    limits.max_agents,
+                    limits.max_concurrent_sessions,
+                    limits.max_concurrent_runs
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn clients_select_model_without_manually_entering_context_limits() {
+        let input: CreateAgent = serde_json::from_value(serde_json::json!({
+            "name":"test", "model":{"provider":"openrouter","model":"deepseek/deepseek-v4.1-flash-1017"}
+        }))
+        .unwrap();
+        assert!(input.validate().is_ok());
+        assert_eq!(input.model.context_window, 1_048_576);
+    }
+
+    #[test]
+    fn omitted_model_uses_the_deployed_openrouter_route() {
+        let input: CreateAgent =
+            serde_json::from_value(serde_json::json!({"name":"test"})).unwrap();
+        assert_eq!(input.model.provider, Provider::OpenRouter);
+        assert_eq!(input.model.model, "deepseek/deepseek-v4.1-flash-1017");
+        assert_eq!(input.model.context_window, 1_048_576);
+        assert_eq!(input.model.max_output_tokens, 8192);
+    }
+
+    #[test]
+    fn provider_wire_names_are_conventional_and_old_names_remain_readable() {
+        assert_eq!(
+            serde_json::to_string(&Provider::OpenRouter).unwrap(),
+            "\"openrouter\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Provider>("\"deep_seek\"").unwrap(),
+            Provider::DeepSeek
+        );
+    }
+}

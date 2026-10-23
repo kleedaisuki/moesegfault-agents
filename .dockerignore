@@ -1,0 +1,13 @@
+.git
+.agents
+.cache
+.temp
+target
+node_modules
+**/node_modules
+**/dist
+**/build
+.env*
+.dev.vars*
+*.pem
+*.key

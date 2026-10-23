@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/agents-core",
+  "crates/agents-auth",
+  "crates/agents-worker",
+  "crates/workspace-daemon",
+  "crates/magents",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/kleedaisuki/moesegfault-agents"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+thiserror = "2"
+sha2 = "0.10"
+
+[profile.release]
+lto = true
+opt-level = "s"
+strip = true
