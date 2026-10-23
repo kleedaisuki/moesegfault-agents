@@ -174,3 +174,12 @@ jobs also succeeded. These results establish container protocol and build
 acceptance for that exact revision. They do **not** establish deployed Identity
 login, billing, Cloudflare Container/R2 lifecycle or production readiness; the
 separate deployed release evidence listed above remains required.
+
+## Live staging integration milestones (2026-10-24)
+
+- [CI 39989070343](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/39989070343), source `156d641`, passed all six jobs, including the actual compiled Rust/Wasm HTTP, D1, alarm, streaming, exact model-cost, DO reconstruction and redirect-refusal tests. Browser journeys use the runner's maintained Chrome rather than slow system-package downloads; no interaction case was skipped.
+- [Native packaging 39993274170](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/39993274170), source `928c533`, passed Linux and Windows native release builds and CLI tests. The downloaded Windows archive's SHA-256 and build metadata were independently checked; its actual binary completed staging PKCE login and a separate-process account request. See [Identity/Billing acceptance](identity-billing.md) for real signup, refresh, logout, API-key revocation and same-account checks.
+- [Staging deployment 39993513683](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/39993513683), source `928c533`, deployed successfully but its user-journey gate finished with **13 passed, 1 failed and 1 cleanup error**. Real Flash calls, time, SSE, live steering, pinned configuration, percentage compaction, isolation and configuration quota checks passed. A real Bash task exited successfully and its Container allocation and lease settled.
+- The remaining journey failure was archive/resume: SQLite `json_set` inserted an integral timestamp as JSON REAL, which the typed session reader rejected. The malformed projection also prevented cleanup. Integer JSON writes, narrow legacy decoding and idempotent partial-resume reconciliation are fixed in subsequent source, but require new-artifact and deployed restore acceptance. No live D1 snapshot was reset to manufacture success.
+
+These are intermediate milestones, not production promotion approval. The separately discovered Free-to-paid allocation-window issue is under correction and independent financial review; successful subscription redemption alone is not credit-conservation acceptance. Production has not been deployed or charged by these runs.

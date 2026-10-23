@@ -90,3 +90,82 @@ claim, and local logout. These are WASM ABI tests, not a replacement for a deplo
 OIDC and rotating-refresh acceptance journey. No synthetic key or cookie is logged.
 
 `cargo test -p agents-auth --lib` covers real RS256 signature verification, issuer/audience/time/purpose rejection, callback mix-up and browser-binding defenses, origin-safe return paths, ciphertext integrity and owner/purpose isolation, and exact-money accounting properties. `python -m unittest discover -s tests -p test_billing_sql.py` covers actual SQL transactions/triggers, concurrent budget admission, replay and large integer precision. Worker native/WASM checks verify platform integration. Environment acceptance must additionally demonstrate a human login, concurrent refresh, API-key/BYOK management, expired-session logout and shared-sector subscription recognition against the registered staging clients; unit tests do not substitute for that journey.
+
+### Real staging account preparation, 2026-10-24
+
+The public Identity registration UI was exercised with a fresh, task-owned Chromium
+profile, not an existing human browser session. Password registration is available;
+Passkey enrollment is optional. Random test credentials and browser state remain in an
+ACL-protected, ignored `.temp/identity-acceptance-*` directory, readable only by the
+current Windows user and SYSTEM. No email address, OTP, password or browser token was
+printed or included in this document.
+
+Three existing, clearly agent/test-owned aliases were attempted, with no further alias
+enumeration. For each, the public UI accepted the registration email request with 201,
+the narrowly scoped amail retrieval delivered the intended verification message, and
+the public UI verified its code with 200. Password registration then returned 409
+`identifier_conflict`. A read-only staging query scoped solely to these attempted
+identities returned `username_exists=0`, `email_any_exists=1`, and
+`email_verified_exists=1` for all three. Thus these aliases already belong to verified
+Identity accounts; the new random accounts were not created. This is not evidence of
+a registration transaction defect. The handler's broad constraint-to-conflict mapping
+was reviewed rather than assuming the machine error alone proved email ownership.
+
+One separately authorized attempt to provision a dedicated new amail alias was rejected
+with 409 `address_limit`. No retry with another new alias, allowance increase,
+subscription activation, spending authorization, account reset, provider-control-plane
+change or Identity database write was performed. Existing accounts were not impersonated.
+
+Those initial alias attempts did not complete Agents sign-in and did not justify
+resetting an existing account. The later dedicated staging-fixture journey below
+resolved the mailbox constraint without increasing production amail limits or requiring
+an unrelated account. Passwords were not requested in chat.
+
+### Real staging BFF and native lifecycle acceptance, 2026-10-24
+
+The existing, narrowly allowlisted `identity-test-inbox` operational fixture provided
+an unused staging registration address. Its deployed recipient allowlist, private R2
+binding and bounded verification-object retention were checked using its official
+management scripts, copied only into this project's private `.temp` tree. No catch-all
+was enabled and no production amail address quota, subscription or spending limit was
+changed. Normal public Identity UI created the account after actual mail delivery and
+code verification; no credential, principal or grant was inserted directly into D1.
+
+The first controlled route attempt illustrated a documented upstream operational
+constraint: Email Routing rule readback does not establish data-plane readiness.
+The existing acceptance helper explicitly waits 60 seconds because immediate sends
+can later fail as `routing_unknown_address`. After applying that settle interval and
+auditing the exact route again, a fresh bounded UI verification attempt succeeded.
+The exact route was removed before submitting the delivered code, and only the owned
+verification MIME object was deleted after verification. A provider-accepted outbox
+row alone was never treated as proof of delivery.
+
+| Real deployed journey | Observed result |
+| --- | --- |
+| Public registration email request / mailbox code completion / password registration | 201 / actual private MIME received / 200 / 201 |
+| Normal BFF authorization callback and authenticated account read | Dashboard reached through Identity SSO; account 200 |
+| Actual initial entitlement | Free, test billing mode, 1,000,000 microUSD included credit; 2 configurations, 2 live sessions, 1 concurrent run |
+| Free configuration admission | First two creations succeeded; third returned 429 `agent_limit`; temporary configurations were deleted |
+| Management key custody | Creation disclosed a key once; metadata list contained neither plaintext key nor digest |
+| OpenAI SDK using the new user's API key | `models.list()` succeeded before and after browser logout |
+| Real BFF refresh window | Session `refresh_version` increased from the initial zero; included credit was not granted again |
+| Real native refresh window | `auth status` first reported expired; protected account read refreshed successfully; another process reported logged in |
+| Browser logout | Browser account read became 401; native client and separately issued API key remained usable |
+| Explicit API-key revocation | Native management deletion succeeded; subsequent OpenAI SDK request returned 401 |
+
+Native acceptance was first exercised with the new no-browser option in a debug build,
+then repeated with the **published Windows CLI** from source `928c533` after root
+verified its artifact digest and BUILDINFO (package run `39993274170`). The published
+binary completed the real Authorization Code + S256 PKCE exchange using its normal
+temporary loopback callback, persisted credentials through the OS credential store,
+and passed `auth status` plus protected `account` from separate processes. Its account
+ID was compared privately with the BFF account and matched, exercising the deliberate
+shared subject-sector mapping across both registered clients.
+
+The no-browser authorization URL was carried only through a private process pipe into
+the task's isolated browser; it was not logged publicly, and no existing human browser
+profile or amail OAuth token was reused as an Agents credential. The Identity session
+belonged to the newly created staging fixture. Browser OAuth-token custody is enforced
+by the BFF implementation; these results do not claim an independent browser-memory
+forensics audit. Durable metadata and secret-bearing acceptance artifacts remain
+separated: only the sanitized outcomes above belong in repository knowledge.
