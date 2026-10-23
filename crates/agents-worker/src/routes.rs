@@ -185,6 +185,7 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "Your plan's concurrent run limit has been reached",
         ),
         "provider_usage_missing"
+        | "openrouter_cost_missing"
         | "invalid_provider_usage"
         | "invalid provider event stream"
         | "invalid provider stream chunk"
@@ -882,6 +883,7 @@ mod tests {
             ("run_limit_exceeded", 429, "run_limit_exceeded"),
             ("provider returned HTTP 429", 502, "provider_error"),
             ("provider_usage_missing", 502, "provider_error"),
+            ("openrouter_cost_missing", 502, "provider_error"),
             ("csrf_failed", 403, "csrf_failed"),
             ("invalid_callback", 400, "invalid_callback"),
             ("unknown_skill", 400, "invalid_skill"),

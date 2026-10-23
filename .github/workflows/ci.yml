@@ -105,6 +105,7 @@ jobs:
       - run: node scripts/bundle-worker.mjs
       - run: npm run test:worker
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
         with:
           name: worker
           path: crates/agents-worker/build

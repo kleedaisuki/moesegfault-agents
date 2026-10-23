@@ -72,7 +72,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
         }
         const delta = first ? { role: 'assistant', tool_calls: [{ index: 0, id: 'call_time', type: 'function', function: { name: 'time', arguments: '{}' } }] }
           : { role: 'assistant', content: 'The clock tool completed.' };
-        return new Response(`data: ${JSON.stringify({ id: `mock-${providerCalls}`, model: 'test-model', choices: [{ index: 0, delta, finish_reason: first ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
+        return new Response(`data: ${JSON.stringify({ id: `mock-${providerCalls}`, model: 'test-model', choices: [{ index: 0, delta, finish_reason: first ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.00001 } })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
       }
       if (request.url === 'https://identity.test/jwks') return Response.json({ keys: [] });
       assert.equal(request.url, 'https://identity.test/.well-known/openid-configuration');
@@ -143,6 +143,17 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     const agent = await request('POST', '/v1/agents', { name: 'Tool continuation', model: { provider: 'openrouter', model: 'test-model' }, tools: ['time'], workspace: false }, 201);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201);
     let timer;
+    async function diagnostics() {
+      const statusResponse = await mf.dispatchFetch(`https://agents.test/v1/sessions/${session.id}`, {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      const status = statusResponse.status === 200 ? await statusResponse.json() : {};
+      const reservations = await db.prepare('SELECT id,state,reserved_microusd,settled_microusd FROM usage_reservations WHERE session_id=?1').bind(session.id).all();
+      const observations = await db.prepare('SELECT event_key,resource,status,quantity FROM resource_observations WHERE session_id=?1').bind(session.id).all();
+      const ledger = await db.prepare('SELECT resource,unit,amount_microusd FROM usage_ledger WHERE reservation_id IN (SELECT id FROM usage_reservations WHERE session_id=?1)').bind(session.id).all();
+      return { providerCalls, session: { status: status.status, run_id: status.run_id, last_error: status.last_error,
+        checkpoint_pending: status.checkpoint_pending }, reservations: reservations.results, observations: observations.results, ledger: ledger.results };
+    }
     const completion = mf.dispatchFetch('https://agents.test/v1/chat/completions', {
       method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'X-Agents-Session': session.id },
       body: JSON.stringify({ model: agent.id, messages: [{ role: 'user', content: 'Use time, then answer.' }], stream: false }),
@@ -155,6 +166,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
           reject(new Error(`Run stalled after 8 seconds: providerCalls=${providerCalls}, reservations=${reservations}, ledger=${ledger}, session=${session.id}`));
         }, 8000);
       })]);
+      if (response.status !== 200) t.diagnostic(JSON.stringify(await diagnostics()));
       assert.equal(response.status, 200, await response.clone().text());
       const answer = await response.json();
       assert.equal(answer.choices[0].message.content, 'The clock tool completed.');
@@ -177,6 +189,15 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       assert.ok(events.includes('[DONE]'));
       assert.equal(providerCalls, 2);
       assert.ok(await db.prepare("SELECT COUNT(*) AS count FROM usage_ledger WHERE resource='model'").first('count') >= 4);
+      const modelCharges = await db.prepare("SELECT CAST(amount_microusd AS TEXT) AS amount_microusd FROM usage_ledger WHERE resource='model'").all();
+      assert.equal(modelCharges.results.length, 4);
+      assert.ok(modelCharges.results.every(row => row.amount_microusd === '10'), 'Bill exactly the provider-reported API-equivalent cost');
+      const beforeEviction = await request('GET', `/v1/sessions/${session.id}`);
+      await mf.unsafeEvictDurableObject('', 'Session', { name: `owner:${session.id}` });
+      const afterEviction = await request('GET', `/v1/sessions/${session.id}`);
+      assert.deepEqual(afterEviction.messages, beforeEviction.messages, 'DO reconstruction must bulk-load the persisted message codec without data loss');
+      assert.deepEqual(afterEviction.pending_messages, beforeEviction.pending_messages);
+      assert.equal(afterEviction.last_error, beforeEviction.last_error);
     } finally {
       clearTimeout(timer);
     }

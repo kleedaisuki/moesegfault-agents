@@ -47,4 +47,15 @@ zero. Root-cause source inspection found that worker-rs `set_alarm(i64)` accepts
 an offset, while the application supplied epoch milliseconds. The scheduled
 alarm was therefore decades in the future. The test retains its bounded
 eight-second deadline and two-provider-call/settled-model-ledger assertions to
-verify the absolute-date scheduling repair end to end.
+verify the absolute-date scheduling repair end to end. The browser fixture also
+arms a real three-second AuthSession expiry and checks physical D1 deletion within
+five seconds; merely returning an expired-session error is insufficient.
+
+CI run `39984214018` confirmed the first-use ABI, browser auth, actual AuthSession
+expiry alarm, OIDC redirect, agent CRUD, and DO status/close checks pass. Model
+execution advanced beyond admission but returned 500. The next fixture revision
+includes OpenRouter's required numeric `usage.cost` and emits only allowlisted
+session/accounting diagnostics on failure. Every mocked model round reports
+$0.00001 and the complete two-run journey asserts four ledger entries of exactly
+10 micro-USD each. After non-streaming and streaming runs, the test evicts the
+actual Session DO and checks that reconstruction preserves the message journal.

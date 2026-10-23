@@ -27,6 +27,8 @@ Cloudflare sources:
 - [At-least-once alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
 - [Rust worker SDK](https://docs.rs/worker/0.8.7/worker/)
 
+The Rust SDK's `Storage::set_alarm(i64)` interprets its integer as a **relative offset**, unlike JavaScript's numeric epoch API. All absolute session deadlines use `util::alarm_at(epoch_ms)`, which constructs an explicit JavaScript `Date`. The constructor and regular scheduling share `alarm_deadline`: restored active/preparing work receives a near-term wakeup if its alarm is missing or too late; an already-earlier alarm is preserved. Closed sessions without pending cleanup delete their alarm. This repairs the crash window between committing accepted work and publishing its wakeup without replaying an uncertain external operation.
+
 Run phases journal a provider result *before* billing or executing its tool calls. A successful terminal OpenAI response (including usage), or a terminal error, is committed before asynchronous final settlement. Recovery replays that terminal result rather than dispatching another inference; the worker wall-time endpoint is pinned before settlement for idempotent accounting. Tool execution IDs combine run, response round and provider call ID: provider IDs such as `call_0` are not globally unique. Queued steering enters the active prompt only at a safe boundary after pending tool results. Accepted steering during final billing starts a new durable continuation rather than becoming stranded in an idle queue.
 
 The run safety ceiling is 128 model rounds; this is distinct from inactivity. Provider continuation fields, including DeepSeek reasoning and OpenRouter signed reasoning blocks, remain private conversation data and are preserved verbatim.

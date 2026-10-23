@@ -418,6 +418,7 @@ impl DurableObject for Session {
         } else if snapshot.run.is_some() {
             let started = util::now_ms();
             loop {
+                let phase = execution_phase(&inner.snapshot()?);
                 let result = inner.observed_step().await;
                 match result {
                     Ok(Some(value)) => {
@@ -434,8 +435,13 @@ impl DurableObject for Session {
                         }
                     }
                     Err(error) => {
+                        let code = safe_error_code(&error);
+                        util::emit(
+                            "run.failed",
+                            json!({"session_id":snapshot.record.id,"run_id":snapshot.run.as_ref().map(|r|r.id.as_str()),"phase":phase,"error_code":code,"outcome":error_family(&error)}),
+                        );
                         inner.running.set(false);
-                        inner.finish(Err(safe_error_code(&error))).await?;
+                        inner.finish(Err(code)).await?;
                         break;
                     }
                 }
@@ -1403,6 +1409,12 @@ fn safe_error_code(error: &Error) -> String {
         "provider_key_not_found",
         "invalid_provider_model",
         "provider_cost_missing",
+        "openrouter_cost_missing",
+        "completion_reservation_mismatch",
+        "completion_not_reserved",
+        "d1_usage_metadata_missing",
+        "resource_observation_conflict",
+        "resource_observation_missing",
         "resource_reconciliation_pending",
         "context_budget_exceeded",
         "execution_round_limit",
@@ -1412,6 +1424,45 @@ fn safe_error_code(error: &Error) -> String {
         }
     }
     "run_failed".into()
+}
+
+fn execution_phase(data: &PersistedSession) -> &'static str {
+    let Some(run) = &data.run else {
+        return "idle";
+    };
+    if !run.admitted {
+        return "admission";
+    }
+    if replay_terminal(run).is_some() {
+        return "finalization";
+    }
+    if run.pending_compaction.is_some() {
+        return "compaction_accounting";
+    }
+    if run.pending_completion.is_some() {
+        return "model_accounting";
+    }
+    if run.compaction_in_flight {
+        return "compaction_recovery";
+    }
+    if run.provider_in_flight {
+        return "provider_recovery";
+    }
+    if unresolved_tool(&data.messages).is_some() {
+        return "tool_dispatch";
+    }
+    "model_request"
+}
+
+fn error_family(error: &Error) -> &'static str {
+    match error {
+        Error::D1(_) => "d1_error",
+        Error::SerdeJsonError(_) => "json_decode",
+        Error::SerdeWasmBindgenError(_) => "binding_decode",
+        Error::BindingError(_) => "binding_error",
+        Error::RustError(_) => "runtime_error",
+        _ => "platform_error",
+    }
 }
 
 fn alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
@@ -1542,6 +1593,14 @@ mod tests {
         assert_eq!(
             safe_error_code(&Error::RustError("provider_outcome_unknown".into())),
             "provider_outcome_unknown"
+        );
+        assert_eq!(
+            safe_error_code(&Error::RustError("openrouter_cost_missing".into())),
+            "openrouter_cost_missing"
+        );
+        assert_eq!(
+            error_family(&Error::RustError("token secret /workspace/private".into())),
+            "runtime_error"
         );
         assert_eq!(
             safe_error_code(&Error::RustError("token secret /workspace/private".into())),
