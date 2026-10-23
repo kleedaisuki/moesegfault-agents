@@ -79,7 +79,11 @@ enum Command {
 
 #[derive(Subcommand)]
 enum Auth {
-    Login,
+    Login {
+        /// Print the authorization URL instead of opening the system browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     Logout,
     Status,
 }
@@ -187,7 +191,7 @@ async fn main() -> Result<()> {
     let api = Api::new(&cli.api_url)?;
     match cli.command {
         Command::Auth { command } => match command {
-            Auth::Login => auth::login(api.base()).await?,
+            Auth::Login { no_browser } => auth::login(api.base(), no_browser).await?,
             Auth::Logout => auth::logout(api.base())?,
             Auth::Status => auth::status(api.base())?,
         },

@@ -237,7 +237,21 @@ fn callback(target: &str, redirect: &Url, state: &str, issuer: &str) -> Result<S
     Ok(code)
 }
 
-pub async fn login(base: &str) -> Result<()> {
+fn present_authorization(
+    url: &Url,
+    no_browser: bool,
+    mut output: impl std::io::Write,
+    open_browser: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<()> {
+    if no_browser {
+        writeln!(output, "{url}")?;
+        output.flush()?;
+        return Ok(());
+    }
+    open_browser(url.as_str()).context("Cannot open browser")
+}
+
+pub async fn login(base: &str, no_browser: bool) -> Result<()> {
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
@@ -284,8 +298,12 @@ pub async fn login(base: &str) -> Result<()> {
         .add_scope(Scope::new("offline_access".into()))
         .set_pkce_challenge(challenge)
         .url();
-    eprintln!("Opening your system browser. Login expires in 3 minutes.");
-    webbrowser::open(url.as_str()).context("Cannot open browser")?;
+    if no_browser {
+        eprintln!("Open the authorization URL in your browser. Login expires in 3 minutes.");
+    } else {
+        eprintln!("Opening your system browser. Login expires in 3 minutes.");
+    }
+    present_authorization(&url, no_browser, std::io::stdout(), webbrowser::open)?;
     let result = tokio::time::timeout(Duration::from_secs(180), async {
         let (mut stream, peer) = listener.accept().await?;
         if !peer.ip().is_loopback() { bail!("Non-loopback callback rejected"); }
@@ -330,6 +348,31 @@ pub async fn login(base: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manual_authorization_prints_url_without_opening_browser() {
+        let url = Url::parse("https://identity.test/authorize?state=transaction&code_challenge=challenge&code_challenge_method=S256").unwrap();
+        let mut output = Vec::new();
+        present_authorization(&url, true, &mut output, |_| {
+            panic!("manual login opened a browser")
+        })
+        .unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), format!("{url}\n"));
+    }
+
+    #[test]
+    fn default_authorization_still_opens_browser_without_printing_url() {
+        let url = Url::parse("https://identity.test/authorize").unwrap();
+        let mut output = Vec::new();
+        let mut opened = false;
+        present_authorization(&url, false, &mut output, |actual| {
+            assert_eq!(actual, url.as_str());
+            opened = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(opened);
+        assert!(output.is_empty());
+    }
     #[test]
     fn legacy_credentials_remain_readable() {
         let stored = r#"{"access_token":"old","expires_at":123,"issuer":"https://identity.test","client_id":"native"}"#;
