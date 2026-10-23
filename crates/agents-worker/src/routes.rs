@@ -196,6 +196,13 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
     if path == "/healthz" && req.method() == Method::Get {
         return Response::from_json(&json!({"status":"ok"}));
     }
+    if let Some(ip) = req.headers().get("CF-Connecting-IP")? {
+        use sha2::{Digest, Sha256};
+        let key = format!("ip:{:x}", Sha256::digest(ip.as_bytes()));
+        if let Some(response) = rate_limited(env, "INGRESS_RATE_LIMITER", key).await? {
+            return Ok(response);
+        }
+    }
     if path.starts_with("/auth/") {
         return auth::handle_auth(req, env).await;
     }
@@ -206,6 +213,18 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         Ok(principal) => principal,
         Err(error) => return error_response(&error),
     };
+    if let Some(response) =
+        rate_limited(env, "ACCOUNT_RATE_LIMITER", principal.account_id.clone()).await?
+    {
+        return Ok(response);
+    }
+    if !matches!(req.method(), Method::Get | Method::Head | Method::Options) {
+        if let Some(response) =
+            rate_limited(env, "MUTATION_RATE_LIMITER", principal.account_id.clone()).await?
+        {
+            return Ok(response);
+        }
+    }
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
     if matches!(
         segments.get(1),
@@ -241,6 +260,19 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         }
         _ => util::json_error(404, "not_found", "Route not found"),
     }
+}
+
+async fn rate_limited(env: &Env, binding: &str, key: String) -> Result<Option<Response>> {
+    if env.rate_limiter(binding)?.limit(key).await?.success {
+        return Ok(None);
+    }
+    let mut response = util::json_error(
+        429,
+        "request_rate_exceeded",
+        "Too many requests; retry after the indicated delay",
+    )?;
+    response.headers_mut().set("Retry-After", "60")?;
+    Ok(Some(response))
 }
 
 async fn body<T: DeserializeOwned>(req: &mut Request) -> std::result::Result<T, Response> {

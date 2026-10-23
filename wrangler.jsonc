@@ -129,7 +129,33 @@
         "crons": [
           "*/15 * * * *"
         ]
-      }
+      },
+      "ratelimits": [
+        {
+          "name": "INGRESS_RATE_LIMITER",
+          "namespace_id": "67023201",
+          "simple": {
+            "limit": 2400,
+            "period": 60
+          }
+        },
+        {
+          "name": "ACCOUNT_RATE_LIMITER",
+          "namespace_id": "67023001",
+          "simple": {
+            "limit": 1200,
+            "period": 60
+          }
+        },
+        {
+          "name": "MUTATION_RATE_LIMITER",
+          "namespace_id": "67023101",
+          "simple": {
+            "limit": 120,
+            "period": 60
+          }
+        }
+      ]
     },
     "production": {
       "name": "moesegfault-agents-production",
@@ -218,7 +244,33 @@
         "crons": [
           "*/15 * * * *"
         ]
-      }
+      },
+      "ratelimits": [
+        {
+          "name": "INGRESS_RATE_LIMITER",
+          "namespace_id": "67023202",
+          "simple": {
+            "limit": 2400,
+            "period": 60
+          }
+        },
+        {
+          "name": "ACCOUNT_RATE_LIMITER",
+          "namespace_id": "67023002",
+          "simple": {
+            "limit": 1200,
+            "period": 60
+          }
+        },
+        {
+          "name": "MUTATION_RATE_LIMITER",
+          "namespace_id": "67023102",
+          "simple": {
+            "limit": 120,
+            "period": 60
+          }
+        }
+      ]
     }
   }
 }
