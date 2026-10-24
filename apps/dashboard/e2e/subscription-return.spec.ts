@@ -93,4 +93,3 @@ test("refresh failure remains visible on the returned usage page", async ({
     page.getByRole("link", { name: "Retry subscription refresh" }),
   ).toHaveAttribute("href", "/billing/return");
 });
-
