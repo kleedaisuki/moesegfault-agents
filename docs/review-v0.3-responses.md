@@ -37,8 +37,16 @@ identities. Required discriminating test: observe delta sequence N, replace the
 DO while provider outcome is uncertain, resume after N, and see one later terminal
 without repeating the inference or tool effects. Source correction now reserves
 a high-water sequence range before provider I/O and skips it on cold recovery;
-the per-delta hot path no longer clones the entire session. Status: **source
-corrected; crash/compiled verification pending**.
+the per-delta hot path no longer clones the entire session. A subsequent review
+found that a fresh reservation is also needed before post-recovery non-provider
+events: cold load skips to the previous high-water mark, but a second reset after
+an uncommitted `response.in_progress` could reuse that mark. The existing
+single-reset test did not exercise this. The owner subsequently made cold load
+renew and persist the new allocation fence before releasing the constructor's
+concurrency block, preserved the existing `journal_count`, rejected events outside
+that fence and durably renewed terminal capacity before finalization. The repeated
+reset/exhaustion pure test now covers the identified sequence. Status: **source
+correction independently inspected; actual-reset/compiled verification pending**.
 
 ### P2 — Enforce unretained/deleted parent policy at continuation admission
 
@@ -67,7 +75,9 @@ Required correction: validate the complete ordered fresh call/output history,
 separately from the exact outstanding continuation set. Reject orphaned, duplicate
 and partially matched outputs before appending any input. Fresh imports now select
 their declared calls rather than the session pending set; ordered-history and
-duplicate-call validation still need final review. Status: **partially corrected**.
+duplicate-call validation now use an ordered call-group validator that also
+permits reused provider call IDs across completed historical groups. Status:
+**source corrected; compiled verification pending**.
 
 ### P2 — Preserve refusal and abnormal provider termination
 
@@ -127,7 +137,9 @@ flush the canonical run and ensure its durable wakeup using the normal serialize
 path. Terminal immutable receipt retries should remain read-only. Test transient
 acceptance-write and alarm failures on a continuation, then retry exactly the same
 key: one input append, one response identity, prompt recovery, no provider replay.
-Status: **sent to runtime owner; pending**.
+The current existing-active-ID path now flushes and rearms before observing it;
+terminal receipt retries remain read-only. Status: **source corrected; fault and
+compiled verification pending**.
 
 ### P1 — Recheck archival after resolving attachments
 
@@ -239,7 +251,14 @@ validator, cap per-number expanded digit/exponent size and aggregate expanded
 numeric work across schemas/request/instance, and include effective numeric work
 in the application budget. Preserve ordinary exact integers beyond u64; rejecting
 astronomical allocations does not require reverting to rounded floating point.
-Status: **owner implementing; no expensive numeric conversion was executed**.
+The owner added coefficient-digits plus absolute-exponent admission (4,096 digits
+per number), aggregate schema/request/instance budgets and effective numeric work
+in the instance product before compilation/validation. The final source also
+rejects nested modern/legacy resource IDs and accounts for referenced pointer
+targets outside ordinary schema positions, so admission and validator resolution
+cannot silently use different resource scopes. Status: **source correction
+independently inspected; compiled adversarial tests pending**. No expensive
+numeric conversion was executed locally.
 
 The raw JSON examples are retained as `.temp/v0.3-review/numeric-schema.json` and
 `numeric-instance.json`. They were constructed as text without invoking a
@@ -256,3 +275,7 @@ that admission rejects it before validation.
 Recheck the final implementation and the exact-source compiled Worker failure,
 concurrency and SDK journeys before resolving these entries. This document does
 not claim that a missing field in an unfinished module is an accepted release bug.
+
+At the end of this source-review pass, all concrete findings above have source
+corrections inspected and no additional blocking source defect remains. This does
+not resolve the compiled SDK, recovery-fault and real staging acceptance gates.

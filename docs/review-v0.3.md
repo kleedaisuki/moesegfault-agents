@@ -134,3 +134,19 @@ failure boundaries; consistency alone is not a cross-service transaction.
 
 Review final sources, exact-source compiled Worker tests and real SDK/file/version
 journeys. No release approval is given by this initial record.
+
+## Source review checkpoint
+
+At source `46338b4`, all confirmed source defects identified in this review and
+the accompanying Responses review have corrections independently inspected.
+Attachment capability/syntax errors now use an exact static error whitelist:
+400 for malformed/unsupported content, 413 for size bounds and 404 for missing or
+foreign owned files. Internal integrity/platform failures remain server errors;
+arbitrary prefixes/suffixes cannot select a public error classification.
+
+The independent SQLite suite passed **87/87** in 4.178 seconds at this checkpoint,
+and review-document diff checks passed. No heavy local compiler, real model call
+or cloud mutation was performed by the review team. These results do not establish
+the actual-Wasm, Container, SDK fault-recovery or staging acceptance gates. There
+is no remaining confirmed source blocker from this review, but release approval
+remains pending those exact-source runtime results.
