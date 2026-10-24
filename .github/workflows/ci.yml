@@ -148,6 +148,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
       - run: npm run test:tooling
       - run: |
           python3 -m venv .cache/e2e-venv
