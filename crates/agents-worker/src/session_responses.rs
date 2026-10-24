@@ -329,6 +329,30 @@ impl SessionInner {
         }
     }
 
+    async fn existing_response(
+        &self,
+        existing: ResponseRun,
+        request: &ResponseRequest,
+    ) -> Result<Response> {
+        if existing.deleted || (!existing.request.store && terminal_status(&existing.status)) {
+            return util::json_error(404, "not_found", "Response has been deleted");
+        }
+        if serde_json::to_value(&existing.request)? != serde_json::to_value(&request)? {
+            return util::json_error(
+                409,
+                "idempotency_conflict",
+                "Response ID already belongs to another request",
+            );
+        }
+        if !terminal_status(&existing.status) {
+            // Repair a warm retry's failed initial state/alarm publication,
+            // without appending input or admitting a second execution.
+            self.persist().await?;
+            self.arm_alarm().await?;
+        }
+        self.observe_response(&existing, request.stream, None).await
+    }
+
     async fn create_response(
         &self,
         create: CreateResponse,
@@ -339,28 +363,12 @@ impl SessionInner {
             return util::json_error(400, "invalid_request_error", &error.to_string());
         }
         if let Some(existing) = self.read_response(&create.response_id).await? {
-            if existing.deleted || (!existing.request.store && terminal_status(&existing.status)) {
-                return util::json_error(404, "not_found", "Response has been deleted");
-            }
-            if serde_json::to_value(&existing.request)? != serde_json::to_value(&request)? {
-                return util::json_error(
-                    409,
-                    "idempotency_conflict",
-                    "Response ID already belongs to another request",
-                );
-            }
-            if !terminal_status(&existing.status) {
-                // Repair a warm retry's failed initial state/alarm publication,
-                // without appending input or admitting a second execution.
-                self.persist().await?;
-                self.arm_alarm().await?;
-            }
-            return self.observe_response(&existing, request.stream, None).await;
+            return self.existing_response(existing, &request).await;
         }
-        let mut input = match request.normalize_structure() {
+        let mut input = match crate::response_preflight::validate(&request) {
             Ok(input) => input,
             Err(error) => {
-                return util::json_error(400, "invalid_request_error", &error.to_string());
+                return util::json_error(400, error.code, &error.message);
             }
         };
         let data = self.snapshot()?;
@@ -397,46 +405,19 @@ impl SessionInner {
                 return util::json_error(404, "not_found", "Previous response not retained");
             }
         }
-        if request.previous_response_id.is_none() {
-            if let Err(code) = validate_imported_history(&input.messages) {
+        if request.previous_response_id.is_some() {
+            if let Err(code) =
+                validate_tool_outputs(&data.pending_client_tools, &input.tool_outputs)
+            {
                 return util::json_error(
                     400,
                     code,
-                    "Imported function calls and outputs must be complete, ordered groups",
+                    "Provide each outstanding function result exactly once before continuing",
                 );
             }
-        } else if let Err(code) =
-            validate_tool_outputs(&data.pending_client_tools, &input.tool_outputs)
-        {
-            return util::json_error(
-                400,
-                code,
-                "Provide each outstanding function result exactly once before continuing",
-            );
-        }
-        if request.previous_response_id.is_some()
-            && input
-                .messages
-                .iter()
-                .any(|m| m.role == "assistant" || !m.tool_calls.is_empty())
-        {
-            return util::json_error(
-                400,
-                "history_replay_not_supported",
-                "Continuation accepts only new input and matching function results",
-            );
         }
         let mut definitions = tool_definitions(&data.record);
         let local = request.tool_definitions().map_err(Error::RustError)?;
-        for definition in &local {
-            if tools::tool_kind(&definition.function.name).is_some() {
-                return util::json_error(
-                    400,
-                    "tool_name_conflict",
-                    "Client tools cannot replace server tools",
-                );
-            }
-        }
         definitions.extend(local);
         let mut config = self.provider_config(&data.record).await?;
         let options = request.generation_options();
@@ -538,6 +519,74 @@ impl SessionInner {
                 "Combined instruction prefix exceeds 256 KiB",
             );
         }
+        let acceptance = self.persistence.lock().await;
+        if let Some(existing) = self.read_response(&create.response_id).await? {
+            drop(acceptance);
+            return self.existing_response(existing, &request).await;
+        }
+        let before_pins = self.snapshot()?;
+        if before_pins.run.is_some()
+            || before_pins.archive_pending
+            || before_pins.archive_preparing
+            || self.closing.get()
+            || before_pins.response_head != data.response_head
+            || before_pins.record.input_revision != data.record.input_revision
+            || before_pins.record.status != SessionStatus::Idle
+        {
+            drop(acceptance);
+            if before_pins.record.status == SessionStatus::Closed {
+                self.persist().await?;
+                return util::json_error(
+                    409,
+                    "response_session_closed",
+                    "Readmit the archived session before continuing",
+                );
+            }
+            return util::json_error(
+                409,
+                "session_busy",
+                "Session changed before attachment admission",
+            );
+        }
+        crate::space::acquire_response_files(
+            &self.env,
+            &data.record.owner_id,
+            &data.record.id,
+            &create.response_id,
+            &resolved.attachments,
+        )
+        .await?;
+        let after_pins = self.snapshot()?;
+        if after_pins.run.is_some()
+            || after_pins.archive_pending
+            || after_pins.archive_preparing
+            || self.closing.get()
+            || after_pins.response_head != data.response_head
+            || after_pins.record.input_revision != data.record.input_revision
+            || after_pins.record.status != SessionStatus::Idle
+        {
+            crate::space::release_response_files(
+                &self.env,
+                &data.record.owner_id,
+                &data.record.id,
+                &create.response_id,
+            )
+            .await?;
+            drop(acceptance);
+            if after_pins.record.status == SessionStatus::Closed {
+                self.persist().await?;
+                return util::json_error(
+                    409,
+                    "response_session_closed",
+                    "Readmit the archived session before continuing",
+                );
+            }
+            return util::json_error(
+                409,
+                "session_busy",
+                "Session changed while pinning attachments",
+            );
+        }
         // No await separates this domain preflight from acceptance mutations.
         // Exhausted revisions and non-idle records cannot partially consume tools.
         let mut admission = current.record.clone();
@@ -561,6 +610,15 @@ impl SessionInner {
             current.pending_client_tools.clear();
         }
         self.append(input.messages)?;
+        {
+            let mut borrowed = self.data.borrow_mut();
+            let current = borrowed.as_mut().unwrap();
+            project_response_input(
+                &mut current.messages,
+                &mut current.pending,
+                !data.pending_client_tools.is_empty(),
+            );
+        }
         self.start_run_with_id(create.response_id.clone())?;
         let mut response = ResponseRun {
             id: create.response_id.clone(),
@@ -595,6 +653,8 @@ impl SessionInner {
             run.traceparent = traceparent;
             run.response = Some(response.clone());
         }
+        save_state(&self.state.storage(), &self.snapshot()?).await?;
+        drop(acceptance);
         self.persist().await?;
         self.arm_alarm().await?;
         if request.background && !request.stream {
@@ -684,7 +744,7 @@ impl SessionInner {
         }
     }
 
-    async fn read_response(&self, id: &str) -> Result<Option<ResponseRun>> {
+    pub(super) async fn read_response(&self, id: &str) -> Result<Option<ResponseRun>> {
         if let Some(response) = self
             .data
             .borrow()
@@ -1054,7 +1114,7 @@ impl SessionInner {
         Ok(())
     }
 
-    pub(super) fn fit_response_prompt(&self) -> Result<()> {
+    pub(super) fn fit_response_prompt(&self, output_budget: u32) -> Result<()> {
         let mut borrowed = self.data.borrow_mut();
         let data = borrowed.as_mut().unwrap();
         let Some(response) = data.run.as_ref().and_then(|run| run.response.as_ref()) else {
@@ -1066,15 +1126,14 @@ impl SessionInner {
                 .pinned
                 .model
                 .context_window
-                .saturating_sub(data.record.pinned.model.max_output_tokens),
+                .saturating_sub(output_budget),
         );
         loop {
-            let new_bytes = serde_json::to_vec(
+            let new_bytes = budget::working_tokens(
                 &data.messages[data.measured_messages.min(data.messages.len())..],
-            )?
-            .len() as u64;
+            )?;
             let estimate = if data.input_tokens == 0 {
-                serde_json::to_vec(&data.messages)?.len() as u64
+                budget::working_tokens(&data.messages)?
             } else {
                 data.input_tokens.saturating_add(new_bytes)
             };
@@ -1221,36 +1280,23 @@ fn outstanding_local_calls(
         .collect()
 }
 
-fn validate_imported_history(messages: &[Message]) -> std::result::Result<(), &'static str> {
-    let mut pending = BTreeMap::<&str, bool>::new();
-    for message in messages {
-        if message.role == "tool" {
-            let Some(id) = message.tool_call_id.as_deref() else {
-                return Err("invalid_tool_outputs");
-            };
-            let Some(done) = pending.get_mut(id) else {
-                return Err("invalid_tool_outputs");
-            };
-            if *done {
-                return Err("duplicate_tool_output");
-            }
-            *done = true;
-            continue;
-        }
-        if pending.values().any(|done| !*done) {
-            return Err("incomplete_tool_history");
-        }
-        pending.clear();
-        for call in &message.tool_calls {
-            if pending.insert(&call.id, false).is_some() {
-                return Err("duplicate_tool_call");
-            }
-        }
+fn project_response_input(
+    messages: &mut Vec<Message>,
+    pending: &mut Vec<Message>,
+    client_results: bool,
+) {
+    let additions = std::mem::take(pending);
+    if !client_results {
+        messages.extend(additions);
+        return;
     }
-    if pending.values().any(|done| !*done) {
-        return Err("incomplete_tool_history");
-    }
-    Ok(())
+    // Client results close the previous assistant call group before queued user
+    // steering. Source-journal ordering remains the actual acceptance ordering.
+    let (results, input): (Vec<_>, Vec<_>) = additions
+        .into_iter()
+        .partition(|message| message.role == "tool");
+    messages.extend(results);
+    messages.extend(input);
 }
 
 fn validate_tool_outputs(
@@ -1328,6 +1374,7 @@ fn input_items(response: &ResponseRun, url: &worker::Url) -> Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::response_preflight::validate_imported_history;
 
     fn response() -> ResponseRun {
         ResponseRun {
@@ -1514,6 +1561,41 @@ mod tests {
             .extra
             .insert("refusal".into(), json!("Cannot comply"));
         assert!(SessionInner::validate_response_output(&completion, &request).is_ok());
+    }
+
+    #[test]
+    fn client_outputs_are_projected_before_unresolved_tool_detection_and_queued_steering() {
+        let mut assistant = Message::text("assistant", "");
+        assistant.tool_calls.push(call("local_call"));
+        let mut messages = vec![Message::text("system", "fixed"), assistant];
+        let mut pending = vec![
+            Message::text("user", "late steering"),
+            Message::tool_result("local_call", "actual local result"),
+            Message::text("user", "new request"),
+        ];
+        project_response_input(&mut messages, &mut pending, true);
+        assert!(pending.is_empty());
+        assert_eq!(messages[2].role, "tool");
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("local_call"));
+        assert_eq!(messages[3].content, "late steering");
+        assert_eq!(messages[4].content, "new request");
+        assert!(unresolved_tool(&messages).is_none());
+    }
+
+    #[test]
+    fn fresh_manual_history_is_not_reordered_as_client_continuation() {
+        let mut assistant = Message::text("assistant", "");
+        assistant.tool_calls.push(call("manual"));
+        let mut messages = vec![Message::text("system", "fixed")];
+        let mut pending = vec![
+            assistant,
+            Message::tool_result("manual", "history"),
+            Message::text("user", "continue"),
+        ];
+        project_response_input(&mut messages, &mut pending, false);
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[2].role, "tool");
+        assert!(unresolved_tool(&messages).is_none());
     }
 
     #[test]

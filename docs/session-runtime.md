@@ -92,3 +92,85 @@ after acknowledgement. Queued input remains durable and starts through normal
 run admission without advancing the user's append clock. A transport disconnect
 still does not authorize replay, and channel acceptance is not a network-delivery
 guarantee.
+
+## Responses execution and immutable receipts (v0.3)
+
+Responses and Chat Completions share the existing durable execution loop. A
+Responses ID is also its financial run identity, but is not a session ID. The DO
+publishes each completed response under its own chunked key before clearing the
+active run. Retrieval never substitutes a later session answer for an earlier
+response. D1 contains owner-scoped routing/idempotency metadata, not the canonical
+response body. A warm retry of an accepted active ID republishes state and its
+alarm before acknowledgement; it does not append input again.
+
+Only the current response head may continue. Starting an ordinary Chat run
+invalidates that head; arbitrary historical or workspace forks are unsupported.
+Client function calls finish the response with public `function_call` items and
+release inference concurrency. The session retains their exact outstanding call
+IDs. Continuation requires one result per call, rejects unknown/duplicate/missing
+results before mutation, and creates a new response. Server tools execute inside
+the same loop and are not advertised as work the client must execute again.
+Fresh manually supplied history must contain complete, chronologically linked
+call/result groups; provider call IDs may be reused in different completed groups.
+
+For a valid archived continuation, the DO returns a private pre-admission
+`response_session_closed` signal only after validating the current head, pending
+results and generation options. The edge then uses existing quota admission and
+retries the same response ID once. Every asynchronous preparation boundary is
+followed by a fresh check of the canonical status, archive phase, revision and
+head. Domain append/start checks happen before any instruction or pending-call
+mutation. Rejected stale requests cannot silently extend or consume a session.
+
+Instructions have three distinct lifetimes. The server/agent pin is immutable for
+the session. System/developer messages supplied as input are persistent historical
+instructions. Top-level `instructions` apply to that response only, as in the
+Responses protocol. The active prefix includes all applicable layers and survives
+every compaction; constructing the next response removes only the request-local
+layer. Canonical source messages and original input items remain separate from the
+compacted inference view. File input receipts retain references rather than
+duplicating expanded text/image content in the public input-items representation.
+
+Background cancellation is a durable request observed at a safe execution
+boundary. A known pending model/compaction result is journaled and financially
+recorded first; cancellation does not turn consumed inference into fictitious zero
+usage. No further tool is dispatched, and interrupted tool groups receive explicit
+linked terminal results so a later turn cannot accidentally execute them. The
+canonical response becomes `cancelled`. Since the standard SSE event union has no
+`response.cancelled` event, a cancelled observer receives the standard `error`
+event with `code: response_cancelled`, then EOF; the client retrieves the same ID.
+
+### Event sequence fencing and bounded replay
+
+Live deltas are buffered with the provider round rather than causing a durable
+write per token. Their sequence allocation range is committed **before** upstream
+I/O. A cold load skips the old range and durably reserves a fresh range before
+exposing the restored object; this also protects a second reset during recovery.
+No event can allocate beyond its published range. Finalization renews a durable
+range before emitting its terminal event, so range exhaustion cannot strand a run.
+An unknown in-flight provider outcome becomes an explicit failure with a later
+sequence, not an automatic inference replay or a fabricated successful answer.
+
+Replay retains at most 65,536 events and 16 MiB, evicting an amortized prefix.
+An expired replay cursor returns 410 and directs the owner to retrieve the complete
+immutable response. Public response output is bounded to 4 MiB before new output
+items are emitted. At most eight observers attach; each live stream has a bounded
+32-frame queue. A slow observer may disconnect without cancelling execution and
+must recover from the original ID. These bounds are protocol/resource policy, not
+claims that channel acceptance proves delivery to the remote client.
+
+### Prompt planning is not billing
+
+The text-only working estimator preserves the existing conservative JSON-byte
+budget without allocating another serialized prompt. Native image transport bytes
+are masked and receive an 8,192-token working reservation per image; base64 size
+must not be misclassified as millions of textual model tokens. This reservation is
+an approximation, not a tokenizer, a model capability guarantee, or a billable
+quantity. Reported upstream usage remains authoritative. Aggregate decoded inline
+attachments/images are bounded to 4 MiB to protect the Worker while the inference
+view and source journal coexist; larger binary files stream into a funded workspace.
+
+Configured semantic compaction remains independent from `truncation`. After that
+policy runs, `auto` may drop whole older interaction groups from the active view
+if necessary; `disabled` rejects a view that still exceeds its working budget.
+Neither mode drops the pinned instruction prefix, splits a tool group, deletes
+source history, or changes financial token counts.

@@ -29,6 +29,16 @@ identity are immutable. Names cannot contain path separators or control bytes.
 Deleting an upload does not delete a saved workspace version or change an already
 materialized workspace file.
 
+An accepted response retains the source files it needs to materialize into its
+workspace until the owning session has durably committed completion or
+cancellation. Text/image bytes already copied into the durable execution input
+do not need a live source-object reference. Deleting a retained upload returns
+`409 file_in_use`; retry after the response finishes or is cancelled. This also
+protects background execution after its HTTP observer disconnects. Retention has
+no time-based expiry: a long task does not lose its inputs merely because it is
+old. Metadata renames remain allowed because file content and identity do not
+change.
+
 File lists accept `limit` (1–100, default 20), `after`, `order` (`asc` or default
 `desc`) and optional `purpose`. Cursors are owned file IDs; ordering uses the
 creation timestamp and ID together, so equal timestamps do not skip entries.
@@ -123,6 +133,10 @@ after physical deletion succeeds. R2 operations are reserved and observed before
 settlement, independently of agent execution concurrency. Outstanding storage
 debt prevents additions, not authenticated reads or deletion. Egress is not
 invented as a charge: the configured R2 operation/storage tariffs apply.
+Bounded attachment-pin admission, ownership checks and retention bookkeeping are
+control-plane overhead included in service pricing, not separate synthetic D1
+charges or new financial holds. Actual R2 operations and retained bytes remain
+metered as before.
 
 ## Recovery and data classes
 
@@ -146,6 +160,17 @@ Uploads and immutable versions are user data, not telemetry. Incomplete upload
 rows, transfer leases and abandoned candidates are recovery state; diagnostics
 contain only IDs and safe lifecycle codes. No blanket R2 expiry applies to
 accepted files or versions.
+
+Attachment references are inserted atomically before canonical response
+acceptance while the owning session holds its admission/persistence mutex. A
+missing, deleting, cross-owner or changed file aborts the entire reference set.
+The same database interlock prevents deletion from winning after retention has
+been acquired. References are released only after authoritative DO state proves
+terminal/cancelled execution, or proves a pre-acceptance reference was never
+accepted; a missing routing read or elapsed time is not such proof. Interrupted
+release retains the input and retries instead of withholding an already-known
+terminal answer. Upload-abort cleanup also claims its own candidate before
+physical deletion and cannot delete a subsequently published or retained file.
 
 ## Using files and saved workspaces with agents
 

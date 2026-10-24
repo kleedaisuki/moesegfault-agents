@@ -8,6 +8,7 @@ mod provider;
 mod reconcile;
 mod resources;
 mod response_index;
+mod response_preflight;
 mod response_routes;
 mod responses_attachments;
 mod responses_schema;
@@ -43,6 +44,12 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, ctx: ScheduleContext) {
         }
         if space::recover(&env).await.is_err() {
             util::emit("space.recovery_deferred", serde_json::json!({}));
+        }
+        if space::reconcile_attachment_pins(&env).await.is_err() {
+            util::emit(
+                "space.attachment_pin_recovery_deferred",
+                serde_json::json!({}),
+            );
         }
         if workspace_versions::cleanup_uploads(&env).await.is_err() {
             util::emit("workspace.version_recovery_deferred", serde_json::json!({}));

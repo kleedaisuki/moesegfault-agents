@@ -16,6 +16,12 @@ use std::{
 };
 use worker::*;
 
+#[path = "session_admission.rs"]
+mod admission;
+#[path = "responses_budget.rs"]
+mod budget;
+#[path = "session_file_pins.rs"]
+mod file_pins;
 #[path = "session_observer.rs"]
 mod observer;
 #[path = "session_responses.rs"]
@@ -250,7 +256,10 @@ impl DurableObject for Session {
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let inner = &self.inner;
         if req.path() == "/responses" || req.path().starts_with("/responses/") {
-            return inner.response_route(req).await;
+            return match inner.response_route(req).await {
+                Ok(response) => Ok(response),
+                Err(error) => crate::routes::error_response(&error),
+            };
         }
         match (req.method(), req.path().as_str()) {
             (Method::Post, "/init") => {
@@ -308,6 +317,8 @@ impl DurableObject for Session {
                 inner.arm_alarm().await?;
                 Response::from_json(&inner.snapshot()?.record)
             }
+            (Method::Post, "/retire-empty") => inner.retire_empty(req).await,
+            (Method::Post, "/file-pins/reconcile") => inner.reconcile_file_pins().await,
             (Method::Get, "/view") => inner.lightweight_view(&req),
             (Method::Get, "/messages") => inner.journal_page(&req),
             (Method::Get, "/status") => {
@@ -628,6 +639,7 @@ impl DurableObject for Session {
         if inner.snapshot()?.record.status != SessionStatus::Closed
             && inner.snapshot()?.run.is_none()
             && !inner.snapshot()?.pending.is_empty()
+            && inner.snapshot()?.pending_client_tools.is_empty()
         {
             inner.start_run()?;
             if let Err(error) = inner.persist().await {
@@ -1237,7 +1249,11 @@ impl SessionInner {
         if self.compact_if_needed(&config).await? {
             return Ok(None);
         }
-        self.fit_response_prompt()?;
+        self.fit_response_prompt(
+            config
+                .max_output_tokens
+                .unwrap_or(record.pinned.model.max_output_tokens),
+        )?;
         let messages = self.snapshot()?.messages;
         let event = format!("round:{}", run.round);
         store
@@ -1446,7 +1462,8 @@ impl SessionInner {
         self.commit_completion(run, result, accounting_pending, observer)
             .await?;
         if !self.snapshot()?.projection_pending
-            && self.snapshot()?.pending.is_empty()
+            && (self.snapshot()?.pending.is_empty()
+                || !self.snapshot()?.pending_client_tools.is_empty())
             && self.snapshot()?.record.idle_action(util::now_ms()) == IdleAction::Archive
         {
             self.archive(false).await?;
@@ -1493,12 +1510,29 @@ impl SessionInner {
                 &generation,
             )?;
         if let Some(response) = response {
+            let has_attachments = !response.attachments.is_empty();
+            let response_id = response.id.clone();
             self.data
                 .borrow_mut()
                 .as_mut()
                 .unwrap()
                 .pending_client_tools = response.awaiting_calls.clone();
             self.publish_response(response);
+            if has_attachments
+                && crate::space::release_response_files(
+                    &self.env,
+                    &committed.record.owner_id,
+                    &committed.record.id,
+                    &response_id,
+                )
+                .await
+                .is_err()
+            {
+                util::emit(
+                    "response.file_pin_release_pending",
+                    json!({"session_id":committed.record.id,"run_id":response_id}),
+                );
+            }
         }
         if let Some(observer) = observer.take() {
             let accepted = observer.complete(result, &committed.record.agent_id, &run.total);
@@ -1597,9 +1631,9 @@ impl SessionInner {
     async fn compact_if_needed(&self, config: &ProviderConfig) -> Result<bool> {
         let data = self.snapshot()?;
         let appended = &data.messages[data.measured_messages.min(data.messages.len())..];
-        let new_bytes = serde_json::to_vec(appended)?.len() as u64;
+        let new_bytes = budget::working_tokens(appended)?;
         let tokens = if data.input_tokens == 0 {
-            serde_json::to_vec(&data.messages)?.len() as u64
+            budget::working_tokens(&data.messages)?
         } else {
             data.input_tokens.saturating_add(new_bytes)
         };
@@ -2285,7 +2319,7 @@ fn alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
         return None;
     }
     if data.run.is_some()
-        || !data.pending.is_empty()
+        || (!data.pending.is_empty() && data.pending_client_tools.is_empty())
         || data.archive_pending
         || data.archive_preparing
     {
@@ -2330,7 +2364,7 @@ fn apply_resume(
     if data.run.is_some()
         || data.archive_pending
         || data.archive_preparing
-        || !data.pending.is_empty()
+        || (!data.pending.is_empty() && data.pending_client_tools.is_empty())
         || admitted.status != SessionStatus::Idle
     {
         return Err("session_busy");

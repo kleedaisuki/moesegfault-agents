@@ -14,6 +14,15 @@ use worker::{Env, Error, Method, Request, Response, Result};
 
 use crate::{reconcile, resources::ResourceMeter, store::Store, util};
 
+#[path = "space_pin_reconcile.rs"]
+mod pin_reconcile;
+#[path = "space_pins.rs"]
+mod pins;
+pub use pin_reconcile::run as reconcile_attachment_pins;
+pub use pins::{
+    acquire_response_files, list_response_pins, list_response_pins_after, release_response_files,
+};
+
 const MULTIPART_LIMIT: u64 = 16 * 1024 * 1024;
 const RAW_LIMIT: u64 = 64 * 1024 * 1024;
 const TEXT_LIMIT: u64 = 256 * 1024;
@@ -803,11 +812,14 @@ fn upload_may_dispatch(now: u64, deadline: u64) -> bool {
 }
 
 async fn abort_upload(env: &Env, owner: &str, id: &str, key: &str) -> Result<()> {
-    env.bucket("WORKSPACES")?.delete(key).await?;
-    reconcile::remove_storage_object(env, key, util::now_ms()).await?;
-    env.d1("DB")?.prepare("UPDATE space_files SET status='failed',updated_at_ms=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND status='uploading'")
+    env.d1("DB")?.prepare("UPDATE space_files SET status='deleting',deletion_reason='upload_abort',updated_at_ms=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND status='uploading' AND upload_outcome!='stored' AND NOT EXISTS(SELECT 1 FROM file_attachment_pins WHERE file_id=space_files.id)")
         .bind(&[text(&util::now_ms().to_string()),text(id),text(owner)])?.run().await?;
-    Ok(())
+    let candidate:Option<OwnedFile>=env.d1("DB")?.prepare(format!("SELECT {FILE_COLUMNS} FROM space_files WHERE id=? AND account_id=? AND object_key=? AND status='deleting' AND deletion_reason='upload_abort'"))
+        .bind(&[text(id),text(owner),text(key)])?.first(None).await?;
+    match candidate {
+        Some(file) => finish_delete(env, &file).await,
+        None => Ok(()),
+    }
 }
 
 async fn finish_upload(env: &Env, owner: &str, id: &str) -> Result<()> {
@@ -863,17 +875,35 @@ async fn delete_file(env: &Env, owner: &str, id: &str) -> Result<Response> {
         return not_found();
     };
     if file.status != "deleted" {
-        env.d1("DB")?.prepare("UPDATE space_files SET status='deleting',updated_at_ms=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND status='processed'")
-            .bind(&[text(&util::now_ms().to_string()),text(id),text(owner)])?.run().await?;
+        if file.status == "processed" {
+            let claimed:Option<Value>=env.d1("DB")?.prepare("UPDATE space_files SET status='deleting',deletion_reason='user',updated_at_ms=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND status='processed' AND NOT EXISTS(SELECT 1 FROM file_attachment_pins WHERE file_id=space_files.id) RETURNING id")
+                .bind(&[text(&util::now_ms().to_string()),text(id),text(owner)])?.first(None).await?;
+            if claimed.is_none() {
+                return util::json_error(
+                    409,
+                    "file_in_use",
+                    "The file is in use by an active response; retry after it finishes or is cancelled",
+                );
+            }
+        }
+        if file.status == "failed" {
+            env.d1("DB")?.prepare("UPDATE space_files SET deletion_reason='user' WHERE id=? AND account_id=? AND status='failed'")
+                .bind(&[text(id),text(owner)])?.run().await?;
+        }
         finish_delete(env, &file).await?;
     }
     Response::from_json(&json!({"id":id,"object":"file","deleted":true}))
 }
 
 async fn finish_delete(env: &Env, file: &OwnedFile) -> Result<()> {
+    let permitted:Option<Value>=env.d1("DB")?.prepare("SELECT id FROM space_files WHERE id=? AND account_id=? AND status IN ('deleting','failed') AND NOT EXISTS(SELECT 1 FROM file_attachment_pins WHERE file_id=space_files.id)")
+        .bind(&[text(&file.id),text(&file.account_id)])?.first(None).await?;
+    if permitted.is_none() {
+        return Err(fail("file_in_use"));
+    }
     env.bucket("WORKSPACES")?.delete(&file.object_key).await?;
     reconcile::remove_storage_object(env, &file.object_key, util::now_ms()).await?;
-    env.d1("DB")?.prepare("UPDATE space_files SET status='deleted',updated_at_ms=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND status IN ('deleting','failed')")
+    env.d1("DB")?.prepare("UPDATE space_files SET status=CASE deletion_reason WHEN 'upload_abort' THEN 'failed' ELSE 'deleted' END,updated_at_ms=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND status IN ('deleting','failed')")
         .bind(&[text(&util::now_ms().to_string()),text(&file.id),text(&file.account_id)])?.run().await?;
     Ok(())
 }

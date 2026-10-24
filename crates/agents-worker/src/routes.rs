@@ -243,6 +243,11 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "file_workspace_conflict",
             "The file conflicts with an existing workspace path",
         ),
+        "file_in_use" => (
+            409,
+            "file_in_use",
+            "The file is in use by an active response; wait for it to finish or cancel it before deleting",
+        ),
         "space_quota_exceeded" => (
             409,
             "space_quota_exceeded",
@@ -1326,6 +1331,7 @@ mod tests {
         assert_eq!(classify_error("file_not_found").0, 404);
         assert_eq!(classify_error("file_length_required").0, 411);
         assert_eq!(classify_error("file_upload_conflict").0, 409);
+        assert_eq!(classify_error("file_in_use").0, 409);
         assert_eq!(classify_error("space_limit_exceeded").0, 409);
         assert_eq!(classify_error("storage_debt").0, 402);
         for code in [

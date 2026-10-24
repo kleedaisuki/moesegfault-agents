@@ -49,6 +49,19 @@ cannot decode account-only storage rows. Forward recovery must preserve these
 rows rather than rolling back to an incompatible binary. Existing session
 resource constructors and their owner/immutability constraints remain intact.
 
+Deferred binary attachments acquire owner-scoped file references before a
+response is durably accepted. While any accepted response still needs a source
+file, deletion returns `409 file_in_use`; it does not quietly remove bytes that
+a queued or running task has not imported yet. References are released only
+after canonical terminal response state commits, including confirmed cancellation,
+not on observer disconnect, a cancellation request, or a guessed timeout.
+Only the owning session DO may reconcile an orphan reference against its
+authoritative response state, serialized with admission. A failed state read is
+not proof that a reference is disposable. The underlying file's retained-byte
+clock continues normally while referenced. Reference/admission metadata is
+bounded control-plane overhead included in service pricing, not a second
+storage operation or an independent financial reservation.
+
 See [Space workflows and recovery](space.md) and
 [workspace version publication](workspace-versions.md) for the user contract and
 the durable commit points.

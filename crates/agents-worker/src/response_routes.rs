@@ -84,11 +84,8 @@ async fn create(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result
         Ok(input) => input,
         Err(_) => return invalid("Request body is not valid for Responses creation"),
     };
-    if let Err(error) = input.validate() {
-        return invalid(&error);
-    }
-    if let Err(error) = input.validate_input_structure() {
-        return invalid(&error);
+    if let Err(error) = crate::response_preflight::validate(&input) {
+        return util::json_error(400, error.code, &error.message);
     }
     if let Some(parent) = &previous {
         if parent.agent_id != input.model {
@@ -187,14 +184,23 @@ async fn dispatch_create(
     .await
     {
         Ok(response) => response,
-        Err(error) => routes::error_response(&error)?,
+        Err(error) => return with_identity(routes::error_response(&error)?, &route),
     };
     if response.status_code() != 409 {
+        retire_rejected_session(
+            env,
+            &session,
+            &route,
+            existing_session,
+            response.status_code(),
+        )
+        .await;
         return with_identity(response, &route);
     }
     let headers = response.headers().clone();
     let body: Value = response.json().await?;
     if body.pointer("/error/code").and_then(Value::as_str) != Some("response_session_closed") {
+        retire_rejected_session(env, &session, &route, existing_session, 409).await;
         return with_identity(
             Response::from_json(&body)?
                 .with_status(409)
@@ -217,9 +223,46 @@ async fn dispatch_create(
     let response =
         match routes::forward(env, &session, Method::Post, "/responses", Some(payload)).await {
             Ok(response) => response,
-            Err(error) => routes::error_response(&error)?,
+            Err(error) => return with_identity(routes::error_response(&error)?, &route),
         };
+    retire_rejected_session(
+        env,
+        &session,
+        &route,
+        existing_session,
+        response.status_code(),
+    )
+    .await;
     with_identity(response, &route)
+}
+
+async fn retire_rejected_session(
+    env: &RouteContext<'_>,
+    session: &agents_core::SessionRecord,
+    route: &ResponseRoute,
+    existing_session: bool,
+    status: u16,
+) {
+    if existing_session || !(400..500).contains(&status) {
+        return;
+    }
+    // A response status alone cannot prove the run was never admitted. The DO
+    // checks canonical state and in-flight admission fences before retirement.
+    let retired = routes::forward(
+        env,
+        session,
+        Method::Post,
+        "/retire-empty",
+        Some(json!({"response_id":route.id})),
+    )
+    .await;
+    if !retired.is_ok_and(|response| response.status_code() < 300 || response.status_code() == 409)
+    {
+        util::emit(
+            "session.empty_retirement_deferred",
+            json!({"session_id":session.id,"agent_id":session.agent_id}),
+        );
+    }
 }
 
 async fn indexed(
