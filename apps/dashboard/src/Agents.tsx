@@ -155,9 +155,7 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   );
   const [name, setName] = useState(agent?.name ?? "");
   const [model, setModel] = useState(agent?.model.model ?? "");
-  const [provider, setProvider] = useState(
-    agent?.model.provider ?? "openrouter",
-  );
+  const [provider, setProvider] = useState(agent?.model.provider ?? "");
   const [instructions, setInstructions] = useState(agent?.instructions ?? "");
   const [percent, setPercent] = useState(agent?.compaction_percent ?? 80);
   const [workspace, setWorkspace] = useState(agent?.workspace ?? true);
@@ -169,26 +167,71 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
     enabled: provider === "byok",
     queryFn: () => request<{ data: ProviderKey[] }>("/v1/provider-keys"),
   });
+  const platformModels =
+    models.data?.available_platform_models ??
+    models.data?.available_models ??
+    [];
+  const platformProviders = [
+    ...new Set(platformModels.map((model) => model.provider)),
+  ];
+  const selectedProvider = provider || platformProviders[0] || "";
+  const selectedKey = credentials.data?.data.find(
+    (key) => key.id === credentialId,
+  );
+  function modelsFor(nextProvider: string, nextCredentialId: string) {
+    const providerModels =
+      nextProvider === "byok"
+        ? (models.data?.available_models ?? [])
+        : platformModels;
+    const namespace =
+      nextProvider === "byok"
+        ? credentials.data?.data.find((key) => key.id === nextCredentialId)
+            ?.provider
+        : nextProvider;
+    return providerModels.filter((model) => model.provider === namespace);
+  }
+  const selectableModels = modelsFor(selectedProvider, credentialId);
+  function changeProvider(nextProvider: string) {
+    setProvider(nextProvider);
+    if (
+      !modelsFor(nextProvider, credentialId).some(
+        (option) => option.model === model,
+      )
+    )
+      setModel("");
+  }
+  function changeCredential(nextCredentialId: string) {
+    setCredentialId(nextCredentialId);
+    if (
+      !modelsFor(selectedProvider, nextCredentialId).some(
+        (option) => option.model === model,
+      )
+    )
+      setModel("");
+  }
   const save = useMutation({
     mutationFn: () => {
-      const metadata = models.data?.available_models.find(
-        (x) =>
-          x.model === model && (x.provider === provider || provider === "byok"),
+      if (selectedProvider === "byok" && !selectedKey)
+        throw new Error("Select an API key from Access first.");
+      const metadata = selectableModels.find(
+        (option) => option.model === model,
       );
       if (!metadata)
         throw new Error(
           "Choose a registered model with available context metadata.",
         );
-      if (provider === "byok" && !credentialId)
-        throw new Error("Select an API key from Access first.");
       return request(
         agent ? `/v1/agents/${encodeURIComponent(agent.id)}` : "/v1/agents",
         json(agent ? "PATCH" : "POST", {
           name,
           model: {
-            ...metadata,
-            provider,
-            ...(provider === "byok" ? { credential_id: credentialId } : {}),
+            provider: selectedProvider,
+            model: metadata.model,
+            context_window: metadata.context_window,
+            max_output_tokens: metadata.max_output_tokens,
+            ...(selectedProvider === "byok"
+              ? { credential_id: credentialId }
+              : {}),
           },
           instructions,
           compaction_percent: percent,
@@ -225,11 +268,29 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
           <label>
             {t("Provider")}
             <select
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
+              required
+              value={selectedProvider}
+              onChange={(e) => changeProvider(e.target.value)}
             >
-              <option value="openrouter">{t("OpenRouter")}</option>
-              <option value="deepseek">{t("DeepSeek")}</option>
+              {!selectedProvider && <option value="">{t("Provider")}</option>}
+              {selectedProvider !== "byok" &&
+                selectedProvider &&
+                !platformProviders.includes(selectedProvider) && (
+                  <option value={selectedProvider} disabled>
+                    {selectedProvider}
+                  </option>
+                )}
+              {platformProviders.map((value) => (
+                <option key={value} value={value}>
+                  {t(
+                    value === "openrouter"
+                      ? "OpenRouter"
+                      : value === "deepseek"
+                        ? "DeepSeek"
+                        : value,
+                  )}
+                </option>
+              ))}
               <option value="byok">{t("Your API key")}</option>
             </select>
           </label>
@@ -240,25 +301,34 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
               list="models"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder={t("Select or enter model ID")}
+              disabled={
+                !selectedProvider ||
+                (selectedProvider === "byok" && !selectedKey)
+              }
+              placeholder={t(
+                selectedProvider === "byok" && !selectedKey
+                  ? "Select an API key first."
+                  : "Select or enter model ID",
+              )}
             />
             <datalist id="models">
-              {models.data?.available_models
-                .filter((m) => m.provider === provider || provider === "byok")
-                .map((m) => (
-                  <option key={`${m.provider}/${m.model}`} value={m.model} />
-                ))}
+              {selectableModels.map((option) => (
+                <option
+                  key={`${option.provider}/${option.model}`}
+                  value={option.model}
+                />
+              ))}
             </datalist>
           </label>
         </div>
         <ErrorNotice error={models.error} />
-        {provider === "byok" && (
+        {selectedProvider === "byok" && (
           <label>
             {t("Saved API key")}
             <select
               required
               value={credentialId}
-              onChange={(e) => setCredentialId(e.target.value)}
+              onChange={(e) => changeCredential(e.target.value)}
             >
               <option value="">{t("Select a key")}</option>
               {credentials.data?.data.map((key) => (
@@ -330,7 +400,14 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
           <button type="button" onClick={close}>
             {t("Cancel")}
           </button>
-          <button className="primary" disabled={save.isPending}>
+          <button
+            className="primary"
+            disabled={
+              save.isPending ||
+              models.isPending ||
+              (selectedProvider === "byok" && credentials.isPending)
+            }
+          >
             {save.isPending ? t("Saving…") : t("Save agent")}
           </button>
         </footer>

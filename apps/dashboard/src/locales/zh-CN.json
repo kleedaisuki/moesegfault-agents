@@ -159,5 +159,6 @@
   "Invalid response stream": "服务响应格式不正确，请重试。",
   "Response stream interrupted": "响应流已中断，任务可能仍在后台运行。请刷新会话查看进度。",
   "Customize {{name}}": "个性化 {{name}}",
-  "Customize skill": "个性化技能"
+  "Customize skill": "个性化技能",
+  "Select an API key first.": "请先选择 API 密钥。"
 }

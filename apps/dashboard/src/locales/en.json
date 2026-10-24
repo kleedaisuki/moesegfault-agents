@@ -159,5 +159,6 @@
   "Invalid response stream": "Invalid response stream",
   "Response stream interrupted": "Response stream interrupted",
   "Customize {{name}}": "Customize {{name}}",
-  "Customize skill": "Customize skill"
+  "Customize skill": "Customize skill",
+  "Select an API key first.": "Select an API key first."
 }

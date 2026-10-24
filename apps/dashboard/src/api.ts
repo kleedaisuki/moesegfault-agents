@@ -24,6 +24,7 @@ export type Model = {
 export type ModelRegistry = {
   data: { id: string }[];
   available_models: Model[];
+  available_platform_models?: Model[];
 };
 export type ProviderKey = { id: string; provider: string };
 export type Message = { role: string; content: string };
