@@ -19,6 +19,17 @@ export function UsagePage({ account }: { account: Account }) {
   const totals = usageTotals(usage.data);
   return (
     <>
+      {new URLSearchParams(window.location.search).get("billing_refresh") ===
+        "failed" && (
+        <div className="notice" role="alert">
+          <p>
+            {t(
+              "Your subscription could not be refreshed. Existing access has not been removed.",
+            )}
+          </p>
+          <a href="/billing/return">{t("Retry subscription refresh")}</a>
+        </div>
+      )}
       <header className="page-header">
         <div>
           <h1>{t("Usage & plan")}</h1>
@@ -104,12 +115,7 @@ export function UsagePage({ account }: { account: Account }) {
           )}
         </div>
         {account.subscription_url && (
-          <a
-            className="button primary"
-            href={account.subscription_url}
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a className="button primary" href={account.subscription_url}>
             {t("Manage subscription")}
             <ArrowUpRight size={16} />
           </a>

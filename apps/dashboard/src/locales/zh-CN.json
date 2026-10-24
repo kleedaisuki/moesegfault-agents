@@ -181,5 +181,7 @@
   "Context window": "上下文窗口",
   "Maximum output tokens": "最大输出 token 数",
   "Use your API’s model limits. Context compaction is calculated from this window.": "请使用 API 所提供的模型限制；上下文压缩比例以此窗口计算。",
-  "Output tokens must be smaller than the context window.": "最大输出 token 数必须小于上下文窗口。"
+  "Output tokens must be smaller than the context window.": "最大输出 token 数必须小于上下文窗口。",
+  "Your subscription could not be refreshed. Existing access has not been removed.": "暂时无法刷新订阅，已有权益未被移除。",
+  "Retry subscription refresh": "重新刷新订阅"
 }

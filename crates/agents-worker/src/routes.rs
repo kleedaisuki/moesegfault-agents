@@ -265,6 +265,9 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
     if path.starts_with("/auth/") {
         return auth::handle_auth(req, env).await;
     }
+    if path == auth::BILLING_RETURN_PATH {
+        return auth::handle_billing_return(req, env).await;
+    }
     if !path.starts_with("/v1/") {
         return util::json_error(404, "not_found", "Route not found");
     }

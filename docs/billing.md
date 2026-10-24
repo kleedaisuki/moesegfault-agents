@@ -60,6 +60,40 @@ SDK access every five minutes or relaxing Identity audience checks.
 Regression evidence is in `tests/test_subscription_snapshots_sql.py` (actual shared SQL,
 API-key use after browser logout, refresh deadlines, tenant isolation and idempotent funding)
 and the Rust `sdk_only_paid_grant_survives_refresh_ttl_but_not_subscription_expiry` test.
+
+### Subscribe management return
+
+The dashboard account response supplies an environment-paired `subscription_url`
+with `app=agents` and an exact HTTPS `return_to` ending in `/billing/return` on
+the corresponding `adash` origin. This is a product continuation, not an OAuth
+redirect URI or evidence of payment. The dashboard follows it in the same tab;
+Subscribe alone owns activation and must accept the exact destination in its
+own environment's return allowlist.
+
+`GET /billing/return` is explicitly Worker-first, not static SPA fallback. It
+authenticates its own host-only Agents browser session; an absent or expired
+session starts ordinary OIDC with the same safe local return path. Inside the
+session's serialized AuthSession, a server-owned flag fetches Billing using that
+session's current access token, bypassing the normal 60-second snapshot-fetch
+coalescing window. It never trusts a query-supplied plan, payer, tier or return
+destination, and cannot import a different Subscribe principal's grant.
+
+After a typed successful Billing response and allowance reconciliation it
+redirects to `/#usage`. The new document selects Usage & plan from that existing
+hash and cold-loads account and usage data, so no stale React Query state from
+the departing dashboard can mask a new activation or renewal. Normal API reads
+and API-key grant validity remain unchanged.
+
+A failed request, non-200 response, or malformed subscription array does not
+replace the last verified snapshot or call a temporary outage a successful
+refresh. The return lands at `/?billing_refresh=failed#usage` with an explicit
+retry link back to the fixed return endpoint. Existing grants still expire at
+their real period end. No bearer token or refresh capability enters browser URLs.
+
+The initial rollout is **staging only**. Before promoting the Agents code to
+production, the independently deployed Subscribe production allowlist must first
+accept exactly `https://adash.moesegfault.dev/billing/return`; adding only the
+staging destination is not proof that the production round trip is enabled.
 ## Local policy
 
 `agents_auth::billing::PlanPolicy` is local entitlement-to-limit policy, not an
@@ -237,3 +271,27 @@ entitlement timing, idempotency conflicts, release semantics, exact rational
 prices and conservation across interleaved runs.
 These local tests do not establish deployed Billing audience registration,
 funding, provider reconciliation, or Cloudflare metric ingestion acceptance.
+
+### Hosted subscription return acceptance — 2026-10-24
+
+Staging source `3e68ff9eb330b4d896816575c9e2d47f4f2833d5` completed
+[full CI 40092052174](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40092052174)
+and was deployed through
+[staging run 40092345570](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40092345570).
+Its actual public health readback matched that source before the browser test.
+
+An owned synthetic Free account clicked the real Manage subscription link,
+completed same-tab Subscribe SSO, browsed products and returned to activation
+without losing context. A first no-activation return established a fresh Free
+snapshot. After one real emailed Go activation, the actual return reached
+`/billing/return` then `/#usage` in 9,378 ms of that fresh baseline: UI and
+account/usage API showed Go, ten agent configurations, five concurrent sessions
+and an USD 8 test allowance. Repeating the trip did not fund twice. Removing only
+the synthetic Agents browser cookie exercised ordinary SSO recovery back through
+the fixed route. No production rollout or new OAuth permission was involved.
+
+The complete eight-group hosted proof, exact paired Subscribe source/versions,
+negative destination checks and precise local-versus-hosted limits are recorded
+in the [cross-service acceptance report](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/bc878c09d2d01297f579d04fbd828302aeb49ee6/docs/validation/agents-roundtrip-2026-10-24.md).
+Credentials, activation capabilities and browser state remain in a protected,
+ignored local test workspace rather than source or documentation.

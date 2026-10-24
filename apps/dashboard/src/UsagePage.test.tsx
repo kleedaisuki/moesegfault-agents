@@ -33,6 +33,7 @@ function mount(subscription_url?: string) {
 afterEach(() => {
   cleanup();
   i18n.changeLanguage("en");
+  window.history.replaceState(null, "", "/");
 });
 for (const language of ["en", "zh-CN"])
   describe(`subscription environment boundary (${language})`, () => {
@@ -58,7 +59,25 @@ for (const language of ["en", "zh-CN"])
         screen.getByRole("link", { name: i18n.t("Manage subscription") }),
       ).toHaveAttribute("href", "https://subscribe-staging.moesegfault.dev/");
       expect(
+        screen.getByRole("link", { name: i18n.t("Manage subscription") }),
+      ).not.toHaveAttribute("target");
+      expect(
         document.querySelector('a[href^="https://subscribe.moesegfault.dev"]'),
       ).toBeNull();
+    });
+    it("offers a fixed retry after a failed authenticated subscription refresh", async () => {
+      await i18n.changeLanguage(language);
+      window.history.replaceState(null, "", "/?billing_refresh=failed#usage");
+      mount();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        i18n.t(
+          "Your subscription could not be refreshed. Existing access has not been removed.",
+        ),
+      );
+      expect(
+        screen.getByRole("link", {
+          name: i18n.t("Retry subscription refresh"),
+        }),
+      ).toHaveAttribute("href", "/billing/return");
     });
   });
