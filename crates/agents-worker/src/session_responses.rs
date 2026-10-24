@@ -43,6 +43,9 @@ pub(super) struct ResponseRun {
 impl ResponseRun {
     pub(super) fn recover_sequence(&mut self) {
         self.next_sequence = self.next_sequence.max(self.reserved_sequence_end);
+        self.reserved_sequence_end = self
+            .next_sequence
+            .saturating_add(MAX_RESPONSE_EVENTS as u64 + 16);
     }
 
     fn value(&self) -> Value {
@@ -69,6 +72,10 @@ impl ResponseRun {
     }
 
     fn event(&mut self, kind: &str, mut fields: Value) -> Result<Value> {
+        if self.next_sequence >= self.reserved_sequence_end {
+            self.stream_error = Some("response_event_limit".into());
+            return Err(Error::RustError("response_event_limit".into()));
+        }
         fields["type"] = json!(kind);
         fields["sequence_number"] = json!(self.next_sequence);
         let bytes = serde_json::to_vec(&fields)?.len();
@@ -817,6 +824,9 @@ impl SessionInner {
         let Some(response) = run.response else {
             return Ok(());
         };
+        if let Some(error) = &response.stream_error {
+            return Err(Error::RustError(error.clone()));
+        }
         let text = completion.message.content.as_str().unwrap_or("");
         let projected_bytes = serde_json::to_vec(&response.output)?
             .len()
@@ -1334,7 +1344,7 @@ mod tests {
             awaiting_calls: vec![],
             usage: Usage::default(),
             next_sequence: 0,
-            reserved_sequence_end: 0,
+            reserved_sequence_end: MAX_RESPONSE_EVENTS as u64 + 16,
             event_bytes: 0,
             completed_at: None,
             stream_error: None,
@@ -1400,6 +1410,34 @@ mod tests {
             failed["sequence_number"].as_u64().unwrap()
                 > delta["sequence_number"].as_u64().unwrap()
         );
+    }
+
+    #[test]
+    fn repeated_resets_require_fresh_durable_ranges_before_any_new_event() {
+        let mut first = response();
+        first.event("response.created", json!({})).unwrap();
+        let mut restored = first.clone();
+        restored.recover_sequence();
+        let durable = restored.clone();
+        let disclosed = restored.event("response.in_progress", json!({})).unwrap();
+        let mut restored_again = durable;
+        restored_again.recover_sequence();
+        let after = restored_again.event("response.failed", json!({})).unwrap();
+        assert!(
+            after["sequence_number"].as_u64().unwrap()
+                > disclosed["sequence_number"].as_u64().unwrap()
+        );
+        restored_again.next_sequence = restored_again.reserved_sequence_end;
+        assert!(
+            restored_again
+                .event(
+                    "response.output_text.delta",
+                    json!({"delta":"must not escape"})
+                )
+                .is_err()
+        );
+        restored_again.recover_sequence();
+        assert!(restored_again.event("response.failed", json!({})).is_ok());
     }
 
     #[test]

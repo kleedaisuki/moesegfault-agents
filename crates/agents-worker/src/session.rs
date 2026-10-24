@@ -1388,6 +1388,7 @@ impl SessionInner {
                 )?;
             }
         }
+        self.reserve_response_events();
         let needs_end = saved.run.as_ref().unwrap().ended_at_ms.is_none();
         if needs_end {
             {
@@ -1399,6 +1400,8 @@ impl SessionInner {
             // This boundary precedes settlement, preserving its observed D1
             // charge. Recovery never adds a new event to a finalized reservation.
             self.persist_with_observation(true).await?;
+        } else if saved.run.as_ref().unwrap().response.is_some() {
+            self.persist().await?;
         }
         let data = self.snapshot()?;
         let run = data.run.as_ref().unwrap();
@@ -1919,6 +1922,9 @@ async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
     let mut data: PersistedSession = serde_json::from_slice(&bytes)?;
     if let Some(response) = data.run.as_mut().and_then(|r| r.response.as_mut()) {
         response.recover_sequence();
+        // Commit a fresh allocation fence before any restored fetch/alarm can
+        // expose events. A second reset cannot reuse an already disclosed ID.
+        write_chunks(storage, STATE_KEY, &serde_json::to_vec(&data)?).await?;
     }
     if data.projection_pending
         && !data.projection_generation.is_empty()
