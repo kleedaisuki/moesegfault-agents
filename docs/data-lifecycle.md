@@ -62,6 +62,14 @@ clock continues normally while referenced. Reference/admission metadata is
 bounded control-plane overhead included in service pricing, not a second
 storage operation or an independent financial reservation.
 
+The v0.3 service rollback floor includes migration 0014 and pin-aware deletion,
+upload-abort claims and authoritative DO reconciliation. Do not serve accepted
+references with a pre-pin v0.3 binary: database guards protect status-transition
+writers, but cannot intercept an older handler that deletes an R2 object before
+checking its database state. The first v0.3 rollout must include the complete
+pin-aware implementation. This service migration floor does not change the
+existing v0.2 SDK, CLI or Chat Completions client contracts.
+
 See [Space workflows and recovery](space.md) and
 [workspace version publication](workspace-versions.md) for the user contract and
 the durable commit points.
