@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -18,7 +17,6 @@ use crate::{
 const MAX_INPUT_ITEMS: usize = 128;
 const MAX_TEXT_BYTES: usize = 256 * 1024;
 const MAX_INSTRUCTIONS_BYTES: usize = 64 * 1024;
-const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMAGES: usize = 8;
 
@@ -197,12 +195,16 @@ impl ResponseRequest {
                 return Err("include_obfuscation must be a boolean".into());
             }
         }
-        self.validate_tools()?;
-        self.validate_text()?;
+        let mut schemas = crate::responses_schema::SchemaBudget::default();
+        self.validate_tools(&mut schemas)?;
+        self.validate_text(&mut schemas)?;
         Ok(())
     }
 
-    fn validate_tools(&self) -> Result<(), String> {
+    fn validate_tools(
+        &self,
+        schemas: &mut crate::responses_schema::SchemaBudget,
+    ) -> Result<(), String> {
         if self.tools.len() > 128 {
             return Err("At most 128 client tools may be registered".into());
         }
@@ -242,12 +244,15 @@ impl ResponseRequest {
             {
                 return Err("Function schema exceeds 64 KiB".into());
             }
-            crate::responses_schema::validate_schema(&tool.parameters)?;
+            schemas.validate(&tool.parameters)?;
         }
         Ok(())
     }
 
-    fn validate_text(&self) -> Result<(), String> {
+    fn validate_text(
+        &self,
+        schemas: &mut crate::responses_schema::SchemaBudget,
+    ) -> Result<(), String> {
         let Some(text) = &self.text else {
             return Ok(());
         };
@@ -290,7 +295,7 @@ impl ResponseRequest {
                 {
                     return Err("JSON schema description must be a string".into());
                 }
-                crate::responses_schema::validate_schema(&format["schema"])?;
+                schemas.validate(&format["schema"])?;
                 Ok(())
             }
             _ => Err("Unsupported text.format.type".into()),
@@ -313,7 +318,7 @@ impl ResponseRequest {
     }
 
     pub fn tool_definitions(&self) -> Result<Vec<ToolDefinition>, String> {
-        self.validate_tools()?;
+        self.validate_tools(&mut crate::responses_schema::SchemaBudget::default())?;
         self.tools
             .iter()
             .map(|tool| {
@@ -346,7 +351,8 @@ impl ResponseRequest {
         self.validate()?;
         let mut input = self.input.clone();
         let mut images = 0;
-        placeholder_files(&mut input, &mut images)?;
+        let mut bytes = 0;
+        placeholder_files(&mut input, &mut images, &mut bytes)?;
         let mut normalized = self.normalize_input(&input)?;
         // Public input history keeps owner-scoped references, not a second copy
         // of bytes already durably stored in Space.
@@ -407,39 +413,37 @@ fn input_items(input: &Value) -> Result<Vec<Value>, String> {
         .collect()
 }
 
-fn placeholder_files(value: &mut Value, images: &mut usize) -> Result<(), String> {
+fn placeholder_files(
+    value: &mut Value,
+    images: &mut usize,
+    bytes: &mut usize,
+) -> Result<(), String> {
+    if value
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "input_file" | "input_image"))
+    {
+        let (count, size) = crate::responses_attachments::validate_part(value)
+            .map_err(|_| "Invalid file or image attachment")?;
+        *images += count;
+        *bytes += size;
+        if *images > MAX_IMAGES || *bytes > MAX_TOTAL_IMAGE_BYTES {
+            return Err(
+                "A response accepts at most 8 images and 4 MiB of inline attachments".into(),
+            );
+        }
+        *value = json!({"type":"input_text","text":""});
+        return Ok(());
+    }
     match value {
-        Value::Object(object)
-            if object.get("type").and_then(Value::as_str) == Some("input_file") =>
-        {
-            let part = Value::Object(object.clone());
-            object_keys(&part, &["type", "file_id"], "input_file")?;
-            identifier(required_string(&part, "file_id")?, "file_id")?;
-            *value = json!({"type":"input_text","text":""});
-        }
-        Value::Object(object)
-            if object.get("type").and_then(Value::as_str) == Some("input_image") =>
-        {
-            *images += 1;
-            if *images > MAX_IMAGES {
-                return Err("A response accepts at most 8 images totaling 4 MiB".into());
-            }
-            if object.contains_key("file_id") {
-                let part = Value::Object(object.clone());
-                object_keys(&part, &["type", "file_id", "detail"], "input_image")?;
-                identifier(required_string(&part, "file_id")?, "file_id")?;
-                image_detail(part.get("detail"))?;
-                *value = json!({"type":"input_text","text":""});
-            }
-        }
         Value::Object(object) => {
             for value in object.values_mut() {
-                placeholder_files(value, images)?;
+                placeholder_files(value, images, bytes)?;
             }
         }
         Value::Array(array) => {
             for value in array {
-                placeholder_files(value, images)?;
+                placeholder_files(value, images, bytes)?;
             }
         }
         _ => {}
@@ -620,28 +624,8 @@ fn image_detail(detail: Option<&Value>) -> Result<&str, String> {
 }
 
 fn image_bytes(url: &str) -> Result<usize, String> {
-    let (prefix, encoded) = url
-        .split_once(',')
-        .ok_or("Images must use bounded base64 data URLs or owned Space file IDs")?;
-    if !matches!(
-        prefix,
-        "data:image/png;base64"
-            | "data:image/jpeg;base64"
-            | "data:image/gif;base64"
-            | "data:image/webp;base64"
-    ) || encoded.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4
-    {
-        return Err(
-            "Images must be PNG, JPEG, GIF or WebP base64 data URLs of at most 5 MiB".into(),
-        );
-    }
-    let bytes = STANDARD
-        .decode(encoded)
-        .map_err(|_| "Image data is not valid base64")?;
-    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
-        return Err("Image data must contain between 1 byte and 5 MiB".into());
-    }
-    Ok(bytes.len())
+    crate::responses_attachments::validate_data_image(url)
+        .map_err(|_| "Images must use bounded PNG, JPEG, GIF or WebP base64 data URLs".into())
 }
 
 fn user_content(content: &Value) -> Result<Value, String> {
@@ -1053,6 +1037,34 @@ mod tests {
     }
 
     #[test]
+    fn inline_files_use_the_resolvers_pure_admission_contract() {
+        for data in ["aGVsbG8=", "data:text/plain;base64,aGVsbG8="] {
+            let request = request(
+                json!([{"role":"user","content":[{"type":"input_file","filename":"notes.txt","file_data":data}]}]),
+            );
+            let structural = request.normalize_structure().unwrap();
+            assert_eq!(
+                structural.input_items[0]["content"][0]["filename"],
+                "notes.txt"
+            );
+            assert_eq!(structural.input_items[0]["content"][0]["file_data"], data);
+            assert_eq!(structural.messages[0].content, "");
+            assert!(request.normalize().is_err());
+        }
+        for part in [
+            json!({"type":"input_file","filename":"../escape","file_data":"aGVsbG8="}),
+            json!({"type":"input_file","filename":"notes.txt","file_data":"invalid!"}),
+            json!({"type":"input_file","file_data":"aGVsbG8="}),
+        ] {
+            assert!(
+                request(json!([{"role":"user","content":[part]}]))
+                    .normalize_structure()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn request_schemas_are_compiled_before_execution() {
         let mut request = request(json!("hello"));
         request.tools = serde_json::from_value(json!([{"type":"function","name":"local","parameters":{"type":"object","properties":{"count":{"minimum":"wrong"}}}}])).unwrap();
@@ -1060,6 +1072,23 @@ mod tests {
         request.tools.clear();
         request.text = Some(
             json!({"format":{"type":"json_schema","name":"result","schema":{"$ref":"https://example.invalid/schema"}}}),
+        );
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn schema_budget_is_shared_between_all_tools_and_structured_output() {
+        let mut request = request(json!("hello"));
+        request.tools = (0..32).map(|index| ResponseTool {
+            kind: "function".into(),
+            name: format!("local_{index}"),
+            description: None,
+            parameters: json!({"type":"object","properties":{"name":{"type":"string","pattern":"^[a-z]+$"}}}),
+            strict: None,
+        }).collect();
+        assert!(request.validate().is_ok());
+        request.text = Some(
+            json!({"format":{"type":"json_schema","name":"result","schema":{"type":"object","properties":{"name":{"type":"string","pattern":"^[a-z]+$"}}}}}),
         );
         assert!(request.validate().is_err());
     }

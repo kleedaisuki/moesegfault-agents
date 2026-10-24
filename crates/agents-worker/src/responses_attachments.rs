@@ -105,6 +105,34 @@ fn fields(part: &Value, allowed: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Returns image count and known decoded bytes without reading or writing storage.
+/// Referenced file sizes remain unknown until the owner-scoped resolution step.
+pub fn validate_part(part: &Value) -> Result<(usize, usize)> {
+    match part["type"].as_str() {
+        Some("input_file") => {
+            fields(part, &["type", "file_id", "file_data", "filename"])?;
+            match (part.get("file_id"), part.get("file_data")) {
+                (Some(id), None) if id.as_str().is_some_and(valid_file_id) => Ok((0, 0)),
+                (None, Some(_)) => Ok((0, inline_file(part)?.2.len())),
+                _ => Err(fail("invalid_file_input")),
+            }
+        }
+        Some("input_image") => {
+            fields(part, &["type", "file_id", "image_url", "detail"])?;
+            image_detail(part)?;
+            match (part.get("file_id"), part.get("image_url")) {
+                (Some(id), None) if id.as_str().is_some_and(valid_file_id) => Ok((1, 0)),
+                (None, Some(url)) => {
+                    let url = url.as_str().ok_or_else(|| fail("invalid_image_source"))?;
+                    Ok((1, validate_data_image(url)?))
+                }
+                _ => Err(fail("invalid_image_source")),
+            }
+        }
+        _ => Err(fail("invalid_attachment")),
+    }
+}
+
 async fn resolve_file(
     env: &Env,
     owner: &str,
@@ -279,7 +307,7 @@ fn image_media(media: &str) -> bool {
     )
 }
 
-fn validate_data_image(url: &str) -> Result<usize> {
+pub fn validate_data_image(url: &str) -> Result<usize> {
     let (header, encoded) = url
         .split_once(',')
         .ok_or_else(|| fail("invalid_image_source"))?;
@@ -426,5 +454,41 @@ mod tests {
         );
         assert!(image_detail(&json!({"detail":"invalid"})).is_err());
         assert_eq!(image_detail(&json!({})).unwrap(), "auto");
+    }
+
+    #[test]
+    fn pure_preflight_checks_sources_and_known_decoded_bytes() {
+        assert_eq!(
+            validate_part(&json!({"type":"input_file","file_id":"file_a"})).unwrap(),
+            (0, 0)
+        );
+        assert_eq!(
+            validate_part(
+                &json!({"type":"input_file","filename":"notes.txt","file_data":"aGVsbG8="})
+            )
+            .unwrap(),
+            (0, 5)
+        );
+        assert_eq!(
+            validate_part(&json!({"type":"input_image","file_id":"file_a","detail":"high"}))
+                .unwrap(),
+            (1, 0)
+        );
+        assert_eq!(
+            validate_part(&json!({"type":"input_image","image_url":"data:image/png;base64,AQID"}))
+                .unwrap(),
+            (1, 3)
+        );
+        for part in [
+            json!({"type":"input_file","file_id":"file_a","file_data":"aGVsbG8="}),
+            json!({"type":"input_file","file_id":"../escape"}),
+            json!({"type":"input_file","file_data":"aGVsbG8="}),
+            json!({"type":"input_image","file_id":"file_a","image_url":"data:image/png;base64,AQID"}),
+            json!({"type":"input_image","image_url":"https://example.invalid/image.png"}),
+            json!({"type":"input_image","file_id":"file_a","detail":"unknown"}),
+            json!({"type":"input_file","file_url":"https://example.invalid/file"}),
+        ] {
+            assert!(validate_part(&part).is_err());
+        }
     }
 }
