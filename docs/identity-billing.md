@@ -169,3 +169,100 @@ belonged to the newly created staging fixture. Browser OAuth-token custody is en
 by the BFF implementation; these results do not claim an independent browser-memory
 forensics audit. Durable metadata and secret-bearing acceptance artifacts remain
 separated: only the sanitized outcomes above belong in repository knowledge.
+
+### Authoritative paid allowance correction: deployed acceptance, 2026-10-24
+
+The same independently registered staging fixture subsequently redeemed an authorized
+synthetic Agents Pro capability through Subscribe's normal UI. This was not a payment
+or a direct database grant. The original calendar-pinned allocation exposed
+48,744,159 microUSD rather than the full verified paid period's 180,000,000 microUSD.
+That earlier observed balance is historical evidence, not the intended Pro allowance.
+
+After public `/healthz` reported exact build
+`a918c6730cf95fcb66e3ec360b4d68f64eb091f8`, the published Windows CLI from source
+`928c533` was exercised again against staging, using its existing OS-keyring credential
+and the same fixture. No registration, capability issuance, subscription redemption or
+financial database mutation was performed during this correction acceptance.
+
+| Boundary exercised | Observed result |
+| --- | --- |
+| Existing native credential lifecycle | `auth status` initially reported `Login expired`; normal protected `account` refreshed it, and a separate process then reported `Logged in` |
+| Three consecutive normal account reads | Same privately compared account; Pro, test billing mode, 180,000,000 microUSD available each time |
+| Pro admission policy | 200 configurations, 100 concurrent sessions, 20 concurrent runs |
+| Owned-account, read-only wallet inspection | Budget 180,000,000; spent 0; reserved 0 microUSD, matching the API's available balance |
+| Immutable replacement provenance | Exactly one replacement: previous allocation 48,744,159, delta 131,255,841, target 180,000,000 microUSD |
+| Verified paid validity | Replacement paid anchor and wallet expiry matched the active product-scoped Pro snapshot: 2026-10-23 17:33:02 UTC through 2026-11-22 17:33:02 UTC, exactly 30 days |
+
+The replacement preserves the existing funding-window identity and its spend/hold
+provenance while replacing the legacy Free calendar anchor with the authoritative paid
+period. It does not stack a second monthly allowance. Repeated protected account reads
+and the ordinary native rotating-refresh path neither added another replacement nor
+increased the balance. These observations used actual deployed Rust Worker/D1 and the
+released CLI, not a mocked account response. Inspection was restricted to this owned
+account's wallet, replacement journal and verified subscription snapshot; credential
+material, principal identifiers and raw subscription records remain private.
+
+### Real-clock inactivity acceptance, 2026-10-24
+
+Build `a918c6730cf95fcb66e3ec360b4d68f64eb091f8` was exercised through the published
+CLI and official OpenAI SDK, using the same isolated Pro fixture. The CLI issued a
+task-specific API key; two temporary configurations and workspaces were created.
+No clock, Durable Object state, credential or financial record was edited. Reads
+sampled the real deployed sessions approximately every ten seconds. After the sole
+accepted input, both `last_input_at_ms` and `input_revision` remained unchanged by
+those GET requests.
+
+**Polled idle workspace: passed.** One real bash call wrote a unique marker and returned
+exit code 0 in 35 ms. No further input was appended. The stored close timestamp was
+605.399 seconds after that input; the first polling observation of Closed was at
+616.24 seconds. Thus the ten-minute deadline initiated archival, with checkpoint
+and release finishing several seconds later, rather than GET traffic renewing it.
+This exercised the application idle deadline under read traffic, **not fully
+unattended persistence**: polling can keep the Durable Object active and mask the
+platform's independent container inactivity-stop behavior. A follow-up must leave
+the workspace entirely unrequested until after the deadline, with the native
+container inactivity timeout explicitly configured longer than the session window.
+
+The archived workspace had generation 1 and a 365-byte compressed archive. Its actual
+private R2 manifest and archive were downloaded, and their generation, byte count and
+SHA-256 matched the session snapshot. The conversation archive was also retrieved.
+A read-only Cloudflare Containers query matched this exact owned Durable Object's
+instance and reported `inactive`. All its reservations were settled or released, with
+no held balance or pending resource observations. Its first container interval was
+594,368 wall-ms, charged 5,944 microUSD; the initial model journal contained 1,373
+tokens across two provider calls, charged 283 microUSD.
+
+Normal explicit resume preserved the pin. A **new actual bash tool result**, not an
+assistant recollection, read the restored marker with exit code 0 in 19 ms. The session
+was then explicitly closed; its container again reported inactive. Including this
+resume/restore cycle, the idle fixture's final recorded charge was 6,774 microUSD,
+with all reservations finalized.
+
+**Task continuing beyond ten minutes: not yet passed.** The other fixture requested
+exactly three sequential bash calls sleeping 240, 240 and 150 seconds, each with
+`timeout_ms=270000`; SDK timeout was 1,000 seconds and automatic retries were disabled.
+The model emitted the correct first bash call. It was present in the journal by
+12.85 seconds, but between the 25.22- and 37.06-second observations the run ended
+with `workspace_unavailable`, `execution_status=unknown`, and no confirmed tool result.
+The container record was inactive without evidence of a successful process start.
+Consequently neither 630 seconds of command execution nor continued Running state
+after the idle deadline was demonstrated. This is a workspace-start/transport incident
+for diagnosis, not evidence that the model ignored the requested sequence or that
+long-task inactivity semantics passed.
+
+There was no retry, appended recovery command or forced close of that uncertain task.
+It later reported logical Closed at input plus 601.187 seconds and persisted its
+conversation, but had no workspace snapshot. Its flags still showed
+`checkpoint_pending=true`, `workspace_checkpoint_pending`, and
+`workspace_container_exit_before_checkpoint`: logical Closed alone is **not** proof
+that archival or cleanup completed. Its unresolved container observation and
+38,018-microUSD financial hold were deliberately left intact, not released by the
+test. No DELETE was sent to that session. Read-only diagnostic evidence was handed
+to the runtime owner. Both temporary configurations were subsequently soft-deleted
+after observing closed, non-running sessions; the uncertain session's retained
+checkpoint journal and hold still require runtime reconciliation. The
+task-specific API key was revoked through the released CLI and an API request with it
+then returned 401. Five model calls were recorded across both fixtures, totaling
+3,925 tokens; total posted charges were 7,085 microUSD at inspection, plus the preserved
+uncertain hold, within the authorized synthetic test budget. No production state or
+existing smoke-test tenant was touched.

@@ -152,6 +152,52 @@ For a deployment, verify `/healthz.build_id` matches its checked-out Git SHA, th
 inspect a real `run.started` and its joined provider/tool/snapshot references. Unit
 tests and a WASM check do not establish that Cloudflare has ingested those events.
 
+### Live staging acceptance — 2026-10-24
+
+A bounded test against `agents-staging.moesegfault.dev` first verified the exact
+health build `a918c6730cf95fcb66e3ec360b4d68f64eb091f8`. It used the secondary test
+account, one new agent/session, and exactly one user turn with the registered
+`deepseek/deepseek-v4.1-flash-1017` model. The model called `time` once and completed
+after two upstream completions. Both owned resources were normally closed/deleted
+with HTTP 200; no primary-account work was touched.
+
+Cloudflare live `wrangler tail --env staging --format json` observations established
+the following content-free chain, not merely local emitter/unit-test behavior:
+
+| Observed event | Count | Verified correlation / provenance |
+| --- | ---: | --- |
+| `request.completed` | 7 | This test's application `trace_id`, status and duration |
+| `run.started` | 1 | Same app trace; owned agent/session/run; exact deployment build; revision 1; 64-hex `prefix_hash`; pinned registry `2026-10-23.1` |
+| `provider.completed` | 2 | Same trace/run/session; rounds 0 and 1; `usage_reported=true`; bounded token counters |
+| `tool.completed` | 1 | Same trace/run/session; `tool_name=time`; tool-call ID and round 1 |
+| `run.completed` | 1 | Same run/session; `success=true` |
+| `session.archived` | 1 | Same session/agent; exact deployment build |
+
+The app trace was `98e0c976a63044bfa7710cb1d2a695a8`; the run was
+`run_bf0683b3d8d441c5b5008712d6b53d44`. Provider/tool events join to the pinned
+context digest and build through `run.started`; the archive joins through the owned
+session, not a nonexistent archive `trace_id` field. Request and completion logs can
+arrive in different tail batches, so the table is a causal join, not an assertion of
+transport ordering. The tool's emitted round is 1 following provider round 0; equal
+provider/tool round numbers must not be assumed to identify the producing completion.
+
+The collector disabled Wrangler disk logging with `WRANGLER_WRITE_LOGS=false` and
+metrics with `WRANGLER_SEND_METRICS=false`, parsed tail objects only in memory,
+discarded invocation requests/headers/query/body/raw exceptions, selected only this
+test's app trace or owned session, and persisted only explicit allowlisted event
+metadata. A unique private marker in instructions and user input did not appear in
+the selected raw structured console-event payloads; no unexpected metadata fields
+were observed. No credential, message, model answer or tool result was persisted.
+Sanitized local evidence is `.cache/telemetry/a918c67-events.json` and
+`.cache/telemetry/a918c67-acceptance.json`; these caches are not durable user records.
+
+Scope: this establishes real Cloudflare ingestion and application provenance joins
+for the request → run → provider/tool → archive journey. It does not establish
+native Cloudflare trace-UI parentage or equate the application trace ID with a
+platform span/trace ID. This time-only run did not allocate a workspace or change a
+snapshot, so no `session.checkpoint` event was expected or claimed. R2 lifecycle
+expiration and diagnostic-upload retention were not exercised by this bounded test.
+
 ## Sources and engineering rationale
 
 - [Cloudflare custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/):
