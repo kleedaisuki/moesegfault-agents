@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture, runAuthJourney, runClientAssertionJourney, runInvalidClientKeyJourney } from './auth-journey.mjs';
+import { createGenericProviderFixture, runGenericByokJourney } from './generic-byok-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -16,6 +17,7 @@ const hash = createHash('sha256').update(key).digest('base64url');
 test('compiled Rust Worker: authenticated D1 and session DO user journey', { timeout: 90000 }, async (t) => {
   const encryptionKey = randomBytes(32);
   const identity = createIdentityFixture();
+  const genericProviders = createGenericProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -60,6 +62,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
+      const genericResponse = await genericProviders.handle(request);
+      if (genericResponse !== undefined) return genericResponse;
       if (request.url.startsWith('https://redirect-target.test/')) {
         redirectTargetCalls++;
         throw new Error('Provider redirect must never be followed');
@@ -395,4 +399,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       byokProviderKey = null;
     }
   });
+  for (const protocol of ['openai', 'anthropic']) {
+    await t.test(`generic ${protocol} BYOK preserves route identity and completes tools without model charges`, { timeout: 32000 }, () =>
+      runGenericByokJourney({ mf, db, encryptionKey, request, providers: genericProviders, protocol }));
+  }
 });

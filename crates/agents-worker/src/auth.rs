@@ -109,11 +109,15 @@ fn error_response(code: &str, status: u16) -> Result<Response> {
 }
 
 async fn bounded_json(req: &mut Request) -> Result<Value> {
+    bounded_json_limit(req, 16384).await
+}
+
+async fn bounded_json_limit(req: &mut Request, limit: usize) -> Result<Value> {
     if req
         .headers()
         .get("Content-Length")?
         .and_then(|s| s.parse::<usize>().ok())
-        .is_some_and(|len| len > 16384)
+        .is_some_and(|len| len > limit)
     {
         return Err(failure("body_too_large"));
     }
@@ -121,7 +125,7 @@ async fn bounded_json(req: &mut Request) -> Result<Value> {
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        if chunk.len() > 16384usize.saturating_sub(bytes.len()) {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
             return Err(failure("body_too_large"));
         }
         bytes.extend_from_slice(&chunk);
@@ -640,7 +644,7 @@ pub async fn handle_account(
         return api_keys(&mut req, env, context).await;
     }
     if path.starts_with("/v1/provider-keys") {
-        return provider_keys(&mut req, env, context).await;
+        return provider_keys::handle(&mut req, env, context).await;
     }
     if path == "/v1/diagnostics" && req.method() == Method::Post {
         return diagnostics(&mut req, env, context).await;
@@ -712,92 +716,9 @@ async fn api_keys(req: &mut Request, env: &Env, context: &AuthContext) -> Result
     }
 }
 
-pub struct ProviderCredential {
-    pub provider: String,
-    pub api_key: String,
-}
-
-pub async fn provider_identity(env: &Env, account_id: &str, credential_id: &str) -> Result<String> {
-    let row = env
-        .d1("DB")?
-        .prepare("SELECT provider FROM provider_keys WHERE account_id=?1 AND id=?2")
-        .bind(&[account_id.into(), credential_id.into()])?
-        .first::<Value>(None)
-        .await?
-        .ok_or_else(|| failure("provider_key_not_found"))?;
-    match row["provider"].as_str() {
-        Some(provider @ ("openrouter" | "deepseek")) => Ok(provider.to_owned()),
-        _ => Err(failure("invalid_provider")),
-    }
-}
-
-pub async fn provider_credential(
-    env: &Env,
-    account_id: &str,
-    credential_id: &str,
-) -> Result<ProviderCredential> {
-    let row = env
-        .d1("DB")?
-        .prepare("SELECT provider,key_encrypted FROM provider_keys WHERE account_id=?1 AND id=?2")
-        .bind(&[account_id.into(), credential_id.into()])?
-        .first::<Value>(None)
-        .await?
-        .ok_or_else(|| failure("provider_key_not_found"))?;
-    let provider = row["provider"]
-        .as_str()
-        .ok_or_else(|| failure("invalid_provider"))?;
-    if !["openrouter", "deepseek"].contains(&provider) {
-        return Err(failure("invalid_provider"));
-    }
-    let bytes = crypto(unseal(
-        &encryption_key(env)?,
-        &format!("byok:{account_id}:{provider}"),
-        row["key_encrypted"]
-            .as_str()
-            .ok_or_else(|| failure("invalid_provider_key"))?,
-    ))?;
-    Ok(ProviderCredential {
-        provider: provider.into(),
-        api_key: String::from_utf8(bytes).map_err(|_| failure("invalid_provider_key"))?,
-    })
-}
-
-async fn provider_keys(req: &mut Request, env: &Env, context: &AuthContext) -> Result<Response> {
-    let db = env.d1("DB")?;
-    if req.method() == Method::Get && req.path() == "/v1/provider-keys" {
-        let rows = db.prepare("SELECT id,provider,created_at,updated_at FROM provider_keys WHERE account_id=?1 ORDER BY provider").bind(&[context.account_id.clone().into()])?.all().await?.results::<Value>()?;
-        return secure_response(Response::from_json(&json!({"data":rows}))?);
-    }
-    let path = req.path();
-    let provider = path
-        .strip_prefix("/v1/provider-keys/")
-        .filter(|s| ["openrouter", "deepseek"].contains(s))
-        .ok_or_else(|| failure("invalid_provider"))?;
-    if req.method() == Method::Delete {
-        db.prepare("DELETE FROM provider_keys WHERE account_id=?1 AND provider=?2")
-            .bind(&[context.account_id.clone().into(), provider.into()])?
-            .run()
-            .await?;
-        return secure_response(Response::from_json(&json!({"ok":true}))?);
-    }
-    if req.method() != Method::Put {
-        return error_response("not_found", 404);
-    }
-    let body = bounded_json(req).await?;
-    let secret = body["api_key"]
-        .as_str()
-        .filter(|s| s.len() >= 8 && s.len() <= 4096 && !s.chars().any(char::is_control))
-        .ok_or_else(|| failure("invalid_provider_key"))?;
-    let id = format!("cred_{}", crypto(random_token())?);
-    let encrypted = crypto(seal(
-        &encryption_key(env)?,
-        &format!("byok:{}:{provider}", context.account_id),
-        secret.as_bytes(),
-    ))?;
-    let row = db.prepare("INSERT INTO provider_keys(id,account_id,provider,key_encrypted,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?5) ON CONFLICT(account_id,provider) DO UPDATE SET key_encrypted=excluded.key_encrypted,key_version=provider_keys.key_version+1,updated_at=excluded.updated_at RETURNING id,provider,updated_at")
-        .bind(&[id.into(),context.account_id.clone().into(),provider.into(),encrypted.into(),d1_integer(now())?])?.first::<Value>(None).await?;
-    secure_response(Response::from_json(&row)?)
-}
+#[path = "provider_keys.rs"]
+pub(crate) mod provider_keys;
+pub use provider_keys::{credential as provider_credential, metadata as provider_metadata};
 
 async fn diagnostics(req: &mut Request, env: &Env, context: &AuthContext) -> Result<Response> {
     crate::telemetry::receive_diagnostic(req, env, &context.account_id).await

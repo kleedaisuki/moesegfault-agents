@@ -1131,13 +1131,15 @@ impl SessionInner {
     }
 
     async fn provider_config(&self, record: &SessionRecord) -> Result<ProviderConfig> {
-        use agents_core::Provider;
-        let (base_url, api_key) = match record.pinned.model.provider {
+        use agents_core::{Provider, ProviderProtocol};
+        let (protocol, base_url, api_key) = match record.pinned.model.provider {
             Provider::OpenRouter => (
+                ProviderProtocol::Openai,
                 "https://openrouter.ai/api/v1".into(),
                 self.env.secret("OPENROUTER_API_KEY")?.to_string(),
             ),
             Provider::DeepSeek => (
+                ProviderProtocol::Openai,
                 "https://api.deepseek.com".into(),
                 self.env.secret("DEEPSEEK_API_KEY")?.to_string(),
             ),
@@ -1150,15 +1152,11 @@ impl SessionInner {
                     .ok_or_else(|| Error::RustError("missing_credential".into()))?;
                 let credential =
                     crate::auth::provider_credential(&self.env, &record.owner_id, id).await?;
-                let base = match credential.provider.as_str() {
-                    "openrouter" => "https://openrouter.ai/api/v1",
-                    "deepseek" => "https://api.deepseek.com",
-                    _ => return Err(Error::RustError("untrusted_provider".into())),
-                };
-                (base.into(), credential.api_key)
+                (credential.protocol, credential.base_url, credential.api_key)
             }
         };
         Ok(ProviderConfig {
+            protocol,
             base_url,
             api_key,
             model: record.pinned.model.model.clone(),
@@ -1521,6 +1519,7 @@ fn safe_error_code(error: &Error) -> String {
         "compaction_outcome_unknown",
         "tool_outcome_unknown",
         "provider_usage_missing",
+        "provider_protocol_error",
         "provider_key_not_found",
         "invalid_provider_model",
         "provider_cost_missing",

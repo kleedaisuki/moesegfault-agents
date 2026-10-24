@@ -54,8 +54,9 @@ print(reply.choices[0].message.content)
 for management clients, including models usable through BYOK. The additive
 `available_platform_models` array has the same `ModelConfig` shape but includes only
 registered non-BYOK routes with a valid configured platform price. Management
-clients should use it for platform-funded provider/model choices and keep the full
-`available_models` for BYOK, filtered by the stored key's provider. Missing or
+clients should use it for platform-funded provider/model choices. BYOK uses a
+stored protocol credential and an arbitrary endpoint-supported model ID; it is
+not restricted to `available_models` or a vendor-specific platform catalog. Missing or
 malformed pricing exposes an empty platform list, not apparently supported models;
 invalid individual prices are excluded. Older servers may omit the additive field.
 This is configured pricing support, not a promise of upstream health, available
@@ -138,16 +139,37 @@ Creation/replacement body:
 `provider` is `openrouter`, `deepseek`, or `byok`. The older Rust-style spellings
 `open_router` and `deep_seek` are accepted as input aliases.
 
-Model context/output limits are validated and replaced with server registry
-metadata; sending larger numbers cannot increase the actual allowance. A BYOK
+Platform context/output limits are validated and replaced with server registry
+metadata; sending larger numbers cannot increase the platform allowance. A BYOK
 configuration includes a `credential_id` referencing the caller's encrypted stored
-credential. Omit `model` for the default OpenRouter
+credential and accepts an endpoint-supported custom model ID:
+
+```json
+{
+  "provider": "byok",
+  "credential_id": "cred_example",
+  "model": "my-model",
+  "context_window": 131072,
+  "max_output_tokens": 8192
+}
+```
+
+The BYOK context is a caller-controlled working budget, not a claim that an
+arbitrary endpoint actually supports that many tokens. When omitted it defaults
+conservatively to 131,072, with 8,192 output tokens; configure a smaller budget
+when the selected model requires it. Output must be positive and smaller than
+context. Compaction remains a percentage of this pinned budget. Legacy vendor
+credentials retain registered limits for previously registered model IDs; old
+serialized session pins keep their exact limits. Protocol and endpoint identity
+belong to the credential, not the model field.
+
+Omit `model` for the default OpenRouter
 `deepseek/deepseek-v4.1-flash-1017` route (1,048,576-token context and 8,192-token
 default output budget). Direct DeepSeek and BYOK routes remain explicit choices;
 they require the corresponding configured credential. `instructions` defaults to
 empty; tools to `["time"]`; skills to `[]`; compaction to 80; workspace to false.
 Names contain 1–100 bytes; instructions at most 64 KiB. `bash` requires a workspace.
-Unknown tools, skills, and unregistered models are rejected.
+Unknown tools and skills are rejected, as are unregistered platform-funded models.
 
 Returned `AgentConfig` adds `id`, `owner_id`, `revision`, `created_at_ms`, and
 `updated_at_ms`. Agent updates do not mutate existing sessions. `compaction_percent`
@@ -167,6 +189,10 @@ and skill content are deployment-managed in the initial version.
 | POST | `/v1/sessions/{id}/messages` | `{"messages":[{"role":"user","content":"…"}],"stream":false}`; append and run |
 | POST | `/v1/sessions/{id}/steer` | `{"content":"Prioritize the failing test first"}`; durable input for active run |
 | DELETE | `/v1/sessions/{id}` | Request safe close and workspace checkpoint |
+
+Conversation exports and committed workspace archive downloads are documented in
+[export contracts](exports.md). They preserve full source records rather than
+exporting only the compacted model context.
 
 Steering text is nonempty and at most 64 KiB. It is consumed at a safe model/tool
 boundary, not by launching a concurrent loop. An in-flight external command need
@@ -204,10 +230,54 @@ Canonical management resources are:
 | GET | `/v1/account` | Owner profile, effective plan/limits, credits, CSRF metadata |
 | GET/POST | `/v1/api-keys` | List redacted platform keys / create one-time-displayed secret |
 | DELETE | `/v1/api-keys/{id}` | Revoke a key |
-| GET | `/v1/provider-keys` | List redacted upstream credentials |
-| PUT | `/v1/provider-keys/{provider}` | Store encrypted `{"api_key":"…"}`; provider is `openrouter` or `deepseek` |
-| DELETE | `/v1/provider-keys/{provider}` | Revoke stored upstream credential |
+| GET | `/v1/provider-keys` | List credential metadata; never returns API keys |
+| POST | `/v1/provider-keys` | Create an independently named protocol credential; 201 |
+| PUT | `/v1/provider-keys/{id}` | Rotate its key and optionally rename it; route identity is immutable |
+| DELETE | `/v1/provider-keys/{id}` | Remove this owned credential |
 | POST | `/v1/diagnostics` | Explicitly authorized sanitized diagnostic upload |
+
+Credential creation accepts only:
+
+```json
+{
+  "name": "My endpoint",
+  "protocol": "openai",
+  "base_url": "https://api.example.com/v1",
+  "api_key": "upstream-secret"
+}
+```
+
+`protocol` is exactly `openai` (OpenAI-compatible Chat Completions) or `anthropic`
+(Anthropic Messages). `name` is optional. A user may store multiple endpoints or
+keys for either protocol, up to 100 credentials. Responses contain `id`, `name`,
+`protocol`, normalized `base_url`, `created_at`, `updated_at`, and the compatibility
+field `provider`. The latter is not a third protocol choice.
+
+An Anthropic SDK-style base URL may omit its final `/v1`: both
+`https://api.anthropic.com` and `https://api.anthropic.com/v1` normalize to the same
+route; a gateway prefix such as `https://api.deepseek.com/anthropic` becomes
+`https://api.deepseek.com/anthropic/v1`. The adapter appends `/messages`.
+OpenAI-compatible base URLs retain their explicit path and append
+`/chat/completions`; include `/v1` if the endpoint requires it.
+
+Existing credential IDs keep their protocol and normalized base URL permanently.
+PUT accepts `{"api_key":"replacement"}` and an optional new name; a full body
+with the unchanged route is also accepted. A changed protocol or route returns
+409 `credential_route_immutable`: create a new credential and update the agent
+instead. This preserves persisted tool/reasoning continuations and cache behavior
+in sessions pinned to the old credential. API key rotation does not change its ID.
+
+Legacy `PUT /v1/provider-keys/openrouter` and `/deepseek` with `{"api_key":"…"}`,
+and their DELETE aliases, remain compatible with existing clients. Existing rows,
+IDs, encryption contexts and pinned references survive the additive migration;
+their listing now also includes protocol/base-URL metadata.
+
+All credential management requires a human OIDC account, not a platform API key.
+Endpoints must use public HTTPS hostnames without embedded credentials, query or
+fragment; literal IPs, local/internal and reserved hostnames are rejected. Redirects
+are not followed. Only the selected user's key is sent to that credential's route;
+platform credentials are never inherited by a custom endpoint. Resource usage is
+still billed while BYOK model charges are zero.
 
 `/auth/config` exposes public native-client OIDC metadata. `/auth/login` and
 `/auth/callback` implement the dashboard's browser flow; `POST /auth/logout` revokes

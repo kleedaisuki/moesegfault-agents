@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use agents_core::ProviderProtocol;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -16,8 +17,14 @@ use crate::{
     tools::ToolDefinition,
 };
 
+#[path = "provider_anthropic.rs"]
+mod anthropic;
+
+const MAX_COMPLETION_BYTES: usize = 16 * 1024 * 1024;
+
 /// Never serialize or Debug this object: API keys must not enter session state or logs.
 pub struct ProviderConfig {
+    pub protocol: ProviderProtocol,
     pub base_url: String,
     pub api_key: String,
     pub model: String,
@@ -103,34 +110,20 @@ pub struct Completion {
 }
 
 fn endpoint(config: &ProviderConfig) -> worker::Result<String> {
-    let url = worker::Url::parse(&config.base_url)
-        .map_err(|_| worker::Error::RustError("invalid provider base URL".into()))?;
-    let host = url.host_str().unwrap_or_default();
-    if url.scheme() != "https"
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || host.is_empty()
-        || host == "localhost"
-        || host.ends_with(".localhost")
-        || host.ends_with(".local")
-        || !host.contains('.')
-        || host.parse::<std::net::IpAddr>().is_ok()
-        || host.starts_with('[')
-    {
-        return Err(worker::Error::RustError(
-            "provider requires a public HTTPS hostname".into(),
-        ));
-    }
+    let base_url =
+        crate::auth::provider_keys::normalize_base_url(config.protocol, &config.base_url)?;
     if config.api_key.is_empty() || config.model.is_empty() || config.max_output_tokens == Some(0) {
         return Err(worker::Error::RustError(
             "provider credentials, model, or output limit invalid".into(),
         ));
     }
     Ok(format!(
-        "{}/chat/completions",
-        config.base_url.trim_end_matches('/')
+        "{}/{}",
+        base_url.trim_end_matches('/'),
+        match config.protocol {
+            ProviderProtocol::Openai => "chat/completions",
+            ProviderProtocol::Anthropic => "messages",
+        }
     ))
 }
 
@@ -142,8 +135,34 @@ pub async fn complete(
     let trace = config.trace_context();
     let _span = NativeSpan::start("provider.request", trace.as_ref());
     let mut response = send(config, messages, tools, false).await?;
-    let value: Value = response.json().await?;
-    parse_completion(value).map_err(worker::Error::RustError)
+    let value = completion_json(&mut response)
+        .await
+        .map_err(|_| protocol_failure())?;
+    match config.protocol {
+        ProviderProtocol::Openai => parse_completion(value),
+        ProviderProtocol::Anthropic => anthropic::parse_completion(value),
+    }
+    .map_err(|_| protocol_failure())
+}
+
+fn protocol_failure() -> worker::Error {
+    worker::Error::RustError("provider_protocol_error".into())
+}
+
+async fn completion_json(response: &mut worker::Response) -> worker::Result<Value> {
+    let mut stream = response.stream()?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_COMPLETION_BYTES {
+            return Err(worker::Error::RustError(
+                "provider completion exceeds maximum size".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|_| worker::Error::RustError("invalid provider completion JSON".into()))
 }
 
 async fn send(
@@ -153,27 +172,22 @@ async fn send(
     stream: bool,
 ) -> worker::Result<worker::Response> {
     let endpoint = endpoint(config)?;
-    let mut body = json!({"model":config.model,"messages":messages,"stream":stream});
-    if stream {
-        body["stream_options"] = json!({"include_usage":true});
-    }
-    if worker::Url::parse(&config.base_url)
-        .ok()
-        .is_some_and(|url| url.host_str() == Some("openrouter.ai"))
-    {
-        if let Some(session_id) = &config.session_id {
-            body["session_id"] = json!(session_id);
-        }
-    }
-    if !tools.is_empty() {
-        body["tools"] = serde_json::to_value(tools)?;
-    }
-    if let Some(limit) = config.max_output_tokens {
-        body["max_tokens"] = json!(limit);
-    }
+    let body = match config.protocol {
+        ProviderProtocol::Openai => openai_body(config, messages, tools, stream)?,
+        ProviderProtocol::Anthropic => anthropic::request_body(config, messages, tools, stream)
+            .map_err(|_| protocol_failure())?,
+    };
     let headers = Headers::new();
     headers.set("Content-Type", "application/json")?;
-    headers.set("Authorization", &format!("Bearer {}", config.api_key))?;
+    match config.protocol {
+        ProviderProtocol::Openai => {
+            headers.set("Authorization", &format!("Bearer {}", config.api_key))?;
+        }
+        ProviderProtocol::Anthropic => {
+            headers.set("x-api-key", &config.api_key)?;
+            headers.set("anthropic-version", "2023-06-01")?;
+        }
+    }
     if let Some(trace) = config.trace_context() {
         trace.inject(&headers)?;
     }
@@ -196,6 +210,32 @@ async fn send(
     Ok(response)
 }
 
+fn openai_body(
+    config: &ProviderConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    stream: bool,
+) -> worker::Result<Value> {
+    let mut body = json!({"model":config.model,"messages":messages,"stream":stream});
+    if stream {
+        body["stream_options"] = json!({"include_usage":true});
+    }
+    if worker::Url::parse(&config.base_url)
+        .ok()
+        .is_some_and(|url| url.host_str() == Some("openrouter.ai"))
+        && let Some(session_id) = &config.session_id
+    {
+        body["session_id"] = json!(session_id);
+    }
+    if !tools.is_empty() {
+        body["tools"] = serde_json::to_value(tools)?;
+    }
+    if let Some(limit) = config.max_output_tokens {
+        body["max_tokens"] = json!(limit);
+    }
+    Ok(body)
+}
+
 /// Emits text as soon as the upstream sends it, while preserving full tool and
 /// reasoning continuations for the next inference round. Does not buffer SSE.
 pub async fn complete_stream<F: FnMut(&str)>(
@@ -207,28 +247,50 @@ pub async fn complete_stream<F: FnMut(&str)>(
     let trace = config.trace_context();
     let _span = NativeSpan::start("provider.request", trace.as_ref());
     let mut response = send(config, messages, tools, true).await?;
-    let mut events = response.stream()?.eventsource();
+    let mut received = 0usize;
+    let mut events = response
+        .stream()
+        .map_err(|_| protocol_failure())?
+        .map(move |chunk| {
+            let chunk = chunk?;
+            received = received.saturating_add(chunk.len());
+            if received > MAX_COMPLETION_BYTES {
+                return Err(protocol_failure());
+            }
+            Ok(chunk)
+        })
+        .eventsource();
+    if config.protocol == ProviderProtocol::Anthropic {
+        let mut accumulator = anthropic::StreamAccumulator::default();
+        while let Some(event) = events.next().await {
+            let event = event.map_err(|_| protocol_failure())?;
+            let value: Value = serde_json::from_str(&event.data).map_err(|_| protocol_failure())?;
+            if let Some(text) = accumulator.push(value).map_err(|_| protocol_failure())? {
+                on_delta(&text);
+            }
+            if accumulator.is_done() {
+                break;
+            }
+        }
+        return accumulator.finish().map_err(|_| protocol_failure());
+    }
     let mut accumulator = StreamAccumulator::default();
     let mut done = false;
     while let Some(event) = events.next().await {
-        let event =
-            event.map_err(|_| worker::Error::RustError("invalid provider event stream".into()))?;
+        let event = event.map_err(|_| protocol_failure())?;
         if event.data.trim() == "[DONE]" {
             done = true;
             break;
         }
-        let value: Value = serde_json::from_str(&event.data)
-            .map_err(|_| worker::Error::RustError("invalid provider stream chunk".into()))?;
-        if let Some(text) = accumulator.push(value).map_err(worker::Error::RustError)? {
+        let value: Value = serde_json::from_str(&event.data).map_err(|_| protocol_failure())?;
+        if let Some(text) = accumulator.push(value).map_err(|_| protocol_failure())? {
             on_delta(&text);
         }
     }
     if !done || accumulator.finish_reason.is_none() {
-        return Err(worker::Error::RustError(
-            "provider stream ended before completion".into(),
-        ));
+        return Err(protocol_failure());
     }
-    parse_completion(accumulator.finish()).map_err(worker::Error::RustError)
+    parse_completion(accumulator.finish()).map_err(|_| protocol_failure())
 }
 
 #[derive(Default)]
@@ -248,7 +310,7 @@ struct StreamAccumulator {
 impl StreamAccumulator {
     fn push(&mut self, value: Value) -> Result<Option<String>, String> {
         self.bytes = self.bytes.saturating_add(value.to_string().len());
-        if self.bytes > 16 * 1024 * 1024 {
+        if self.bytes > MAX_COMPLETION_BYTES {
             return Err("provider completion exceeds maximum size".into());
         }
         if value.get("error").is_some() {
@@ -406,6 +468,7 @@ mod tests {
     #[test]
     fn provider_trace_context_is_explicit_and_validated() {
         let mut config = ProviderConfig {
+            protocol: ProviderProtocol::Openai,
             base_url: "https://api.deepseek.com".into(),
             api_key: "test-only".into(),
             model: "deepseek-chat".into(),

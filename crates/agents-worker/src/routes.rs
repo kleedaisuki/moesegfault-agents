@@ -159,6 +159,11 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "invalid_request_error",
             "The credential request is invalid",
         ),
+        "credential_route_immutable" => (
+            409,
+            "credential_route_immutable",
+            "Create a new credential to change its protocol or base URL",
+        ),
         "provider_key_not_found" => (
             404,
             "provider_key_not_found",
@@ -208,6 +213,7 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
         ),
         "provider_usage_missing"
         | "provider_http_error"
+        | "provider_protocol_error"
         | "openrouter_cost_missing"
         | "invalid_provider_usage"
         | "invalid provider event stream"
@@ -379,30 +385,44 @@ pub(crate) async fn normalize_model(
     owner: &str,
     model: &mut ModelConfig,
 ) -> Result<bool> {
-    let provider = if model.provider == Provider::Byok {
+    if model.provider == Provider::Byok {
         let Some(id) = model.credential_id.as_deref() else {
             return Ok(false);
         };
-        match auth::provider_identity(env, owner, id).await {
-            Ok(name) => match name.as_str() {
-                "openrouter" => Provider::OpenRouter,
-                "deepseek" => Provider::DeepSeek,
-                _ => return Ok(false),
-            },
+        let metadata = match auth::provider_metadata(env, owner, id).await {
+            Ok(metadata) => metadata,
             Err(worker::Error::RustError(code))
                 if code == "provider_key_not_found" || code == "invalid_provider" =>
             {
                 return Ok(false);
             }
             Err(error) => return Err(error),
+        };
+        if !valid_byok_model(model) {
+            return Ok(false);
         }
-    } else {
-        model.provider
-    };
+        // Legacy vendor credentials keep their established registered budgets.
+        // New generic endpoints use the explicit (or conservative default) budget.
+        let legacy_provider = match metadata.provider.as_str() {
+            "openrouter" => Some(Provider::OpenRouter),
+            "deepseek" => Some(Provider::DeepSeek),
+            _ => None,
+        };
+        if let Some(provider) = legacy_provider {
+            if let Some(entry) = model_registry(env)?
+                .into_iter()
+                .find(|entry| registered_model(entry, provider, &model.model))
+            {
+                model.context_window = entry.context_window;
+                model.max_output_tokens = entry.max_output_tokens;
+            }
+        }
+        return Ok(true);
+    }
     let registry = model_registry(env)?;
     let Some(entry) = registry
         .iter()
-        .find(|entry| registered_model(entry, provider, &model.model))
+        .find(|entry| registered_model(entry, model.provider, &model.model))
     else {
         return Ok(false);
     };
@@ -412,6 +432,16 @@ pub(crate) async fn normalize_model(
         model.credential_id = None;
     }
     Ok(true)
+}
+
+fn valid_byok_model(model: &ModelConfig) -> bool {
+    !model.model.is_empty()
+        && model.model.len() <= 1024
+        && model.model.trim() == model.model
+        && !model.model.chars().any(char::is_control)
+        && model.context_window > 0
+        && model.max_output_tokens > 0
+        && model.max_output_tokens < model.context_window
 }
 
 fn registered_model(entry: &ModelConfig, provider: Provider, model: &str) -> bool {
@@ -425,9 +455,7 @@ async fn pin(
     if agent.model.provider == Provider::Byok {
         let mut model = agent.model.clone();
         if !normalize_model(env, &agent.owner_id, &mut model).await? {
-            return Ok(Err(
-                "Model is not registered for the selected provider credential",
-            ));
+            return Ok(Err("Model or provider credential is invalid"));
         }
     }
     let registry = tools::registered_tools(agent.workspace);
@@ -515,9 +543,7 @@ async fn agents(
                 return Ok(bad_request(message));
             }
             if !normalize_model(env, owner, &mut input.model).await? {
-                return Ok(bad_request(
-                    "Model is not registered for the selected provider",
-                ));
+                return Ok(bad_request("Model or provider credential is invalid"));
             }
             let now = util::now_ms();
             let mut agent = input.into_config(
@@ -985,5 +1011,33 @@ mod tests {
             Provider::OpenRouter,
             "deepseek-flash"
         ));
+    }
+
+    #[test]
+    fn generic_byok_model_budget_is_independent_of_the_platform_catalog() {
+        let model = ModelConfig {
+            provider: Provider::Byok,
+            model: "my-company/custom-model-v2".into(),
+            context_window: 65_536,
+            max_output_tokens: 4096,
+            credential_id: Some("owned-credential".into()),
+        };
+        assert!(valid_byok_model(&model));
+        for name in ["", " padded", "line\nbreak"] {
+            let invalid = ModelConfig {
+                model: name.into(),
+                ..model.clone()
+            };
+            assert!(!valid_byok_model(&invalid));
+        }
+        for (context, output) in [(0, 1), (8192, 0), (8192, 8192), (8192, 8193)] {
+            let invalid = ModelConfig {
+                context_window: context,
+                max_output_tokens: output,
+                ..model.clone()
+            };
+            assert!(!valid_byok_model(&invalid));
+        }
+        assert_eq!(classify_error("credential_route_immutable").0, 409);
     }
 }

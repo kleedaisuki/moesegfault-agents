@@ -13,7 +13,17 @@ pub enum Provider {
     Byok,
 }
 
+/// Wire protocol, independent of the company hosting a user-owned endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProtocol {
+    #[default]
+    Openai,
+    Anthropic,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "ModelInput")]
 pub struct ModelConfig {
     #[serde(default)]
     pub provider: Provider,
@@ -24,6 +34,36 @@ pub struct ModelConfig {
     pub max_output_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ModelInput {
+    #[serde(default)]
+    provider: Provider,
+    model: String,
+    context_window: Option<u32>,
+    max_output_tokens: Option<u32>,
+    credential_id: Option<String>,
+}
+
+impl From<ModelInput> for ModelConfig {
+    fn from(input: ModelInput) -> Self {
+        Self {
+            provider: input.provider,
+            model: input.model,
+            context_window: input.context_window.unwrap_or_else(|| {
+                if input.provider == Provider::Byok {
+                    131_072
+                } else {
+                    default_context_window()
+                }
+            }),
+            max_output_tokens: input
+                .max_output_tokens
+                .unwrap_or_else(default_output_tokens),
+            credential_id: input.credential_id,
+        }
+    }
 }
 
 fn default_context_window() -> u32 {
@@ -220,5 +260,50 @@ mod tests {
             serde_json::from_str::<Provider>("\"deep_seek\"").unwrap(),
             Provider::DeepSeek
         );
+    }
+
+    #[test]
+    fn generic_byok_defaults_to_a_budget_not_an_invented_provider_limit() {
+        let input: CreateAgent = serde_json::from_value(serde_json::json!({
+            "name":"custom", "model":{"provider":"byok", "model":"private-model", "credential_id":"cred_example"}
+        }))
+        .unwrap();
+        assert_eq!(input.model.context_window, 131_072);
+        assert_eq!(input.model.max_output_tokens, 8192);
+        assert!(input.validate().is_ok());
+    }
+
+    #[test]
+    fn explicit_model_budgets_and_old_pins_survive_roundtrip() {
+        let mut model = ModelConfig {
+            provider: Provider::Byok,
+            credential_id: Some("existing".into()),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_value(&model).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ModelConfig>(encoded).unwrap(),
+            model
+        );
+        model.context_window = 64_000;
+        model.max_output_tokens = 4096;
+        assert_eq!(
+            serde_json::from_value::<ModelConfig>(serde_json::to_value(&model).unwrap()).unwrap(),
+            model
+        );
+    }
+
+    #[test]
+    fn byok_protocols_describe_protocols_not_vendors() {
+        for (name, protocol) in [
+            ("openai", ProviderProtocol::Openai),
+            ("anthropic", ProviderProtocol::Anthropic),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<ProviderProtocol>(name.into()).unwrap(),
+                protocol
+            );
+            assert_eq!(serde_json::to_value(protocol).unwrap(), name);
+        }
     }
 }
