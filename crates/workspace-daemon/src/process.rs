@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const UID: u32 = 1000;
 
 #[derive(Deserialize)]
@@ -200,68 +200,122 @@ fn kill_group(pid: u32) {
 pub fn quiesce() -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         for _ in 0..32 {
             let mut live = 0;
             for entry in std::fs::read_dir("/proc")? {
-                let entry = entry?;
-                let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
-                    continue;
-                };
-                let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-                if fd < 0 {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() == Some(libc::ESRCH) {
-                        continue;
-                    }
-                    return Err(error).context("open process handle for workspace cleanup");
-                }
-                let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
-                let status = match std::fs::read_to_string(entry.path().join("status")) {
-                    Ok(status) => status,
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(err) => {
-                        return Err(err).context("inspect process ownership for workspace cleanup");
-                    }
-                };
-                let user = status
-                    .lines()
-                    .find_map(|line| line.strip_prefix("Uid:"))
-                    .and_then(|line| line.split_whitespace().next())
-                    .and_then(|s| s.parse::<u32>().ok());
-                if user != Some(UID)
-                    || status
-                        .lines()
-                        .any(|line| line.starts_with("State:") && line.contains("Z (zombie)"))
-                {
-                    continue;
-                }
-                live += 1;
-                let sent = unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        fd.as_raw_fd(),
-                        libc::SIGKILL,
-                        std::ptr::null::<libc::siginfo_t>(),
-                        0,
-                    )
-                };
-                if sent < 0 {
-                    let err = std::io::Error::last_os_error();
-                    if err.raw_os_error() != Some(libc::ESRCH) {
-                        return Err(err).context("terminate workspace process");
-                    }
-                }
+                live += usize::from(terminate_workspace_entry(entry?)?);
             }
             if live == 0 {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+        tracing::error!(
+            event = "workspace.cleanup_error",
+            stage = "quiesce_exhausted",
+            errno = 0
+        );
         anyhow::bail!("workspace UID failed to quiesce; refusing checkpoint");
     }
     #[cfg(not(target_os = "linux"))]
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn proc_outcome<T>(stage: &'static str, result: std::io::Result<T>) -> anyhow::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        // An opened procfs file can return ESRCH when its task exits before
+        // read; the same exit before open returns ENOENT. Neither is a failure
+        // to terminate a writer. Permission/resource/unknown errors fail closed.
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            tracing::info!(
+                event = "workspace.cleanup_race",
+                stage,
+                errno = error.raw_os_error().unwrap()
+            );
+            Ok(None)
+        }
+        Err(error) => {
+            tracing::error!(
+                event = "workspace.cleanup_error",
+                stage,
+                errno = error.raw_os_error().unwrap_or(0)
+            );
+            Err(error).context("workspace process cleanup failed")
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_pidfd(pid: i32) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) })
+}
+
+#[cfg(target_os = "linux")]
+fn signal_pidfd(fd: &std::os::fd::OwnedFd) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let sent = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            libc::SIGKILL,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if sent < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn workspace_writer(status: &[u8]) -> anyhow::Result<bool> {
+    let field = |prefix: &[u8]| {
+        status
+            .split(|byte| *byte == b'\n')
+            .find_map(|line| line.strip_prefix(prefix))
+            .and_then(|line| {
+                line.split(u8::is_ascii_whitespace)
+                    .find(|part| !part.is_empty())
+            })
+    };
+    let uid = field(b"Uid:")
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.parse::<u32>().ok())
+        .context("process status missing UID")?;
+    if uid != UID {
+        return Ok(false);
+    }
+    let state = field(b"State:").context("process status missing state")?;
+    Ok(!matches!(state, b"Z" | b"X" | b"x"))
+}
+
+#[cfg(target_os = "linux")]
+fn terminate_workspace_entry(entry: std::fs::DirEntry) -> anyhow::Result<bool> {
+    let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+        return Ok(false);
+    };
+    let Some(fd) = proc_outcome("pidfd_open", open_pidfd(pid))? else {
+        return Ok(false);
+    };
+    // Only ASCII kernel fields matter. Process names can contain non-UTF-8
+    // bytes, so decoding the entire status document would be another false 500.
+    let Some(status) = proc_outcome("process_status", std::fs::read(entry.path().join("status")))?
+    else {
+        return Ok(false);
+    };
+    if !workspace_writer(&status)? {
+        return Ok(false);
+    }
+    // Count only a successfully signaled live task; ESRCH is already dead.
+    Ok(proc_outcome("pidfd_signal", signal_pidfd(&fd))?.is_some())
 }
 
 pub async fn execute(
@@ -342,6 +396,93 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_ignores_only_process_disappearance() {
+        for stage in ["pidfd_open", "process_status", "pidfd_signal"] {
+            for errno in [libc::ENOENT, libc::ESRCH] {
+                assert!(
+                    proc_outcome::<()>(stage, Err(std::io::Error::from_raw_os_error(errno)))
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            for errno in [
+                libc::EPERM,
+                libc::EACCES,
+                libc::EIO,
+                libc::EMFILE,
+                libc::ENFILE,
+                libc::ENOSYS,
+                libc::EINVAL,
+            ] {
+                assert!(
+                    proc_outcome::<()>(stage, Err(std::io::Error::from_raw_os_error(errno)))
+                        .is_err()
+                );
+            }
+        }
+        assert_eq!(proc_outcome("process_status", Ok(42)).unwrap(), Some(42));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn already_open_status_reports_esrch_after_its_process_exits() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        // This test only touches its own child. It never runs UID-wide cleanup
+        // and is safe on an ordinary unprivileged CI runner.
+        let mut child = Child(
+            std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        let path = format!("/proc/{}/status", child.0.id());
+        let fd = open_pidfd(child.0.id() as i32).unwrap();
+        let mut status = std::fs::File::open(&path).unwrap();
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let mut bytes = Vec::new();
+        let error = std::io::Read::read_to_end(&mut status, &mut bytes).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ESRCH));
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            proc_outcome::<()>("process_status", Err(error))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            proc_outcome("process_status", std::fs::read(path))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            proc_outcome("pidfd_signal", signal_pidfd(&fd))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn process_names_are_not_decoded_as_utf8_or_treated_as_kernel_fields() {
+        assert!(
+            workspace_writer(b"Name:\t\xff\nState:\tS (sleeping)\nUid:\t1000\t1000\t1000\t1000\n")
+                .unwrap()
+        );
+        for state in ["Z (zombie)", "X (dead)", "x (dead)"] {
+            assert!(
+                !workspace_writer(format!("State:\t{state}\nUid:\t1000\n").as_bytes()).unwrap()
+            );
+        }
+        assert!(!workspace_writer(b"Name:\tUid:\t1000\nState:\tS\nUid:\t0\n").unwrap());
+        assert!(workspace_writer(b"Name:\tunknown\nState:\tS\n").is_err());
+    }
 
     #[tokio::test]
     async fn bounded_capture_still_drains() {

@@ -201,3 +201,20 @@ The native-lifecycle source passed its next full CI and was deployed as `164d0ae
 - The older never-ready startup fixture closed through its ordinary API with `checkpoint_pending=false` while its unknown financial hold remained explicitly pending. No command was replayed and no live database was edited.
 
 The long task's non-streaming SDK connection had detached, so this proves durable continuation and final persistence, **not** a successful non-streaming transport response. Subsequent source adds standard SSE comment keepalives; a shorter real streamed task with a stricter read timeout is its separate acceptance gate. Full private timing, storage, ledger and passive-provenance evidence is summarized in [Identity/Billing](identity-billing.md) and [Observability](observability.md).
+
+### Process-exit race regression (2026-10-24)
+
+[CI run 40065762512](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40065762512),
+source `7641204`, completed fourteen real daemon cases but returned HTTP 500 for
+the single detached-`setsid` cleanup journey. The supervisor remained running and
+subsequent cases passed; this is distinct from the earlier stale Docker port.
+A successful prior fifteen-case run does not rule out this intermittent failure.
+
+The suite now retains that original assertion and adds 120 distinct executions
+across six shell/short-lived-child/`setsid` exit patterns. Every individual POST
+must return 200 with normal completion; requests are not retried to manufacture
+a pass. Each delayed writer targets a unique file, and a single final one-second
+wait verifies none survived. Command and HTTP timeouts are three and ten seconds
+respectively. This expanded native-container regression requires another real
+Linux run; local collection plus portable harness success does not establish
+that the underlying cleanup defect is fixed.

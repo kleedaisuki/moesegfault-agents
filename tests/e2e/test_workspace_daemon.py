@@ -99,6 +99,32 @@ def test_setsid_descendant_cannot_write_after_execution_completes(execute):
     assert execute("test ! -e orphan")["exit_code"] == 0
 
 
+def test_repeated_process_exit_races_never_fail_or_leave_detached_writers(daemon, execute):
+    directory = "process-races-" + uuid.uuid4().hex
+    assert execute(f"mkdir {directory}")["exit_code"] == 0
+    try:
+        for index in range(120):
+            detached = (f"setsid bash -c 'sleep .5; printf orphan > \"$HOME/{directory}/{index}\"' "
+                        ">/dev/null 2>&1 &")
+            # Each distinct request explores cleanup against different shell and
+            # short-lived child exit timing. A failed request is never retried.
+            commands = [detached, detached + " true", detached + " sleep .003",
+                        detached + " bash -c 'exit 0'", detached + " (sleep .001) & wait $!; exit 0",
+                        "(" + detached + "); true"]
+            result = daemon.json("POST", "/v1/exec", {
+                "id": uuid.uuid4().hex, "command": commands[index % len(commands)], "timeout_ms": 3000,
+            }, timeout=10)
+            assert result["exit_code"] == 0, f"process-race iteration {index} must finish normally"
+            assert not result["timed_out"] and not result["cancelled"]
+        time.sleep(1)
+        # No new exec occurs before the delay: later cleanup must not hide a
+        # detached writer left behind by the final command.
+        checked = execute(f"test -z \"$(find {directory} -type f -print -quit)\"")
+        assert checked["exit_code"] == 0, "all completed commands must quiesce their detached writers"
+    finally:
+        assert execute(f"rm -rf -- {directory}")["exit_code"] == 0
+
+
 def test_read_only_large_workspace_does_not_accumulate_dirty_bytes(daemon, execute):
     size = 64 * 1024 * 1024
     assert execute(f"truncate -s {size} large.bin")["exit_code"] == 0

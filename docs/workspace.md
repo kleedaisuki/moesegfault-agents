@@ -161,6 +161,41 @@ Docker image. Platform container memory/CPU/disk quotas remain necessary to
 bound malicious workloads; rlimits and output retention are not a complete
 sandbox or resource-accounting solution.
 
+### Process-exit race handling
+
+The release run [40065762512](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40065762512)
+exposed an intermittent HTTP 500 in the detached-`setsid` journey after earlier
+green runs. The container remained healthy and later tests passed; the old
+sanitized logs did not retain the underlying errno. Inspection found a concrete
+gap: `/proc/<pid>/status` used `read_to_string` and ignored only `NotFound`, while
+a task exiting **after** its status file is opened produces `ESRCH`, not `ENOENT`.
+
+A deterministic, unprivileged Linux probe reproduced the exact lifecycle using
+only its own `/bin/sleep` child: open status and pidfd, kill and reap the child,
+then read the already-open status handle. On WSL Linux 6.18 the results were
+`status read: ESRCH (3)`, `status reopen: ENOENT (2)`, and
+`pidfd signal after reap: ESRCH (3)`. This agrees with the
+[kernel procfs lifetime contract](https://www.kernel.org/doc/html/latest/filesystems/proc.html).
+The native regression repeats this sequence without running UID-wide cleanup on
+the shared CI host. It verifies that `ESRCH` is not Rust's `ErrorKind::NotFound`.
+
+Per-process discovery, status reads and pidfd signaling now share one exit
+classification: only `ENOENT`/`ESRCH` mean the task is already gone. Permission,
+descriptor/resource, unsupported-kernel and unknown errors remain fatal; a
+global `/proc` enumeration failure is not treated as a clean workspace. Only a
+successfully signaled task counts as needing a follow-up cleanup pass. Kernel
+UID/state fields are parsed as ASCII bytes rather than decoding untrusted process
+names as UTF-8. Zombie/dead states cannot write and are excluded.
+
+`workspace.cleanup_race` and `workspace.cleanup_error` events contain only numeric
+`errno` and a fixed stage from `pidfd_open`, `process_status`, `pidfd_signal`, and
+`quiesce_exhausted`. They never contain process names, commands, paths, user output
+or the full error chain. Container acceptance retains the original detached
+writer assertion and adds 120 independent short-lived/`setsid` executions, each
+requiring HTTP 200 without retries, followed by an assertion that no delayed
+writer created a file. The next exact-revision CI run must validate the fix;
+the older green run alone is not acceptance for this race correction.
+
 Request logs contain execution IDs, safe endpoint/method/status, durations,
 traceparent and generated request IDs, but never commands, tool output, file
 names, archive bodies or credentials. The DO owns distributed trace propagation
