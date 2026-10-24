@@ -16,6 +16,9 @@ use std::{
 };
 use worker::*;
 
+#[path = "session_sse.rs"]
+mod sse;
+
 const STATE_KEY: &str = "session.v1";
 const MAX_TOOL_ROUNDS: u64 = 128;
 type EventSender = mpsc::UnboundedSender<Result<Vec<u8>>>;
@@ -358,7 +361,7 @@ impl DurableObject for Session {
                     let (tx, rx) = mpsc::unbounded::<Result<Vec<u8>>>();
                     *inner.events.borrow_mut() = Some(tx);
                     inner.arm_alarm().await?;
-                    let mut response = Response::from_stream(rx)?;
+                    let mut response = Response::from_stream(sse::keep_alive(rx))?;
                     response
                         .headers_mut()
                         .set("content-type", "text/event-stream")?;

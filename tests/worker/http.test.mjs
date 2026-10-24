@@ -20,6 +20,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   let providerCalls = 0;
   let redirectProvider = false;
   let redirectTargetCalls = 0;
+  let slowProvider = false;
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const temp = await mkdtemp(path.join(root, '.temp/worker-integration-'));
   process.env.TMP = process.env.TEMP = process.env.TMPDIR = temp;
@@ -48,7 +49,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       IDENTITY_NATIVE_CLIENT_ID: 'test-native', IDENTITY_REDIRECT_URI: 'https://agents.test/auth/callback',
       IDENTITY_NATIVE_REDIRECT_URI: 'http://127.0.0.1/callback',
       BILLING_PRODUCT_ID: 'agents', BILLING_MODE: 'test',
-      MODEL_REGISTRY_JSON: JSON.stringify([{ provider: 'openrouter', model: 'test-model', context_window: 10000, max_output_tokens: 1000 }]),
+      MODEL_REGISTRY_JSON: JSON.stringify([{ provider: 'openrouter', model: 'test-model', context_window: 10000, max_output_tokens: 1000 }, { provider: 'deepseek', model: 'unpriced-direct-model', context_window: 10000, max_output_tokens: 1000 }]),
       RESOURCE_PRICING_JSON: resourcePricing,
       OPENROUTER_API_KEY: 'synthetic-provider-key-never-sent-outside-fixture',
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000',
@@ -62,6 +63,13 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       }
       if (request.url === 'https://openrouter.ai/api/v1/chat/completions') {
         providerCalls++;
+        if (slowProvider) {
+          assert.equal(providerCalls, 1, 'Heartbeat must not initiate extra provider calls');
+          const input = await request.json();
+          assert.equal(input.stream, true);
+          await new Promise(resolve => setTimeout(resolve, 16000));
+          return new Response(`data: ${JSON.stringify({ id: 'mock-heartbeat', model: 'test-model', choices: [{ index: 0, delta: { role: 'assistant', content: 'Delayed provider completed.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.00001 } })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
+        }
         if (redirectProvider) return new Response(null, { status: 302, headers: { Location: 'https://redirect-target.test/steal' } });
         const input = await request.json();
         assert.equal(input.stream, true);
@@ -129,6 +137,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   await t.test('first API key use binds an integer across Wasm -> JavaScript -> D1', async () => {
     const models = await request('GET', '/v1/models');
     assert.deepEqual(models.data, []);
+    assert.deepEqual(models.available_models.map(model => [model.provider, model.model]), [['openrouter', 'test-model'], ['deepseek', 'unpriced-direct-model']]);
+    assert.deepEqual(models.available_platform_models.map(model => [model.provider, model.model]), [['openrouter', 'test-model']]);
     const row = await db.prepare("SELECT last_used_at,typeof(last_used_at) AS kind FROM api_keys WHERE id='key'").first();
     assert.equal(row.kind, 'integer');
     assert.ok(row.last_used_at > 1_700_000_000);
@@ -251,6 +261,58 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       assert.equal((await rejectedRedirect.json()).error.code, 'provider_error');
     } finally {
       clearTimeout(timer);
+    }
+  });
+  await t.test('slow provider receives SSE comment heartbeat before data and closes after DONE', { timeout: 32000 }, async () => {
+    const heartbeatKey = 'mag_heartbeat_synthetic_fixture_only';
+    await db.batch([
+      db.prepare("INSERT INTO accounts(id,issuer,subject,created_at,updated_at) VALUES('heartbeat-owner','https://identity.test','heartbeat',0,0)"),
+      db.prepare("INSERT INTO usage_accounts(account_id,updated_at) VALUES('heartbeat-owner',0)"),
+      db.prepare("INSERT INTO api_keys(id,account_id,name,key_hash,key_prefix,created_at) VALUES('heartbeat-key','heartbeat-owner','heartbeat',?1,'mag_heartbeat',0)").bind(createHash('sha256').update(heartbeatKey).digest('base64url')),
+    ]);
+    const agent = await request('POST', '/v1/agents', { name: 'Heartbeat', tools: ['time'], workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, heartbeatKey);
+    const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, heartbeatKey);
+    slowProvider = true;
+    providerCalls = 0;
+    let timer;
+    try {
+      const started = Date.now();
+      const response = await mf.dispatchFetch('https://agents.test/v1/chat/completions', {
+        method: 'POST', headers: { Authorization: `Bearer ${heartbeatKey}`, 'Content-Type': 'application/json', 'X-Agents-Session': session.id },
+        body: JSON.stringify({ model: agent.id, messages: [{ role: 'user', content: 'Wait for the provider response.' }], stream: true }),
+      });
+      assert.equal(response.status, 200);
+      const initialInput = await db.prepare('SELECT last_input_at FROM sessions WHERE id=?1').bind(session.id).first();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let wire = '';
+      let heartbeatAt;
+      const receive = async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          wire += decoder.decode(value, { stream: true });
+          if (heartbeatAt === undefined && wire.includes(': keepalive\n\n')) heartbeatAt = Date.now() - started;
+          if (wire.includes('Delayed provider completed.')) assert.notEqual(heartbeatAt, undefined, 'A comment heartbeat must arrive before delayed provider content');
+        }
+        wire += decoder.decode();
+      };
+      await Promise.race([receive(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Heartbeat stream did not reach EOF within 30 seconds')), 30000);
+      })]);
+      assert.ok(heartbeatAt >= 14000, `Unexpected heartbeat timing: ${heartbeatAt}`);
+      assert.ok(wire.indexOf(': keepalive\n\n') < wire.indexOf('Delayed provider completed.'));
+      assert.ok(wire.trimEnd().endsWith('data: [DONE]'), 'DONE must be followed by EOF, not more heartbeat comments');
+      assert.equal(providerCalls, 1);
+      const status = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, heartbeatKey);
+      assert.equal(status.input_revision, session.input_revision + 1);
+      assert.equal(status.last_input_at_ms, initialInput.last_input_at);
+      assert.deepEqual(status.messages.map(message => message.role), ['user', 'assistant']);
+      const charges = await db.prepare("SELECT CAST(amount_microusd AS TEXT) AS amount FROM usage_ledger WHERE resource='model' AND reservation_id IN (SELECT id FROM usage_reservations WHERE session_id=?1)").bind(session.id).all();
+      assert.deepEqual(charges.results, [{ amount: '10' }]);
+    } finally {
+      clearTimeout(timer);
+      slowProvider = false;
     }
   });
 });

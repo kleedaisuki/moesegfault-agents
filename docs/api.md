@@ -51,7 +51,15 @@ print(reply.choices[0].message.content)
 
 `GET /v1/models` returns the caller's agent IDs as OpenAI model records. Its
 `available_models` extension lists server-registered upstream model configurations
-for management clients. In `POST /v1/chat/completions`, `model` always identifies an
+for management clients, including models usable through BYOK. The additive
+`available_platform_models` array has the same `ModelConfig` shape but includes only
+registered non-BYOK routes with a valid configured platform price. Management
+clients should use it for platform-funded provider/model choices and keep the full
+`available_models` for BYOK, filtered by the stored key's provider. Missing or
+malformed pricing exposes an empty platform list, not apparently supported models;
+invalid individual prices are excluded. Older servers may omit the additive field.
+This is configured pricing support, not a promise of upstream health, available
+credentials, or funded execution admission. In `POST /v1/chat/completions`, `model` always identifies an
 **agent**, not an upstream model.
 
 ### Chat Completions
@@ -75,6 +83,19 @@ for management clients. In `POST /v1/chat/completions`, `model` always identifie
 
 The response includes `X-Agents-Session` for both JSON and streaming calls. Normal
 OpenAI completion/chunk object shapes are used; SSE ends with `data: [DONE]`.
+Quiet streaming responses send the [standard SSE comment](https://html.spec.whatwg.org/multipage/server-sent-events.html#authoring-notes) `: keepalive\n\n`
+after 15 seconds without a data chunk. SSE parsers, including the OpenAI SDK,
+ignore comments; these are not user messages or model tokens. Heartbeats stop
+when the event channel closes or `[DONE]` is sent.
+
+For long tasks, create a session with `POST /v1/agents/{id}/sessions` first and
+pass its ID in `X-Agents-Session` with `stream: true`. A non-streaming observer can
+lose its connection through client or intermediary timeouts even when a durable
+run is still executing. Increasing the SDK timeout does not control every proxy.
+A disconnected observer does **not** cancel the run: inspect
+`GET /v1/sessions/{id}` before deciding what to do next, and do not automatically
+replay the completion request or its user messages. Non-streaming responses do
+not send whitespace heartbeats, preserving normal JSON and HTTP error statuses.
 Harness tool calls and workspace execution are managed on the server. System,
 developer, assistant, tool-result, and arbitrary multimodal message injection is
 not supported by this subset. Tools, instructions, model budgets, and compaction
