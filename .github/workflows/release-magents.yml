@@ -2,6 +2,12 @@ name: Package magents
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to rebuild and attach assets (empty means artifacts only)
+        type: string
+        required: false
+        default: ''
   release:
     types: [published]
 
@@ -15,6 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || '' }}
 
 jobs:
   package:
@@ -34,11 +41,10 @@ jobs:
         shell: bash
     env:
       TARGET: ${{ matrix.target }}
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ (github.event.release.tag_name || inputs.release_tag) && format('refs/tags/{0}', github.event.release.tag_name || inputs.release_tag) || github.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
@@ -58,6 +64,11 @@ jobs:
           tag = os.environ.get("RELEASE_TAG", "")
           if tag and tag != f"v{version}":
               raise SystemExit(f"Release tag {tag!r} does not match magents v{version}")
+          if tag:
+              tagged = subprocess.check_output(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], text=True).strip()
+              checked_out = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+              if tagged != checked_out:
+                  raise SystemExit("Checked-out source does not match the requested release tag")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"PACKAGE_VERSION={version}\n")
       - name: Test real CLI journeys on the native platform
@@ -81,7 +92,7 @@ jobs:
           info = stage / "BUILD-INFO.json"
           info.write_text(json.dumps({
               "package": "magents", "version": version, "target": target,
-              "commit": commit, "source_ref": os.environ["GITHUB_REF"],
+              "commit": commit, "source_ref": f"refs/tags/{os.environ['RELEASE_TAG']}" if os.environ.get("RELEASE_TAG") else os.environ["GITHUB_REF"],
               "workflow_run": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
               "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip()
           }, indent=2) + "\n", encoding="utf-8")
@@ -104,7 +115,7 @@ jobs:
               for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                   digest.update(chunk)
           checksum = digest.hexdigest()
-          archive.with_name(archive.name + ".sha256").write_text(f"{checksum}  {archive.name}\n", encoding="ascii")
+          archive.with_name(archive.name + ".sha256").write_bytes(f"{checksum}  {archive.name}\n".encode("ascii"))
           print(f"Packaged {archive.name}: {checksum}")
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -116,7 +127,7 @@ jobs:
 
   attach:
     name: Attach assets to the existing release
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     needs: package
     runs-on: ubuntu-22.04
     timeout-minutes: 10
@@ -138,5 +149,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$RELEASE_TAG" dist/*
