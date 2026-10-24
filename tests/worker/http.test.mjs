@@ -408,7 +408,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   }
   await t.test('native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
     const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'forward-recovery-owner' });
-    const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false }, 201, principal.apiKey);
+    const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, principal.apiKey);
     const before = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
     const walletBefore = await db.prepare('SELECT spent_microusd,reserved_microusd FROM usage_accounts WHERE account_id=?1').bind(principal.owner).first();
