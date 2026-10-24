@@ -159,7 +159,7 @@ describe("metadata-driven model selection", () => {
       credential_id: "cred-deepseek",
     });
   });
-  it("rejects another provider namespace even when its model ID is registered", async () => {
+  it("accepts custom BYOK model IDs without requiring a platform registry entry", async () => {
     mount();
     const { user, dialog, provider, model } = await createForm();
     await user.selectOptions(provider, "byok");
@@ -168,12 +168,16 @@ describe("metadata-driven model selection", () => {
       "cred-deepseek",
     );
     await waitFor(() => expect(model).toBeEnabled());
-    await user.type(model, "openai/example");
+    await user.type(model, "customer/private-model");
     await user.click(dialog.getByRole("button", { name: "Save agent" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Choose a registered model",
-    );
-    expect(writes).toEqual([]);
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.model).toEqual({
+      provider: "byok",
+      model: "customer/private-model",
+      context_window: 131072,
+      max_output_tokens: 8192,
+      credential_id: "cred-deepseek",
+    });
   });
   it("clears incompatible models on provider/key switches but keeps valid selections", async () => {
     mount();
@@ -309,5 +313,78 @@ describe("metadata-driven model selection", () => {
       max_output_tokens: 16384,
       credential_id: "cred-deepseek",
     });
+  });
+  it("publishes a generic Anthropic connection with explicit custom model limits", async () => {
+    mount(
+      registry,
+      [],
+      [
+        {
+          id: "anthropic-owned",
+          protocol: "anthropic",
+          name: "Research API",
+          base_url: "https://custom.example/v1",
+        },
+      ],
+    );
+    const { user, dialog, provider, model } = await createForm();
+    await user.selectOptions(provider, "byok");
+    const key = await dialog.findByRole("combobox", { name: "Saved API key" });
+    expect(
+      within(key).getByRole("option", { name: "Research API" }),
+    ).toBeInTheDocument();
+    await user.selectOptions(key, "anthropic-owned");
+    await waitFor(() => expect(model).toBeEnabled());
+    expect(options()).toEqual([]);
+    await user.type(model, "claude-custom-model");
+    await user.click(dialog.getByText("Model limits", { exact: true }));
+    const context = dialog.getByLabelText("Context window");
+    const output = dialog.getByLabelText("Maximum output tokens");
+    await user.clear(context);
+    await user.type(context, "200000");
+    await user.clear(output);
+    await user.type(output, "16000");
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.model).toEqual({
+      provider: "byok",
+      model: "claude-custom-model",
+      context_window: 200000,
+      max_output_tokens: 16000,
+      credential_id: "anthropic-owned",
+    });
+  });
+  it("preserves existing custom BYOK model limits when editing instructions", async () => {
+    const model = {
+      provider: "byok",
+      model: "custom/not-in-registry",
+      context_window: 262144,
+      max_output_tokens: 16384,
+      credential_id: "generic-owned",
+    };
+    mount(
+      registry,
+      [{ ...existing, model }],
+      [
+        {
+          id: "generic-owned",
+          protocol: "openai",
+          name: "Private API",
+          base_url: "https://private.example/v1",
+        },
+      ],
+    );
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit Notebook" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Save agent" })).toBeEnabled(),
+    );
+    await user.type(dialog.getByLabelText("Instructions"), " updated");
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.model).toEqual(model);
   });
 });

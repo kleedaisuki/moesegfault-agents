@@ -26,7 +26,13 @@ export type ModelRegistry = {
   available_models: Model[];
   available_platform_models?: Model[];
 };
-export type ProviderKey = { id: string; provider: string };
+export type ProviderKey = {
+  id: string;
+  provider?: string;
+  name?: string;
+  protocol?: "openai" | "anthropic";
+  base_url?: string;
+};
 export type Message = { role: string; content: string };
 export type Session = {
   id: string;
@@ -76,6 +82,7 @@ export class ApiError extends Error {
   }
 }
 let csrfToken: string | undefined;
+export const AUTHENTICATION_REQUIRED_EVENT = "magents:authentication-required";
 export function setCsrfToken(token?: string) {
   csrfToken = token;
 }
@@ -93,6 +100,8 @@ export async function responseFor(
     headers,
   });
   if (!response.ok) {
+    if (response.status === 401 && path !== "/v1/account")
+      window.dispatchEvent(new Event(AUTHENTICATION_REQUIRED_EVENT));
     const body = await response.json().catch(() => ({}));
     throw new ApiError(
       body.error?.message ??

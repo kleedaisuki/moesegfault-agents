@@ -147,14 +147,35 @@ for (const scenario of cases)
               : [],
           },
         });
-      if (path === "/v1/provider-keys/deepseek") {
+      if (path === "/v1/provider-keys" && method === "POST") {
+        expect(request.postDataJSON()).toMatchObject({
+          protocol: "openai",
+          base_url: "https://api.deepseek.com/v1",
+          api_key: "fixture-provider-key",
+        });
         providerSaved = true;
-        return route.fulfill({ json: { id: "cred-1", provider: "deepseek" } });
+        return route.fulfill({
+          json: {
+            id: "cred-1",
+            protocol: "openai",
+            base_url: "https://api.deepseek.com/v1",
+            name: "Personal endpoint",
+          },
+        });
       }
       if (path === "/v1/provider-keys")
         return route.fulfill({
           json: {
-            data: providerSaved ? [{ id: "cred-1", provider: "deepseek" }] : [],
+            data: providerSaved
+              ? [
+                  {
+                    id: "cred-1",
+                    protocol: "openai",
+                    base_url: "https://api.deepseek.com/v1",
+                    name: "Personal endpoint",
+                  },
+                ]
+              : [],
           },
         });
       if (path === "/v1/diagnostics")
@@ -250,8 +271,9 @@ for (const scenario of cases)
       .getByRole("button", { name: t("I’ve saved it"), exact: true })
       .click();
     await page
-      .getByLabel(t("Provider"), { exact: true })
-      .selectOption("deepseek");
+      .getByLabel(t("API type"), { exact: true })
+      .selectOption("openai");
+    await page.getByLabel(t("Base URL")).fill("https://api.deepseek.com/v1");
     await page.getByLabel(t("Provider API key")).fill("fixture-provider-key");
     await page
       .getByRole("button", { name: t("Save key"), exact: true })

@@ -23,7 +23,9 @@ export function Access() {
   });
   const [name, setName] = useState("");
   const [secret, setSecret] = useState("");
-  const [provider, setProvider] = useState("openrouter");
+  const [protocol, setProtocol] = useState<"openai" | "anthropic">("openai");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [connectionName, setConnectionName] = useState("");
   const [providerKey, setProviderKey] = useState("");
   const [consent, setConsent] = useState(false);
   const [errorCode, setErrorCode] = useState("");
@@ -44,13 +46,21 @@ export function Access() {
     onSuccess: () => cache.invalidateQueries({ queryKey: ["keys"] }),
   });
   const saveProvider = useMutation({
+    gcTime: 0,
     mutationFn: () =>
       request(
-        `/v1/provider-keys/${provider}`,
-        json("PUT", { api_key: providerKey }),
+        "/v1/provider-keys",
+        json("POST", {
+          protocol,
+          base_url: baseUrl,
+          api_key: providerKey,
+          ...(connectionName.trim() ? { name: connectionName.trim() } : {}),
+        }),
       ),
     onSuccess: () => {
       setProviderKey("");
+      setBaseUrl("");
+      setConnectionName("");
       cache.invalidateQueries({ queryKey: ["provider-keys"] });
     },
   });
@@ -169,45 +179,93 @@ export function Access() {
           {t("Keys are encrypted server-side, never saved in this browser.")}
         </p>
         <form
-          className="inline-form"
+          className="provider-form"
           onSubmit={(e) => {
             e.preventDefault();
             saveProvider.mutate();
           }}
         >
-          <select
-            aria-label={t("Provider")}
-            value={provider}
-            onChange={(e) => setProvider(e.target.value)}
-          >
-            <option value="openrouter">{t("OpenRouter")}</option>
-            <option value="deepseek">{t("DeepSeek")}</option>
-          </select>
-          <input
-            type="password"
-            autoComplete="off"
-            aria-label={t("Provider API key")}
-            value={providerKey}
-            onChange={(e) => setProviderKey(e.target.value)}
-            required
-            placeholder={t("API key")}
-          />
-          <button disabled={saveProvider.isPending}>{t("Save key")}</button>
+          <div className="form-row">
+            <label>
+              {t("API type")}
+              <select
+                aria-label={t("API type")}
+                value={protocol}
+                onChange={(e) =>
+                  setProtocol(e.target.value as "openai" | "anthropic")
+                }
+              >
+                <option value="openai">{t("OpenAI-compatible API")}</option>
+                <option value="anthropic">Anthropic</option>
+              </select>
+            </label>
+            <label>
+              {t("Connection name (optional)")}
+              <input
+                value={connectionName}
+                onChange={(e) => setConnectionName(e.target.value)}
+                maxLength={100}
+                placeholder={t("Personal endpoint")}
+              />
+            </label>
+          </div>
+          <label>
+            {t("Base URL")}
+            <input
+              type="url"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              required
+              placeholder={
+                protocol === "anthropic"
+                  ? "https://api.anthropic.com/v1"
+                  : "https://api.example.com/v1"
+              }
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            {t("Provider API key")}
+            <input
+              type="password"
+              autoComplete="off"
+              aria-label={t("Provider API key")}
+              value={providerKey}
+              onChange={(e) => setProviderKey(e.target.value)}
+              required
+              placeholder={t("API key")}
+            />
+          </label>
+          <button className="provider-save" disabled={saveProvider.isPending}>
+            {t("Save key")}
+          </button>
         </form>
         <ErrorNotice
           error={providers.error ?? saveProvider.error ?? removeProvider.error}
         />
         {providers.data?.data.map((p) => (
-          <div className="list-row" key={p.provider}>
-            <strong>{p.provider}</strong>
+          <div className="list-row provider-row" key={p.id}>
+            <div>
+              <strong>
+                {p.name ??
+                  p.provider ??
+                  (p.protocol === "anthropic"
+                    ? "Anthropic"
+                    : t("OpenAI-compatible API"))}
+              </strong>
+              {p.base_url && <code>{p.base_url}</code>}
+            </div>
             <button
               onClick={() => {
                 if (
                   window.confirm(
-                    t("Remove {{provider}} key?", { provider: p.provider }),
+                    t("Remove {{provider}} key?", {
+                      provider: p.name ?? p.provider ?? p.protocol,
+                    }),
                   )
                 )
-                  removeProvider.mutate(p.provider);
+                  removeProvider.mutate(p.id);
               }}
             >
               {t("Remove")}

@@ -156,6 +156,12 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   const [name, setName] = useState(agent?.name ?? "");
   const [model, setModel] = useState(agent?.model.model ?? "");
   const [provider, setProvider] = useState(agent?.model.provider ?? "");
+  const [contextWindow, setContextWindow] = useState(
+    agent?.model.context_window ?? 131072,
+  );
+  const [maxOutputTokens, setMaxOutputTokens] = useState(
+    agent?.model.max_output_tokens ?? 8192,
+  );
   const [instructions, setInstructions] = useState(agent?.instructions ?? "");
   const [percent, setPercent] = useState(agent?.compaction_percent ?? 80);
   const [workspace, setWorkspace] = useState(agent?.workspace ?? true);
@@ -193,32 +199,66 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   const selectableModels = modelsFor(selectedProvider, credentialId);
   function changeProvider(nextProvider: string) {
     setProvider(nextProvider);
-    if (
-      !modelsFor(nextProvider, credentialId).some(
-        (option) => option.model === model,
-      )
-    )
-      setModel("");
+    const metadata = modelsFor(nextProvider, credentialId).find(
+      (option) => option.model === model,
+    );
+    if (!metadata) setModel("");
+    else if (nextProvider === "byok") applyModelLimits(metadata);
   }
   function changeCredential(nextCredentialId: string) {
+    if (nextCredentialId === credentialId) return;
     setCredentialId(nextCredentialId);
-    if (
-      !modelsFor(selectedProvider, nextCredentialId).some(
-        (option) => option.model === model,
-      )
-    )
-      setModel("");
+    const metadata = modelsFor(selectedProvider, nextCredentialId).find(
+      (option) => option.model === model,
+    );
+    if (!metadata) setModel("");
+    applyModelLimits(
+      metadata ?? { context_window: 131072, max_output_tokens: 8192 },
+    );
+  }
+  function applyModelLimits(metadata: {
+    context_window: number;
+    max_output_tokens: number;
+  }) {
+    setContextWindow(metadata.context_window);
+    setMaxOutputTokens(metadata.max_output_tokens);
+  }
+  function changeModel(nextModel: string) {
+    setModel(nextModel);
+    const metadata = selectableModels.find(
+      (option) => option.model === nextModel,
+    );
+    if (metadata && selectedProvider === "byok") {
+      applyModelLimits(metadata);
+    }
   }
   const save = useMutation({
     mutationFn: () => {
       if (selectedProvider === "byok" && !selectedKey)
         throw new Error("Select an API key from Access first.");
-      const metadata = selectableModels.find(
-        (option) => option.model === model,
-      );
+      const metadata =
+        selectedProvider === "byok"
+          ? {
+              model: model.trim(),
+              context_window: contextWindow,
+              max_output_tokens: maxOutputTokens,
+            }
+          : selectableModels.find((option) => option.model === model);
       if (!metadata)
         throw new Error(
           "Choose a registered model with available context metadata.",
+        );
+      if (
+        selectedProvider === "byok" &&
+        (!metadata.model ||
+          !Number.isSafeInteger(contextWindow) ||
+          !Number.isSafeInteger(maxOutputTokens) ||
+          contextWindow < 2 ||
+          maxOutputTokens < 1 ||
+          maxOutputTokens >= contextWindow)
+      )
+        throw new Error(
+          "Output tokens must be smaller than the context window.",
         );
       return request(
         agent ? `/v1/agents/${encodeURIComponent(agent.id)}` : "/v1/agents",
@@ -300,7 +340,7 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
               required
               list="models"
               value={model}
-              onChange={(e) => setModel(e.target.value)}
+              onChange={(e) => changeModel(e.target.value)}
               disabled={
                 !selectedProvider ||
                 (selectedProvider === "byok" && !selectedKey)
@@ -321,7 +361,7 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
             </datalist>
           </label>
         </div>
-        <ErrorNotice error={models.error} />
+        {selectedProvider !== "byok" && <ErrorNotice error={models.error} />}
         {selectedProvider === "byok" && (
           <label>
             {t("Saved API key")}
@@ -333,12 +373,52 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
               <option value="">{t("Select a key")}</option>
               {credentials.data?.data.map((key) => (
                 <option value={key.id} key={key.id}>
-                  {key.provider}
+                  {key.name ??
+                    key.provider ??
+                    (key.protocol === "anthropic"
+                      ? "Anthropic"
+                      : t("OpenAI-compatible API"))}
                 </option>
               ))}
             </select>
             <ErrorNotice error={credentials.error} />
           </label>
+        )}
+        {selectedProvider === "byok" && (
+          <details className="model-limits">
+            <summary>{t("Model limits")}</summary>
+            <div className="form-row">
+              <label>
+                {t("Context window")}
+                <input
+                  type="number"
+                  min={2}
+                  max={4294967295}
+                  step={1}
+                  required
+                  value={contextWindow}
+                  onChange={(e) => setContextWindow(Number(e.target.value))}
+                />
+              </label>
+              <label>
+                {t("Maximum output tokens")}
+                <input
+                  type="number"
+                  min={1}
+                  max={contextWindow - 1}
+                  step={1}
+                  required
+                  value={maxOutputTokens}
+                  onChange={(e) => setMaxOutputTokens(Number(e.target.value))}
+                />
+              </label>
+            </div>
+            <p className="hint">
+              {t(
+                "Use your API’s model limits. Context compaction is calculated from this window.",
+              )}
+            </p>
+          </details>
         )}
         <label>
           {t("Instructions")}
@@ -404,8 +484,9 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
             className="primary"
             disabled={
               save.isPending ||
-              models.isPending ||
-              (selectedProvider === "byok" && credentials.isPending)
+              (selectedProvider === "byok"
+                ? credentials.isPending
+                : models.isPending)
             }
           >
             {save.isPending ? t("Saving…") : t("Save agent")}
