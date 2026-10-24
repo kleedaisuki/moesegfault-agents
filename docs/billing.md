@@ -271,3 +271,27 @@ entitlement timing, idempotency conflicts, release semantics, exact rational
 prices and conservation across interleaved runs.
 These local tests do not establish deployed Billing audience registration,
 funding, provider reconciliation, or Cloudflare metric ingestion acceptance.
+
+### Hosted subscription return acceptance — 2026-10-24
+
+Staging source `3e68ff9eb330b4d896816575c9e2d47f4f2833d5` completed
+[full CI 40092052174](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40092052174)
+and was deployed through
+[staging run 40092345570](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40092345570).
+Its actual public health readback matched that source before the browser test.
+
+An owned synthetic Free account clicked the real Manage subscription link,
+completed same-tab Subscribe SSO, browsed products and returned to activation
+without losing context. A first no-activation return established a fresh Free
+snapshot. After one real emailed Go activation, the actual return reached
+`/billing/return` then `/#usage` in 9,378 ms of that fresh baseline: UI and
+account/usage API showed Go, ten agent configurations, five concurrent sessions
+and an USD 8 test allowance. Repeating the trip did not fund twice. Removing only
+the synthetic Agents browser cookie exercised ordinary SSO recovery back through
+the fixed route. No production rollout or new OAuth permission was involved.
+
+The complete eight-group hosted proof, exact paired Subscribe source/versions,
+negative destination checks and precise local-versus-hosted limits are recorded
+in the [cross-service acceptance report](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/bc878c09d2d01297f579d04fbd828302aeb49ee6/docs/validation/agents-roundtrip-2026-10-24.md).
+Credentials, activation capabilities and browser state remain in a protected,
+ignored local test workspace rather than source or documentation.
