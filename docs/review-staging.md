@@ -547,3 +547,21 @@ and reviewed test assertions are not silently promoted to independent results.
 The **newly compiled v0.2 Worker CI** and **real staging CLI archive/file/transcript
 journeys** remain explicit promotion gates; the old v0.1/native-signer baseline is
 not evidence that these new boundary implementations have run successfully.
+
+### Subscribe return compatibility review
+
+The integrated return flow was independently reviewed against its actual GET
+navigation contract. The application and return destination are fixed by the
+environment, not accepted from arbitrary caller queries. A missing application
+cookie resumes normal OIDC login before return processing. The token-owning
+AuthSession binds the account and forces a verified Billing read, bypassing
+snapshot freshness without weakening grant validity. Invalid or unavailable
+upstream responses do not erase a previously verified grant; existing allowance
+synchronization remains idempotent. No new activation or POST/CSRF surface is
+introduced, and existing mutations retain their protection.
+
+No substantive source-review finding remained in this bounded integration.
+Combined-source CI, staging return acceptance and the producer's actual
+production destination rollout remain separate release gates. The producer is
+responsible for its own production release; a configured allowlist is not proof
+that it is serving.

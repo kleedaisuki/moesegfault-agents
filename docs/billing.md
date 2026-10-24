@@ -295,3 +295,33 @@ negative destination checks and precise local-versus-hosted limits are recorded
 in the [cross-service acceptance report](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/bc878c09d2d01297f579d04fbd828302aeb49ee6/docs/validation/agents-roundtrip-2026-10-24.md).
 Credentials, activation capabilities and browser state remain in a protected,
 ignored local test workspace rather than source or documentation.
+
+### Subscribe release compatibility
+
+The newer Subscribe experience makes the existing ownership model explicit:
+one BillingAccount has one account-wide billing profile and product-scoped
+subscription grants; catalog plans are choices, not proof of entitlement.
+Its consumer response contract is unchanged. Agents still authorizes only the
+verified `agents` grant snapshot for the fixed issuer/subject, never the profile,
+catalog name or navigation query.
+
+The integrated consumer reuses the already accepted roundtrip implementation:
+an environment-paired `app=agents` entry, the exact Worker-first
+`/billing/return`, same-tab navigation, and an authoritative Billing read inside
+the token-owning AuthSession DO before reloading `/#usage`. That read bypasses
+only snapshot fetch freshness; it does not weaken OAuth or grant validity.
+Unavailable or malformed responses retain the prior verified snapshot and offer
+explicit retry. No additional scope, audience, sector or schema is introduced.
+
+The earlier eight-group business roundtrip passed, but Agents deployment
+40092345570 separately finished **13/14** broader SDK cases: workspace close
+returned 500 even though later readback found the session closed with both
+checkpoints. That red release gate must not be described as overall deployment
+acceptance or silently overwritten by the successful subscription journey.
+
+Upstream main `6c3586eb6681b21daf0c61af658c3c9f9fb4c974` includes the exact paired
+production destination in configuration; its staging delivery 40094394703 passed.
+Configuration readiness is not production rollout evidence. The producer owns
+its release, and Agents promotion requires live production allowlist/readback
+plus its own integrated staging gate. See the upstream
+[production contract](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/6c3586eb6681b21daf0c61af658c3c9f9fb4c974/docs/deployment/production.md).

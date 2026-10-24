@@ -312,3 +312,58 @@ native PKCE clients do not hold or use the BFF's private signing key. Prior real
 workspace, unattended-clock, long-stream and production model acceptance remains
 applicable to the unchanged runtime paths; those expensive probes were not replayed
 merely for an isolated authentication implementation update.
+
+## v0.2 portable agents and protocol BYOK: real staging acceptance
+
+After [full CI 40090727036](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40090727036),
+public staging health matched exact source
+`43cf770020fd86b4b91cb29ff4ddc78ad1c1ca5e` before this independent journey.
+The actual clean, locked, source-built Windows `magents 0.2.0` candidate had SHA-256
+`f26fe42a5db46f86f29f6278b8f11e876b6a6ba6b6c26a5c9dafa3a92b328150`.
+This is source-candidate acceptance, not verification of a later public archive.
+
+- Actual anonymous deployed Chrome showed the separate public entry without a
+  dashboard/sidebar flash or private agent/session/skill/key queries. English/light
+  desktop and Chinese/dark mobile at 390 x 844 passed, without horizontal overflow;
+  language and appearance survived reload. The ordinary owned Pro/test BFF login
+  then succeeded. Its actual Access form exposed exactly two protocols, accepted
+  only base URL and hidden API key with the optional name blank, returned 201 and
+  cleared the secret input.
+- Two fresh owner credentials exercised **real DeepSeek Flash** through both
+  `https://api.deepseek.com/v1` and `https://api.deepseek.com/anthropic`.
+  The latter verifies Anthropic-compatible Messages against DeepSeek, **not** an
+  Anthropic commercial model. Both completed actual time-tool loops; the OpenAI
+  route additionally used real Bash to write a unique `proof.txt` marker.
+- The actual CLI performed TOML init/validation, create publication, same-agent
+  update with increased revision, download and semantic round-trip using standard
+  `tomllib`. Downloaded configuration omitted server identity/revision and real
+  credentials. JSON, JSONL and Markdown exports preserved the complete source
+  journals and tool calls/results: six OpenAI-route messages and four Anthropic-route
+  messages. Pending lists matched the status snapshot; export did not advance the
+  input clock or revision. This does not claim a nonempty live steering queue was
+  exercised by this particular export journey.
+- The active workspace download returned 409 and the disabled workspace 404.
+  After normal close/checkpoint, the native private R2 stream downloaded as a
+  **294-byte tar.zst**, SHA-256
+  `6b0af38df7ee8bb0b6f78b6f5fa0781000bf2ac35e403f6c30fd37753eb641a5`.
+  Individual-file download matched the exact Bash-written bytes. Existing output
+  was never clobbered, missing files published no destination, parent traversal was
+  rejected, and downloads neither resumed the session nor advanced user activity.
+- Read-only financial inspection was restricted to the two new owned sessions:
+  **103 ledger events, five model calls, zero platform model charge**, all model
+  prices `byok`; resource/export charges totaled **530 microUSD**, with **zero
+  unresolved reservations**. Historical fixture holds were neither changed nor
+  represented as zero. Both new sessions closed, both agents were soft-deleted,
+  both credentials deleted, and the short-lived API key revoked through ordinary
+  APIs. The BFF logged out with CSRF, its browser closed, and protected recovery
+  state was removed only after complete cleanup.
+
+The safe receipt and public-entry screenshots are under
+`.temp/v2-acceptance-20261024/f8ac315a-01bd-4896-bde9-720b6d7d24a8/`; the isolated
+runner is `.temp/v2-acceptance-20261024/journey.mjs`. It requires explicit staging
+build and same-source binary gates, never prints credentials, and does not retry
+accepted execution. Two earlier harness-only errors (Chinese line-break matching
+and using a hash jump instead of clicking Access) were retained and reconciled
+before the successful journey; no model submission was replayed. Public native
+archive verification and production compatibility/promotion remain separate
+delivery-owner gates, not implied by this staged result.
