@@ -205,8 +205,8 @@ fn token(value: &str, max: usize) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_-.:/".contains(&b))
 }
 
-pub fn emit(event: &str, fields: Value) {
-    let event = match event {
+fn event_name(event: &str) -> &str {
+    match event {
         "request.completed"
         | "request.failed"
         | "run.started"
@@ -218,12 +218,17 @@ pub fn emit(event: &str, fields: Value) {
         | "tool.failed"
         | "session.checkpoint"
         | "session.archived"
+        | "session.index_deferred"
         | "session.restored"
         | "workspace.checkpoint"
         | "workspace.restored"
         | "diagnostics.accepted" => event,
         _ => "operation",
-    };
+    }
+}
+
+pub fn emit(event: &str, fields: Value) {
+    let event = event_name(event);
     worker::console_log!(
         "{}",
         json!({"event":event,"timestamp_ms":crate::util::now_ms(),
@@ -449,6 +454,14 @@ impl Drop for NativeSpan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deferred_index_event_is_named_without_opening_freeform_telemetry() {
+        assert_eq!(
+            event_name("session.index_deferred"),
+            "session.index_deferred"
+        );
+        assert_eq!(event_name("synthetic-private-unknown-event"), "operation");
+    }
     const VALID: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     #[test]
     fn deployment_build_id_is_only_a_full_validated_git_sha() {

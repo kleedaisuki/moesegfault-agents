@@ -65,7 +65,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       RESOURCE_PRICING_JSON: resourcePricing,
       OPENROUTER_API_KEY: 'synthetic-provider-key-never-sent-outside-fixture',
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000',
-      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '10000000',
+      // Separate synthetic principals share this real D1 subsidy pool; keep capacity above suite enrollment.
+      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000',
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
@@ -393,11 +394,11 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       slowProvider = false;
     }
   });
-  await t.test('a failed terminal session index write cannot strand an already durable SSE result', { timeout: 12000 }, async () => {
+  for (const warmClose of [false, true]) await t.test(`a failed terminal index survives ${warmClose ? 'warm close' : 'cold reconstruction'} without stranding the durable result`, { timeout: 12000 }, async () => {
     providerCalls = 0;
     redirectProvider = false;
     byokProviderKey = null;
-    const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'terminal-index-owner' });
+    const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: warmClose ? 'terminal-index-warm-owner' : 'terminal-index-cold-owner' });
     providerOwnerKey = principal.apiKey;
     const agent = await request('POST', '/v1/agents', { name: 'Terminal index fixture', tools: ['time'], workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, principal.apiKey);
@@ -425,23 +426,34 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       assert.equal(snapshot.index_pending, true);
       assert.equal(snapshot.billing_pending, false);
       assert.equal(providerCalls, 2);
+      if (warmClose) {
+        await db.prepare('DROP TRIGGER terminal_index_failure').run();
+        await request('DELETE', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+        const closed = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+        assert.equal(closed.status, 'closed');
+        assert.equal(closed.index_pending, true, 'Closing may not discard a pending index repair');
+      }
       ledgerCount = await db.prepare('SELECT COUNT(*) AS count FROM usage_ledger WHERE reservation_id IN (SELECT id FROM usage_reservations WHERE session_id=?1)').bind(session.id).first('count');
     } finally {
       clearTimeout(timer);
       await db.prepare('DROP TRIGGER IF EXISTS terminal_index_failure').run();
       providerOwnerKey = key;
     }
-    await mf.unsafeEvictDurableObject('', 'Session', { name: `${principal.owner}:${session.id}` });
+    if (!warmClose) await mf.unsafeEvictDurableObject('', 'Session', { name: `${principal.owner}:${session.id}` });
     const restored = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
-    assert.equal(restored.status, 'idle');
+    const expectedStatus = warmClose ? 'closed' : 'idle';
+    assert.equal(restored.status, expectedStatus);
     assert.equal(restored.messages.length, 4);
     const deadline = Date.now() + 6000;
     let indexed;
+    let pending = true;
     do {
       indexed = await db.prepare("SELECT json_extract(config_snapshot_json,'$.status') AS status FROM sessions WHERE id=?1").bind(session.id).first('status');
-      if (indexed !== 'idle') await new Promise(resolve => setTimeout(resolve, 100));
-    } while (indexed !== 'idle' && Date.now() < deadline);
-    assert.equal(indexed, 'idle', 'The pending alarm must repair the index without another model call');
+      pending = (await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey)).index_pending;
+      if (indexed !== expectedStatus || pending) await new Promise(resolve => setTimeout(resolve, 100));
+    } while ((indexed !== expectedStatus || pending) && Date.now() < deadline);
+    assert.equal(indexed, expectedStatus, 'The pending alarm must repair the index without another model call');
+    assert.equal(pending, false);
     assert.equal(providerCalls, 2);
     assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM usage_ledger WHERE reservation_id IN (SELECT id FROM usage_reservations WHERE session_id=?1)').bind(session.id).first('count'), ledgerCount, 'Index repair must not reprice or recharge a settled run');
     const repaired = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);

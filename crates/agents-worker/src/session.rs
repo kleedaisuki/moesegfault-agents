@@ -1328,7 +1328,7 @@ impl SessionInner {
         {
             self.data.borrow_mut().as_mut().unwrap().record.status = SessionStatus::Closed;
             self.persist().await?;
-            self.state.storage().delete_alarm().await?;
+            self.arm_alarm().await?;
             return Ok(());
         }
         if data.archive_funding.is_none() {
@@ -1484,7 +1484,7 @@ impl SessionInner {
             .unwrap()
             .complete_archive(accounting_pending)?;
         self.persist().await?;
-        self.state.storage().delete_alarm().await?;
+        self.arm_alarm().await?;
         util::emit(
             "session.archived",
             json!({"session_id":record.id,"agent_id":record.agent_id,"build_id":util::build_id(&self.env)}),
