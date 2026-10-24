@@ -107,7 +107,25 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node scripts/bundle-worker.mjs
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/e2e/requirements.lock
+      - name: Install the strict SDK wire-schema validator
+        run: |
+          python3 -m venv .cache/e2e-venv
+          .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
       - run: npm run test:worker
+        env:
+          MAGENTS_SCHEMA_PYTHON: .cache/e2e-venv/bin/python
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: performance-v3
+          path: .cache/perf/v3/*.json
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -130,6 +148,11 @@ jobs:
           tags: magents-workspace:acceptance
           cache-from: type=gha,scope=workspace
           cache-to: type=gha,mode=max,scope=workspace
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/e2e/requirements.lock
       - run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
@@ -150,7 +173,14 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high
       - run: npm run test:tooling
+      - run: node --test scripts/perf/v3-dataflow.test.mjs
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/e2e/requirements.lock
       - run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
-          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_sdk_contract.py tests/e2e/test_daemon_harness.py tests/e2e/test_cleanup.py scripts/perf/test_measure.py -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest
+          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_sdk_contract.py tests/e2e/test_responses_contract.py tests/e2e/test_daemon_harness.py tests/e2e/test_cleanup.py scripts/perf/test_measure.py -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest
+          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_deployed.py tests/e2e/test_responses.py tests/e2e/test_space.py --collect-only -q -o cache_dir=.cache/pytest

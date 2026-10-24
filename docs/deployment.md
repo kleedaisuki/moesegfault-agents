@@ -10,6 +10,36 @@ Initial resources were provisioned in the Cloudflare account belonging to this r
 
 `CI` computes affected areas from the actual Git diff. Documentation-only changes do not rebuild the platform; dashboard-only changes do not build containers. Native Rust checks, wasm/Worker builds, dashboard interaction tests and isolated container journeys run independently. Cargo, npm and Docker BuildKit caches are keyed by their real inputs. Actions are pinned by commit; Dependabot reviews updates.
 
+Schema-only changes run the native SQL checks and compiled-Worker integration,
+without rebuilding the container. Responses and Space SDK contract changes run
+the tooling lane; deployed journeys are also collected there to catch invalid
+imports before delivery. Python 3.13 jobs share the lock-keyed pip download cache
+through [setup-python](https://github.com/actions/setup-python#caching-packages-dependencies),
+but create a fresh virtual environment and install the locked requirements on
+every run. Acceptance state, credentials, transcripts and test output are never
+dependency-cache inputs.
+
+The compiled-Worker lane also validates actual Responses objects and streaming
+events against the locked official Python SDK, rather than relying only on the
+Node SDK's permissive runtime parsing. It reuses the same pip download cache and
+sets `MAGENTS_SCHEMA_PYTHON` for the fixture subprocess. The existing Rust library
+test writes the bounded data-flow workload receipt; CI uploads it separately as
+`performance-v3`, never under the `worker` release artifact, so artifact directory
+roots and exact-source deployment layout remain unchanged. These workload figures
+are synthetic transfer measurements, not production latency or CPU benchmarks.
+
+Staging delivery requires both dedicated tenant credentials before changing
+infrastructure. After rollout, the public health build must match the exact CI
+source before the original Chat Completions, Responses and Space journeys run.
+Both the locked Python SDK and the pinned official Node SDK exercise Responses;
+the latter runs on the same Node 24 toolchain as Worker tooling.
+All selected staging cases are mandatory (`MAGENTS_TEST_REQUIRE_ALL=1`): a missing
+opt-in or skipped prerequisite fails acceptance instead of producing a green
+deployment with untested features. Local collection and explicitly opted-in
+manual tests retain their normal skip behavior. Production promotion still uses
+the successful exact-source CI artifacts; a docs-only green run is not sufficient
+because it does not supply the required Worker/dashboard artifacts.
+
 Dashboard browser journeys use the Ubuntu 24.04 runner's installed Google Chrome through the existing Playwright executable-path option. The step logs the actual browser version and fails if it is absent; all interaction tests remain mandatory. This avoids re-downloading system fonts through the runner's slow APT mirror (over eleven minutes for 25.9 MB in run `39985741803`; the six browser journeys took 12.2 seconds). This tests the maintained Chrome channel, not an exactly pinned browser build. See the [versioned runner image manifest](https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md) and [Playwright's Chrome support](https://playwright.dev/docs/browsers#google-chrome--microsoft-edge).
 
 The initial deployment uses a manual **CI** dispatch, which forces all areas and produces `worker` and `dashboard` artifacts. Then dispatch **Deploy** on the same commit with `environment=staging` and that successful `source_run`. Deploy verifies exact source SHA, successful CI, workflow identity and non-PR origin. Missing environment-paired secrets stop delivery before infrastructure changes. Container images are published before the Worker changes because Cloudflare Worker/image rollout is not transactional. The deployment points at a commit-tagged Cloudflare registry image and reuses the verified Worker/UI artifacts.
