@@ -1,4 +1,4 @@
 interface:
   display_name: "moeSegFault Agents API"
-  short_description: "Integrate applications with durable agent sessions"
-  default_prompt: "Use $moesegfault-agents-api to integrate my application with an owned agent."
+  short_description: "Integrate agent Responses, Files, and Space clients"
+  default_prompt: "Use $moesegfault-agents-api to integrate my application with owned agent Responses and account Space files."

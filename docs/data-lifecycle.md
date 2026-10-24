@@ -4,8 +4,8 @@
 
 | Class | Examples | Retention authority |
 | --- | --- | --- |
-| User data | Current workspace snapshot, current R2 manifest, conversation archives, pinned instructions and skill revisions | Explicit account/session lifecycle; never blanket age expiry |
-| Recoverable intermediate state | Immutable uploaded checkpoint not referenced by the current manifest; upload intents | Bounded scheduled garbage collection after a 24-hour grace period |
+| User data | Uploaded Space files, published immutable workspace versions, current workspace snapshot and R2 manifest, conversation archives, pinned instructions and skill revisions | Explicit account/session lifecycle; never blanket age expiry |
+| Recoverable intermediate state | Unpublished file/version candidates, unreferenced session checkpoints, upload intents and transfer leases | Bounded lifecycle-specific recovery; checkpoint/version orphan collection after a 24-hour grace period |
 | Financial provenance | Resource storage clocks, tariff snapshots, reservations, usage ledger | Billing retention policy; checkpoint GC never removes ledger rows |
 | Observability | Traces, aggregate GC counters, consented diagnostic uploads | Observability retention and diagnostics consent; no raw private paths in global GC logs |
 
@@ -13,6 +13,45 @@ The R2 `manifest.json` pointer is authoritative for workspace restoration. A D1
 session projection or DO cached manifest can lag publication and is not sufficient
 proof that an archive is disposable. Session closure does not delete its current
 workspace or conversation.
+
+## Space data and immutable workspace versions
+
+An account has one Space independent of its agent sessions. Files are mutable
+only through display-name changes or explicit deletion; their original bytes,
+digest and identity do not change. Published workspace versions are immutable
+user data, including when their source session is closed or its current
+checkpoint advances. The public user API cannot rename, replace or delete a
+saved version. These versions have independent archive keys outside the legacy
+session-checkpoint collector's namespace, so mixed-version sessions cannot
+accidentally reclaim them. Repeated versions may share one owned immutable
+archive; its physical bytes have one retained-storage clock.
+
+File publication follows checksum-verified object storage, retained-byte
+registration and operation accounting. Pending uploads reserve capacity before
+storage begins. Known failures release content capacity after cleanup and settle
+only known operation quantities. A process crash with an unknown dispatched
+operation may leave a financial hold even after content recovery is finished;
+that accounting uncertainty does not authorize deleting accepted user files or
+keeping failed content capacity reserved forever. Owner-only file diagnostics
+identify the operation without exposing private storage keys.
+
+File recovery advances an indexed retry deadline before external I/O and bounds
+each batch. Version-copy candidates reserve the same aggregate Space byte budget
+as uploaded files. Their separate collector claims an expired transfer lease
+before removing an unpublished object. Abandoned bytes continue consuming
+capacity until physical deletion succeeds. Published file and version prefixes
+must never receive a blanket R2 expiration policy.
+
+Space resources reuse the existing account ledger and retained-byte reconciler
+without creating a synthetic session. The nullable account resource schema is a
+migration floor for the background storage reconciler: a pre-v0.3 reconciler
+cannot decode account-only storage rows. Forward recovery must preserve these
+rows rather than rolling back to an incompatible binary. Existing session
+resource constructors and their owner/immutability constraints remain intact.
+
+See [Space workflows and recovery](space.md) and
+[workspace version publication](workspace-versions.md) for the user contract and
+the durable commit points.
 
 ## Write-ahead checkpoint discovery
 

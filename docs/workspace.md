@@ -24,6 +24,7 @@ at a time; conflicts return 409. Request bodies except restore are capped at 32 
 | `GET /v1/snapshot` | Known-length streamed `application/zstd` body and checkpoint headers below. |
 | `POST /v1/restore` | Streamed archive body, required `X-Snapshot-Sha256`; returns checkpoint metadata. Invalid archives return 422 without changing the current generation. |
 | `POST /v1/checkpoint-ack` | `{ "sha256": "..." }`; 204 after matching the latest generated snapshot. Call only after durable R2 publication. |
+| `PUT /v1/files/{id}` | Stream a Space attachment into `uploads/{id}/content`. Requires `Content-Length` (up to 64 MiB) and `X-Content-Sha256`; returns `{file_id,path,bytes,sha256}`. Identical content is idempotent; conflicts never overwrite user files. |
 
 Execution results contain `id`, nullable `exit_code`, UTF-8-lossy `stdout` and
 `stderr`, `timed_out`, `cancelled`, `truncated` and `duration_ms`. The combined
@@ -32,6 +33,17 @@ binary data remains in workspace files rather than a JSON tool result. Timeout
 is 1–600000 ms; output budget is 1–4194304 bytes. Command text is capped at 24 KiB.
 `cwd` is relative to the current workspace generation and opened through a
 directory capability; absolute/parent components and escaping links are rejected.
+
+Attachment imports use the same workspace gate and UID quiescence as checkpoint
+operations. The daemon first streams into a protected temporary file and verifies
+the exact byte count and compressed-independent file digest. It then publishes a
+capability-relative, no-clobber hard link from that protected temporary file,
+fsyncs the directory, and updates dirty tracking. File IDs contain only bounded
+ASCII letters, digits, underscores and hyphens; user filenames are metadata, not
+paths. Existing symlinks in the destination chain are rejected. A client
+disconnect or invalid body never publishes an incomplete file. The capability
+and no-clobber primitives are provided by [cap-std](https://docs.rs/cap-std/4.0.3/cap_std/fs/struct.Dir.html),
+not a string-prefix filesystem sandbox.
 
 Accepted executions run independently of the HTTP connection. Reconnect using
 the same execution ID and GET status rather than retrying the POST. The last 128

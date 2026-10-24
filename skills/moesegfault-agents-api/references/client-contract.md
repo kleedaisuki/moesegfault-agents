@@ -2,7 +2,7 @@
 
 ## Request boundary
 
-Use `POST /v1/chat/completions`, not Responses or Anthropic Messages. Accept only 1–128 nonempty text-only `user` messages; the JSON body limit is 1 MiB. Do not send system/developer/assistant/tool messages, multimodal content, client tool schemas, or arbitrary generation options. Unsupported options are rejected, not silently ignored. Server-managed tools execute in the harness, not the SDK client.
+This reference covers `POST /v1/chat/completions`; for the separate Responses contract read [responses.md](responses.md). Chat accepts only 1–128 nonempty text-only `user` messages; the JSON body limit is 1 MiB. Do not send system/developer/assistant/tool messages, multimodal content, client tool schemas, or arbitrary generation options to Chat. Unsupported options are rejected, not silently ignored. Server-managed tools execute in the harness, not the SDK client.
 
 All HTTP examples below use origin `https://agents.moesegfault.dev` and `Authorization: Bearer <platform-api-key>`. JSON mutations use `Content-Type: application/json`.
 
@@ -83,6 +83,8 @@ The `finally` block observes status; it never resubmits input or closes a possib
 | Intentionally reopen closed session | `POST /v1/sessions/{id}/resume`; preserve its existing pin |
 
 Agent edits affect future sessions, not existing pins. Closed sessions cannot be resumed just by appending. User appends and steering reset the ten-minute idle clock; tool/model output does not. An active run may outlast the deadline and close after finishing.
+
+For lightweight management polling, `GET /v1/sessions/{id}/view` omits full history/pin and includes message count, latest response ID, and outstanding local calls. ETag plus `If-None-Match` supports 304. Fetch source records incrementally using `GET /v1/sessions/{id}/messages` with one opaque session-bound `before`/`after` cursor and `limit` 1–100 (default latest 50). Records retain stable source sequences through compaction; pages include `start`, `end`, `high_water`, both cursors, and older/newer flags. Keep the legacy full status endpoint when its complete representation is actually needed.
 
 ## Observe without duplicating execution
 
