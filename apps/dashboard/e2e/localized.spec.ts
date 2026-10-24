@@ -91,14 +91,22 @@ for (const scenario of cases)
               ? { id: "session-matrix", agent_id: agent.id, status: "idle" }
               : { data: [] },
         });
-      if (path === "/v1/sessions/session-matrix/messages") {
+      if (
+        (path === "/v1/responses" ||
+          path === "/v1/sessions/session-matrix/messages") &&
+        method === "POST"
+      ) {
         messageCalls++;
         messages.push(
           {
             role: "user",
             content:
               request.postDataJSON().content ??
-              request.postDataJSON().messages?.[0]?.content,
+              request
+                .postDataJSON()
+                .input?.[0]?.content?.find(
+                  (part: { type: string }) => part.type === "input_text",
+                )?.text,
           },
           { role: "assistant", content: "Done." },
         );
@@ -106,15 +114,37 @@ for (const scenario of cases)
           return route.fulfill({
             contentType: "text/event-stream",
             body:
-              "data: " +
-              JSON.stringify({ choices: [{ delta: { content: "Done." } }] }) +
-              "\n\ndata: [DONE]\n\n",
+              `event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { id: `response-${messageCalls}`, status: "in_progress" } })}\n\n` +
+              `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "Done." })}\n\n` +
+              `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: `response-${messageCalls}`, status: "completed", output: [] } })}\n\n`,
           });
         return route.fulfill({
           json: { queued: true, input_revision: messageCalls },
         });
       }
-      if (path === "/v1/sessions/session-matrix")
+      if (path === "/v1/sessions/session-matrix/messages") {
+        const start = Number(
+          new URL(request.url()).searchParams
+            .get("after")
+            ?.replace("after-", "") ?? "0",
+        );
+        return route.fulfill({
+          json: {
+            object: "list",
+            data: messages
+              .slice(start)
+              .map((message, index) => ({ sequence: start + index, message })),
+            start,
+            end: messages.length,
+            high_water: messages.length,
+            before_cursor: `before-${start}`,
+            after_cursor: `after-${messages.length}`,
+            has_older: start > 0,
+            has_newer: false,
+          },
+        });
+      }
+      if (path === "/v1/sessions/session-matrix/view")
         return route.fulfill({
           json: {
             id: "session-matrix",
@@ -123,7 +153,7 @@ for (const scenario of cases)
             input_revision: messageCalls,
             last_input_at_ms: Date.now(),
             context_tokens: 1000,
-            messages,
+            message_count: messages.length,
           },
         });
       if (path === "/v1/api-keys" && method === "POST") {

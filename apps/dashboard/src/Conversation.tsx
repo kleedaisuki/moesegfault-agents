@@ -1,17 +1,18 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, X, Send } from "lucide-react";
-import {
-  request,
-  ApiError,
-  json,
-  streamCompletion,
-  type Agent,
-  type Session,
-} from "./api";
+import { Plus, X, Send, Paperclip, RefreshCw } from "lucide-react";
+import { request, json, type Agent, type Session } from "./api";
 import { sessionPollInterval } from "./polling";
 import { ErrorNotice, Empty } from "./ui";
+import { SessionWorkspace } from "./SessionWorkspace";
+import {
+  sessionView,
+  useSessionJournal,
+  type SessionView,
+} from "./session-data";
+import { Attachments, type Attachment } from "./Attachments";
+import { streamResponse } from "./responses-stream";
 export function Conversation({
   agent,
   back,
@@ -31,6 +32,9 @@ export function Conversation({
       ),
   });
   const [content, setContent] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [choosingFiles, setChoosingFiles] = useState(false);
   const [streamId, setStreamId] = useState<string | null>(null);
   const [partial, setPartial] = useState("");
   const streamController = useRef<AbortController | null>(null);
@@ -44,43 +48,60 @@ export function Conversation({
     mutationFn: async ({
       id,
       content,
+      files,
+      instructions,
+      previousResponseId,
     }: {
       id: string;
       content: string;
-      historyLength: number;
+      files: Attachment[];
+      instructions: string;
+      previousResponseId?: string | null;
+      historyEnd: number;
     }) => {
       const controller = new AbortController();
       streamController.current = controller;
       setStreamId(id);
       setPartial("");
       setContent("");
-      try {
-        await streamCompletion(
-          `/v1/sessions/${encodeURIComponent(id)}/messages`,
-          {
-            ...json("POST", {
-              messages: [{ role: "user", content }],
-              stream: true,
-            }),
-            signal: controller.signal,
-          },
-          (delta) => setPartial((previous) => previous + delta),
-        );
-      } catch (error) {
-        if (
-          error instanceof ApiError &&
-          error.status === 409 &&
-          error.code === "session_busy"
-        )
-          await request(
-            `/v1/sessions/${encodeURIComponent(id)}/messages`,
-            json("POST", { content }),
-          );
-        else throw error;
-      }
+      setAttachments([]);
+      return streamResponse(
+        {
+          ...json("POST", {
+            model: agent.id,
+            input: [
+              {
+                role: "user",
+                content: [
+                  ...(content.trim()
+                    ? [{ type: "input_text", text: content }]
+                    : []),
+                  ...files.map((file) => ({
+                    type: "input_file",
+                    file_id: file.id,
+                  })),
+                ],
+              },
+            ],
+            ...(previousResponseId
+              ? { previous_response_id: previousResponseId }
+              : {}),
+            ...(instructions.trim() ? { instructions } : {}),
+            stream: true,
+          }),
+          headers: { "X-Agents-Session": id },
+          signal: controller.signal,
+        },
+        (delta) => setPartial((previous) => previous + delta),
+      );
     },
     onSettled: async (_data, _error, variables) => {
-      await cache.invalidateQueries({ queryKey: ["session", variables.id] });
+      await Promise.all([
+        cache.invalidateQueries({ queryKey: ["session", variables.id] }),
+        cache.invalidateQueries({
+          queryKey: ["session-messages", variables.id],
+        }),
+      ]);
       setStreamId((current) => (current === variables.id ? null : current));
     },
   });
@@ -88,9 +109,12 @@ export function Conversation({
     queryKey: ["session", sessionId],
     enabled: !!sessionId,
     queryFn: ({ signal }) =>
-      request<Session>(`/v1/sessions/${encodeURIComponent(sessionId)}`, {
+      sessionView(
+        sessionId,
+        cache.getQueryData<SessionView>(["session", sessionId]),
         signal,
-      }),
+      ),
+    select: (data) => data.session,
     staleTime: 5_000,
     refetchOnWindowFocus: true,
     refetchIntervalInBackground: false,
@@ -98,11 +122,14 @@ export function Conversation({
       streamId === sessionId
         ? false
         : sessionPollInterval(
-            query.state.data,
+            query.state.data?.session,
             query.state.error,
             query.state.fetchFailureCount,
           ),
   });
+  const journal = useSessionJournal(sessionId, session.data?.message_count);
+  const active = session.data?.status === "running" || streamId === sessionId;
+  const awaitingTools = !!session.data?.pending_local_calls?.length;
   const create = useMutation({
     mutationFn: () =>
       request<Session>(
@@ -203,6 +230,8 @@ export function Conversation({
           create.error ??
           sessions.error ??
           session.error ??
+          journal.error ??
+          journal.olderError ??
           send.error ??
           (run.error instanceof DOMException && run.error.name === "AbortError"
             ? null
@@ -230,23 +259,65 @@ export function Conversation({
               {t(session.data?.status ?? "Connecting")}
               <small className="mono">{sessionId}</small>
             </div>
-            <button
-              className="icon"
-              aria-label={t("Close session")}
-              disabled={end.isPending}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    t("Close this session and persist its workspace?"),
+            <div className="conversation-actions">
+              <button
+                className="icon"
+                aria-label={t("Refresh conversation")}
+                disabled={session.isFetching || journal.isFetching}
+                onClick={() => {
+                  void session.refetch();
+                  void journal.refetch();
+                }}
+              >
+                <RefreshCw size={17} />
+              </button>
+              <button
+                className="icon"
+                aria-label={t("Close session")}
+                disabled={end.isPending}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      t("Close this session and persist its workspace?"),
+                    )
                   )
-                )
-                  end.mutate();
-              }}
-            >
-              <X size={18} />
-            </button>
+                    end.mutate();
+                }}
+              >
+                <X size={18} />
+              </button>
+            </div>
           </header>
+          {agent.workspace && session.data && (
+            <SessionWorkspace key={sessionId} session={session.data} />
+          )}
           <div className="messages" aria-live="polite">
+            {awaitingTools && (
+              <div className="notice">
+                <strong>{t("Waiting for local tools")}</strong>
+                <p>
+                  {t(
+                    "Return these function results from the client that started this response.",
+                  )}
+                </p>
+                <ul>
+                  {session.data?.pending_local_calls?.map((call) => (
+                    <li key={call.call_id}>
+                      <code>{call.name}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {journal.data?.has_older && (
+              <button
+                className="history-more"
+                disabled={journal.loadingOlder}
+                onClick={() => journal.loadOlder()}
+              >
+                {t(journal.loadingOlder ? "Loading…" : "Load earlier messages")}
+              </button>
+            )}
             {session.data?.status === "closed" && (
               <div className="notice">
                 {t(
@@ -260,9 +331,9 @@ export function Conversation({
                 </button>
               </div>
             )}
-            {session.data?.messages?.length ? (
-              session.data.messages.map((m, i) => (
-                <article className={`message ${m.role}`} key={i}>
+            {journal.data?.data.length ? (
+              journal.data.data.map(({ message: m, sequence }) => (
+                <article className={`message ${m.role}`} key={sequence}>
                   <span>{t(m.role)}</span>
                   <p>
                     {typeof m.content === "string"
@@ -280,8 +351,9 @@ export function Conversation({
             )}
             {streamId === sessionId && (
               <>
-                {session.data?.messages?.[run.variables?.historyLength ?? -1]
-                  ?.content !== run.variables?.content && (
+                {journal.data?.data.find(
+                  (entry) => entry.sequence === run.variables?.historyEnd,
+                )?.message.content !== run.variables?.content && (
                   <article className="message user">
                     <span>{t("user")}</span>
                     <p>{run.variables?.content}</p>
@@ -304,13 +376,16 @@ export function Conversation({
             className="composer"
             onSubmit={(e) => {
               e.preventDefault();
-              if (session.data?.status === "running" || streamId === sessionId)
-                send.mutate();
+              if (awaitingTools || (active && attachments.length)) return;
+              if (active) send.mutate();
               else
                 run.mutate({
                   id: sessionId,
                   content,
-                  historyLength: session.data?.messages?.length ?? 0,
+                  files: attachments,
+                  instructions,
+                  previousResponseId: session.data?.latest_response_id,
+                  historyEnd: journal.data?.end ?? 0,
                 });
             }}
           >
@@ -320,28 +395,90 @@ export function Conversation({
               value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={3}
-              required
+              required={!attachments.length}
+              disabled={awaitingTools}
             />
+            {!!attachments.length && (
+              <div className="attachment-chips">
+                {attachments.map((file) => (
+                  <span key={file.id}>
+                    {file.filename}
+                    <button
+                      type="button"
+                      className="icon"
+                      aria-label={t("Remove {{name}}", { name: file.filename })}
+                      onClick={() =>
+                        setAttachments((previous) =>
+                          previous.filter((value) => value.id !== file.id),
+                        )
+                      }
+                    >
+                      <X size={15} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <details className="response-instructions">
+              <summary>{t("Response instructions")}</summary>
+              <label className="sr-only" htmlFor="response-instructions">
+                {t("Response instructions")}
+              </label>
+              <textarea
+                id="response-instructions"
+                value={instructions}
+                onChange={(event) => setInstructions(event.target.value)}
+                rows={3}
+                disabled={active || awaitingTools}
+              />
+              <p className="hint">
+                {t(
+                  "Kept through compaction for this response. Your agent instructions stay pinned.",
+                )}
+              </p>
+            </details>
             <footer>
               <span>
                 {session.data?.context_tokens !== undefined
                   ? t("contextTokens", { count: session.data.context_tokens })
                   : t("Instructions pinned · workspace persistent")}
               </span>
-              <button
-                className="primary"
-                disabled={
-                  !content.trim() ||
-                  send.isPending ||
-                  session.data?.status === "closed"
-                }
-              >
-                <Send size={16} />
-                {send.isPending ? t("Sending…") : t("Send")}
-              </button>
+              <div className="composer-actions">
+                <button
+                  type="button"
+                  className="icon"
+                  aria-label={t("Attach files")}
+                  disabled={
+                    active || awaitingTools || session.data?.status === "closed"
+                  }
+                  onClick={() => setChoosingFiles(true)}
+                >
+                  <Paperclip size={18} />
+                </button>
+                <button
+                  className="primary"
+                  disabled={
+                    (!content.trim() && !attachments.length) ||
+                    send.isPending ||
+                    awaitingTools ||
+                    (active && !!attachments.length) ||
+                    session.data?.status === "closed"
+                  }
+                >
+                  <Send size={16} />
+                  {send.isPending ? t("Sending…") : t("Send")}
+                </button>
+              </div>
             </footer>
           </form>
         </section>
+      )}
+      {choosingFiles && (
+        <Attachments
+          selected={attachments}
+          apply={setAttachments}
+          close={() => setChoosingFiles(false)}
+        />
       )}
     </>
   );

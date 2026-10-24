@@ -120,6 +120,37 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("metadata-driven model selection", () => {
+  it("preserves an existing tool allowlist when editing instructions", async () => {
+    mount(registry, [{ ...existing, tools: ["time", "workspace_versions"] }]);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit Notebook" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    await user.type(dialog.getByLabelText("Instructions"), " updated");
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.tools).toEqual(["time", "workspace_versions"]);
+  });
+  it("offers functional workspace tool selection and removes workspace tools when disabled", async () => {
+    mount();
+    const { user, dialog, model } = await createForm();
+    await user.type(model, "openai/example");
+    await user.click(dialog.getByText("Tools", { exact: true }));
+    expect(
+      dialog.getByRole("checkbox", { name: "Persist workspace" }),
+    ).toBeChecked();
+    await user.click(
+      dialog.getByRole("checkbox", { name: "Restore workspace" }),
+    );
+    await user.click(
+      dialog.getByRole("checkbox", { name: "Persistent workspace" }),
+    );
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.workspace).toBe(false);
+    expect(writes[0].body.tools).toEqual(["time"]);
+  });
   it("offers only priced platform providers and rejects a BYOK-only model typed manually", async () => {
     mount();
     const { user, dialog, provider, model } = await createForm();

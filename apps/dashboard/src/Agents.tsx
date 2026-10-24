@@ -20,6 +20,19 @@ import {
 } from "./api";
 import { ErrorNotice, Empty, Modal } from "./ui";
 import { Conversation } from "./Conversation";
+const workspaceTools = [
+  "bash",
+  "workspace_commit",
+  "workspace_versions",
+  "workspace_restore",
+];
+const toolLabels = {
+  time: "Current time",
+  bash: "Bash",
+  workspace_commit: "Persist workspace",
+  workspace_versions: "List workspace versions",
+  workspace_restore: "Restore workspace",
+} as const;
 export function Agents() {
   const { t } = useTranslation();
   const cache = useQueryClient();
@@ -122,11 +135,12 @@ export function Agents() {
         <summary>API</summary>
         <pre>{`from openai import OpenAI
 
-client = OpenAI(base_url="${apiBaseUrl()}", api_key="YOUR_API_KEY")
-response = client.chat.completions.create(
+client = OpenAI(base_url="${apiBaseUrl()}", api_key="YOUR_API_KEY", max_retries=0)
+response = client.responses.create(
     model="AGENT_ID",
-    messages=[{"role": "user", "content": "Hello"}],
-)`}</pre>
+    input="Hello",
+)
+print(response.output_text)`}</pre>
       </details>
       {editing && (
         <AgentEditor
@@ -165,6 +179,14 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   const [instructions, setInstructions] = useState(agent?.instructions ?? "");
   const [percent, setPercent] = useState(agent?.compaction_percent ?? 80);
   const [workspace, setWorkspace] = useState(agent?.workspace ?? true);
+  const [selectedTools, setSelectedTools] = useState<string[]>(
+    agent?.tools ??
+      (agent
+        ? agent.workspace
+          ? ["time", "bash"]
+          : ["time"]
+        : ["time", ...workspaceTools]),
+  );
   const [credentialId, setCredentialId] = useState(
     agent?.model.credential_id ?? "",
   );
@@ -276,7 +298,9 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
           instructions,
           compaction_percent: percent,
           workspace,
-          tools: workspace ? ["time", "bash"] : ["time"],
+          tools: selectedTools.filter(
+            (tool) => workspace || !workspaceTools.includes(tool),
+          ),
           skills: selectedSkills,
         }),
       );
@@ -449,10 +473,41 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
           <input
             type="checkbox"
             checked={workspace}
-            onChange={(e) => setWorkspace(e.target.checked)}
+            onChange={(e) => {
+              setWorkspace(e.target.checked);
+              if (
+                e.target.checked &&
+                !selectedTools.some((tool) => workspaceTools.includes(tool))
+              )
+                setSelectedTools((previous) => [
+                  ...previous,
+                  ...workspaceTools,
+                ]);
+            }}
           />{" "}
-          {t("Persistent workspace with Bash")}
+          {t("Persistent workspace")}
         </label>
+        <details className="model-limits">
+          <summary>{t("Tools")}</summary>
+          {Object.entries(toolLabels)
+            .filter(([tool]) => workspace || tool === "time")
+            .map(([tool, label]) => (
+              <label className="check" key={tool}>
+                <input
+                  type="checkbox"
+                  checked={selectedTools.includes(tool)}
+                  onChange={(event) =>
+                    setSelectedTools((previous) =>
+                      event.target.checked
+                        ? [...previous, tool]
+                        : previous.filter((name) => name !== tool),
+                    )
+                  }
+                />
+                {t(label)}
+              </label>
+            ))}
+        </details>
         <fieldset className="skill-selection">
           <legend>{t("Skills")}</legend>
           <ErrorNotice error={skills.error} />

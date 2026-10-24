@@ -18,7 +18,7 @@ describe("complete localized UI", () => {
   it("has matching nonempty resources for every literal UI key", () => {
     expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
     const modules = import.meta.glob(
-      "./{App,PublicEntry,Agents,Access,Conversation,UsagePage,Preferences,Skills,ui}.tsx",
+      "./{App,PublicEntry,Agents,Access,Conversation,Attachments,SessionWorkspace,UsagePage,Preferences,Skills,Space,ui}.tsx",
       { query: "?raw", import: "default", eager: true },
     );
     for (const source of Object.values(modules))

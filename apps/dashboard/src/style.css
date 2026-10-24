@@ -1155,7 +1155,7 @@ button {
 @media (max-width: 480px) {
   .sidebar nav {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
   .nav-item {
     flex-direction: column;
@@ -1466,5 +1466,230 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .loading-icon {
     animation: none;
+  }
+}
+
+.space-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.space-heading h1 {
+  overflow-wrap: anywhere;
+}
+.space-storage {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.space-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+.space-tabs button {
+  white-space: normal;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.space-tabs button[aria-selected="true"] {
+  background: var(--soft);
+  color: var(--text);
+}
+.space-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 24px 0 16px;
+}
+.space-toolbar .hint {
+  margin: 0;
+}
+.file-picker {
+  display: none;
+}
+.space-list {
+  padding: 0 20px;
+}
+.space-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 0;
+}
+.space-row + .space-row {
+  border-top: 1px solid var(--line);
+}
+.space-file-icon {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.space-item {
+  min-width: 0;
+  flex: 1;
+}
+.space-item strong {
+  display: block;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.space-item > span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.space-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.space-more {
+  display: flex;
+  margin: 24px auto;
+}
+.workspace-controls {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+}
+.workspace-controls summary {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+.workspace-controls > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+}
+.operation-id {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.workspace-choice {
+  padding: 0;
+  margin: 16px 0;
+  border: 0;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.workspace-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  margin: 0;
+  border-radius: 7px;
+}
+.workspace-option:has(input:checked) {
+  background: var(--soft);
+}
+.workspace-option input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.workspace-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.workspace-option small {
+  display: block;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.composer-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.conversation-actions {
+  display: flex;
+  gap: 4px;
+}
+.attachment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+.attachment-chips > span {
+  display: inline-flex;
+  align-items: center;
+  padding-left: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 12px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.attachment-chips button {
+  flex-shrink: 0;
+}
+.response-instructions {
+  margin-top: 8px;
+}
+.response-instructions summary {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.history-more {
+  display: flex;
+  margin: 0 auto 20px;
+}
+@media (max-width: 700px) {
+  .sidebar nav {
+    flex-wrap: wrap;
+  }
+  .nav-item {
+    width: auto;
+    flex: 1 1 auto;
+  }
+  .space-storage {
+    flex-basis: 100%;
+  }
+  .space-list {
+    padding: 0 16px;
+  }
+  .space-row {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .space-item {
+    flex-basis: calc(100% - 34px);
+  }
+  .space-actions {
+    margin-left: auto;
+  }
+  .space-row > a {
+    margin-left: auto;
+  }
+  .space-row:has(> a) {
+    flex-wrap: nowrap;
+  }
+  .space-row:has(> a) .space-item {
+    flex-basis: auto;
   }
 }

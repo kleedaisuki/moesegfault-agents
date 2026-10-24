@@ -13,6 +13,7 @@ export type Agent = {
   instructions: string;
   compaction_percent: number;
   workspace: boolean;
+  tools?: string[];
   skills: string[];
 };
 export type Model = {
@@ -45,6 +46,10 @@ export type Session = {
   context_window?: number;
   last_error?: string;
   pending_messages?: Message[];
+  message_count?: number;
+  run_id?: string | null;
+  latest_response_id?: string | null;
+  pending_local_calls?: { call_id: string; name: string; arguments: string }[];
 };
 export type Account = {
   account_id: string;
@@ -89,9 +94,11 @@ export function setCsrfToken(token?: string) {
 export async function responseFor(
   path: string,
   init: RequestInit = {},
+  acceptedStatuses: readonly number[] = [],
 ): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (init.body) headers.set("Content-Type", "application/json");
+  if (typeof init.body === "string" && !headers.has("Content-Type"))
+    headers.set("Content-Type", "application/json");
   if (csrfToken && init.method && !["GET", "HEAD"].includes(init.method))
     headers.set("X-CSRF-Token", csrfToken);
   const response = await fetch(path, {
@@ -99,7 +106,7 @@ export async function responseFor(
     credentials: "same-origin",
     headers,
   });
-  if (!response.ok) {
+  if (!response.ok && !acceptedStatuses.includes(response.status)) {
     if (response.status === 401 && path !== "/v1/account")
       window.dispatchEvent(new Event(AUTHENTICATION_REQUIRED_EVENT));
     const body = await response.json().catch(() => ({}));
@@ -151,6 +158,8 @@ export function apiBaseUrl(
 }
 
 export function localizedError(error: unknown): string {
+  if (error instanceof ApiError && error.code === "response_cancelled")
+    return i18n.t("Response cancelled");
   const message =
     error instanceof Error
       ? error.message
@@ -246,6 +255,7 @@ export async function streamCompletion(
   )
     throw new Error("Invalid response stream");
   let completed = false;
+  let successful = false;
   const parser = createParser({
     onEvent: (event) => {
       if (event.data === "[DONE]") {
@@ -262,6 +272,9 @@ export async function streamCompletion(
         );
       const content = value.choices?.[0]?.delta?.content;
       if (typeof content === "string") onDelta(content);
+      const finish = value.choices?.[0]?.finish_reason;
+      if (finish === "stop") successful = true;
+      else if (finish) throw new Error("Response incomplete");
     },
   });
   const reader = response.body.getReader();
@@ -273,7 +286,8 @@ export async function streamCompletion(
       parser.feed(decoder.decode(value, { stream: true }));
     }
     parser.feed(decoder.decode());
-    if (!completed) throw new Error("Response stream interrupted");
+    if (!completed || !successful)
+      throw new Error("Response stream interrupted");
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();

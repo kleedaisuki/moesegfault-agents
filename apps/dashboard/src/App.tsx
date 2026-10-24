@@ -9,6 +9,7 @@ import {
   ChevronRight,
   KeyRound,
   Layers3,
+  FolderOpen,
   LogOut,
 } from "lucide-react";
 import {
@@ -33,10 +34,16 @@ const UsagePage = lazy(() =>
 const Skills = lazy(() =>
   import("./Skills").then((module) => ({ default: module.Skills })),
 );
-type Page = "agents" | "skills" | "access" | "usage";
+const Space = lazy(() =>
+  import("./Space").then((module) => ({ default: module.Space })),
+);
+type Page = "agents" | "space" | "skills" | "access" | "usage";
 function initialPage(): Page {
   const page = window.location.hash.slice(1);
-  return page === "skills" || page === "access" || page === "usage"
+  return page === "space" ||
+    page === "skills" ||
+    page === "access" ||
+    page === "usage"
     ? page
     : "agents";
 }
@@ -119,6 +126,7 @@ export function App() {
           {(
             [
               ["agents", Bot, "Agents"],
+              ["space", FolderOpen, "Space"],
               ["skills", BookOpen, "Skills"],
               ["access", KeyRound, "Access"],
               ["usage", Layers3, "Usage & plan"],
@@ -165,6 +173,11 @@ export function App() {
           {page === "skills" && (
             <Suspense fallback={<Empty title={t("Loading…")} />}>
               <Skills />
+            </Suspense>
+          )}
+          {page === "space" && (
+            <Suspense fallback={<Empty title={t("Loading…")} />}>
+              <Space />
             </Suspense>
           )}
           {page === "access" && (
