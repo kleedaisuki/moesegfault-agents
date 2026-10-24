@@ -1,0 +1,4 @@
+interface:
+  display_name: "magents"
+  short_description: "Manage agents, sessions, credentials and downloads"
+  default_prompt: "Use $magents to publish my agent configuration and manage its sessions."

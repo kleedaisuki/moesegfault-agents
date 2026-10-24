@@ -1,0 +1,4 @@
+interface:
+  display_name: "moeSegFault Agents Development"
+  short_description: "Develop and release the moeSegFault Agents platform"
+  default_prompt: "Use $moesegfault-agents-development to make and verify a compatible platform change."

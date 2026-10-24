@@ -1,5 +1,10 @@
 # Account skills registry
 
+For portable skills teaching an external agent to use the CLI/API or develop the
+platform, see [the integration skill packs](../skills/README.md). Those folders
+are not automatically uploaded to this registry. This document describes the
+cloud harness's separate named-instruction API.
+
 Skills are named instruction text, not executable tools or client-provided tool
 schemas. Only the server's harness/workspace registry can define tools (`time`
 and `bash`). A skill can describe how to use those tools but cannot grant a
