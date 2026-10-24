@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -21,6 +21,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   let redirectProvider = false;
   let redirectTargetCalls = 0;
   let slowProvider = false;
+  let byokProviderKey = null;
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const temp = await mkdtemp(path.join(root, '.temp/worker-integration-'));
   process.env.TMP = process.env.TEMP = process.env.TMPDIR = temp;
@@ -63,6 +64,9 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       }
       if (request.url === 'https://openrouter.ai/api/v1/chat/completions') {
         providerCalls++;
+        if (byokProviderKey !== null) {
+          assert.ok(request.headers.get('authorization') === `Bearer ${byokProviderKey}`, 'BYOK must use only the account-owned provider credential, never the platform key');
+        }
         if (slowProvider) {
           assert.equal(providerCalls, 1, 'Heartbeat must not initiate extra provider calls');
           const input = await request.json();
@@ -75,7 +79,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
         assert.equal(input.stream, true);
         assert.equal(input.model, 'test-model');
         assert.ok(input.tools.some(tool => tool.function.name === 'time'));
-        if (providerCalls === 1) {
+        if (providerCalls === 1 && byokProviderKey === null) {
           const before = await db.prepare('SELECT status,last_input_at,config_snapshot_json FROM sessions WHERE id=?1').bind(input.session_id).first();
           const rejected = await mf.dispatchFetch(`https://agents.test/v1/sessions/${input.session_id}/resume`, {
             method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: '{}',
@@ -313,6 +317,70 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     } finally {
       clearTimeout(timer);
       slowProvider = false;
+    }
+  });
+  await t.test('BYOK uses the owned key, isolates credentials, and charges resources but no model cost', { timeout: 12000 }, async () => {
+    const owner = 'byok-owner';
+    const cookie = randomBytes(32).toString('base64url');
+    const csrf = randomBytes(32).toString('base64url');
+    const cookieHash = createHash('sha256').update(cookie).digest('base64url');
+    const now = Math.floor(Date.now() / 1000);
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', encryptionKey, nonce);
+    cipher.setAAD(Buffer.from(`session:${cookieHash}`));
+    const encrypted = Buffer.concat([Buffer.from([1]), nonce,
+      cipher.update(Buffer.from(JSON.stringify({ csrf_token: csrf, oauth: {}, access_expires_at: now + 3600 }))),
+      cipher.final(), cipher.getAuthTag()]).toString('base64url');
+    await db.batch([
+      db.prepare('INSERT INTO accounts(id,issuer,subject,created_at,updated_at) VALUES(?,?,?,?,?)').bind(owner, 'https://identity.test', owner, now, now),
+      db.prepare('INSERT INTO usage_accounts(account_id,updated_at) VALUES(?,?)').bind(owner, now),
+      db.prepare('INSERT INTO browser_sessions(token_hash,account_id,tokens_encrypted,csrf_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)')
+        .bind(cookieHash, owner, encrypted, createHash('sha256').update(csrf).digest('base64url'), now + 3600, now),
+    ]);
+    async function browser(method, endpoint, body, expected = 200) {
+      const response = await mf.dispatchFetch(`https://agents.test${endpoint}`, {
+        method, headers: { Cookie: `__Host-magents_session=${cookie}`, Origin: 'https://agents.test', 'X-CSRF-Token': csrf, 'Content-Type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      assert.equal(response.status, expected, `${method} ${endpoint}`);
+      return response.json();
+    }
+    const apiKey = (await browser('POST', '/v1/api-keys', { name: 'BYOK journey' }, 201)).key;
+    const userKey = 'synthetic-user-owned-openrouter-key-distinct-from-platform';
+    const credential = await browser('PUT', '/v1/provider-keys/openrouter', { api_key: userKey });
+    const model = { provider: 'byok', model: 'test-model', credential_id: credential.id };
+    const rejected = await request('POST', '/v1/agents', { name: 'Foreign credential denied', model }, 400);
+    assert.equal(rejected.error.code, 'invalid_request_error');
+    const agent = await request('POST', '/v1/agents', { name: 'Owned BYOK', model, tools: ['time'], workspace: false }, 201, apiKey);
+    const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, apiKey);
+    redirectProvider = false;
+    providerCalls = 0;
+    byokProviderKey = userKey;
+    let timer;
+    try {
+      const response = await Promise.race([
+        mf.dispatchFetch('https://agents.test/v1/chat/completions', {
+          method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'X-Agents-Session': session.id },
+          body: JSON.stringify({ model: agent.id, messages: [{ role: 'user', content: 'Call time and report the result.' }], stream: false }),
+        }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('BYOK inference stalled beyond 8 seconds')), 8000); }),
+      ]);
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).choices[0].message.content, 'The clock tool completed.');
+      assert.equal(providerCalls, 2);
+      const status = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, apiKey);
+      assert.ok(status.messages.some(message => message.role === 'tool' && message.tool_call_id === 'call_time'));
+      const modelCosts = await db.prepare("SELECT CAST(l.amount_microusd AS TEXT) AS amount,l.price_version FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=?1 AND l.resource='model'").bind(owner).all();
+      assert.deepEqual(modelCosts.results, [{ amount: '0', price_version: 'byok' }, { amount: '0', price_version: 'byok' }]);
+      await request('DELETE', `/v1/sessions/${session.id}`, undefined, 200, apiKey);
+      const wallet = await db.prepare('SELECT CAST(spent_microusd AS TEXT) AS spent,CAST(reserved_microusd AS TEXT) AS held FROM usage_accounts WHERE account_id=?1').bind(owner).first();
+      assert.ok(BigInt(wallet.spent) > 0n, 'BYOK still pays observed platform resources');
+      assert.equal(wallet.held, '0', 'Finished and archived BYOK work must release all holds');
+      const held = await db.prepare("SELECT COUNT(*) AS count FROM usage_reservations WHERE account_id=?1 AND state='reserved'").bind(owner).first('count');
+      assert.equal(held, 0);
+    } finally {
+      clearTimeout(timer);
+      byokProviderKey = null;
     }
   });
 });
