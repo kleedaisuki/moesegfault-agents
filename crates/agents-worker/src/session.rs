@@ -20,6 +20,7 @@ use worker::*;
 mod sse;
 
 const STATE_KEY: &str = "session.v1";
+const INDEX_PENDING_KEY: &str = "session.index.pending";
 const MAX_TOOL_ROUNDS: u64 = 128;
 type EventSender = mpsc::UnboundedSender<Result<Vec<u8>>>;
 
@@ -145,7 +146,16 @@ impl DurableObject for Session {
             let storage = loaded.state.storage();
             let restored = load_state(&storage).await?;
             if let Some(data) = &restored {
-                match alarm_deadline(data, util::now_ms()) {
+                let deadline = if storage
+                    .get::<bool>(INDEX_PENDING_KEY)
+                    .await?
+                    .unwrap_or(false)
+                {
+                    Some(util::now_ms().saturating_add(1000))
+                } else {
+                    alarm_deadline(data, util::now_ms())
+                };
+                match deadline {
                     Some(expected) => {
                         if storage
                             .get_alarm()
@@ -233,6 +243,14 @@ impl DurableObject for Session {
                 value["checkpoint_error"] = json!(data.checkpoint_error);
                 value["conversation_r2_key"] = json!(data.archive_key);
                 value["run_id"] = json!(data.run.map(|r| r.id));
+                value["index_pending"] = json!(
+                    inner
+                        .state
+                        .storage()
+                        .get::<bool>(INDEX_PENDING_KEY)
+                        .await?
+                        .unwrap_or(false)
+                );
                 Response::from_json(&value)
             }
             (Method::Get, "/export") => {
@@ -486,6 +504,10 @@ impl DurableObject for Session {
             inner.arm_alarm().await?;
             return Response::ok("busy");
         }
+        if let Err(error) = inner.repair_index().await {
+            inner.running.set(false);
+            return Err(error);
+        }
         let snapshot = inner.snapshot()?;
         if snapshot.archive_pending || snapshot.archive_preparing {
             inner.running.set(false);
@@ -570,7 +592,18 @@ impl SessionInner {
     }
 
     async fn arm_alarm(&self) -> Result<()> {
-        match alarm_deadline(&self.snapshot()?, util::now_ms()) {
+        let deadline = if self
+            .state
+            .storage()
+            .get::<bool>(INDEX_PENDING_KEY)
+            .await?
+            .unwrap_or(false)
+        {
+            Some(util::now_ms().saturating_add(1000))
+        } else {
+            alarm_deadline(&self.snapshot()?, util::now_ms())
+        };
+        match deadline {
             Some(deadline) => {
                 self.state
                     .storage()
@@ -579,6 +612,45 @@ impl SessionInner {
             }
             None => self.state.storage().delete_alarm().await,
         }
+    }
+
+    async fn persist_finalized(&self) -> Result<()> {
+        let _guard = self.persistence.lock().await;
+        let storage = self.state.storage();
+        let data = self.snapshot()?;
+        storage.put(INDEX_PENDING_KEY, true).await?;
+        save_state(&storage, &data).await?;
+        if Store::new(&self.env)
+            .update_session(&data.record)
+            .await
+            .is_ok()
+        {
+            let _ = storage.delete(INDEX_PENDING_KEY).await;
+        } else {
+            util::emit(
+                "session.index_deferred",
+                json!({"session_id":data.record.id,"phase":"session_index","error_code":"session_index_pending"}),
+            );
+        }
+        Ok(())
+    }
+
+    async fn repair_index(&self) -> Result<()> {
+        let _guard = self.persistence.lock().await;
+        let storage = self.state.storage();
+        if !storage
+            .get::<bool>(INDEX_PENDING_KEY)
+            .await?
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let data = load_state(&storage)
+            .await?
+            .ok_or_else(|| Error::RustError("session_not_initialized".into()))?;
+        Store::new(&self.env).update_session(&data.record).await?;
+        storage.delete(INDEX_PENDING_KEY).await?;
+        Ok(())
     }
 
     fn append(&self, messages: Vec<Message>) -> Result<u64> {
@@ -1045,7 +1117,9 @@ impl SessionInner {
         if !self.snapshot()?.pending.is_empty() {
             self.start_run()?;
         }
-        self.persist().await?;
+        // The DO snapshot is authoritative. A failed derived index update must
+        // remain repairable without hiding the outcome or replaying execution.
+        self.persist_finalized().await?;
         if let Some(tx) = self.events.borrow_mut().take() {
             match &result {
                 Ok(_) => send_chunk(

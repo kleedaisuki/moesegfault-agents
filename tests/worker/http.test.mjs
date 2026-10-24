@@ -27,6 +27,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   let redirectTargetCalls = 0;
   let slowProvider = false;
   let byokProviderKey = null;
+  let providerOwnerKey = key;
   let billingAvailable = true;
   let billingMalformed = false;
   let billingFetches = 0;
@@ -99,7 +100,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
         if (providerCalls === 1 && byokProviderKey === null) {
           const before = await db.prepare('SELECT status,last_input_at,config_snapshot_json FROM sessions WHERE id=?1').bind(input.session_id).first();
           const rejected = await mf.dispatchFetch(`https://agents.test/v1/sessions/${input.session_id}/resume`, {
-            method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: '{}',
+            method: 'POST', headers: { Authorization: `Bearer ${providerOwnerKey}`, 'Content-Type': 'application/json' }, body: '{}',
           });
           assert.equal(rejected.status, 409, 'Resume must reject an executing run, not roll back its quota admission');
           const after = await db.prepare('SELECT status,last_input_at,config_snapshot_json FROM sessions WHERE id=?1').bind(input.session_id).first();
@@ -391,6 +392,60 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       clearTimeout(timer);
       slowProvider = false;
     }
+  });
+  await t.test('a failed terminal session index write cannot strand an already durable SSE result', { timeout: 12000 }, async () => {
+    providerCalls = 0;
+    redirectProvider = false;
+    byokProviderKey = null;
+    const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'terminal-index-owner' });
+    providerOwnerKey = principal.apiKey;
+    const agent = await request('POST', '/v1/agents', { name: 'Terminal index fixture', tools: ['time'], workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);
+    const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, principal.apiKey);
+    await db.prepare(`CREATE TRIGGER terminal_index_failure BEFORE UPDATE ON sessions WHEN NEW.id='${session.id}' AND json_extract(OLD.config_snapshot_json,'$.status')='running' AND json_extract(NEW.config_snapshot_json,'$.status')='idle' BEGIN SELECT RAISE(ABORT,'synthetic_terminal_index_failure'); END`).run();
+    let timer;
+    let ledgerCount;
+    try {
+      const response = await mf.dispatchFetch('https://agents.test/v1/chat/completions', {
+        method: 'POST', headers: { Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': 'application/json', 'X-Agents-Session': session.id },
+        body: JSON.stringify({ model: agent.id, messages: [{ role: 'user', content: 'Use time and finish.' }], stream: true }),
+      });
+      const observed = response.text();
+      const wire = await Promise.race([observed, new Promise((_, reject) => {
+        timer = setTimeout(async () => {
+          const snapshot = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+          const index = await db.prepare('SELECT status FROM sessions WHERE id=?1').bind(session.id).first('status');
+          reject(new Error(JSON.stringify({ diagnosis: 'terminal_observer_stranded', authoritative_status: snapshot.status, index_status: index, message_count: snapshot.messages.length, last_error: snapshot.last_error, provider_calls: providerCalls })));
+        }, 6000);
+      })]);
+      assert.match(wire, /"finish_reason":"stop"/);
+      assert.match(wire, /"usage":/);
+      assert.ok(wire.trimEnd().endsWith('data: [DONE]'));
+      const snapshot = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+      assert.equal(snapshot.status, 'idle');
+      assert.equal(snapshot.index_pending, true);
+      assert.equal(snapshot.billing_pending, false);
+      assert.equal(providerCalls, 2);
+      ledgerCount = await db.prepare('SELECT COUNT(*) AS count FROM usage_ledger WHERE reservation_id IN (SELECT id FROM usage_reservations WHERE session_id=?1)').bind(session.id).first('count');
+    } finally {
+      clearTimeout(timer);
+      await db.prepare('DROP TRIGGER IF EXISTS terminal_index_failure').run();
+      providerOwnerKey = key;
+    }
+    await mf.unsafeEvictDurableObject('', 'Session', { name: `${principal.owner}:${session.id}` });
+    const restored = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+    assert.equal(restored.status, 'idle');
+    assert.equal(restored.messages.length, 4);
+    const deadline = Date.now() + 6000;
+    let indexed;
+    do {
+      indexed = await db.prepare("SELECT json_extract(config_snapshot_json,'$.status') AS status FROM sessions WHERE id=?1").bind(session.id).first('status');
+      if (indexed !== 'idle') await new Promise(resolve => setTimeout(resolve, 100));
+    } while (indexed !== 'idle' && Date.now() < deadline);
+    assert.equal(indexed, 'idle', 'The pending alarm must repair the index without another model call');
+    assert.equal(providerCalls, 2);
+    assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM usage_ledger WHERE reservation_id IN (SELECT id FROM usage_reservations WHERE session_id=?1)').bind(session.id).first('count'), ledgerCount, 'Index repair must not reprice or recharge a settled run');
+    const repaired = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+    assert.equal(repaired.index_pending, false);
   });
   await t.test('BYOK uses the owned key, isolates credentials, and charges resources but no model cost', { timeout: 12000 }, async () => {
     const owner = 'byok-owner';
