@@ -12,18 +12,24 @@ import { createGenericProviderFixture, runGenericByokJourney } from './generic-b
 import { runExportJourney } from './export-journey.mjs';
 import { createCompactionProviderFixture, runCompactionJourney } from './compaction-journey.mjs';
 import { createObserverProviderFixture, runProjectionFaultJourney } from './observer-journey.mjs';
+import { createResponsesProviderFixture, runResponsesNodeSdkJourney, runResponsesLocalToolsJourney,
+  runResponsesCompactionJourney, runResponsesBackgroundRaceJourney, runResponsesStorageAndFailureJourney,
+  runResponsesCancellationJourney, runResponsesIdempotencyRaceJourney, runSessionViewsJourney,
+  runResponsesInputAndOptionsJourney, runResponsesUnknownUsageJourney, runResponsesMidstreamResetJourney } from './responses-journey.mjs';
+import { runSpaceJourney } from './space-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
 const key = 'mag_integration_synthetic_key_not_a_real_credential';
 const hash = createHash('sha256').update(key).digest('base64url');
 
-test('compiled Rust Worker: authenticated D1 and session DO user journey', { timeout: 90000 }, async (t) => {
+test('compiled Rust Worker: authenticated D1 and session DO user journey', { timeout: 180000 }, async (t) => {
   const encryptionKey = randomBytes(32);
   const identity = createIdentityFixture();
   const genericProviders = createGenericProviderFixture();
   const compactionProviders = createCompactionProviderFixture();
   const observerProvider = createObserverProviderFixture();
+  const responsesProvider = createResponsesProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -68,10 +74,14 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       RESOURCE_PRICING_JSON: resourcePricing,
       OPENROUTER_API_KEY: 'synthetic-provider-key-never-sent-outside-fixture',
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000',
-      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '20000000',
+      // Independent Responses/Space principals need trial grants; owner-level
+      // exhaustion remains covered separately rather than sharing a global cap.
+      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000',
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
+      const responsesResponse = await responsesProvider.handle(request);
+      if (responsesResponse !== undefined) return responsesResponse;
       const observerResponse = await observerProvider.handle(request);
       if (observerResponse !== undefined) return observerResponse;
       const compactionResponse = await compactionProviders.handle(request);
@@ -474,6 +484,31 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   }
   await t.test('terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
+  const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, diagnostic: value => t.diagnostic(value) });
+  await t.test('Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>
+    runSpaceJourney(responseContext()));
+  await t.test('Responses actual Node SDK streams, recovers and returns local function results', { timeout: 16000 }, () =>
+    runResponsesNodeSdkJourney(responseContext()));
+  await t.test('Responses mixed server/local tools reject partial results and resume an archived head', { timeout: 16000 }, () =>
+    runResponsesLocalToolsJourney(responseContext()));
+  await t.test('Responses repeated compaction retains exact fixed and request-scoped instructions', { timeout: 16000 }, () =>
+    runResponsesCompactionJourney(responseContext()));
+  await t.test('Responses concurrent children admit one linear background execution', { timeout: 16000 }, () =>
+    runResponsesBackgroundRaceJourney(responseContext()));
+  await t.test('Responses no-store, upstream failure and output-budget terminals remain distinct', { timeout: 16000 }, () =>
+    runResponsesStorageAndFailureJourney(responseContext()));
+  await t.test('Responses durable cancellation cannot replay or revive an accepted execution', { timeout: 16000 }, () =>
+    runResponsesCancellationJourney(responseContext()));
+  await t.test('Responses concurrent idempotency receipt creates one session and one run', { timeout: 16000 }, () =>
+    runResponsesIdempotencyRaceJourney(responseContext()));
+  await t.test('history metadata validators and cursor pages reduce bytes without changing legacy history', { timeout: 16000 }, () =>
+    runSessionViewsJourney(responseContext()));
+  await t.test('Responses typed context and generation controls are implemented rather than silently ignored', { timeout: 16000 }, () =>
+    runResponsesInputAndOptionsJourney(responseContext()));
+  await t.test('Responses unknown reasoning preserves exact known usage without inventing a breakdown', { timeout: 16000 }, () =>
+    runResponsesUnknownUsageJourney(responseContext()));
+  await t.test('Responses midstream isolate replacement preserves sequence high-water without replaying uncertain inference', { timeout: 16000 }, () =>
+    runResponsesMidstreamResetJourney(responseContext()));
   await t.test('native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
     const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'forward-recovery-owner' });
     const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);

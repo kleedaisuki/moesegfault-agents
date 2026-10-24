@@ -12,7 +12,7 @@ use crate::{auth, provider::Message, store::Store, telemetry::TraceContext, tool
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-struct RouteContext<'a> {
+pub(crate) struct RouteContext<'a> {
     env: &'a Env,
     trace: &'a TraceContext,
 }
@@ -82,11 +82,11 @@ pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         )?;
         response.headers_mut().set(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, X-CSRF-Token, X-Agents-Session, Idempotency-Key, traceparent",
+            "Authorization, Content-Type, X-CSRF-Token, X-Agents-Session, Idempotency-Key, X-Content-Sha256, If-None-Match, Range, traceparent",
         )?;
         response.headers_mut().set(
             "Access-Control-Expose-Headers",
-            "X-Agents-Session, X-Agents-Run, traceparent",
+            "X-Agents-Session, X-Agents-Run, X-Agents-Response, X-Content-Sha256, Content-Length, Content-Disposition, Accept-Ranges, Content-Range, ETag, traceparent",
         )?;
         response
             .headers_mut()
@@ -229,6 +229,47 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "This request key was already used with different parameters",
         ),
         "session_not_found" => (404, "not_found", "Session not found"),
+        "file_not_found" => (404, "file_not_found", "File not found in your Space"),
+        "file_not_ready" | "file_upload_pending" => (
+            409,
+            "file_not_ready",
+            "The file is not ready; wait for the upload to finish",
+        ),
+        "file_workspace_conflict" => (
+            409,
+            "file_workspace_conflict",
+            "The file conflicts with an existing workspace path",
+        ),
+        "space_quota_exceeded" => (
+            409,
+            "space_quota_exceeded",
+            "Your Space storage limit has been reached",
+        ),
+        "invalid_workspace_version" | "invalid_workspace_restore" => (
+            400,
+            "invalid_workspace_version",
+            "The workspace version request is invalid",
+        ),
+        "workspace_version_not_found" => (
+            404,
+            "workspace_version_not_found",
+            "Workspace version not found in your Space",
+        ),
+        "workspace_version_cursor_not_found" => (
+            400,
+            "workspace_version_cursor_not_found",
+            "The workspace version cursor is invalid",
+        ),
+        "workspace_version_unavailable" => (
+            409,
+            "workspace_version_unavailable",
+            "The workspace version is not available for this operation",
+        ),
+        "response_route_unavailable" => (
+            503,
+            "response_unavailable",
+            "The response route is temporarily unavailable; retry using the same request key",
+        ),
         "context_budget_exceeded" => (
             400,
             "context_budget_exceeded",
@@ -296,6 +337,10 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
     }
     let owner = &principal.account_id;
     match segments.as_slice() {
+        ["v1", "space", "workspace-versions", tail @ ..] => {
+            crate::workspace_versions::route(req, env, owner, tail).await
+        }
+        ["v1", "space" | "files", ..] => crate::space::handle(req, env, owner, &path).await,
         ["v1", "skills"] => crate::skills::handle(req, env, &principal, None).await,
         ["v1", "skills", name] => crate::skills::handle(req, env, &principal, Some(name)).await,
         ["v1", "usage"] if req.method() == Method::Get => {
@@ -307,6 +352,12 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "sessions", id] => session_route(req, env, owner, id, None).await,
         ["v1", "sessions", id, "workspace", "archive"] => {
             session_route(req, env, owner, id, Some("workspace-archive")).await
+        }
+        ["v1", "sessions", id, "workspace", "commit"] => {
+            session_route(req, env, owner, id, Some("workspace-commit")).await
+        }
+        ["v1", "sessions", id, "workspace", "restore"] => {
+            session_route(req, env, owner, id, Some("workspace-restore")).await
         }
         ["v1", "sessions", id, action] => session_route(req, env, owner, id, Some(action)).await,
         ["v1", "sessions"] if req.method() == Method::Get => Response::from_json(
@@ -326,6 +377,7 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "chat", "completions"] if req.method() == Method::Post => {
             chat(req, env, owner).await
         }
+        ["v1", "responses", ..] => crate::response_routes::handle(req, env, owner).await,
         _ => util::json_error(404, "not_found", "Route not found"),
     }
 }
@@ -343,7 +395,9 @@ async fn rate_limited(env: &Env, binding: &str, key: String) -> Result<Option<Re
     Ok(Some(response))
 }
 
-async fn body<T: DeserializeOwned>(req: &mut Request) -> std::result::Result<T, Response> {
+pub(crate) async fn body<T: DeserializeOwned>(
+    req: &mut Request,
+) -> std::result::Result<T, Response> {
     let mut stream = req
         .stream()
         .map_err(|_| bad_request("Could not read JSON body"))?;
@@ -616,6 +670,57 @@ async fn create_session_inner(
     owner: &str,
     agent_id: &str,
 ) -> Result<std::result::Result<SessionRecord, Response>> {
+    create_session_inner_at(env, owner, agent_id, &uuid::Uuid::new_v4().to_string()).await
+}
+
+/// Response retry identity reserves the session ID before admission. A lost edge
+/// observation can reinitialize that exact DO without consuming a second slot.
+pub(crate) async fn response_session(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+        return initialize_response_session(env, session).await;
+    }
+    match create_session_inner_at(env, owner, agent_id, session_id).await {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+                initialize_response_session(env, session).await
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn initialize_response_session(
+    env: &RouteContext<'_>,
+    session: SessionRecord,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    let response = forward(
+        env,
+        &session,
+        Method::Post,
+        "/init",
+        Some(serde_json::to_value(&session)?),
+    )
+    .await?;
+    if response.status_code() < 300 {
+        Ok(Ok(session))
+    } else {
+        Ok(Err(response))
+    }
+}
+
+async fn create_session_inner_at(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<std::result::Result<SessionRecord, Response>> {
     let store = Store::new(env);
     let Some(agent) = store.get_agent(owner, agent_id).await? else {
         return Ok(Err(util::json_error(404, "not_found", "Agent not found")?));
@@ -626,7 +731,7 @@ async fn create_session_inner(
     };
     let now = util::now_ms();
     let session = SessionRecord {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: session_id.into(),
         owner_id: owner.into(),
         agent_id: agent_id.into(),
         status: SessionStatus::Idle,
@@ -755,6 +860,20 @@ async fn session_route(
     };
     match (req.method(), action) {
         (Method::Get, None) => forward(env, &session, Method::Get, "/status", None).await,
+        (Method::Get, Some("view")) => {
+            if req.url()?.query().is_some() {
+                return Ok(bad_request("Session views do not accept query parameters"));
+            }
+            forward_conditional(env, &session, "/view", req.headers().get("If-None-Match")?).await
+        }
+        (Method::Get, Some("messages")) => {
+            let url = req.url()?;
+            let path = match url.query() {
+                Some(query) => format!("/messages?{query}"),
+                None => "/messages".into(),
+            };
+            forward_conditional(env, &session, &path, req.headers().get("If-None-Match")?).await
+        }
         (Method::Get, Some("export")) => {
             let Some(format) = crate::exports::requested_format(&req.url()?) else {
                 return crate::exports::invalid_format();
@@ -779,41 +898,24 @@ async fn session_route(
             forward(env, &session, Method::Get, "/workspace/archive", None).await
         }
         (Method::Delete, None) => forward(env, &session, Method::Delete, "/close", None).await,
-        (Method::Post, Some("resume")) => {
-            let store = Store::new(env);
-            let resumed = if session.status == SessionStatus::Closed {
-                let limits = store.account_plan(owner).await?.limits();
-                let admitted = store
-                    .resume_session(owner, id, limits.max_concurrent_sessions)
-                    .await?;
-                let Some(current) = store.get_session(owner, id).await? else {
-                    return util::json_error(404, "not_found", "Session not found");
-                };
-                if !admitted && current.status != SessionStatus::Idle {
-                    return util::json_error(
-                        409,
-                        "session_not_resumable",
-                        "Session is busy or your plan's session limit has been reached",
-                    );
-                }
-                current
-            } else {
-                session
-            };
-            if resumed.status != SessionStatus::Idle {
-                return util::json_error(409, "session_busy", "Session is busy");
+        (Method::Post, Some("workspace-commit" | "workspace-restore")) => {
+            if req.url()?.query().is_some() {
+                return Ok(bad_request(
+                    "Workspace actions do not accept query parameters",
+                ));
             }
-            // Admission survives an unknown forwarding outcome. A retry reconciles
-            // the same pinned revision instead of releasing a possibly active slot.
-            forward(
-                env,
-                &resumed,
-                Method::Post,
-                "/resume",
-                Some(serde_json::to_value(&resumed)?),
-            )
-            .await
+            let input: Value = match body(&mut req).await {
+                Ok(input) => input,
+                Err(response) => return Ok(response),
+            };
+            let path = if action == Some("workspace-commit") {
+                "/workspace/commit"
+            } else {
+                "/workspace/restore"
+            };
+            forward(env, &session, Method::Post, path, Some(input)).await
         }
+        (Method::Post, Some("resume")) => resume_session(env, owner, session).await,
         (Method::Post, Some("messages")) => {
             let append: Append = match body(&mut req).await {
                 Ok(input) => input,
@@ -864,6 +966,46 @@ async fn session_route(
         }
         _ => util::json_error(405, "method_not_allowed", "Method not allowed"),
     }
+}
+
+pub(crate) async fn resume_session(
+    env: &RouteContext<'_>,
+    owner: &str,
+    session: SessionRecord,
+) -> Result<Response> {
+    let store = Store::new(env);
+    let resumed = if session.status == SessionStatus::Closed {
+        let limits = store.account_plan(owner).await?.limits();
+        let admitted = store
+            .resume_session(owner, &session.id, limits.max_concurrent_sessions)
+            .await?;
+        let Some(current) = store.get_session(owner, &session.id).await? else {
+            return util::json_error(404, "not_found", "Session not found");
+        };
+        if !admitted && current.status != SessionStatus::Idle {
+            return util::json_error(
+                409,
+                "session_not_resumable",
+                "Session is busy or your plan's session limit has been reached",
+            );
+        }
+        current
+    } else {
+        session
+    };
+    if resumed.status != SessionStatus::Idle {
+        return util::json_error(409, "session_busy", "Session is busy");
+    }
+    // Admission survives an unknown forwarding outcome. A retry reconciles the
+    // same pinned revision instead of releasing a possibly active slot.
+    forward(
+        env,
+        &resumed,
+        Method::Post,
+        "/resume",
+        Some(serde_json::to_value(&resumed)?),
+    )
+    .await
 }
 
 async fn chat(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
@@ -991,12 +1133,35 @@ impl<'a> RunForwardFailure<'a> {
     }
 }
 
-async fn forward(
+pub(crate) async fn forward(
     env: &RouteContext<'_>,
     session: &SessionRecord,
     method: Method,
     path: &str,
     body: Option<Value>,
+) -> Result<Response> {
+    forward_inner(env, session, method, path, body, None).await
+}
+
+async fn forward_conditional(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    path: &str,
+    etag: Option<String>,
+) -> Result<Response> {
+    if etag.as_ref().is_some_and(|value| value.len() > 1024) {
+        return Ok(bad_request("If-None-Match exceeds its limit"));
+    }
+    forward_inner(env, session, Method::Get, path, None, etag.as_deref()).await
+}
+
+async fn forward_inner(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    etag: Option<&str>,
 ) -> Result<Response> {
     let namespace = env.durable_object("SESSIONS")?;
     let id = namespace.id_from_name(&format!("{}:{}", session.owner_id, session.id))?;
@@ -1010,6 +1175,9 @@ async fn forward(
     request
         .headers_mut()?
         .set("Content-Type", "application/json")?;
+    if let Some(etag) = etag {
+        request.headers_mut()?.set("If-None-Match", etag)?;
+    }
     env.trace.child().inject(request.headers_mut()?)?;
     stub.fetch_with_request(request).await
 }
@@ -1027,6 +1195,30 @@ mod tests {
                 "insufficient_credits",
             ),
             ("run_limit_exceeded", 429, "run_limit_exceeded"),
+            ("file_not_found", 404, "file_not_found"),
+            ("file_upload_pending", 409, "file_not_ready"),
+            ("file_workspace_conflict", 409, "file_workspace_conflict"),
+            ("space_quota_exceeded", 409, "space_quota_exceeded"),
+            (
+                "invalid_workspace_restore",
+                400,
+                "invalid_workspace_version",
+            ),
+            (
+                "workspace_version_not_found",
+                404,
+                "workspace_version_not_found",
+            ),
+            (
+                "workspace_version_cursor_not_found",
+                400,
+                "workspace_version_cursor_not_found",
+            ),
+            (
+                "workspace_version_unavailable",
+                409,
+                "workspace_version_unavailable",
+            ),
             ("provider returned HTTP 429", 502, "provider_error"),
             ("provider_usage_missing", 502, "provider_error"),
             ("openrouter_cost_missing", 502, "provider_error"),

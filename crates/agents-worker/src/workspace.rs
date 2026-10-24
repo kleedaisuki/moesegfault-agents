@@ -29,6 +29,8 @@ use crate::{
 
 #[path = "workspace_download.rs"]
 mod download;
+#[path = "workspace_files.rs"]
+mod files;
 #[path = "workspace_lease.rs"]
 mod lease;
 #[path = "workspace_transport.rs"]
@@ -96,7 +98,7 @@ impl ReleaseIntent {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Manifest {
     format_version: u8,
     object_key: String,
@@ -107,6 +109,22 @@ struct Manifest {
     #[serde(default)]
     created_at_ms: u64,
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+struct VersionCommit {
+    operation: String,
+    name: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct VersionRestore {
+    operation: String,
+    version_id: String,
+    safety_version_id: String,
+    manifest: Manifest,
+}
+
+const VERSION_RESTORE: &str = "workspace:version-restore";
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct UsageClock {
@@ -539,6 +557,7 @@ impl<'a> Workspace<'a> {
                 storage.put("workspace:tools", 0_u64).await?;
                 storage.delete(STARTUP_PENDING).await?;
             }
+            self.resume_version_restore().await?;
             return Ok(());
         }
         let bucket = self.env.bucket("WORKSPACES")?;
@@ -599,6 +618,7 @@ impl<'a> Workspace<'a> {
         storage.put("workspace:boot", boot).await?;
         storage.put("workspace:tools", 0_u64).await?;
         storage.delete(STARTUP_PENDING).await?;
+        self.resume_version_restore().await?;
         Ok(())
     }
 
@@ -787,6 +807,381 @@ impl<'a> Workspace<'a> {
         download::checkpoint(self, expected).await
     }
 
+    pub async fn commit_version(&self, operation_id: &str, name: Option<&str>) -> Result<Value> {
+        if operation_id.is_empty()
+            || name.is_some_and(|value| {
+                value.is_empty() || value.len() > 100 || value.chars().any(char::is_control)
+            })
+        {
+            return Err(Error::RustError("invalid_workspace_version".into()));
+        }
+        if let Some(version) = crate::workspace_versions::find_operation(
+            self.env,
+            &self.owner,
+            &self.session,
+            operation_id,
+        )
+        .await?
+        {
+            if version.name != name.unwrap_or("") {
+                return Err(Error::RustError("workspace_operation_conflict".into()));
+            }
+            return Ok(version.public());
+        }
+        if let Some(upload) = crate::workspace_versions::pending_upload(
+            self.env,
+            &self.owner,
+            &self.session,
+            operation_id,
+        )
+        .await?
+        {
+            let payload: crate::workspace_versions::UploadPayload =
+                serde_json::from_str(&upload.version_json)?;
+            if payload.version.name != name.unwrap_or("") {
+                return Err(Error::RustError("workspace_operation_conflict".into()));
+            }
+            let version = self.finish_version_upload(&upload).await?;
+            return Ok(version.public());
+        }
+        self.restore_if_needed().await?;
+        let commit = VersionCommit {
+            operation: operation_id.into(),
+            name: name.unwrap_or("").into(),
+        };
+        self.capture_checkpoint(Some(&commit)).await?;
+        crate::workspace_versions::find_operation(
+            self.env,
+            &self.owner,
+            &self.session,
+            operation_id,
+        )
+        .await?
+        .map(|version| version.public())
+        .ok_or_else(|| Error::RustError("workspace_version_publication_missing".into()))
+    }
+
+    async fn publish_version(&self, commit: &VersionCommit, manifest: &Manifest) -> Result<()> {
+        let id = format!(
+            "wsv_{}",
+            digest_key(&serde_json::to_string(&(
+                &self.owner,
+                &self.session,
+                &commit.operation
+            ))?)
+        );
+        let mut version = crate::workspace_versions::Version {
+            id,
+            account_id: self.owner.clone(),
+            session_id: self.session.clone(),
+            operation_id: commit.operation.clone(),
+            name: commit.name.clone(),
+            object_key: String::new(),
+            sha256: manifest.sha256.clone(),
+            format_version: manifest.format_version,
+            generation: manifest.generation,
+            archive_bytes: manifest.stats.archive_bytes,
+            logical_bytes: manifest.stats.logical_bytes,
+            entries: manifest.stats.entries,
+            created_at_ms: crate::util::now_ms(),
+        };
+        if let Some(existing) = crate::workspace_versions::find_content(
+            self.env,
+            &self.owner,
+            &manifest.sha256,
+            manifest.stats.archive_bytes,
+        )
+        .await?
+        {
+            version.object_key = existing.object_key;
+            crate::workspace_versions::publish(self.env, &version).await?;
+            return Ok(());
+        }
+        version.object_key = format!(
+            "space-versions/{}/{}/{}.tar.zst",
+            digest_key(&self.owner),
+            manifest.sha256,
+            uuid::Uuid::new_v4()
+        );
+        let upload = crate::workspace_versions::admit_upload(
+            self.env,
+            &crate::workspace_versions::UploadPayload {
+                version,
+                source_key: manifest.object_key.clone(),
+            },
+        )
+        .await?;
+        self.finish_version_upload(&upload).await?;
+        Ok(())
+    }
+
+    async fn finish_version_upload(
+        &self,
+        upload: &crate::workspace_versions::Upload,
+    ) -> Result<crate::workspace_versions::Version> {
+        let payload: crate::workspace_versions::UploadPayload =
+            serde_json::from_str(&upload.version_json)?;
+        let version = payload.version;
+        let prefix = format!("space-versions/{}/", digest_key(&self.owner));
+        if upload.status != "pending"
+            || version.account_id != self.owner
+            || version.session_id != self.session
+            || version.object_key != upload.object_key
+            || !version.object_key.starts_with(&prefix)
+            || !payload
+                .source_key
+                .starts_with(&format!("{}/snapshots/", self.prefix))
+        {
+            return Err(Error::RustError("invalid_workspace_version_upload".into()));
+        }
+        crate::workspace_versions::activate_upload(self.env, &version.object_key).await?;
+        let bucket = self.env.bucket("WORKSPACES")?;
+        let probe = self.require_r2("class_b").await?;
+        let existing = bucket.head(&version.object_key).await?;
+        self.record_r2(&probe, "class_b").await?;
+        let (size, uploaded_at) = if let Some(object) = existing {
+            (object.size(), object.uploaded().as_millis())
+        } else {
+            let read = self.require_r2("class_b").await?;
+            let source = bucket.get(&payload.source_key).execute().await?;
+            self.record_r2(&read, "class_b").await?;
+            let source = source
+                .ok_or_else(|| Error::RustError("workspace_version_source_unavailable".into()))?;
+            if source.size() != version.archive_bytes {
+                return Err(Error::RustError("workspace_version_size_mismatch".into()));
+            }
+            let ResponseBody::Stream(body) = source
+                .body()
+                .ok_or_else(|| Error::RustError("workspace_version_source_unavailable".into()))?
+                .response_body()?
+            else {
+                return Err(Error::RustError("workspace_version_not_streamable".into()));
+            };
+            let write = self.require_r2("class_a").await?;
+            let copied = Deadline::new(crate::util::now_ms().saturating_add(120_000))?
+                .wait(
+                    bucket
+                        .put(&version.object_key, body)
+                        .sha256(decode_sha256(&version.sha256)?)
+                        .execute(),
+                )
+                .await?
+                .ok_or_else(|| Error::RustError("workspace_version_copy_rejected".into()))?;
+            self.record_r2(&write, "class_a").await?;
+            (copied.size(), copied.uploaded().as_millis())
+        };
+        if size != version.archive_bytes {
+            return Err(Error::RustError("workspace_version_size_mismatch".into()));
+        }
+        crate::reconcile::register_storage_object(
+            self.env,
+            &self.owner,
+            &self.session,
+            &version.object_key,
+            size,
+            uploaded_at,
+        )
+        .await?;
+        crate::workspace_versions::publish(self.env, &version).await
+    }
+
+    pub async fn restore_version(&self, operation_id: &str, version_id: &str) -> Result<Value> {
+        if operation_id.is_empty() {
+            return Err(Error::RustError("invalid_workspace_restore".into()));
+        }
+        let result_key = format!("workspace:restore-result:{}", digest_key(operation_id));
+        if let Some(result) = self.state.storage().get::<Value>(&result_key).await? {
+            return matching_restore_result(result, version_id);
+        }
+        let version = crate::workspace_versions::find(self.env, &self.owner, version_id)
+            .await?
+            .ok_or_else(|| Error::RustError("workspace_version_not_found".into()))?;
+        self.restore_if_needed().await?;
+        if let Some(result) = self.state.storage().get::<Value>(&result_key).await? {
+            return matching_restore_result(result, version_id);
+        }
+        let safety = self
+            .commit_version(
+                &format!("restore:{operation_id}:before"),
+                Some("Before workspace restore"),
+            )
+            .await?;
+        let safety_version_id = safety["id"]
+            .as_str()
+            .ok_or_else(|| Error::RustError("workspace_restore_backup_missing".into()))?
+            .to_owned();
+        let checksum = decode_sha256(&version.sha256)?;
+        let bucket = self.env.bucket("WORKSPACES")?;
+        let read = self.require_r2("class_b").await?;
+        let source = bucket.get(&version.object_key).execute().await?;
+        self.record_r2(&read, "class_b").await?;
+        let source =
+            source.ok_or_else(|| Error::RustError("workspace_version_unavailable".into()))?;
+        if source.size() != version.archive_bytes {
+            return Err(Error::RustError("workspace_version_size_mismatch".into()));
+        }
+        let ResponseBody::Stream(body) = source
+            .body()
+            .ok_or_else(|| Error::RustError("workspace_version_unavailable".into()))?
+            .response_body()?
+        else {
+            return Err(Error::RustError("workspace_version_not_streamable".into()));
+        };
+        let key = format!(
+            "{}/snapshots/{}/{}.tar.zst",
+            self.prefix,
+            version.sha256,
+            uuid::Uuid::new_v4()
+        );
+        crate::checkpoint_gc::record_upload_intent(self.env, &self.owner, &self.session, &key)
+            .await?;
+        let write = self.require_r2("class_a").await?;
+        let copied = Deadline::new(crate::util::now_ms().saturating_add(120_000))?
+            .wait(bucket.put(&key, body).sha256(checksum).execute())
+            .await?
+            .ok_or_else(|| Error::RustError("workspace_version_copy_rejected".into()))?;
+        crate::reconcile::register_storage_object(
+            self.env,
+            &self.owner,
+            &self.session,
+            &key,
+            copied.size(),
+            crate::util::now_ms(),
+        )
+        .await?;
+        self.record_r2(&write, "class_a").await?;
+        if copied.size() != version.archive_bytes {
+            return Err(Error::RustError("workspace_version_size_mismatch".into()));
+        }
+        let previous = self
+            .state
+            .storage()
+            .get::<Manifest>("workspace:manifest")
+            .await?;
+        let generation = self
+            .state
+            .storage()
+            .get::<u64>("workspace:generation")
+            .await?
+            .unwrap_or(0)
+            .max(previous.as_ref().map_or(0, |value| value.generation))
+            .checked_add(1)
+            .ok_or_else(|| Error::RustError("workspace_generation_exhausted".into()))?;
+        self.state
+            .storage()
+            .put("workspace:generation", generation)
+            .await?;
+        let manifest = Manifest {
+            format_version: version.format_version,
+            object_key: key,
+            sha256: version.sha256.clone(),
+            generation,
+            created_at_ms: crate::util::now_ms(),
+            stats: CheckpointStats {
+                archive_bytes: version.archive_bytes,
+                logical_bytes: version.logical_bytes,
+                entries: version.entries,
+                r2_write_operations: 2,
+            },
+        };
+        self.state
+            .storage()
+            .put(
+                VERSION_RESTORE,
+                VersionRestore {
+                    operation: operation_id.into(),
+                    version_id: version_id.into(),
+                    safety_version_id,
+                    manifest,
+                },
+            )
+            .await?;
+        self.resume_version_restore().await?;
+        self.state
+            .storage()
+            .get::<Value>(&result_key)
+            .await?
+            .ok_or_else(|| Error::RustError("workspace_restore_result_missing".into()))
+    }
+
+    /// Reapplying a pending replacement precedes all later execution. A lost
+    /// acknowledgement can repeat the same atomic restore, never later Bash.
+    async fn resume_version_restore(&self) -> Result<()> {
+        let Some(intent) = self
+            .state
+            .storage()
+            .get::<VersionRestore>(VERSION_RESTORE)
+            .await?
+        else {
+            return Ok(());
+        };
+        let result_key = format!("workspace:restore-result:{}", digest_key(&intent.operation));
+        if self
+            .state
+            .storage()
+            .get::<Value>(&result_key)
+            .await?
+            .is_some()
+        {
+            self.state.storage().delete(VERSION_RESTORE).await?;
+            return Ok(());
+        }
+        if intent.manifest.format_version != 1
+            || !intent
+                .manifest
+                .object_key
+                .starts_with(&format!("{}/snapshots/", self.prefix))
+        {
+            return Err(Error::RustError("invalid_workspace_restore_intent".into()));
+        }
+        let read = self.require_r2("class_b").await?;
+        let object = self
+            .env
+            .bucket("WORKSPACES")?
+            .get(&intent.manifest.object_key)
+            .execute()
+            .await?;
+        self.record_r2(&read, "class_b").await?;
+        let object =
+            object.ok_or_else(|| Error::RustError("workspace_restore_snapshot_missing".into()))?;
+        if object.size() != intent.manifest.stats.archive_bytes {
+            return Err(Error::RustError("workspace_restore_size_mismatch".into()));
+        }
+        let ResponseBody::Stream(body) = object
+            .body()
+            .ok_or_else(|| Error::RustError("workspace_restore_snapshot_missing".into()))?
+            .response_body()?
+        else {
+            return Err(Error::RustError("workspace_restore_not_streamable".into()));
+        };
+        ensure_success(
+            self.request(
+                Method::Post,
+                "/v1/restore",
+                Some(body.into()),
+                &[
+                    ("Content-Type", "application/zstd"),
+                    ("X-Snapshot-Sha256", &intent.manifest.sha256),
+                ],
+            )
+            .await?,
+        )?;
+        self.publish_manifest(&intent.manifest).await?;
+        self.state.storage().put("workspace:tools", 0_u64).await?;
+        let version = crate::workspace_versions::find(self.env, &self.owner, &intent.version_id)
+            .await?
+            .ok_or_else(|| Error::RustError("workspace_version_not_found".into()))?;
+        self.state
+            .storage()
+            .put(
+                &result_key,
+                json!({"restored":version.public(),"safety_version_id":intent.safety_version_id}),
+            )
+            .await?;
+        self.state.storage().delete(VERSION_RESTORE).await?;
+        Ok(())
+    }
+
     pub async fn checkpoint(&self) -> Result<CheckpointStats> {
         if self.startup_pending().await? || !self.container()?.running() {
             return Ok(CheckpointStats::default());
@@ -795,12 +1190,25 @@ impl<'a> Workspace<'a> {
     }
 
     async fn checkpoint_active(&self) -> Result<CheckpointStats> {
+        self.resume_version_restore().await?;
+        self.capture_checkpoint(None).await
+    }
+
+    async fn capture_checkpoint(&self, version: Option<&VersionCommit>) -> Result<CheckpointStats> {
         self.arm_usage().await?;
         let mut status = ensure_success(self.request(Method::Get, "/v1/status", None, &[]).await?)?;
         let dirty = status.json::<Value>().await?["dirty_bytes"]
             .as_u64()
             .ok_or_else(|| Error::RustError("workspace_dirty_measurement_missing".into()))?;
-        if dirty == 0 {
+        let previous = self
+            .state
+            .storage()
+            .get::<Manifest>("workspace:manifest")
+            .await?;
+        if dirty == 0 && (version.is_none() || previous.is_some()) {
+            if let (Some(commit), Some(manifest)) = (version, previous.as_ref()) {
+                self.publish_version(commit, manifest).await?;
+            }
             self.state.storage().put("workspace:tools", 0_u64).await?;
             return Ok(CheckpointStats::default());
         }
@@ -856,11 +1264,6 @@ impl<'a> Workspace<'a> {
                 "Workspace snapshot upload size mismatch".into(),
             ));
         }
-        let previous = self
-            .state
-            .storage()
-            .get::<Manifest>("workspace:manifest")
-            .await?;
         let generation = self
             .state
             .storage()
@@ -882,8 +1285,31 @@ impl<'a> Workspace<'a> {
             generation,
             created_at_ms: worker::Date::now().as_millis(),
         };
+        if let Some(commit) = version {
+            self.publish_version(commit, &manifest).await?;
+        }
+        self.publish_manifest(&manifest).await?;
+        ensure_success(
+            self.json_request(
+                Method::Post,
+                "/v1/checkpoint-ack",
+                &json!({"sha256":sha256}),
+            )
+            .await?,
+        )?;
+        self.state.storage().put("workspace:tools", 0_u64).await?;
+        Ok(stats)
+    }
+
+    async fn publish_manifest(&self, manifest: &Manifest) -> Result<()> {
+        let bucket = self.env.bucket("WORKSPACES")?;
+        let previous = self
+            .state
+            .storage()
+            .get::<Manifest>("workspace:manifest")
+            .await?;
         let manifest_write = self.require_r2("class_a").await?;
-        let manifest_json = serde_json::to_string(&manifest)?;
+        let manifest_json = serde_json::to_string(manifest)?;
         let manifest_bytes = manifest_json.len() as u64;
         bucket
             .put(format!("{}/manifest.json", self.prefix), manifest_json)
@@ -901,7 +1327,10 @@ impl<'a> Workspace<'a> {
             published_at,
         )
         .await?;
-        if let Some(previous) = &previous {
+        if let Some(previous) = previous
+            .as_ref()
+            .filter(|old| old.generation != manifest.generation)
+        {
             let old_manifest_identity =
                 format!("{}/manifest.json@{}", self.prefix, previous.generation);
             crate::reconcile::remove_storage_object(self.env, &old_manifest_identity, published_at)
@@ -910,9 +1339,12 @@ impl<'a> Workspace<'a> {
         self.record_r2(&manifest_write, "class_a").await?;
         self.state
             .storage()
-            .put("workspace:manifest", &manifest)
+            .put("workspace:manifest", manifest)
             .await?;
-        if let Some(previous) = previous.filter(|old| old.object_key != key) {
+        if let Some(previous) = previous.filter(|old| old.object_key != manifest.object_key) {
+            if crate::workspace_versions::referenced(self.env, &previous.object_key).await? {
+                return Ok(());
+            }
             // Publication is the commit point. Failed cleanup never invalidates
             // the new checkpoint; an orphan sweep can safely retry it later.
             match bucket.delete(&previous.object_key).await {
@@ -927,16 +1359,7 @@ impl<'a> Workspace<'a> {
                 Err(_) => crate::util::emit("checkpoint.gc_deferred", serde_json::json!({})),
             }
         }
-        ensure_success(
-            self.json_request(
-                Method::Post,
-                "/v1/checkpoint-ack",
-                &json!({"sha256":sha256}),
-            )
-            .await?,
-        )?;
-        self.state.storage().put("workspace:tools", 0_u64).await?;
-        Ok(stats)
+        Ok(())
     }
 
     /// Data publication precedes a durable release intent. Once stopped, billing
@@ -1088,6 +1511,13 @@ fn inactivity_timeout_ms(expires_ms: u64, now_ms: u64) -> Result<u64> {
     Ok(remaining.min(INACTIVITY_FALLBACK_MS))
 }
 
+fn matching_restore_result(result: Value, version_id: &str) -> Result<Value> {
+    if result["restored"]["id"].as_str() != Some(version_id) {
+        return Err(Error::RustError("workspace_operation_conflict".into()));
+    }
+    Ok(result)
+}
+
 fn startup_probe_until(now_ms: u64, ready_until: u64) -> u64 {
     now_ms.saturating_add(STARTUP_PROBE_MS).min(ready_until)
 }
@@ -1183,6 +1613,13 @@ fn digest_key(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_operation_identity_cannot_select_a_different_version() {
+        let result = json!({"restored":{"id":"wsv_a"},"safety_version_id":"wsv_backup"});
+        assert!(matching_restore_result(result.clone(), "wsv_a").is_ok());
+        assert!(matching_restore_result(result, "wsv_b").is_err());
+    }
 
     #[test]
     fn native_inactivity_duration_is_positive_and_clamped_to_existing_funding() {

@@ -18,9 +18,15 @@ use worker::*;
 
 #[path = "session_observer.rs"]
 mod observer;
+#[path = "session_responses.rs"]
+mod responses;
 #[path = "session_sse.rs"]
 mod sse;
+use crate::session_views as views;
+#[path = "session_view_routes.rs"]
+mod view_routes;
 use observer::{CompletionResult, Observer};
+use responses::{ResponseObserver, ResponseRun};
 
 const STATE_KEY: &str = "session.v1";
 const PROJECTION_ACK_KEY: &str = "session.projection-ack";
@@ -55,6 +61,8 @@ struct RunState {
     terminal_error: Option<String>,
     #[serde(default)]
     ended_at_ms: Option<u64>,
+    #[serde(default)]
+    response: Option<ResponseRun>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -97,6 +105,12 @@ struct PersistedSession {
     archive_started_at_ms: Option<u64>,
     #[serde(default)]
     measured_messages: usize,
+    #[serde(default)]
+    response_head: Option<String>,
+    #[serde(default)]
+    pending_client_tools: Vec<provider::ToolCall>,
+    #[serde(default)]
+    history_instructions: Vec<Message>,
 }
 
 impl PersistedSession {
@@ -169,6 +183,7 @@ struct SessionInner {
     running: Cell<bool>,
     closing: Cell<bool>,
     observer: RefCell<Option<Observer>>,
+    response_observers: RefCell<Vec<ResponseObserver>>,
     persistence: futures::lock::Mutex<()>,
 }
 
@@ -186,6 +201,7 @@ impl DurableObject for Session {
             running: Cell::new(false),
             closing: Cell::new(false),
             observer: RefCell::new(None),
+            response_observers: RefCell::new(vec![]),
             persistence: futures::lock::Mutex::new(()),
         });
         let loaded = inner.clone();
@@ -233,14 +249,34 @@ impl DurableObject for Session {
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let inner = &self.inner;
+        if req.path() == "/responses" || req.path().starts_with("/responses/") {
+            return inner.response_route(req).await;
+        }
         match (req.method(), req.path().as_str()) {
             (Method::Post, "/init") => {
-                if inner.data.borrow().is_some() {
-                    return util::json_error(409, "already_initialized", "Session already exists");
-                }
                 let record: SessionRecord = req.json().await?;
-                if inner.data.borrow().is_some() {
-                    return util::json_error(409, "already_initialized", "Session already exists");
+                let initialized = inner
+                    .data
+                    .borrow()
+                    .as_ref()
+                    .map(|data| initialization_matches(&data.record, &record));
+                match initialized {
+                    Some(false) => {
+                        return util::json_error(
+                            409,
+                            "already_initialized",
+                            "Session identity or pinned configuration does not match",
+                        );
+                    }
+                    Some(true) => {
+                        // A racing initializer may have published memory but not
+                        // committed storage yet. Flush without resetting history,
+                        // clocks or the live run before acknowledging its receipt.
+                        inner.persist().await?;
+                        inner.arm_alarm().await?;
+                        return Response::from_json(&inner.data.borrow().as_ref().unwrap().record);
+                    }
+                    None => {}
                 }
                 let prefix = system_prefix(&record);
                 *inner.data.borrow_mut() = Some(PersistedSession {
@@ -264,11 +300,16 @@ impl DurableObject for Session {
                     archive_key: None,
                     archive_started_at_ms: None,
                     measured_messages: 1,
+                    response_head: None,
+                    pending_client_tools: vec![],
+                    history_instructions: vec![],
                 });
                 inner.persist().await?;
                 inner.arm_alarm().await?;
                 Response::from_json(&inner.snapshot()?.record)
             }
+            (Method::Get, "/view") => inner.lightweight_view(&req),
+            (Method::Get, "/messages") => inner.journal_page(&req),
             (Method::Get, "/status") => {
                 let data = inner.snapshot()?;
                 let mut value = serde_json::to_value(&data.record)?;
@@ -356,6 +397,13 @@ impl DurableObject for Session {
                 Response::from_json(&inner.snapshot()?.record)
             }
             (Method::Post, "/steer") => {
+                if !inner.snapshot()?.pending_client_tools.is_empty() {
+                    return util::json_error(
+                        409,
+                        "client_tool_outputs_required",
+                        "Submit outstanding function results through Responses before continuing",
+                    );
+                }
                 let value: Value = req.json().await?;
                 let Some(content) = value.get("content").and_then(Value::as_str) else {
                     return util::json_error(400, "invalid_message", "content must be a string");
@@ -395,6 +443,13 @@ impl DurableObject for Session {
                 Response::from_json(&json!({"queued":true,"input_revision":revision}))
             }
             (Method::Post, "/run") => {
+                if !inner.snapshot()?.pending_client_tools.is_empty() {
+                    return util::json_error(
+                        409,
+                        "client_tool_outputs_required",
+                        "Submit outstanding function results through Responses before continuing",
+                    );
+                }
                 let input: ChatRequest = req.json().await?;
                 if inner.snapshot()?.run.is_some()
                     || inner.closing.get()
@@ -429,6 +484,17 @@ impl DurableObject for Session {
                         "Resume the archived session first",
                     );
                 }
+                let saved = inner.snapshot()?;
+                let mut prefix = system_prefix(&saved.record);
+                for instruction in &saved.history_instructions {
+                    prefix.push_str(&format!(
+                        "\n\nHistorical {} instruction:\n{}",
+                        instruction.role,
+                        instruction.content.as_str().unwrap_or("")
+                    ));
+                }
+                inner.data.borrow_mut().as_mut().unwrap().messages[0] =
+                    Message::text("system", prefix);
                 inner.append(input.messages)?;
                 let run_id = inner.start_run()?;
                 inner
@@ -485,7 +551,13 @@ impl DurableObject for Session {
                     return util::json_error(400, "invalid_gc_candidate", "object_key is required");
                 };
                 let data = inner.snapshot()?;
-                if inner.running.get()
+                if inner
+                    .state
+                    .storage()
+                    .get::<Value>("workspace:version-restore")
+                    .await?
+                    .is_some()
+                    || inner.running.get()
                     || inner.closing.get()
                     || data.run.is_some()
                     || data.archive_preparing
@@ -508,6 +580,9 @@ impl DurableObject for Session {
                 inner.closing.set(false);
                 result?;
                 Response::from_json(&json!({"ok":true}))
+            }
+            (Method::Post, "/workspace/commit" | "/workspace/restore") => {
+                inner.workspace_action(req).await
             }
             (Method::Delete, "/close") => {
                 if inner.closing.get() || inner.snapshot()?.run.is_some() {
@@ -736,7 +811,11 @@ impl SessionInner {
     }
 
     fn start_run(&self) -> Result<String> {
-        let id = util::id("run");
+        self.data.borrow_mut().as_mut().unwrap().response_head = None;
+        self.start_run_with_id(util::id("run"))
+    }
+
+    fn start_run_with_id(&self, id: String) -> Result<String> {
         let mut data = self.data.borrow_mut();
         let data = data.as_mut().unwrap();
         data.record
@@ -760,6 +839,7 @@ impl SessionInner {
             terminal: None,
             terminal_error: None,
             ended_at_ms: None,
+            response: None,
         });
         Ok(id)
     }
@@ -820,6 +900,12 @@ impl SessionInner {
         let _span = crate::telemetry::NativeSpan::start("session.step", Some(&trace));
         let meter =
             crate::resources::ResourceMeter::new(&self.env, &record.owner_id, &record.id, &run.id)?;
+        if run.response.as_ref().is_some_and(|r| r.cancel_requested)
+            && run.pending_completion.is_none()
+            && run.pending_compaction.is_none()
+        {
+            return Ok(self.response_terminal_value(run));
+        }
         meter.preflight(record.pinned.workspace)?;
         if !run.admitted {
             if record.pinned.model.provider == agents_core::Provider::Byok {
@@ -860,6 +946,7 @@ impl SessionInner {
                     trace.trace_id(),
                 ),
             );
+            self.response_in_progress()?;
             if let Some(tx) = self
                 .observer
                 .borrow()
@@ -914,6 +1001,12 @@ impl SessionInner {
             r.total.completion_tokens += summary.usage.completion_tokens;
             r.total.total_tokens += summary.usage.total_tokens;
             r.total.cached_tokens += summary.usage.cached_tokens;
+            r.total.reasoning_tokens = aggregate_reasoning(
+                r.total.reasoning_tokens,
+                summary.usage.reasoning_tokens,
+                r.total.reported,
+            );
+            r.total.reported |= summary.usage.reported;
             return Ok(None);
         }
         if run.compaction_in_flight {
@@ -945,10 +1038,16 @@ impl SessionInner {
                 r.total.completion_tokens += completion.usage.completion_tokens;
                 r.total.total_tokens += completion.usage.total_tokens;
                 r.total.cached_tokens += completion.usage.cached_tokens;
+                r.total.reasoning_tokens = aggregate_reasoning(
+                    r.total.reasoning_tokens,
+                    completion.usage.reasoning_tokens,
+                    r.total.reported,
+                );
                 r.total.reported |= completion.usage.reported;
                 r.pending_completion = None;
                 r.round += 1;
             }
+            self.response_completion(completion)?;
             if completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty() {
                 let value = self.completion_value(&completion.message)?;
                 self.data
@@ -970,7 +1069,46 @@ impl SessionInner {
             }
             return Ok(None);
         }
-        if let Some(call) = unresolved_tool(&data.messages) {
+        if let Some(response) = &run.response {
+            if let Some(file) = response.attachments.get(response.attachments_ready) {
+                self.workspace(record)
+                    .for_run(&run.id)
+                    .materialize_file(file)
+                    .await?;
+                self.data
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .run
+                    .as_mut()
+                    .unwrap()
+                    .response
+                    .as_mut()
+                    .unwrap()
+                    .attachments_ready += 1;
+                self.persist().await?;
+                return Ok(None);
+            }
+        }
+        if let Some(call) = next_tool(&data.messages, run.response.as_ref()) {
+            if self.local_tool_pending(&call.function.name) {
+                let value = self.completion_value(
+                    data.messages
+                        .iter()
+                        .rfind(|m| m.role == "assistant")
+                        .unwrap(),
+                )?;
+                self.data
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .run
+                    .as_mut()
+                    .unwrap()
+                    .terminal = Some(value.clone());
+                self.persist().await?;
+                return Ok(Some(value));
+            }
             let execution_id = execution_key(&run.id, run.round, &call.id);
             let output = self.dispatch_tool(record, &execution_id, &call).await;
             let output = match output {
@@ -1046,10 +1184,45 @@ impl SessionInner {
         if record.pinned.workspace {
             self.workspace(record).ensure_compute_lease().await?;
         }
-        let config = self.provider_config(record).await?;
+        let mut config = self.provider_config(record).await?;
+        if let Some(response) = &run.response {
+            if let Some(limit) = response.request.max_output_tokens {
+                let used = run.total.completion_tokens;
+                if used >= u64::from(limit) {
+                    self.data
+                        .borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .run
+                        .as_mut()
+                        .unwrap()
+                        .response
+                        .as_mut()
+                        .unwrap()
+                        .incomplete_reason = Some("max_output_tokens".into());
+                    let value =
+                        self.response_terminal_value(self.snapshot()?.run.as_ref().unwrap());
+                    self.data
+                        .borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .run
+                        .as_mut()
+                        .unwrap()
+                        .terminal = value.clone();
+                    self.persist().await?;
+                    return Ok(value);
+                }
+                config.max_output_tokens = Some(
+                    (u64::from(limit) - used).min(u64::from(record.pinned.model.max_output_tokens))
+                        as u32,
+                );
+            }
+        }
         if self.compact_if_needed(&config).await? {
             return Ok(None);
         }
+        self.fit_response_prompt()?;
         let messages = self.snapshot()?.messages;
         let event = format!("round:{}", run.round);
         store
@@ -1072,22 +1245,43 @@ impl SessionInner {
             .as_mut()
             .unwrap()
             .provider_in_flight = true;
+        self.reserve_response_events();
         self.persist().await?;
         self.state
             .storage()
             .set_alarm(util::alarm_at(util::now_ms() + 600_000))
             .await?;
-        let definitions = tool_definitions(record);
+        let mut definitions = tool_definitions(record);
+        let mut options = provider::GenerationOptions::default();
+        if let Some(response) = &run.response {
+            definitions.extend(
+                response
+                    .request
+                    .tool_definitions()
+                    .map_err(Error::RustError)?,
+            );
+            options = response.request.generation_options();
+            if run.round > 0
+                && options
+                    .tool_choice
+                    .as_ref()
+                    .is_some_and(|choice| choice == "required" || choice.is_object())
+            {
+                options.tool_choice = Some(json!("auto"));
+            }
+        }
         let sender = self
             .observer
             .borrow()
             .as_ref()
             .and_then(|observer| observer.stream_sender(&run.id));
-        let completion = bounded_provider(provider::complete_stream(
+        let completion = bounded_provider(provider::complete_stream_with_options(
             &config,
             &messages,
             &definitions,
+            &options,
             |delta| {
+                let _ = self.response_delta(delta);
                 if let Some(tx) = &sender {
                     send_chunk(
                         tx,
@@ -1114,6 +1308,9 @@ impl SessionInner {
     fn completion_value(&self, message: &Message) -> Result<Value> {
         let data = self.snapshot()?;
         let run = data.run.as_ref().unwrap();
+        if let Some(value) = self.response_terminal_value(run) {
+            return Ok(value);
+        }
         Ok(
             json!({"id":run.id,"object":"chat.completion","created":util::now_ms()/1000,"model":data.record.agent_id,"choices":[{"index":0,"message":message,"finish_reason":"stop"}],"usage":openai_usage(&run.total)}),
         )
@@ -1154,6 +1351,15 @@ impl SessionInner {
             (Err(_), Some(value)) => Ok(value),
             (result, _) => result,
         };
+        if result.is_err() {
+            if let Some(call) = unresolved_tool(&saved.messages) {
+                complete_failed_tool_group(
+                    self.data.borrow_mut().as_mut().unwrap(),
+                    &call.id,
+                    result.as_ref().err().unwrap(),
+                )?;
+            }
+        }
         let needs_end = saved.run.as_ref().unwrap().ended_at_ms.is_none();
         if needs_end {
             {
@@ -1231,7 +1437,11 @@ impl SessionInner {
         observer: &mut Option<Observer>,
     ) -> Result<()> {
         let _guard = self.persistence.lock().await;
+        let response = self.commit_response(run, &result).await?;
         let mut committed = self.snapshot()?;
+        if let Some(response) = &response {
+            committed.pending_client_tools = response.awaiting_calls.clone();
+        }
         let generation = util::id("projection");
         committed.complete_run_commit(
             &run.id,
@@ -1251,6 +1461,14 @@ impl SessionInner {
                 result.as_ref().err().cloned(),
                 &generation,
             )?;
+        if let Some(response) = response {
+            self.data
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .pending_client_tools = response.awaiting_calls.clone();
+            self.publish_response(response);
+        }
         if let Some(observer) = observer.take() {
             let accepted = observer.complete(result, &committed.record.agent_id, &run.total);
             util::emit(
@@ -1296,6 +1514,39 @@ impl SessionInner {
         let _span = crate::telemetry::NativeSpan::start("session.tool", Some(&trace));
         if !record.pinned.tools.iter().any(|t| t.name == *name) {
             return Err(Error::RustError("tool_not_pinned".into()));
+        }
+        if tools::tool_kind(name) == Some(tools::ToolKind::Persistence) {
+            let run_id = self.snapshot()?.run.as_ref().unwrap().id.clone();
+            let workspace = self.workspace(record).for_run(&run_id);
+            let output = match name.as_str() {
+                "workspace_commit" => {
+                    let args = tools::parse_workspace_commit(&call.function.arguments)
+                        .map_err(Error::RustError)?;
+                    workspace
+                        .commit_version(execution_id, args.name.as_deref())
+                        .await?
+                }
+                "workspace_versions" => {
+                    let args = tools::parse_workspace_versions(&call.function.arguments)
+                        .map_err(Error::RustError)?;
+                    crate::workspace_versions::list(
+                        &self.env,
+                        &record.owner_id,
+                        args.after.as_deref(),
+                        args.limit,
+                    )
+                    .await?
+                }
+                "workspace_restore" => {
+                    let args = tools::parse_workspace_restore(&call.function.arguments)
+                        .map_err(Error::RustError)?;
+                    workspace
+                        .restore_version(execution_id, &args.version_id)
+                        .await?
+                }
+                _ => return Err(Error::RustError("tool_not_pinned".into())),
+            };
+            return Ok(tools::persistence_output(name, &output).to_string());
         }
         match tools::dispatch_harness(name, &call.function.arguments).map_err(Error::RustError)? {
             Some(output) => Ok(output),
@@ -1638,6 +1889,9 @@ async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
         return Ok(None);
     };
     let mut data: PersistedSession = serde_json::from_slice(&bytes)?;
+    if let Some(response) = data.run.as_mut().and_then(|r| r.response.as_mut()) {
+        response.next_sequence = response.next_sequence.max(response.reserved_sequence_end);
+    }
     if data.projection_pending
         && !data.projection_generation.is_empty()
         && storage.get::<String>(PROJECTION_ACK_KEY).await?.as_deref()
@@ -1654,6 +1908,38 @@ async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
         data.journal.push(serde_json::from_slice(&bytes)?);
     }
     Ok(Some(data))
+}
+
+fn aggregate_reasoning(
+    total: Option<u64>,
+    next: Option<u64>,
+    previously_reported: bool,
+) -> Option<u64> {
+    if previously_reported {
+        total.zip(next).map(|(a, b)| a.saturating_add(b))
+    } else {
+        next
+    }
+}
+
+fn next_tool(messages: &[Message], response: Option<&ResponseRun>) -> Option<provider::ToolCall> {
+    let index = messages.iter().rposition(|m| m.role == "assistant")?;
+    let calls = messages[index]
+        .tool_calls
+        .iter()
+        .filter(|call| {
+            !messages[index + 1..]
+                .iter()
+                .any(|m| m.tool_call_id.as_deref() == Some(call.id.as_str()))
+        })
+        .collect::<Vec<_>>();
+    calls
+        .iter()
+        .find(|call| {
+            !response.is_some_and(|r| r.request.tools.iter().any(|t| t.name == call.function.name))
+        })
+        .or(calls.first())
+        .map(|call| (*call).clone())
 }
 
 fn unresolved_tool(messages: &[Message]) -> Option<provider::ToolCall> {
@@ -1679,6 +1965,7 @@ fn tool_definitions(record: &SessionRecord) -> Vec<tools::ToolDefinition> {
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: t.parameters.clone(),
+                strict: None,
             },
         })
         .collect()
@@ -1776,6 +2063,12 @@ fn safe_error_code(error: &Error) -> String {
         "resource_observation_missing",
         "resource_reconciliation_pending",
         "context_budget_exceeded",
+        "context_length_exceeded",
+        "invalid_function_arguments",
+        "invalid_structured_output",
+        "provider_parallel_tool_policy_violation",
+        "response_output_limit",
+        "response_event_limit",
         "execution_round_limit",
     ] {
         if text == code || text.ends_with(&format!(": {code}")) {
@@ -1832,6 +2125,17 @@ fn correctable_tool_error(error: &Error) -> Option<Value> {
         return None;
     };
     let (code, message) = match message.as_str() {
+        "workspace_version_not_found"
+        | "workspace_version_cursor_not_found"
+        | "workspace_operation_conflict"
+        | "invalid_workspace_version"
+        | "invalid_workspace_restore"
+        | "workspace commit arguments must match the registered schema"
+        | "workspace versions arguments must match the registered schema"
+        | "workspace restore arguments must match the registered schema" => (
+            "invalid_tool_arguments",
+            "Check the workspace version and operation arguments, then retry with corrected input.",
+        ),
         "tool_not_pinned" => ("unknown_tool", "Use only tools registered in this session."),
         "bash arguments must match the registered schema" => (
             "invalid_tool_arguments",
@@ -2012,6 +2316,14 @@ fn apply_resume(
     Ok(true)
 }
 
+fn initialization_matches(existing: &SessionRecord, incoming: &SessionRecord) -> bool {
+    existing.id == incoming.id
+        && existing.owner_id == incoming.owner_id
+        && existing.agent_id == incoming.agent_id
+        && existing.pinned == incoming.pinned
+        && existing.created_at_ms == incoming.created_at_ms
+}
+
 fn execution_key(run: &str, round: u64, call: &str) -> String {
     format!("{}:{run}:{round}:{}:{call}", run.len(), call.len())
 }
@@ -2019,6 +2331,32 @@ fn execution_key(run: &str, round: u64, call: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initialization_retry_checks_identity_without_replacing_mutable_state() {
+        let original = state().record;
+        let mut current = original.clone();
+        current.status = SessionStatus::Running;
+        current.input_revision = 8;
+        current.last_input_at_ms = 9000;
+        assert!(initialization_matches(&current, &original));
+        assert_eq!(current.input_revision, 8);
+        assert_eq!(current.last_input_at_ms, 9000);
+        assert_eq!(current.status, SessionStatus::Running);
+
+        for field in ["id", "owner", "agent", "pin", "created"] {
+            let mut changed = original.clone();
+            match field {
+                "id" => changed.id.push('x'),
+                "owner" => changed.owner_id.push('x'),
+                "agent" => changed.agent_id.push('x'),
+                "pin" => changed.pinned.instructions.push('x'),
+                "created" => changed.created_at_ms += 1,
+                _ => unreachable!(),
+            }
+            assert!(!initialization_matches(&current, &changed), "{field}");
+        }
+    }
 
     fn state() -> PersistedSession {
         let agent = serde_json::from_value::<agents_core::CreateAgent>(json!({"name":"test"}))
@@ -2055,6 +2393,9 @@ mod tests {
             archive_key: None,
             archive_started_at_ms: None,
             measured_messages: 1,
+            response_head: None,
+            pending_client_tools: vec![],
+            history_instructions: vec![],
         }
     }
 
@@ -2358,6 +2699,7 @@ mod tests {
             terminal: Some(result.clone()),
             terminal_error: None,
             ended_at_ms: Some(12),
+            response: None,
         };
         let restored: RunState =
             serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();

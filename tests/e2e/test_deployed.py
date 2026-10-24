@@ -13,6 +13,7 @@ from openai import OpenAI
 
 from conftest import Http, cleanup_deployed_agent, correlation_headers
 from stream_usage import reported_stream_usage
+from response_checks import checked_stream
 
 
 @pytest.fixture
@@ -225,10 +226,13 @@ def test_real_provider_compaction_preserves_pin_and_source_journal(
     # context-window overrides or a tokenizer approximation as the test oracle.
     assert "flash" in agent["model"]["model"].lower()
     assert agent["model"]["context_window"] in (1_000_000, 1_048_576)
+    fixed_marker = "fixed-" + uuid.uuid4().hex
+    custom_marker = "custom-" + uuid.uuid4().hex
     deployed.json("PUT", "/v1/agents/" + agent["id"], {
         "name": agent["name"], "model": agent["model"], "tools": ["time"],
         "instructions": "Reply very briefly. For a source payload, acknowledge with ACK and do not repeat it. "
-                        "For a current-time request, call the time tool exactly once and report the result briefly.",
+                        "For a current-time request, call the time tool exactly once and report the result briefly. "
+                        f"Include {fixed_marker} in every final answer.",
         "compaction_percent": 1,
     })
     session = deployed.json("POST", f"/v1/agents/{agent['id']}/sessions", {}, expected=201)
@@ -253,11 +257,16 @@ def test_real_provider_compaction_preserves_pin_and_source_journal(
     assert before["compact_count"] == 0
     assert before["pinned"] == pinned
     assert any(message["role"] == "user" and message["content"] == payload for message in before["messages"])
-    with inference.chat.completions.create(
-        model=agent["id"], messages=[{"role": "user", "content": "Call the time tool now and briefly report the current UTC time."}],
+    # One costly prefill covers legacy Chat input and Responses continuation.
+    # The custom instruction is absent from user text and must remain a separate
+    # exact layer when the real provider compacts this session before tool use.
+    with inference.responses.create(
+        model=agent["id"], input="Call the time tool now and briefly report the current UTC time.",
+        instructions=f"Include {custom_marker} in your final answer in addition to fixed agent instructions.",
         extra_headers={"x-agents-session": session_id}, stream=True,
     ) as continued:
-        reported_stream_usage(continued)
+        final, _ = checked_stream(continued)
+    assert fixed_marker in final.output_text and custom_marker in final.output_text
     after = deployed.json("GET", "/v1/sessions/" + session_id)
     assert after["compact_count"] >= 1
     assert after["pinned"] == pinned

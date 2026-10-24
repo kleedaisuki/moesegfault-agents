@@ -22,6 +22,222 @@ mod anthropic;
 
 const MAX_COMPLETION_BYTES: usize = 16 * 1024 * 1024;
 
+/// Per-response generation policy, separate from the session's provider secrets.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerationOptions {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub tool_choice: Option<Value>,
+    pub parallel_tool_calls: Option<bool>,
+    pub text_format: Option<Value>,
+    pub reasoning: Option<Value>,
+}
+
+impl GenerationOptions {
+    // DeepSeek accepts some fields while ignoring them in particular modes.
+    // Reject those combinations rather than misrepresenting the user's policy.
+    // https://api-docs.deepseek.com/guides/thinking_mode/
+    // https://api-docs.deepseek.com/guides/anthropic_api/
+    pub fn validate_for_config(
+        &self,
+        config: &ProviderConfig,
+        tools: &[ToolDefinition],
+    ) -> Result<(), String> {
+        if !is_deepseek(config) {
+            return self.validate(config.protocol, tools);
+        }
+        self.validate(ProviderProtocol::Openai, tools)?;
+        if self.text_format.as_ref().is_some_and(|format| {
+            format["type"] == "json_schema"
+                || (config.protocol == ProviderProtocol::Anthropic && format["type"] != "text")
+        }) {
+            return Err(
+                "This DeepSeek endpoint does not support the requested output format".into(),
+            );
+        }
+        if config.protocol == ProviderProtocol::Anthropic
+            && (self.parallel_tool_calls == Some(false)
+                || tools.iter().any(|tool| tool.function.strict == Some(true)))
+        {
+            return Err(
+                "The DeepSeek Anthropic endpoint does not enforce strict or single-tool generation"
+                    .into(),
+            );
+        }
+        let nonthinking = self
+            .reasoning
+            .as_ref()
+            .is_some_and(|value| value["effort"] == "none");
+        if self.temperature.is_some() && !nonthinking {
+            return Err("DeepSeek temperature requires reasoning.effort none".into());
+        }
+        if self
+            .tool_choice
+            .as_ref()
+            .is_some_and(|choice| choice == "required" || choice.is_object())
+            && !nonthinking
+        {
+            return Err("DeepSeek forced tool selection requires reasoning.effort none".into());
+        }
+        if let Some(top_p) = self.top_p {
+            let supported = if config.model.contains("flash") {
+                !nonthinking && top_p >= 0.95
+            } else if config.model.contains("pro") {
+                nonthinking
+            } else {
+                false
+            };
+            if !supported {
+                return Err("This DeepSeek mode does not honor the requested top_p".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate(
+        &self,
+        protocol: ProviderProtocol,
+        tools: &[ToolDefinition],
+    ) -> Result<(), String> {
+        if self
+            .temperature
+            .is_some_and(|v| !v.is_finite() || !(0.0..=2.0).contains(&v))
+        {
+            return Err("temperature must be between 0 and 2".into());
+        }
+        if self
+            .top_p
+            .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+        {
+            return Err("top_p must be between 0 and 1".into());
+        }
+        if protocol == ProviderProtocol::Anthropic && self.temperature.is_some_and(|v| v > 1.0) {
+            return Err("Anthropic temperature must be between 0 and 1".into());
+        }
+        if let Some(choice) = &self.tool_choice {
+            validate_tool_choice(choice, tools)?;
+        }
+        if let Some(format) = &self.text_format {
+            validate_text_format(format)?;
+            if protocol == ProviderProtocol::Anthropic && format["type"] == "json_object" {
+                return Err(
+                    "Anthropic does not support json_object output; use json_schema".into(),
+                );
+            }
+        }
+        if let Some(reasoning) = &self.reasoning {
+            validate_reasoning(reasoning)?;
+            if protocol == ProviderProtocol::Anthropic {
+                return Err(
+                    "reasoning overrides are not supported by the Anthropic adapter".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn provider_host(config: &ProviderConfig) -> Option<String> {
+    worker::Url::parse(&config.base_url)
+        .ok()?
+        .host_str()
+        .map(str::to_owned)
+}
+
+pub(super) fn is_deepseek(config: &ProviderConfig) -> bool {
+    provider_host(config).as_deref() == Some("api.deepseek.com")
+}
+
+pub(super) fn deepseek_effort(effort: &str) -> &str {
+    match effort {
+        "minimal" => "low",
+        "medium" | "xhigh" => "high",
+        other => other,
+    }
+}
+
+fn validate_tool_choice(choice: &Value, tools: &[ToolDefinition]) -> Result<(), String> {
+    match choice.as_str() {
+        Some("none" | "auto") => return Ok(()),
+        Some("required") if !tools.is_empty() => return Ok(()),
+        Some(_) => {
+            return Err("tool_choice must be none, auto, required or a named function".into());
+        }
+        None => {}
+    }
+    let Some(object) = choice.as_object() else {
+        return Err("tool_choice must be a string or named function".into());
+    };
+    if object.len() != 2 || choice["type"] != "function" {
+        return Err("only named function tool_choice is supported".into());
+    }
+    let name = choice["name"]
+        .as_str()
+        .ok_or("tool_choice requires a function name")?;
+    if !tools.iter().any(|tool| tool.function.name == name) {
+        return Err("tool_choice names an unavailable function".into());
+    }
+    Ok(())
+}
+
+fn validate_text_format(format: &Value) -> Result<(), String> {
+    let object = format.as_object().ok_or("text.format must be an object")?;
+    match format["type"].as_str() {
+        Some("text" | "json_object") if object.len() == 1 => Ok(()),
+        Some("json_schema") => {
+            if object.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "type" | "name" | "description" | "schema" | "strict"
+                )
+            }) {
+                return Err("unsupported text.format field".into());
+            }
+            let name = format["name"]
+                .as_str()
+                .ok_or("json_schema requires a name")?;
+            if name.is_empty()
+                || name.len() > 64
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            {
+                return Err(
+                    "json_schema name must contain 1 to 64 letters, digits, underscores or dashes"
+                        .into(),
+                );
+            }
+            if !format["schema"].is_object()
+                || object
+                    .get("strict")
+                    .is_some_and(|v| !v.is_boolean() && !v.is_null())
+                || object.get("description").is_some_and(|v| !v.is_string())
+            {
+                return Err("invalid json_schema output format".into());
+            }
+            Ok(())
+        }
+        _ => Err("text.format must be text, json_object or json_schema".into()),
+    }
+}
+
+fn validate_reasoning(reasoning: &Value) -> Result<(), String> {
+    let object = reasoning.as_object().ok_or("reasoning must be an object")?;
+    if object.keys().any(|key| key != "effort") {
+        return Err("only reasoning.effort is supported".into());
+    }
+    if object.is_empty()
+        || matches!(
+            reasoning["effort"].as_str(),
+            Some("none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max")
+        )
+    {
+        return Ok(());
+    }
+    Err("invalid reasoning effort".into())
+}
+
 /// Never serialize or Debug this object: API keys must not enter session state or logs.
 pub struct ProviderConfig {
     pub protocol: ProviderProtocol,
@@ -93,6 +309,8 @@ pub struct Usage {
     pub total_tokens: u64,
     pub cached_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_request_id: Option<String>,
     /// Missing upstream usage is not the same as a free inference.
     pub reported: bool,
@@ -132,9 +350,18 @@ pub async fn complete(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> worker::Result<Completion> {
+    complete_with_options(config, messages, tools, &GenerationOptions::default()).await
+}
+
+pub async fn complete_with_options(
+    config: &ProviderConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    options: &GenerationOptions,
+) -> worker::Result<Completion> {
     let trace = config.trace_context();
     let _span = NativeSpan::start("provider.request", trace.as_ref());
-    let mut response = send(config, messages, tools, false).await?;
+    let mut response = send(config, messages, tools, false, options).await?;
     let value = completion_json(&mut response)
         .await
         .map_err(|_| protocol_failure())?;
@@ -170,12 +397,20 @@ async fn send(
     messages: &[Message],
     tools: &[ToolDefinition],
     stream: bool,
+    options: &GenerationOptions,
 ) -> worker::Result<worker::Response> {
+    options
+        .validate_for_config(config, tools)
+        .map_err(worker::Error::RustError)?;
     let endpoint = endpoint(config)?;
     let body = match config.protocol {
-        ProviderProtocol::Openai => openai_body(config, messages, tools, stream)?,
-        ProviderProtocol::Anthropic => anthropic::request_body(config, messages, tools, stream)
-            .map_err(|_| protocol_failure())?,
+        ProviderProtocol::Openai => {
+            openai_body_with_options(config, messages, tools, stream, options)?
+        }
+        ProviderProtocol::Anthropic => {
+            anthropic::request_body_with_options(config, messages, tools, stream, options)
+                .map_err(|_| protocol_failure())?
+        }
     };
     let headers = Headers::new();
     headers.set("Content-Type", "application/json")?;
@@ -210,11 +445,12 @@ async fn send(
     Ok(response)
 }
 
-fn openai_body(
+fn openai_body_with_options(
     config: &ProviderConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
     stream: bool,
+    options: &GenerationOptions,
 ) -> worker::Result<Value> {
     let mut body = json!({"model":config.model,"messages":messages,"stream":stream});
     if stream {
@@ -233,6 +469,42 @@ fn openai_body(
     if let Some(limit) = config.max_output_tokens {
         body["max_tokens"] = json!(limit);
     }
+    if let Some(value) = options.temperature {
+        body["temperature"] = json!(value);
+    }
+    if let Some(value) = options.top_p {
+        body["top_p"] = json!(value);
+    }
+    if let Some(value) = &options.tool_choice {
+        body["tool_choice"] = if value.is_object() {
+            json!({"type":"function","function":{"name":value["name"]}})
+        } else {
+            value.clone()
+        };
+    }
+    if let Some(value) = options.parallel_tool_calls {
+        body["parallel_tool_calls"] = json!(value);
+    }
+    if let Some(format) = &options.text_format {
+        body["response_format"] = if format["type"] == "json_schema" {
+            let mut schema = format.clone();
+            schema.as_object_mut().unwrap().remove("type");
+            json!({"type":"json_schema","json_schema":schema})
+        } else {
+            format.clone()
+        };
+    }
+    if let Some(effort) = options.reasoning.as_ref().and_then(|v| v.get("effort")) {
+        if provider_host(config).as_deref() == Some("openrouter.ai") {
+            body["reasoning"] = json!({"effort":effort});
+        } else if is_deepseek(config) {
+            let effort = deepseek_effort(effort.as_str().unwrap_or("high"));
+            body["thinking"] = json!({"type":if effort == "none" {"disabled"} else {"enabled"}});
+            body["reasoning_effort"] = json!(effort);
+        } else {
+            body["reasoning_effort"] = effort.clone();
+        }
+    }
     Ok(body)
 }
 
@@ -242,11 +514,28 @@ pub async fn complete_stream<F: FnMut(&str)>(
     config: &ProviderConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
+    on_delta: F,
+) -> worker::Result<Completion> {
+    complete_stream_with_options(
+        config,
+        messages,
+        tools,
+        &GenerationOptions::default(),
+        on_delta,
+    )
+    .await
+}
+
+pub async fn complete_stream_with_options<F: FnMut(&str)>(
+    config: &ProviderConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    options: &GenerationOptions,
     mut on_delta: F,
 ) -> worker::Result<Completion> {
     let trace = config.trace_context();
     let _span = NativeSpan::start("provider.request", trace.as_ref());
-    let mut response = send(config, messages, tools, true).await?;
+    let mut response = send(config, messages, tools, true, options).await?;
     let mut received = 0usize;
     let mut events = response
         .stream()
@@ -298,6 +587,7 @@ struct StreamAccumulator {
     id: String,
     model: String,
     content: String,
+    refusal: String,
     reasoning: String,
     reasoning_text: String,
     reasoning_details: Vec<Value>,
@@ -338,6 +628,9 @@ impl StreamAccumulator {
         let content = delta["content"].as_str().map(str::to_owned);
         if let Some(text) = &content {
             self.content.push_str(text);
+        }
+        if let Some(text) = delta["refusal"].as_str() {
+            self.refusal.push_str(text);
         }
         if let Some(text) = delta["reasoning_content"].as_str() {
             self.reasoning.push_str(text);
@@ -389,6 +682,9 @@ impl StreamAccumulator {
 
     fn finish(self) -> Value {
         let mut message = json!({"role":"assistant","content":self.content});
+        if !self.refusal.is_empty() {
+            message["refusal"] = json!(self.refusal);
+        }
         if !self.reasoning.is_empty() {
             message["reasoning_content"] = json!(self.reasoning);
         }
@@ -445,6 +741,8 @@ pub fn parse_completion(value: Value) -> Result<Completion, String> {
                     .or_else(|| u["prompt_cache_hit_tokens"].as_u64())
             })
             .unwrap_or(0),
+        reasoning_tokens: usage_value
+            .and_then(|u| u["completion_tokens_details"]["reasoning_tokens"].as_u64()),
         reported: usage_value
             .is_some_and(|u| u["prompt_tokens"].is_u64() && u["completion_tokens"].is_u64()),
         cost: usage_value
@@ -464,6 +762,221 @@ pub fn parse_completion(value: Value) -> Result<Completion, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_multimodal_content_is_native_not_text_encoded() {
+        let content = json!([
+            {"type":"text","text":"Describe this."},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,AQID","detail":"auto"}}
+        ]);
+        let message = Message {
+            role: "user".into(),
+            content: content.clone(),
+            ..Message::default()
+        };
+        let body = openai_body_with_options(
+            &test_config(ProviderProtocol::Openai),
+            &[message],
+            &[],
+            false,
+            &GenerationOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(body["messages"][0]["content"], content);
+    }
+
+    fn test_config(protocol: ProviderProtocol) -> ProviderConfig {
+        ProviderConfig {
+            protocol,
+            base_url: "https://fixture.invalid/v1".into(),
+            api_key: "test-only".into(),
+            model: "fixture".into(),
+            max_output_tokens: Some(256),
+            session_id: None,
+            traceparent: None,
+        }
+    }
+
+    #[test]
+    fn response_generation_options_translate_without_changing_defaults() {
+        let config = test_config(ProviderProtocol::Openai);
+        let mut tools = crate::tools::registered_tools(false);
+        tools[0].function.strict = Some(true);
+        let default =
+            openai_body_with_options(&config, &[], &tools, false, &GenerationOptions::default())
+                .unwrap();
+        assert!(default.get("temperature").is_none());
+        assert!(default.get("response_format").is_none());
+        assert!(default.get("tool_choice").is_none());
+        let options = GenerationOptions {
+            temperature: Some(0.4),
+            top_p: Some(0.7),
+            tool_choice: Some(json!({"type":"function","name":"time"})),
+            parallel_tool_calls: Some(false),
+            text_format: Some(
+                json!({"type":"json_schema","name":"result","schema":{"type":"object"},"strict":true}),
+            ),
+            reasoning: Some(json!({"effort":"low"})),
+        };
+        options.validate(config.protocol, &tools).unwrap();
+        let body = openai_body_with_options(&config, &[], &tools, true, &options).unwrap();
+        assert_eq!(body["max_tokens"], 256);
+        assert_eq!(body["temperature"], 0.4);
+        assert_eq!(body["top_p"], 0.7);
+        assert_eq!(
+            body["tool_choice"],
+            json!({"type":"function","function":{"name":"time"}})
+        );
+        assert_eq!(body["parallel_tool_calls"], false);
+        assert_eq!(body["tools"][0]["function"]["strict"], true);
+        assert_eq!(body["reasoning_effort"], "low");
+        assert_eq!(
+            body["response_format"],
+            json!({"type":"json_schema","json_schema":{"name":"result","schema":{"type":"object"},"strict":true}})
+        );
+        assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn reasoning_policy_matches_known_provider_wire_protocols() {
+        let mut config = test_config(ProviderProtocol::Openai);
+        config.base_url = "https://openrouter.ai/api/v1".into();
+        let options = GenerationOptions {
+            reasoning: Some(json!({"effort":"medium"})),
+            ..GenerationOptions::default()
+        };
+        options.validate_for_config(&config, &[]).unwrap();
+        let body = openai_body_with_options(&config, &[], &[], false, &options).unwrap();
+        assert_eq!(body["reasoning"], json!({"effort":"medium"}));
+        assert!(body.get("reasoning_effort").is_none());
+        config.base_url = "https://api.deepseek.com/v1".into();
+        options.validate_for_config(&config, &[]).unwrap();
+        let body = openai_body_with_options(&config, &[], &[], false, &options).unwrap();
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["thinking"], json!({"type":"enabled"}));
+        let options = GenerationOptions {
+            reasoning: Some(json!({"effort":"none"})),
+            temperature: Some(1.4),
+            ..GenerationOptions::default()
+        };
+        options.validate_for_config(&config, &[]).unwrap();
+        let body = openai_body_with_options(&config, &[], &[], false, &options).unwrap();
+        assert_eq!(body["thinking"], json!({"type":"disabled"}));
+    }
+
+    #[test]
+    fn known_ignored_deepseek_options_are_rejected_before_dispatch() {
+        let mut config = test_config(ProviderProtocol::Openai);
+        config.base_url = "https://api.deepseek.com".into();
+        config.model = "deepseek-flash".into();
+        for options in [
+            GenerationOptions {
+                temperature: Some(0.5),
+                ..GenerationOptions::default()
+            },
+            GenerationOptions {
+                top_p: Some(0.5),
+                ..GenerationOptions::default()
+            },
+            GenerationOptions {
+                text_format: Some(json!({"type":"json_schema","name":"result","schema":{}})),
+                ..GenerationOptions::default()
+            },
+            GenerationOptions {
+                tool_choice: Some(json!("required")),
+                ..GenerationOptions::default()
+            },
+        ] {
+            assert!(
+                options
+                    .validate_for_config(&config, &crate::tools::registered_tools(false))
+                    .is_err()
+            );
+        }
+        config.protocol = ProviderProtocol::Anthropic;
+        let options = GenerationOptions {
+            parallel_tool_calls: Some(false),
+            ..GenerationOptions::default()
+        };
+        assert!(options.validate_for_config(&config, &[]).is_err());
+        let options = GenerationOptions {
+            reasoning: Some(json!({"effort":"none"})),
+            temperature: Some(1.4),
+            ..GenerationOptions::default()
+        };
+        assert!(options.validate_for_config(&config, &[]).is_ok());
+    }
+
+    #[test]
+    fn generation_options_reject_unknown_or_unavailable_semantics() {
+        let tools = crate::tools::registered_tools(false);
+        for choice in [
+            json!("required"),
+            json!({"type":"function","name":"missing"}),
+            json!({"type":"function","function":{"name":"time"}}),
+        ] {
+            let options = GenerationOptions {
+                tool_choice: Some(choice),
+                ..GenerationOptions::default()
+            };
+            assert!(options.validate(ProviderProtocol::Openai, &[]).is_err());
+        }
+        let required = GenerationOptions {
+            tool_choice: Some(json!("required")),
+            ..GenerationOptions::default()
+        };
+        assert!(required.validate(ProviderProtocol::Openai, &tools).is_ok());
+        for format in [
+            json!({"type":"json_schema","name":"a","schema":false}),
+            json!({"type":"text","unknown":true}),
+            json!({"type":"json_schema","name":"a space","schema":{}}),
+        ] {
+            let options = GenerationOptions {
+                text_format: Some(format),
+                ..GenerationOptions::default()
+            };
+            assert!(options.validate(ProviderProtocol::Openai, &tools).is_err());
+        }
+        let options = GenerationOptions {
+            reasoning: Some(json!({"summary":"auto"})),
+            ..GenerationOptions::default()
+        };
+        assert!(options.validate(ProviderProtocol::Openai, &tools).is_err());
+    }
+
+    #[test]
+    fn generation_numeric_bounds_and_anthropic_capabilities_are_checked() {
+        for temperature in [f64::NAN, f64::INFINITY, -0.1, 2.1] {
+            let options = GenerationOptions {
+                temperature: Some(temperature),
+                ..GenerationOptions::default()
+            };
+            assert!(options.validate(ProviderProtocol::Openai, &[]).is_err());
+        }
+        for top_p in [f64::NAN, -0.1, 1.1] {
+            let options = GenerationOptions {
+                top_p: Some(top_p),
+                ..GenerationOptions::default()
+            };
+            assert!(options.validate(ProviderProtocol::Openai, &[]).is_err());
+        }
+        for options in [
+            GenerationOptions {
+                temperature: Some(1.1),
+                ..GenerationOptions::default()
+            },
+            GenerationOptions {
+                text_format: Some(json!({"type":"json_object"})),
+                ..GenerationOptions::default()
+            },
+            GenerationOptions {
+                reasoning: Some(json!({"effort":"low"})),
+                ..GenerationOptions::default()
+            },
+        ] {
+            assert!(options.validate(ProviderProtocol::Anthropic, &[]).is_err());
+        }
+    }
 
     #[test]
     fn provider_trace_context_is_explicit_and_validated() {
@@ -513,6 +1026,40 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_usage_is_reported_only_when_the_provider_counts_it() {
+        let base = json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":3,"completion_tokens":5}});
+        assert_eq!(
+            parse_completion(base.clone())
+                .unwrap()
+                .usage
+                .reasoning_tokens,
+            None
+        );
+        let mut with_details = base;
+        with_details["usage"]["completion_tokens_details"] = json!({"reasoning_tokens":2});
+        assert_eq!(
+            parse_completion(with_details)
+                .unwrap()
+                .usage
+                .reasoning_tokens,
+            Some(2)
+        );
+        let usage = Usage {
+            reported: true,
+            ..Usage::default()
+        };
+        let mut legacy = serde_json::to_value(&usage).unwrap();
+        legacy.as_object_mut().unwrap().remove("reasoning_tokens");
+        assert_eq!(
+            serde_json::from_value::<Usage>(legacy)
+                .unwrap()
+                .reasoning_tokens,
+            None
+        );
+    }
+
+    #[test]
     fn streaming_tool_fragments_and_usage_reassemble() {
         let mut stream = StreamAccumulator::default();
         stream.push(json!({"id":"stream1","model":"m","choices":[{"delta":{
@@ -552,5 +1099,24 @@ mod tests {
         }
         let completion = parse_completion(stream.finish()).unwrap();
         assert_eq!(completion.message.extra["reasoning_details"], json!(blocks));
+    }
+
+    #[test]
+    fn refusal_deltas_and_content_filter_finish_are_preserved() {
+        let mut stream = StreamAccumulator::default();
+        for refusal in ["I cannot ", "help with that."] {
+            stream
+                .push(json!({"choices":[{"delta":{"refusal":refusal}}]}))
+                .unwrap();
+        }
+        stream
+            .push(json!({"choices":[{"delta":{},"finish_reason":"content_filter"}]}))
+            .unwrap();
+        let completion = parse_completion(stream.finish()).unwrap();
+        assert_eq!(
+            completion.message.extra["refusal"],
+            "I cannot help with that."
+        );
+        assert_eq!(completion.finish_reason, "content_filter");
     }
 }

@@ -127,6 +127,11 @@ pub async fn collect(env: &Env, owner: &str, session: &str, key: &str) -> Result
     if row.next_check_ms > now || now.saturating_sub(row.created_at_ms) < RETENTION_MS {
         return Ok(());
     }
+    if crate::workspace_versions::referenced(env, key).await? {
+        db.prepare("UPDATE workspace_checkpoint_intents SET next_check_ms=MAX(next_check_ms,CAST(? AS INTEGER)) WHERE object_key=?")
+            .bind(&[text(&now.saturating_add(RETENTION_MS).to_string()),text(key)])?.run().await?;
+        return Ok(());
+    }
     let bucket = env.bucket("WORKSPACES")?;
     // Maintenance reads are platform overhead; never invent a user budget hold.
     let current = bucket.get(&expected).execute().await?;

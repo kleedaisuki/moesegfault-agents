@@ -7,15 +7,23 @@ mod metering;
 mod provider;
 mod reconcile;
 mod resources;
+mod response_index;
+mod response_routes;
+mod responses_attachments;
+mod responses_schema;
+mod responses_wire;
 mod routes;
 mod session;
 mod session_storage;
+mod session_views;
 mod skills;
+mod space;
 mod store;
 mod telemetry;
 mod tools;
 mod util;
 mod workspace;
+mod workspace_versions;
 
 pub use auth::AuthSession;
 pub use session::Session;
@@ -32,6 +40,12 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, ctx: ScheduleContext) {
     ctx.wait_until(async move {
         if auth::cleanup_expired(&env).await.is_err() {
             util::emit("auth.cleanup_failed", serde_json::json!({}));
+        }
+        if space::recover(&env).await.is_err() {
+            util::emit("space.recovery_deferred", serde_json::json!({}));
+        }
+        if workspace_versions::cleanup_uploads(&env).await.is_err() {
+            util::emit("workspace.version_recovery_deferred", serde_json::json!({}));
         }
         if checkpoint_gc::run(&env).await.is_err() {
             util::emit("checkpoint.gc_deferred", serde_json::json!({}));

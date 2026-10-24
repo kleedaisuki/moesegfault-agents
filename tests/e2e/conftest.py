@@ -13,6 +13,25 @@ from typing import Any
 import pytest
 
 
+_required_journey_skips: list[str] = []
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if os.getenv("MAGENTS_TEST_REQUIRE_ALL") == "1" and report.skipped:
+        _required_journey_skips.append(report.nodeid)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if not _required_journey_skips:
+        return
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", "Required deployed journeys were skipped", red=True)
+        for nodeid in _required_journey_skips:
+            reporter.write_line(nodeid, red=True)
+
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 

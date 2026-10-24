@@ -21,9 +21,15 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Request", "RequestInit", "WorkerGlobalScope", "Crypto", "SubtleCrypto", "CryptoKey", "EcKeyImportParams", "EcdsaParams"] }
 uuid = { version = "1", features = ["v4", "js"] }
 sha2.workspace = true
+base64 = "0.22"
+percent-encoding = "2"
 console_error_panic_hook = "0.1"
 eventsource-stream = "0.2"
 url = "2"
+jsonschema = { version = "0.49.9", default-features = false, features = ["arbitrary-precision"] }
 
 [dev-dependencies]
 proptest = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
