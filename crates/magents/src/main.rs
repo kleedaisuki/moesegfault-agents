@@ -1,11 +1,13 @@
 mod auth;
 mod client;
+mod config;
+mod downloads;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use client::Api;
 use serde_json::{Value, json};
-use std::{io::Read, path::PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Your agents, from a terminal. Add --help to any command to explore further.
 #[derive(Parser)]
@@ -90,6 +92,29 @@ enum Auth {
 #[derive(Subcommand)]
 enum Agents {
     List,
+    /// Write a complete versioned TOML template without login or network access.
+    Init {
+        #[arg(default_value = "agent.toml")]
+        file: PathBuf,
+    },
+    /// Validate agent TOML offline. Use '-' to read from stdin.
+    Validate {
+        file: PathBuf,
+    },
+    /// Upload TOML as a callable agent in your account; existing session pins never change.
+    Publish {
+        file: PathBuf,
+        /// Replace this owned agent instead of creating a new one.
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Download portable editable TOML, without account metadata or API keys.
+    Download {
+        id: String,
+        /// New output file; '-' explicitly writes TOML to stdout. Never overwrites.
+        #[arg(short, long, default_value = "agent.toml")]
+        output: PathBuf,
+    },
     /// Read the API agent configuration JSON from a file, or '-' for stdin.
     Create {
         file: PathBuf,
@@ -145,6 +170,38 @@ enum Sessions {
     Close {
         id: String,
     },
+    /// Export the original conversation journal, including tool results and pending steering.
+    Export {
+        id: String,
+        #[arg(long, value_enum, default_value = "json")]
+        format: downloads::ExportFormat,
+        /// New output file; '-' explicitly writes to stdout. Never overwrites.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Download the committed workspace of a closed session; never starts a container.
+    Workspace {
+        #[command(subcommand)]
+        command: Workspace,
+    },
+}
+
+#[derive(Subcommand)]
+enum Workspace {
+    /// Download a complete integrity-checked tar.zst snapshot, without unpacking it.
+    Download {
+        id: String,
+        /// New archive file; '-' explicitly writes binary stdout. Never overwrites.
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Download one regular file from the snapshot; links and unsafe paths are rejected.
+    File {
+        id: String,
+        path: String,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 #[derive(Subcommand)]
 enum Keys {
@@ -155,22 +212,49 @@ enum Keys {
 #[derive(Subcommand)]
 enum Byok {
     List,
-    /// Read a provider key using a hidden terminal prompt, never a command argument.
+    /// Add an OpenAI-compatible or Anthropic endpoint. The key is read with a hidden prompt.
+    Add {
+        #[arg(value_enum)]
+        protocol: ByokProtocol,
+        #[arg(long)]
+        base_url: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Rotate an owned credential key. Legacy openrouter/deepseek aliases remain supported.
     Set {
-        provider: String,
+        id: String,
+        /// Existing credential routes are immutable; use add to select a different endpoint.
+        #[arg(long, value_enum, requires = "base_url")]
+        protocol: Option<ByokProtocol>,
+        #[arg(long, requires = "protocol")]
+        base_url: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
     },
     Delete {
-        provider: String,
+        id: String,
     },
 }
 
-fn read_json(path: &PathBuf) -> Result<Value> {
-    let mut source = String::new();
-    if path.as_os_str() == "-" {
-        std::io::stdin().read_to_string(&mut source)?;
-    } else {
-        source = std::fs::read_to_string(path).context("Cannot read configuration")?;
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ByokProtocol {
+    #[value(alias = "openai-compatible")]
+    Openai,
+    Anthropic,
+}
+
+impl ByokProtocol {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+        }
     }
+}
+
+fn read_json(path: &Path) -> Result<Value> {
+    let source = config::read_source(path)?;
     serde_json::from_str(&source).context("Configuration must be valid JSON")
 }
 
@@ -183,6 +267,110 @@ fn segment(value: &str) -> Result<&str> {
         bail!("Identifier must contain only letters, numbers, '_' or '-'");
     }
     Ok(value)
+}
+
+async fn agents(api: &Api, command: Agents) -> Result<()> {
+    match command {
+        Agents::Init { file } => {
+            downloads::write_bytes(&file, config::AgentFile::template()?.toml()?.as_bytes())
+        }
+        Agents::Validate { file } => {
+            config::AgentFile::read(&file)?;
+            println!("{{\"valid\":true,\"schema_version\":1}}");
+            Ok(())
+        }
+        Agents::Publish { file, agent } => {
+            let path = match &agent {
+                Some(id) => format!("/v1/agents/{}", segment(id)?),
+                None => "/v1/agents".into(),
+            };
+            let body = config::AgentFile::read(&file)?.api_body()?;
+            api.print(
+                if agent.is_some() { "PUT" } else { "POST" },
+                &path,
+                Some(body),
+            )
+            .await
+        }
+        Agents::Download { id, output } => {
+            use std::io::Write;
+            let mut destination = downloads::Output::new(&output, false)?;
+            let value = api
+                .json("GET", &format!("/v1/agents/{}", segment(&id)?), None)
+                .await?;
+            let config = config::AgentFile::from_api(value)?;
+            destination.writer().write_all(config.toml()?.as_bytes())?;
+            destination.finish()
+        }
+        command => {
+            let (method, path, body) = match command {
+                Agents::List => ("GET", "/v1/agents".into(), None),
+                Agents::Create { file } => ("POST", "/v1/agents".into(), Some(read_json(&file)?)),
+                Agents::Show { id } => ("GET", format!("/v1/agents/{}", segment(&id)?), None),
+                Agents::Update { id, file } => (
+                    "PATCH",
+                    format!("/v1/agents/{}", segment(&id)?),
+                    Some(read_json(&file)?),
+                ),
+                Agents::Delete { id } => ("DELETE", format!("/v1/agents/{}", segment(&id)?), None),
+                _ => unreachable!(),
+            };
+            api.print(method, &path, body).await
+        }
+    }
+}
+
+fn credential_payload(
+    key: String,
+    protocol: Option<ByokProtocol>,
+    base_url: Option<String>,
+    name: Option<String>,
+) -> Value {
+    let mut payload = json!({"api_key":key});
+    if let Some(protocol) = protocol {
+        payload["protocol"] = protocol.as_str().into();
+    }
+    if let Some(base_url) = base_url {
+        payload["base_url"] = base_url.into();
+    }
+    if let Some(name) = name {
+        payload["name"] = name.into();
+    }
+    payload
+}
+
+async fn byok(api: &Api, command: Byok) -> Result<()> {
+    match command {
+        Byok::List => api.print("GET", "/v1/provider-keys", None).await,
+        Byok::Add {
+            protocol,
+            base_url,
+            name,
+        } => {
+            let key = rpassword::prompt_password("API key: ")?;
+            let body = credential_payload(key, Some(protocol), Some(base_url), name);
+            api.print("POST", "/v1/provider-keys", Some(body)).await
+        }
+        Byok::Set {
+            id,
+            protocol,
+            base_url,
+            name,
+        } => {
+            let path = format!("/v1/provider-keys/{}", segment(&id)?);
+            let key = rpassword::prompt_password("API key: ")?;
+            let body = credential_payload(key, protocol, base_url, name);
+            api.print("PUT", &path, Some(body)).await
+        }
+        Byok::Delete { id } => {
+            api.print(
+                "DELETE",
+                &format!("/v1/provider-keys/{}", segment(&id)?),
+                None,
+            )
+            .await
+        }
+    }
 }
 
 #[tokio::main]
@@ -202,20 +390,7 @@ async fn main() -> Result<()> {
         } => {
             api.stream(json!({"model": agent, "messages": [{"role": "user", "content": prompt}], "stream": true}), session).await?;
         }
-        Command::Agents { command } => {
-            let (method, path, body) = match command {
-                Agents::List => ("GET", "/v1/agents".into(), None),
-                Agents::Create { file } => ("POST", "/v1/agents".into(), Some(read_json(&file)?)),
-                Agents::Show { id } => ("GET", format!("/v1/agents/{}", segment(&id)?), None),
-                Agents::Update { id, file } => (
-                    "PATCH",
-                    format!("/v1/agents/{}", segment(&id)?),
-                    Some(read_json(&file)?),
-                ),
-                Agents::Delete { id } => ("DELETE", format!("/v1/agents/{}", segment(&id)?), None),
-            };
-            api.print(method, &path, body).await?;
-        }
+        Command::Agents { command } => agents(&api, command).await?,
         Command::Skills { command } => {
             let (method, path, body) = match command {
                 Skills::List => ("GET", "/v1/skills".into(), None),
@@ -267,6 +442,17 @@ async fn main() -> Result<()> {
                 )
                 .await?;
             }
+            Sessions::Export { id, format, output } => {
+                downloads::transcript(&api, segment(&id)?, format, &output).await?;
+            }
+            Sessions::Workspace { command } => match command {
+                Workspace::Download { id, output } => {
+                    downloads::workspace(&api, segment(&id)?, &output).await?;
+                }
+                Workspace::File { id, path, output } => {
+                    downloads::workspace_file(&api, segment(&id)?, &path, &output).await?;
+                }
+            },
         },
         Command::Models => api.print("GET", "/v1/models", None).await?,
         Command::Usage => api.print("GET", "/v1/usage", None).await?,
@@ -282,26 +468,7 @@ async fn main() -> Result<()> {
                     .await?
             }
         },
-        Command::Byok { command } => match command {
-            Byok::List => api.print("GET", "/v1/provider-keys", None).await?,
-            Byok::Set { provider } => {
-                let key = rpassword::prompt_password("Provider key: ")?;
-                api.print(
-                    "PUT",
-                    &format!("/v1/provider-keys/{}", segment(&provider)?),
-                    Some(json!({"api_key": key})),
-                )
-                .await?;
-            }
-            Byok::Delete { provider } => {
-                api.print(
-                    "DELETE",
-                    &format!("/v1/provider-keys/{}", segment(&provider)?),
-                    None,
-                )
-                .await?
-            }
-        },
+        Command::Byok { command } => byok(&api, command).await?,
         Command::Diagnostics { upload, .. } => {
             let report = json!({"consent": true, "client": "magents", "version": env!("CARGO_PKG_VERSION"), "platform": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)});
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -332,5 +499,64 @@ mod tests {
             assert!(segment(value).is_err());
         }
         assert!(segment("agent_a-123").is_ok());
+    }
+
+    #[test]
+    fn byok_protocols_and_hidden_key_contract_are_explicit() {
+        for protocol in ["openai", "openai-compatible", "anthropic"] {
+            assert!(
+                Cli::try_parse_from([
+                    "magents",
+                    "byok",
+                    "add",
+                    protocol,
+                    "--base-url",
+                    "https://provider.test/v1"
+                ])
+                .is_ok()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "magents",
+                "byok",
+                "add",
+                "deepseek",
+                "--base-url",
+                "https://provider.test/v1"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "magents",
+                "byok",
+                "add",
+                "openai",
+                "--base-url",
+                "https://provider.test/v1",
+                "--api-key",
+                "never-an-argument"
+            ])
+            .is_err()
+        );
+        assert!(Cli::try_parse_from(["magents", "byok", "set", "deepseek"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["magents", "byok", "set", "key-id", "--protocol", "openai"])
+                .is_err()
+        );
+        assert_eq!(
+            credential_payload(
+                "secret-fixture".into(),
+                Some(ByokProtocol::Anthropic),
+                Some("https://provider.test".into()),
+                Some("research".into())
+            ),
+            json!({"api_key":"secret-fixture","protocol":"anthropic","base_url":"https://provider.test","name":"research"})
+        );
+        assert_eq!(
+            credential_payload("rotated-fixture".into(), None, None, None),
+            json!({"api_key":"rotated-fixture"})
+        );
     }
 }

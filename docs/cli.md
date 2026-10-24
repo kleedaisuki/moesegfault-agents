@@ -7,7 +7,9 @@
 ```sh
 magents auth login
 magents models
-magents agents create agent.json
+magents agents init
+magents agents validate agent.toml
+magents agents publish agent.toml
 magents sessions start AGENT_ID
 magents run AGENT_ID 'Investigate the failing tests' --session SESSION_ID
 # In another terminal during execution:
@@ -17,7 +19,59 @@ magents sessions close SESSION_ID
 magents usage
 ```
 
-Agent create/update accept API configuration JSON from a file or `-` for stdin. The server owns validation and defaults, including context percentage and plan limits. Inspect a configuration with `agents show` before updating. Session close requests server-side close/persistence, not deletion of durable user data.
+Publication creates a callable agent in **your own account**, not a public marketplace entry. The returned JSON contains its ID. `agents publish agent.toml --agent AGENT_ID` replaces that owned configuration; it does not mutate existing session pins. Legacy `agents create agent.json` and `agents update AGENT_ID update.json` retain their JSON and PATCH semantics. Both JSON and TOML input accept `-` for stdin and are bounded to 1 MiB. The server remains authoritative for registered tools/skills, model capabilities, owned credentials, prices and plan limits. Session close requests checkpoint/persistence, not deletion of durable user data.
+
+## Portable agent TOML
+
+`agents init [FILE]` writes a complete template offline (`agent.toml` by default). `agents validate FILE` is also offline and checks the version, fields, types and local domain constraints; it cannot establish that a remote credential or personalized skill exists. It returns `{"valid":true,"schema_version":1}` on stdout. Neither command requires login or contacts a server.
+
+```toml
+schema_version = 1
+name = "Research"
+instructions = "Investigate carefully and present a concise result."
+tools = ["time", "bash"]
+skills = []
+compaction_percent = 80
+workspace = true
+
+[model]
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash-1017"
+context_window = 1048576
+max_output_tokens = 8192
+```
+
+The version-1 document has exactly the fields above, plus optional `model.credential_id`. `name` and the complete `[model]` table are required. Omitted instructions/skills default empty, tools default `["time"]`, workspace defaults false and compaction defaults 80. Unknown fields, including accidentally pasted API keys, are rejected rather than silently discarded; parse errors do not echo TOML source or values. A BYOK model uses `provider = "byok"`, the owned credential ID and the endpoint's model identifier. Set context/output budgets to values supported by that custom model; these are execution budgets, not provider capability discovery. Compaction is still a percentage of the selected context budget, not an independent token threshold.
+
+```sh
+magents agents download AGENT_ID --output downloaded.toml
+magents agents validate downloaded.toml
+magents agents publish downloaded.toml --agent AGENT_ID
+# Explicit stdout is useful for a pipeline:
+magents agents download AGENT_ID --output -
+```
+
+Download projects only editable configuration into TOML: no account ID, server timestamps, revision, raw key or encrypted credential envelope. The credential **reference** is preserved, so a different account must choose one of its own credentials before publication. Tools and skills remain names resolved and pinned by the server, not exported executable registry definitions. Instructions themselves may be private user data; review a configuration before sharing it. The maintained [toml crate](https://docs.rs/toml/latest/toml/) handles serialization and Unicode/multiline escaping; the document is not assembled with string replacement.
+
+## Conversations and workspace downloads
+
+```sh
+magents sessions export SESSION_ID --output conversation.json
+magents sessions export SESSION_ID --format jsonl --output conversation.jsonl
+magents sessions export SESSION_ID --format markdown --output conversation.md
+magents sessions export SESSION_ID --format markdown --output -
+magents sessions close SESSION_ID
+magents sessions workspace download SESSION_ID --output workspace.tar.zst
+magents sessions workspace file SESSION_ID src/main.rs --output main.rs
+```
+
+Conversation export uses the source journal, including original tool calls/results and pending steering, rather than only a compacted prompt or UI-visible summary. Reads do not append messages or advance the user inactivity clock. The requested format is streamed without JSON re-encoding, up to 64 MiB.
+
+Workspace download requires a closed session with a clean committed checkpoint; active or checkpoint-pending sessions return an error rather than silently exporting stale files. It never starts a container or resumes execution. The archive is the existing `tar.zst` format (up to 256 MiB compressed), with workspace entries below `data/` and a separate internal manifest. The CLI streams to disk and verifies the full known length and compressed SHA-256 receipt before publishing any output. R2 export requests remain subject to resource metering and account credit admission.
+
+Single-file download fetches that same verified archive and selects one exact normalized, UTF-8 relative regular-file path below `data/`; callers use `src/main.rs`, not `data/src/main.rs`. It never unpacks a directory tree, resolves symlinks/hardlinks or writes an archive-supplied destination. Parent components, absolute/drive paths and non-normalized paths are rejected. Non-UTF-8 Linux names remain preserved in the full archive but are not addressable through the string-based single-file selector. The native decoder bounds zstd window, expanded bytes, raw tar header counts and extension sizes before the tar parser can allocate GNU extension payloads; PAX/sparse input is outside this daemon format and rejected. It consumes the complete archive and requires a final version-1 manifest whose selected-file size, type and SHA-256 agree with the extracted bytes; missing, malformed, nonfinal or incompatible metadata never publishes the selected file. Download transfers have a five-minute total deadline and are not automatically retried.
+
+All named output files refuse to overwrite existing files or links. Private temporary output is created beside its destination and only published after a successful transfer, checksum and applicable parsing; failure removes the temporary output and leaves no partial target. This uses maintained [tempfile no-clobber persistence](https://docs.rs/tempfile/latest/tempfile/struct.NamedTempFile.html#method.persist_noclobber), not an existence-check/overwrite race. `--output -` explicitly selects stdout; binary workspace output is refused on an interactive terminal. Existing local files are never replaced merely because a server supplies a filename.
 
 A run calls `POST /v1/chat/completions` with the agent ID as `model` and optionally `x-agents-session`. The response session header goes to stderr. The maintained `eventsource-stream` parser handles fragmented UTF-8 and SSE framing. Missing `[DONE]` is an error. After interruption, inspect the session rather than blindly replaying prompts. Steering appends new input without replacing pinned instructions. Automatic retries are not performed.
 
@@ -69,15 +123,21 @@ magents keys list
 magents keys create automation
 magents keys delete KEY_ID
 magents byok list
-magents byok set deepseek
-magents byok delete deepseek
+magents byok add openai --base-url https://api.example.com/v1 --name research
+magents byok add anthropic --base-url https://api.anthropic.com --name claude
+magents byok set CREDENTIAL_ID
+magents byok delete CREDENTIAL_ID
 magents diagnostics
 magents diagnostics --upload --consent
 ```
 
-Key creation intentionally prints the one-time server response; redirect only into protected storage. BYOK uses a hidden terminal prompt, never flags. API failures include HTTP status and `x-moesegfault-correlation-id`, never upstream bodies that might echo sensitive content. Diagnostics contains only consent, client name/version, and OS-architecture platform: no prompts, sessions, credentials, environment dumps, paths, or user identifiers. Upload requires both flags and authentication; preview is offline. Authorization, encryption, subscription limits, and retention remain server responsibilities.
+Key creation intentionally prints the one-time server response; redirect only into protected storage. BYOK offers exactly two generic wire protocols, `openai` (alias `openai-compatible`) and `anthropic`. `add` stores a named endpoint credential and returns its opaque ID. The API key is read with a hidden terminal prompt, never command arguments, environment dumps or TOML. `set ID` rotates its key; optional `--name`, paired `--protocol`/`--base-url` update compatible metadata. An existing credential's protocol/normalized endpoint are immutable: add a new credential to change its route, so pinned sessions cannot silently move to another host. Legacy `byok set openrouter`/`deepseek` and their delete aliases remain compatible but are not separate protocol choices.
+
+Provider-key management requires the human OIDC login; unset `MAGENTS_API_KEY` to use the protected account login. API failures include HTTP status and `x-moesegfault-correlation-id`, never upstream bodies that might echo sensitive content. Diagnostics contains only consent, client name/version, and OS-architecture platform: no prompts, sessions, credentials, environment dumps, paths, or user identifiers. Upload requires both flags and authentication; preview is offline. Authorization, encryption, subscription limits, and retention remain server responsibilities.
 
 ## Verification
+
+The version-0.2 portable/configuration changes passed focused Windows verification with `cargo test --locked -p magents` and `cargo clippy --locked -p magents --all-targets -- -D warnings`: **34 tests passed**, with the pre-existing opt-in real-browser-denial test left ignored. Eight new real-binary loopback journeys cover TOML init/validate/publish/download/PUT replacement, stdin and one-MiB limits, non-echoing private parse errors, all conversation formats, opaque archive and binary single-file download, failed hashes/HTTP admission, malformed final manifests, path rejection, no-clobber destinations and progressive help. Unit cases additionally cover a 36-combination provider/context/percentage editable-state roundtrip, Unicode/GNU long names, extension headers declaring large absent payloads, selected-file manifest mismatches and legacy BYOK aliases. These local results do not substitute for deployed owner/account and real Container/R2 acceptance.
 
 `cargo test -p magents` exercises the real binary against a loopback HTTP fixture through create, start, streamed run, steer, and close, checking authorization and session headers. The personalized skill lifecycle covers stdin creation, list/show, file-based update, and deletion; help is checked without authentication. Tests also cover offline diagnostics, upload consent, sensitive error suppression, truncated streams, origin boundaries, callback confusion/duplicate fields, and Clap command consistency. A registered Identity deployment and OS credential store are needed for the final real-browser login check; tests do not replace it.
 

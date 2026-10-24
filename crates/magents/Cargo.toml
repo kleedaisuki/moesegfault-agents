@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+agents-core = { path = "../agents-core" }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
@@ -16,8 +17,13 @@ openidconnect = "4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tar = "0.4.45"
+tempfile = "3"
+toml = "1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 url = "2"
 webbrowser = "1"
 subtle = "2"
 rpassword = "7"
+zstd = "0.13"

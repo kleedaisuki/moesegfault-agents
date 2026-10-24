@@ -1,0 +1,14 @@
+schema_version = 1
+name = "My endpoint"
+instructions = "Use the available tools to verify your work."
+tools = ["time"]
+skills = []
+compaction_percent = 80
+workspace = false
+
+[model]
+provider = "byok"
+model = "replace-with-your-endpoint-model-id"
+context_window = 131072
+max_output_tokens = 8192
+credential_id = "replace-with-your-owned-credential-id"

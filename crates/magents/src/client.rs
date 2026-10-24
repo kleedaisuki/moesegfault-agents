@@ -3,6 +3,7 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use reqwest::{Client, Response, Url};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     io::{self, Write},
     time::Duration,
@@ -85,6 +86,97 @@ impl Api {
         }
         let value: Value = serde_json::from_str(&text).context("API returned invalid JSON")?;
         println!("{}", serde_json::to_string_pretty(&value)?);
+        Ok(())
+    }
+
+    pub async fn json(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        let response = self.request(method, path, body, None).await?;
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("Configuration download interrupted")?;
+            if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
+                bail!("Configuration response exceeds 1 MiB");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).context("API returned invalid configuration JSON")
+    }
+
+    pub async fn download_to(
+        &self,
+        path: &str,
+        output: &mut impl Write,
+        limit: u64,
+        checkpoint: bool,
+    ) -> Result<()> {
+        tokio::time::timeout(
+            Duration::from_secs(300),
+            self.download_to_inner(path, output, limit, checkpoint),
+        )
+        .await
+        .context("Download timed out; no output file was published")?
+    }
+
+    async fn download_to_inner(
+        &self,
+        path: &str,
+        output: &mut impl Write,
+        limit: u64,
+        checkpoint: bool,
+    ) -> Result<()> {
+        let response = self.request("GET", path, None, None).await?;
+        let expected_length = response.content_length();
+        if expected_length.is_some_and(|length| length > limit) {
+            bail!("Download exceeds the supported size limit");
+        }
+        let expected_hash = if checkpoint {
+            if response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                != Some("application/zstd")
+            {
+                bail!("API returned an unexpected workspace archive format");
+            }
+            let hash = response
+                .headers()
+                .get("x-snapshot-sha256")
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| {
+                    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                .context("Workspace archive is missing its integrity receipt")?;
+            if expected_length.is_none() {
+                bail!("Workspace archive is missing its length receipt");
+            }
+            Some(hash.to_lowercase())
+        } else {
+            None
+        };
+        let mut hasher = Sha256::new();
+        let mut length = 0u64;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("Download interrupted; no output file was published")?;
+            length = length
+                .checked_add(chunk.len() as u64)
+                .context("Download size overflow")?;
+            if length > limit {
+                bail!("Download exceeds the supported size limit");
+            }
+            hasher.update(&chunk);
+            output.write_all(&chunk)?;
+        }
+        if expected_length.is_some_and(|expected| expected != length) {
+            bail!("Download length does not match its receipt");
+        }
+        if let Some(expected) = expected_hash {
+            let actual = format!("{:x}", hasher.finalize());
+            if actual != expected {
+                bail!("Workspace archive checksum mismatch; no output file was published");
+            }
+        }
         Ok(())
     }
 

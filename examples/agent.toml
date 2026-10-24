@@ -1,0 +1,13 @@
+schema_version = 1
+name = "Research"
+instructions = "Investigate carefully and present a concise result."
+tools = ["time", "bash"]
+skills = []
+compaction_percent = 80
+workspace = true
+
+[model]
+provider = "openrouter"
+model = "deepseek/deepseek-v4.1-flash-1017"
+context_window = 1048576
+max_output_tokens = 8192
