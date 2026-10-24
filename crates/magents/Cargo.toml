@@ -21,8 +21,9 @@ sha2.workspace = true
 tar = "0.4.45"
 tempfile = "3"
 toml = "1.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "fs"] }
 url = "2"
+uuid = { version = "1", features = ["v4"] }
 webbrowser = "1"
 subtle = "2"
 rpassword = "7"

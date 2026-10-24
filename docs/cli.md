@@ -73,7 +73,183 @@ Single-file download fetches that same verified archive and selects one exact no
 
 All named output files refuse to overwrite existing files or links. Private temporary output is created beside its destination and only published after a successful transfer, checksum and applicable parsing; failure removes the temporary output and leaves no partial target. This uses maintained [tempfile no-clobber persistence](https://docs.rs/tempfile/latest/tempfile/struct.NamedTempFile.html#method.persist_noclobber), not an existence-check/overwrite race. `--output -` explicitly selects stdout; binary workspace output is refused on an interactive terminal. Existing local files are never replaced merely because a server supplies a filename.
 
-A run calls `POST /v1/chat/completions` with the agent ID as `model` and optionally `x-agents-session`. The response session header goes to stderr. The maintained `eventsource-stream` parser handles fragmented UTF-8 and SSE framing. Missing `[DONE]` is an error. After interruption, inspect the session rather than blindly replaying prompts. Steering appends new input without replacing pinned instructions. Automatic retries are not performed.
+A legacy `magents run` calls `POST /v1/chat/completions` with the agent ID as `model` and optionally `x-agents-session`. Its response session header goes to stderr. The maintained `eventsource-stream` parser handles fragmented UTF-8 and SSE framing. Missing `[DONE]` is an error. After interruption, inspect the session rather than blindly replaying prompts. Steering appends new input without replacing pinned instructions. Automatic retries are not performed. The additive `responses` command family uses the separate Responses contract below; existing `run` behavior is not silently migrated.
+
+## Responses
+
+Start with a text prompt, or use the complete JSON interface when attaching files,
+declaring local functions, supplying custom instructions or setting generation
+controls:
+
+```sh
+magents responses run AGENT_ID 'Investigate the failing tests' --stream
+magents responses run AGENT_ID 'Continue with the fix' --previous RESPONSE_ID --background
+magents responses show RESPONSE_ID
+magents responses inputs RESPONSE_ID --limit 20
+magents responses cancel RESPONSE_ID
+magents responses create request.json --stream
+```
+
+`responses create FILE` accepts a Responses API JSON object, bounded to 1 MiB;
+`-` reads stdin. `--stream` sets its `stream` field to true. Otherwise a JSON
+`stream:true` also selects streaming. The CLI forwards supported request controls
+without inventing a separate tool or generation-options configuration format.
+Responses JSON output is separately bounded to 16 MiB, allowing multi-round output
+larger than an agent configuration; portable agent downloads keep their 1 MiB cap.
+`model` is always the owned **agent ID**, including when BYOK selects an upstream
+model. A `previous_response_id` continues only the current linear head. Send only
+new input, not the entire existing conversation. Arbitrary historical or workspace
+forks are not supported.
+
+`--background` returns the accepted response without waiting for its final answer;
+exit 0 with `queued` or `in_progress` JSON means successful submission, not
+successful execution. It can also be combined with `--stream`, which follows the
+response and requires its successful terminal event. A disconnected observer never implies
+cancellation. Read the saved response, or resume its event stream instead of
+resubmitting the original input:
+
+```sh
+magents responses show RESPONSE_ID --stream --events
+magents responses show RESPONSE_ID --stream --events --starting-after 17
+```
+
+Streamed text is stdout; response/session identities go to stderr. `--events`
+emits full typed events as JSONL, including `sequence_number`, function argument
+events and final usage. Save the last successfully consumed sequence number and
+use `--starting-after` to avoid retransferring earlier events. A completed event
+with a consistent `completed` response status is required for success: an EOF,
+`[DONE]` alone, failed/incomplete/cancelled terminal or malformed event exits
+nonzero. JSONL consumers must also check the process exit status rather than
+treating partial text as a finished response. There is no automatic replay.
+
+An optional `--idempotency-key OPERATION_KEY` on `responses run` or `create` sends
+an owner-scoped operation key. Reuse it only for an explicit retry of the exact
+same request under the server's retained-key contract; use a new key for genuinely
+new work. Changed input under the same key must conflict, not execute. The CLI
+does not infer a retry merely because transport failed. Keys contain 1–255
+printable non-space ASCII bytes. Keep the original request and response ID when
+recovering an operation.
+
+### Local functions and instructions
+
+[`examples/response-local-tools.json`](../examples/response-local-tools.json)
+shows a local function declaration. Replace its agent placeholder, then submit it
+with `responses create`. The response may complete with `function_call` output
+items instead of final assistant text. This is a valid handoff, not an error.
+Inspect every name and argument, execute only an explicitly authorized local
+implementation, and submit the matching `call_id` results through a new create
+request. [`examples/response-local-results.json`](../examples/response-local-results.json)
+shows that continuation shape. Include all pending calls exactly once. The CLI
+never interprets function names as executable paths, launches a local shell,
+downloads tool code or guesses an implementation.
+
+Agent-configuration instructions and server-managed behavioral/tool/skill content
+remain pinned. The request's `instructions` supplies a separate custom layer,
+preserved verbatim through compaction during that response. Top-level request
+instructions are not inherited through `previous_response_id`; resend that
+customization when needed on a later response. Changing it never grants additional
+server tool, filesystem, credential or account permissions.
+
+`responses delete RESPONSE_ID` deletes that stored response representation, not
+the session, Space, workspace versions or financial journal. Cancellation requests
+are not undo operations for completed model, shell or local-function side effects.
+See [the Responses contract](responses-spaces-v0.3.md) for storage, cancellation,
+continuation and unsupported capabilities.
+
+## Space and files
+
+Each account has one Space, shared across its dashboard, CLI and API callers.
+Uploaded files are user data, distinct from immutable workspace versions:
+
+```sh
+magents space show
+magents space rename Research
+magents space files upload ./brief.txt --content-type text/plain
+magents space files upload ./notes.txt --name 'Project notes.txt'
+magents space files list --limit 20
+magents space files list --limit 20 --after FILE_ID
+magents space files show FILE_ID
+magents space files rename FILE_ID 'Updated notes.txt'
+magents space files download FILE_ID --output notes.txt
+magents space files delete FILE_ID
+```
+
+Listing returns one page; follow `last_id` when `has_more` is true. This avoids
+fetching the entire Space just to discover recent files. Upload accepts a regular
+file up to 64 MiB, also subject to the account's actual server limits and funding.
+The client reads a bounded 64 KiB buffer, computes SHA-256, rewinds the same open
+file, then streams its bytes once over the network with explicit length and
+checksum. It uses the native raw upload endpoint, not base64 JSON or an in-memory
+multipart copy. UTF-8 filenames travel in an encoded query, not a header or local
+filesystem path. `--name` overrides only the stored name; content is not rewritten.
+The server's returned byte count and digest must match the local receipt.
+
+File download streams to private temporary output and requires both length and
+SHA-256 receipts before no-clobber publication. `--output -` explicitly selects
+binary stdout and is refused on an interactive terminal. Neither the server's
+filename nor an archive entry selects the local destination. Failed downloads
+leave no partial destination. Uploads and downloads have a five-minute deadline
+and are not retried automatically. If an upload loses its reply, inspect the Space
+for its metadata/digest before deciding to upload again.
+
+To use an uploaded file, include its owned ID in a Responses request:
+
+```json
+{
+  "model": "AGENT_ID",
+  "input": [{
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "Read this brief and identify the next step."},
+      {"type": "input_file", "file_id": "FILE_ID"}
+    ]
+  }]
+}
+```
+
+This is an attachment reference, not permission to read another account's file.
+Use the server's documented file types and size limits; upload support does not
+imply every upstream model can interpret arbitrary media.
+
+### Workspace persistence and versions
+
+```sh
+magents sessions workspace commit SESSION_ID --name 'Before migration'
+magents space versions list --limit 20
+magents space versions show VERSION_ID
+magents space versions download VERSION_ID --output before-migration.tar.zst
+magents sessions workspace restore SESSION_ID VERSION_ID
+# Explicit recovery of the exact same action after an uncertain reply:
+magents sessions workspace restore SESSION_ID VERSION_ID --operation-id OPERATION_ID
+```
+
+Both modifying commands generate a cryptographically random UUID once per
+invocation. The operation ID is printed to stderr **before** dispatch and included
+as `operation_id` in the successful JSON outcome. Preserve it with the exact
+session, action, name or version ID if a connection fails. `--operation-id` reuses
+that identity for an explicit identical-action retry; never reuse it for different
+work or generate a new identity merely because a reply was lost. IDs contain
+1–128 ASCII letters, digits, underscores or hyphens. The corresponding request
+bodies are `{"operation_id":"...","name":"..."}` for commit (name optional),
+and `{"operation_id":"...","version_id":"..."}` for restore. The CLI does not
+automatically repeat either action.
+
+Commit creates an immutable workspace version in the account Space. Versions are
+discoverable across the user's sessions, never publicly shared by knowing an ID.
+They have no user rename, overwrite or delete command. Download verifies the
+archive's full length and compressed checksum without extracting it or starting a
+workspace. Existing session workspace downloads retain their closed-session
+contract; a Space version can be downloaded independently of that session's later
+changes.
+
+Commit and restore require an eligible idle workspace; they do not interrupt a
+running task. Restore first preserves the current workspace as a safety version,
+then restores the selected version into that same session. It is not a workspace
+fork and does not replace the session's pinned instructions or conversation. These
+operations can consume storage, transfer and compute resources under the normal
+account limits. Agents can invoke the corresponding registered persistence,
+version-discovery and restore tools when enabled in their configuration; CLI
+management does not execute an extra model turn.
 
 ## Native identity boundary
 
