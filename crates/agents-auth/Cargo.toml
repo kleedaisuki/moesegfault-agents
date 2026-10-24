@@ -14,10 +14,10 @@ subtle = "2.6"
 aes-gcm = "0.10"
 getrandom = { version = "0.2", features = ["js"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
-p256 = { version = "0.13", features = ["pkcs8"] }
 url = "2"
 time = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+p256 = { version = "0.13", features = ["ecdsa"] }
 rsa = "0.9"
 rand = "0.8"

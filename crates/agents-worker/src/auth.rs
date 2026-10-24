@@ -3,12 +3,15 @@ use futures::StreamExt;
 use std::cell::RefCell;
 
 use agents_auth::{
-    Discovery, LoginTransaction, client_assertion, constant_eq, hash_secret, random_token, seal,
-    unseal, verify_identity_token,
+    Discovery, LoginTransaction, constant_eq, hash_secret, random_token, seal, unseal,
+    verify_identity_token,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use worker::*;
+
+#[path = "auth_crypto.rs"]
+mod native_crypto;
 
 const SESSION_COOKIE: &str = "__Host-magents_session";
 const LOGIN_COOKIE: &str = "__Host-magents_login";
@@ -484,12 +487,13 @@ async fn callback(req: &Request, env: &Env) -> Result<Response> {
     let client_id = setting(env, "IDENTITY_WEB_CLIENT_ID")?;
     let private_jwk: Value =
         serde_json::from_str(&env.secret("IDENTITY_CLIENT_PRIVATE_JWK")?.to_string())?;
-    let assertion = crypto(client_assertion(
+    let assertion = native_crypto::client_assertion(
         &private_jwk,
         &client_id,
         &meta.discovery.token_endpoint,
         now(),
-    ))?;
+    )
+    .await?;
     let form = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs([
             ("grant_type", "authorization_code"),
@@ -930,12 +934,9 @@ async fn oauth_form(env: &Env, endpoint: &str, fields: &[(&str, &str)]) -> Resul
     let meta = metadata(env, false).await?;
     let client = setting(env, "IDENTITY_WEB_CLIENT_ID")?;
     let key: Value = serde_json::from_str(&env.secret("IDENTITY_CLIENT_PRIVATE_JWK")?.to_string())?;
-    let assertion = crypto(client_assertion(
-        &key,
-        &client,
-        &meta.discovery.token_endpoint,
-        now(),
-    ))?;
+    let assertion =
+        native_crypto::client_assertion(&key, &client, &meta.discovery.token_endpoint, now())
+            .await?;
     let mut form = url::form_urlencoded::Serializer::new(String::new());
     form.extend_pairs(fields.iter().copied());
     form.extend_pairs([

@@ -1,6 +1,5 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
-use p256::pkcs8::EncodePrivateKey;
+use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::Url;
@@ -242,35 +241,117 @@ pub fn validate_claims(
     Ok(())
 }
 
-pub fn client_assertion(
+/// Unsigned public JWT framing. Private-key arithmetic belongs to native
+/// WebCrypto, not the software verifier's cryptographic dependencies.
+pub struct ClientAssertionInput {
+    signing_input: String,
+}
+
+impl ClientAssertionInput {
+    pub fn signing_input(&self) -> &str {
+        &self.signing_input
+    }
+
+    /// ES256 JOSE and WebCrypto both use the 64-byte R || S representation,
+    /// not ASN.1 DER: <https://www.rfc-editor.org/rfc/rfc7518#section-3.4>.
+    pub fn finish(self, signature: &[u8]) -> Result<String, AuthError> {
+        if signature.len() != 64 {
+            return Err(AuthError::Configuration);
+        }
+        Ok(format!(
+            "{}.{}",
+            self.signing_input,
+            URL_SAFE_NO_PAD.encode(signature)
+        ))
+    }
+}
+
+pub fn prepare_client_assertion(
     private_jwk: &Value,
     client_id: &str,
     token_endpoint: &str,
     now: i64,
-) -> Result<String, AuthError> {
+) -> Result<ClientAssertionInput, AuthError> {
     if private_jwk["kty"] != "EC" || private_jwk["crv"] != "P-256" || private_jwk["alg"] != "ES256"
     {
         return Err(AuthError::Configuration);
     }
-    let d = URL_SAFE_NO_PAD
-        .decode(private_jwk["d"].as_str().ok_or(AuthError::Configuration)?)
-        .map_err(|_| AuthError::Configuration)?;
-    let key = p256::SecretKey::from_slice(&d).map_err(|_| AuthError::Configuration)?;
-    let der = key.to_pkcs8_der().map_err(|_| AuthError::Configuration)?;
+    for field in ["d", "x", "y"] {
+        validate_jwk_coordinate(&private_jwk[field])?;
+    }
+    let kid = private_jwk["kid"]
+        .as_str()
+        .ok_or(AuthError::Configuration)?;
+    if !bounded_identifier(kid, 128)
+        || !bounded_identifier(client_id, 256)
+        || private_jwk.get("use").is_some_and(|value| value != "sig")
+        || private_jwk
+            .get("ext")
+            .is_some_and(|value| !value.is_boolean())
+        || private_jwk
+            .get("key_ops")
+            .is_some_and(|value| !signing_operations(value))
+        || now < 0
+    {
+        return Err(AuthError::Configuration);
+    }
+    let endpoint = Url::parse(token_endpoint).map_err(|_| AuthError::Configuration)?;
+    if endpoint.scheme() != "https"
+        || endpoint.host_str().is_none()
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(AuthError::Configuration);
+    }
+    let expires_at = now.checked_add(120).ok_or(AuthError::Configuration)?;
     let mut header = Header::new(Algorithm::ES256);
-    header.kid = Some(
-        private_jwk["kid"]
-            .as_str()
-            .ok_or(AuthError::Configuration)?
-            .to_owned(),
-    );
-    jsonwebtoken::encode(&header, &json!({"iss":client_id,"sub":client_id,"aud":token_endpoint,"iat":now,"exp":now+120,"jti":random_token()?}), &EncodingKey::from_ec_der(der.as_bytes()))
-        .map_err(|_| AuthError::Configuration)
+    header.kid = Some(kid.to_owned());
+    let claims = json!({"iss":client_id,"sub":client_id,"aud":token_endpoint,"iat":now,"exp":expires_at,"jti":random_token()?});
+    let header = serde_json::to_vec(&header).map_err(|_| AuthError::Configuration)?;
+    let claims = serde_json::to_vec(&claims).map_err(|_| AuthError::Configuration)?;
+    Ok(ClientAssertionInput {
+        signing_input: format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(header),
+            URL_SAFE_NO_PAD.encode(claims)
+        ),
+    })
+}
+
+fn bounded_identifier(value: &str, limit: usize) -> bool {
+    !value.is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
+}
+
+fn validate_jwk_coordinate(value: &Value) -> Result<(), AuthError> {
+    let encoded = value.as_str().ok_or(AuthError::Configuration)?;
+    if encoded.len() != 43 {
+        return Err(AuthError::Configuration);
+    }
+    let decoded = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| AuthError::Configuration)?;
+    if decoded.len() != 32 || URL_SAFE_NO_PAD.encode(&decoded) != encoded {
+        return Err(AuthError::Configuration);
+    }
+    Ok(())
+}
+
+fn signing_operations(value: &Value) -> bool {
+    let Some(operations) = value.as_array() else {
+        return false;
+    };
+    operations.iter().any(|operation| operation == "sign")
+        && operations.iter().enumerate().all(|(index, operation)| {
+            matches!(operation.as_str(), Some("sign" | "verify"))
+                && !operations[..index].contains(operation)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonwebtoken::EncodingKey;
     #[test]
     fn return_paths_do_not_escape_origin() {
         for path in [
@@ -376,14 +457,22 @@ mod tests {
 
     #[test]
     fn client_assertions_use_registered_es256_key_and_unique_jti() {
+        use p256::ecdsa::{Signature, SigningKey, signature::Signer};
         use p256::elliptic_curve::sec1::ToEncodedPoint;
         let key = p256::SecretKey::from_slice(&[1u8; 32]).unwrap();
         let point = key.public_key().to_encoded_point(false);
         let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
         let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
-        let jwk = json!({"kty":"EC","crv":"P-256","alg":"ES256","kid":"fixture","d":URL_SAFE_NO_PAD.encode([1u8;32])});
-        let first = client_assertion(&jwk, "web", "https://issuer.test/token", 100).unwrap();
-        let second = client_assertion(&jwk, "web", "https://issuer.test/token", 100).unwrap();
+        let jwk = json!({"kty":"EC","crv":"P-256","alg":"ES256","kid":"fixture","d":URL_SAFE_NO_PAD.encode([1u8;32]),"x":x,"y":y});
+        let sign = |input: ClientAssertionInput| {
+            let key = SigningKey::from_slice(&[1u8; 32]).unwrap();
+            let signature: Signature = key.sign(input.signing_input().as_bytes());
+            input.finish(&signature.to_bytes()).unwrap()
+        };
+        let first =
+            sign(prepare_client_assertion(&jwk, "web", "https://issuer.test/token", 100).unwrap());
+        let second =
+            sign(prepare_client_assertion(&jwk, "web", "https://issuer.test/token", 100).unwrap());
         let mut validation = Validation::new(Algorithm::ES256);
         validation.validate_exp = false;
         validation.set_audience(&["https://issuer.test/token"]);
@@ -398,5 +487,120 @@ mod tests {
         assert_eq!(a["sub"], "web");
         assert_eq!(a["exp"], 220);
         assert_ne!(a["jti"], b["jti"]);
+    }
+
+    fn framing_jwk() -> Value {
+        json!({"kty":"EC","crv":"P-256","alg":"ES256","kid":"fixture",
+            "d":URL_SAFE_NO_PAD.encode([1u8;32]),
+            "x":URL_SAFE_NO_PAD.encode([2u8;32]),
+            "y":URL_SAFE_NO_PAD.encode([3u8;32])})
+    }
+
+    #[test]
+    fn unsigned_assertion_contains_only_public_header_and_exact_claims() {
+        let jwk = framing_jwk();
+        let input =
+            prepare_client_assertion(&jwk, "client", "https://issuer.test/token", 100).unwrap();
+        let segments: Vec<_> = input.signing_input().split('.').collect();
+        assert_eq!(segments.len(), 2);
+        let decode = |segment: &str| {
+            serde_json::from_slice::<Value>(&URL_SAFE_NO_PAD.decode(segment).unwrap()).unwrap()
+        };
+        assert_eq!(
+            decode(segments[0]),
+            json!({"alg":"ES256","typ":"JWT","kid":"fixture"})
+        );
+        let claims = decode(segments[1]);
+        assert_eq!(claims.as_object().unwrap().len(), 6);
+        assert_eq!(claims["iss"], "client");
+        assert_eq!(claims["sub"], "client");
+        assert_eq!(claims["aud"], "https://issuer.test/token");
+        assert_eq!(claims["iat"], 100);
+        assert_eq!(claims["exp"], 220);
+        assert!(!claims["jti"].as_str().unwrap().is_empty());
+        assert!(claims.get("d").is_none());
+        assert!(claims.get("jwk").is_none());
+    }
+
+    #[test]
+    fn assertion_metadata_coordinates_and_time_are_strict() {
+        let jwk = framing_jwk();
+        for (field, value) in [
+            ("kty", json!("RSA")),
+            ("crv", json!("P-384")),
+            ("alg", json!("HS256")),
+            ("kid", json!("")),
+            ("kid", json!("x".repeat(129))),
+            ("kid", json!("key\n")),
+            ("use", json!("enc")),
+            ("key_ops", json!(["verify"])),
+            ("key_ops", json!(["sign", 1])),
+            ("key_ops", json!(["sign", "sign"])),
+            ("ext", json!("false")),
+        ] {
+            let mut invalid = jwk.clone();
+            invalid[field] = value;
+            assert!(
+                prepare_client_assertion(&invalid, "client", "https://issuer.test/token", 100)
+                    .is_err(),
+                "{field}"
+            );
+        }
+        for field in ["d", "x", "y"] {
+            for value in [
+                Value::Null,
+                json!(URL_SAFE_NO_PAD.encode([0u8; 31])),
+                json!(format!("{}=", jwk[field].as_str().unwrap())),
+                json!("!".repeat(43)),
+                json!(format!("{}B", "A".repeat(42))),
+            ] {
+                let mut invalid = jwk.clone();
+                invalid[field] = value;
+                assert!(
+                    prepare_client_assertion(&invalid, "client", "https://issuer.test/token", 100)
+                        .is_err(),
+                    "{field}"
+                );
+            }
+        }
+        for now in [-1, i64::MAX] {
+            assert!(
+                prepare_client_assertion(&jwk, "client", "https://issuer.test/token", now).is_err()
+            );
+        }
+        for endpoint in [
+            "http://issuer.test/token",
+            "https://user:pass@issuer.test/token",
+            "https://issuer.test/token#fragment",
+        ] {
+            assert!(prepare_client_assertion(&jwk, "client", endpoint, 100).is_err());
+        }
+        assert!(prepare_client_assertion(&jwk, "", "https://issuer.test/token", 100).is_err());
+        let mut valid = jwk.clone();
+        valid["use"] = json!("sig");
+        valid["key_ops"] = json!(["sign"]);
+        valid["ext"] = json!(false);
+        assert!(
+            prepare_client_assertion(&valid, "client", "https://issuer.test/token", 100).is_ok()
+        );
+    }
+
+    #[test]
+    fn assertion_assembly_requires_p1363_signature_not_der() {
+        let jwk = framing_jwk();
+        for length in [0, 32, 63, 65, 70, 72] {
+            let input =
+                prepare_client_assertion(&jwk, "client", "https://issuer.test/token", 100).unwrap();
+            assert!(input.finish(&vec![0; length]).is_err());
+        }
+        let input =
+            prepare_client_assertion(&jwk, "client", "https://issuer.test/token", 100).unwrap();
+        let wire = input.finish(&[7; 64]).unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(wire.split('.').nth(2).unwrap())
+                .unwrap(),
+            vec![7; 64]
+        );
     }
 }

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { runAuthJourney } from './auth-journey.mjs';
+import { createIdentityFixture, runAuthJourney, runClientAssertionJourney, runInvalidClientKeyJourney } from './auth-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -15,6 +15,7 @@ const hash = createHash('sha256').update(key).digest('base64url');
 
 test('compiled Rust Worker: authenticated D1 and session DO user journey', { timeout: 90000 }, async (t) => {
   const encryptionKey = randomBytes(32);
+  const identity = createIdentityFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -25,7 +26,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const temp = await mkdtemp(path.join(root, '.temp/worker-integration-'));
   process.env.TMP = process.env.TEMP = process.env.TMPDIR = temp;
-  const mf = new Miniflare(convertV4MiniflareOptions({
+  const mfOptions = convertV4MiniflareOptions({
     modulesRoot: build,
     modules: [
       { type: 'ESModule', path: path.join(build, 'worker/shim.mjs') },
@@ -49,6 +50,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       IDENTITY_ISSUER: 'https://identity.test', IDENTITY_WEB_CLIENT_ID: 'test-dashboard',
       IDENTITY_NATIVE_CLIENT_ID: 'test-native', IDENTITY_REDIRECT_URI: 'https://agents.test/auth/callback',
       IDENTITY_NATIVE_REDIRECT_URI: 'http://127.0.0.1/callback',
+      IDENTITY_CLIENT_PRIVATE_JWK: JSON.stringify(identity.privateJwk),
       BILLING_PRODUCT_ID: 'agents', BILLING_MODE: 'test',
       MODEL_REGISTRY_JSON: JSON.stringify([{ provider: 'openrouter', model: 'test-model', context_window: 10000, max_output_tokens: 1000 }, { provider: 'deepseek', model: 'unpriced-direct-model', context_window: 10000, max_output_tokens: 1000 }]),
       RESOURCE_PRICING_JSON: resourcePricing,
@@ -102,16 +104,18 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
           : { role: 'assistant', content: 'The clock tool completed.' };
         return new Response(`data: ${JSON.stringify({ id: `mock-${providerCalls}`, model: 'test-model', choices: [{ index: 0, delta, finish_reason: first ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110, cost: 0.00001 } })}\n\ndata: [DONE]\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
       }
-      if (request.url === 'https://identity.test/jwks') return Response.json({ keys: [] });
+      if (request.url === 'https://identity.test/token' || request.url === 'https://identity.test/revoke') return identity.handle(request);
+      if (request.url === 'https://identity.test/jwks') return Response.json(identity.jwks);
       assert.equal(request.url, 'https://identity.test/.well-known/openid-configuration');
       return Response.json({ issuer: 'https://identity.test', authorization_endpoint: 'https://identity.test/authorize',
         token_endpoint: 'https://identity.test/token', jwks_uri: 'https://identity.test/jwks',
         end_session_endpoint: 'https://identity.test/logout', revocation_endpoint: 'https://identity.test/revoke',
         code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: ['private_key_jwt', 'none'] });
     },
-  }));
+  });
+  const mf = new Miniflare(mfOptions);
   t.after(() => mf.dispose());
-  const db = await mf.getD1Database('DB');
+  let db = await mf.getD1Database('DB');
   for (const name of (await readdir(path.join(root, 'migrations'))).filter(n => n.endsWith('.sql')).sort()) {
     const sql = await readFile(path.join(root, 'migrations', name), 'utf8');
     // Let SQLite recognize trigger bodies and SQL quoting, rather than splitting on semicolons.
@@ -151,6 +155,14 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   });
   await t.test('browser auth lifecycle uses real AuthSession DO and integer D1 values', () =>
     runAuthJourney({ mf, db, encryptionKey, origin: 'https://agents.test' }));
+  await t.test('callback and refresh ES256 assertions verify against the registered client key', () =>
+    runClientAssertionJourney({ mf, db, origin: 'https://agents.test', identity }));
+  await t.test('invalid confidential-client scalar fails before exchange without authenticating', () =>
+    runInvalidClientKeyJourney({ mf, db, origin: 'https://agents.test', identity, updatePrivateJwk: async jwk => {
+      mfOptions.workers[0].config.env.IDENTITY_CLIENT_PRIVATE_JWK = { type: 'text', value: JSON.stringify(jwk) };
+      await mf.setOptions(mfOptions);
+      db = await mf.getD1Database('DB');
+    } }));
   await t.test('agent CRUD, immutable session prefix, DO close and revocation', async (t) => {
     const agent = await request('POST', '/v1/agents', { name: 'Integration', instructions: 'Pinned original instructions', model: { provider: 'openrouter', model: 'test-model' }, workspace: false }, 201);
     assert.equal((await request('GET', '/v1/models')).data[0].id, agent.id);

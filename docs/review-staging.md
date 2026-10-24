@@ -339,3 +339,119 @@ Final cheap compatibility sweep: `python -m unittest discover -s tests -p
  'test_*sql.py' -q` — **60 passed in 1.549 seconds**, including the new independent
 conservation sequence test. No full Rust/WASM build was run by this financial
 review pass.
+
+## Final dependency reachability triage (2026-10-24)
+
+Read-only triage of the supplied 451-registry-package OSV audit and local call
+sites. No private-key values were loaded, no live authentication calls were made,
+and no exploit or timing measurement was performed.
+
+### Actionable: crypto-bigint advisory reaches production private-key operations
+
+The cached authoritative OSV entry for `RUSTSEC-2026-0387` marks locked
+`crypto-bigint 0.5.5` affected and identifies fixes in 0.7.6. Its impact depends on
+secret-dependent arithmetic and observable timing, not simply crate presence.
+The upstream [0.7.6 release PR](https://github.com/RustCrypto/crypto-bigint/pull/1365)
+identifies constant-time fixes in subtraction, equality, invertibility, zero
+counting and Montgomery arithmetic. Practical remote exploitation in this Worker
+has **not** been established; private-operation reachability has.
+
+Concrete local chain before mitigation:
+
+```text
+Worker auth.rs callback / oauth_form
+  -> agents_auth::client_assertion (oidc.rs:245-268)
+  -> decode configured private JWK d
+  -> p256::SecretKey::from_slice / to_pkcs8_der
+  -> jsonwebtoken RustCrypto ES256 signer
+  -> p256 SigningKey::sign_recoverable
+  -> elliptic-curve / crypto-bigint arithmetic
+```
+
+PKCS8 conversion is not merely harmless byte copying: elliptic-curve's secret-key
+encoding derives its public key. The pinned p256 scalar implementation also uses
+crypto-bigint U256 modular subtraction. Callback signing and the shared OAuth
+form path (refresh/revocation) are live operations with the BFF private key, so a
+blanket public-verification-only exception would be incorrect.
+
+Recommended smallest mitigation: move **only Worker ES256 private assertion
+signing** to native Workers Web Crypto, called from Rust through `web_sys`.
+Cloudflare documents native [ECDSA and JWK support](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/).
+Keep the existing key, registered kid, P-256/ES256 algorithm, issuer/subject,
+exact token-endpoint audience, lifetime and fresh jti. Import a non-extractable
+sign-only key; sign the JOSE header/payload bytes using ECDSA SHA-256; require
+64-byte raw r||s output rather than DER. Native import/sign failure must fail
+closed, never fall back to affected Rust private arithmetic. Restrict or remove
+the old private helper from production exports to make this boundary auditable.
+This delegates secret arithmetic to the maintained platform boundary; it does not
+claim that all platform cryptography or all side channels are universally absent.
+
+Required verification: actual-WASM synthetic-key callback and shared refresh/
+revocation assertions, independently verified signatures, unchanged audience and
+fresh jti, plus a source/feature check that no Worker private path still calls the
+RustCrypto helper. Do not print real JWKs, signatures from live accounts or tokens.
+
+### RSA advisory: affected dependency, no production private-RSA path found
+
+`RUSTSEC-2023-0071` concerns private-key timing leakage; the
+[RustSec advisory](https://rustsec.org/advisories/RUSTSEC-2023-0071.html) reports no
+patched release. Runtime Identity verification constructs `DecodingKey` only from
+public RSA n/e and pins RS256. Private RSA generation and signing found locally
+are confined to the `#[cfg(test)]` module. Public verification does not possess
+the issuer's private RSA key, so this is not evidence that network verification
+leaks that private key. A scoped reachability exception is appropriate, invalidated
+by adding any runtime RSA private-key import, signing or decryption path.
+
+The zbus_names/zvariant/derive informational unmaintained notices are maintenance
+items, not demonstrated exploitable findings here. Do not force a keyring/zbus
+major migration solely to make that informational category disappear. Preserve
+explicit advisory IDs, reviewed versions, reachable operations and reevaluation
+conditions; do not describe the whole dependency graph as vulnerability-free.
+
+Status: private-ES256 native mitigation recommended to root; patch verification
+pending. RSA reachability and informational notices do not independently block
+this bounded triage's release decision.
+
+### Native private-assertion mitigation: independent patch review
+
+**Source review passes with no blocking residual found in this bounded patch.**
+Deployment is gated on the new compiled-WASM CI result for this exact change;
+older functional/CI successes do not validate native Web Crypto invocation.
+
+Reviewed `auth_crypto.rs`, the core OIDC diff, both Worker call sites, Cargo
+features and the synthetic actual-Worker auth fixture:
+
+- Production core now only validates JWK framing and constructs unsigned JWT
+  bytes. Its old private signer/PKCS8 conversion is removed. Direct p256 use is
+  dev-only; production-source searches found no `SecretKey`, private RSA import
+  or RustCrypto ES256 signing path outside tests.
+- `auth_crypto.rs` calls the platform's typed `SubtleCrypto.importKey` and `sign`.
+  It imports the existing JWK as ECDSA P-256, non-extractable and sign-only, and
+  signs with SHA-256. Both callback and shared OAuth-form callers await it.
+  Import, Promise rejection, result conversion and invalid signature length all
+  fail closed; no software private-signing fallback remains.
+- JWT wire semantics remain ES256/kid/typ, exact client iss/sub, exact configured
+  token-endpoint aud, 120-second lifetime, fresh random jti, and base64url raw
+  64-byte r||s signature. The key and registration are not rotated. Native import
+  additionally requires the standard private-JWK x/y coordinates matching d;
+  synthetic fixtures use the standard complete JWK export. No real private-key
+  values or ignored custody files were inspected by this reviewer.
+- The new actual-WASM fixture exercises the Rust callback and AuthSession refresh
+  using synthetic keys. An independent Node verifier checks against the matching
+  registered public key, rejects an unrelated key, checks 64-byte format, exact
+  audience/claims, fresh jti and refresh rotation. The invalid-scalar journey
+  requires no upstream token request and no newly authenticated browser session.
+  These are reviewed test assertions, not a claim they have already passed on
+  the freshly compiled Worker.
+
+Independently executed: `cargo test -p agents-auth oidc::tests --locked` —
+**8 passed**; relevant diff whitespace check passed. Native tests verify framing,
+claim/key validation and independent signature compatibility, not the platform
+Web Crypto bridge. Root/runtime's WASM type check is useful but likewise does
+not replace the new compiled-WASM test gate.
+
+The vulnerable dependency can remain transitively present through public
+verification backends; that is not a claim of a vulnerability-free lockfile.
+The scoped residual assessment remains: no runtime private-RSA operation found,
+and no runtime private EC arithmetic remains in the affected Rust implementation.
+Reassess if another signing/decryption path or fallback is introduced.
