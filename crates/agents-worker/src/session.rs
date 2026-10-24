@@ -1048,7 +1048,20 @@ impl SessionInner {
                 r.round += 1;
             }
             self.response_completion(completion)?;
-            if completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty() {
+            let policy_terminal = self
+                .data
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .run
+                .as_ref()
+                .unwrap()
+                .response
+                .as_ref()
+                .is_some_and(|r| r.cancel_requested || r.incomplete_reason.is_some());
+            if (completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty())
+                || policy_terminal
+            {
                 let value = self.completion_value(&completion.message)?;
                 self.data
                     .borrow_mut()
@@ -1064,7 +1077,9 @@ impl SessionInner {
                 "provider.completed",
                 json!({"session_id":record.id,"run_id":run.id,"trace_id":trace.trace_id(),"round":run.round,"input_tokens":completion.usage.prompt_tokens,"output_tokens":completion.usage.completion_tokens,"cached_tokens":completion.usage.cached_tokens,"usage_reported":completion.usage.reported}),
             );
-            if completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty() {
+            if (completion.message.tool_calls.is_empty() && self.snapshot()?.pending.is_empty())
+                || policy_terminal
+            {
                 return Ok(self.snapshot()?.run.as_ref().unwrap().terminal.clone());
             }
             return Ok(None);
@@ -1351,12 +1366,25 @@ impl SessionInner {
             (Err(_), Some(value)) => Ok(value),
             (result, _) => result,
         };
-        if result.is_err() {
+        let policy_end = saved
+            .run
+            .as_ref()
+            .unwrap()
+            .response
+            .as_ref()
+            .filter(|r| r.cancel_requested || r.incomplete_reason.is_some());
+        if result.is_err() || policy_end.is_some() {
             if let Some(call) = unresolved_tool(&saved.messages) {
                 complete_failed_tool_group(
                     self.data.borrow_mut().as_mut().unwrap(),
                     &call.id,
-                    result.as_ref().err().unwrap(),
+                    result.as_ref().err().map(String::as_str).unwrap_or(
+                        if policy_end.is_some_and(|r| r.cancel_requested) {
+                            "response_cancelled"
+                        } else {
+                            "response_incomplete"
+                        },
+                    ),
                 )?;
             }
         }
@@ -1890,7 +1918,7 @@ async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
     };
     let mut data: PersistedSession = serde_json::from_slice(&bytes)?;
     if let Some(response) = data.run.as_mut().and_then(|r| r.response.as_mut()) {
-        response.next_sequence = response.next_sequence.max(response.reserved_sequence_end);
+        response.recover_sequence();
     }
     if data.projection_pending
         && !data.projection_generation.is_empty()

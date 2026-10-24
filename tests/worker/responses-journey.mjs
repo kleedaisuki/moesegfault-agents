@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import OpenAI from 'openai';
 import { createBrowserPrincipal } from './browser-principal.mjs';
 import { runResponsesSdkJourney } from './responses-sdk.mjs';
 
@@ -95,6 +96,7 @@ async function waitUntil(predicate, milliseconds = 8000) {
 }
 
 async function fixture({ mf, db, encryptionKey, request, providers }, name, actions, options = {}) {
+  const { context_window = 8192, ...agentOptions } = options;
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: `responses-${name}-owner` });
   const state = providers.register(name, actions);
   const credential = await principal.browser('POST', '/v1/provider-keys', {
@@ -103,8 +105,8 @@ async function fixture({ mf, db, encryptionKey, request, providers }, name, acti
   const agent = await request('POST', '/v1/agents', {
     name: `Responses ${name}`, instructions: 'Fixed agent prefix must remain in every model context.',
     model: { provider: 'byok', credential_id: credential.id, model: state.model,
-      context_window: 8192, max_output_tokens: 512 }, tools: ['time'], workspace: false,
-    compaction_percent: 80, ...options,
+      context_window, max_output_tokens: 512 }, tools: ['time'], workspace: false,
+    compaction_percent: 80, ...agentOptions,
   }, 201, principal.apiKey);
   const observations = { responses: [], events: [] };
   function observe(value) {
@@ -339,6 +341,20 @@ export async function runResponsesCancellationJourney(context) {
     const { value: accepted, headers } = await scenario.invoke({ input: 'Run in the background until cancellation.', background: true });
     const sessionId = headers.get('x-agents-session');
     await waitUntil(() => scenario.state.calls === 1);
+    const observer = await bounded(context.mf.dispatchFetch(`https://agents.test/v1/responses/${accepted.id}?stream=true`, {
+      headers: { Authorization: `Bearer ${scenario.principal.apiKey}` },
+    }));
+    assert.equal(observer.status, 200);
+    const wirePromise = observer.text();
+    const sdkEvents = [];
+    const client = new OpenAI({ apiKey: scenario.principal.apiKey, baseURL: 'https://agents.test/v1', maxRetries: 0,
+      timeout: 8000, fetch: (input, init) => context.mf.dispatchFetch(input, init) });
+    const sdkOutcome = client.responses.retrieve(accepted.id, { stream: true }).then(async stream => {
+      try {
+        for await (const event of stream) sdkEvents.push(event);
+        return null;
+      } catch (error) { return error; }
+    }, error => error);
     const before = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
     const cancel = await context.request('POST', `/v1/responses/${accepted.id}/cancel`, {}, 200, scenario.principal.apiKey);
     scenario.observations.responses.push(cancel);
@@ -354,6 +370,16 @@ export async function runResponsesCancellationJourney(context) {
     assert.deepEqual(final.usage, { input_tokens: 150, input_tokens_details: { cached_tokens: 30 },
       output_tokens: 10, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 160 },
     'Cancellation after a known provider result must retain the actually reported usage');
+    const events = (await bounded(wirePromise)).split('\n\n')
+      .map(block => block.split('\n').find(line => line.startsWith('data: '))).filter(Boolean)
+      .map(line => JSON.parse(line.slice(6)));
+    assert.equal(events.at(-1).type, 'error');
+    assert.equal(events.at(-1).code, 'response_cancelled');
+    assert.ok(!events.some(event => ['response.completed', 'response.failed', 'response.cancelled'].includes(event.type)),
+      'Cancellation must not fabricate a completed/failed response or invent an SDK event type');
+    const sdkError = await bounded(sdkOutcome);
+    assert.ok(sdkError instanceof Error || sdkEvents.at(-1)?.type === 'error', 'The real SDK must surface cancellation, not a false success');
+    scenario.observations.events.push(...events);
     assert.equal(scenario.state.calls, 1, 'Cancellation and late completion cannot dispatch a replacement inference');
     const after = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
     assert.equal(after.input_revision, before.input_revision, 'Cancellation is not new user input');
@@ -395,7 +421,7 @@ export async function runResponsesIdempotencyRaceJourney(context) {
 export async function runSessionViewsJourney(context) {
   const scenario = await fixture(context, 'history-pages', [
     { text: 'Imported source context acknowledged.' }, { text: 'New append acknowledged.' },
-  ]);
+  ], { context_window: 131072 });
   const input = Array.from({ length: 110 }, (_, index) => ({ role: 'user',
     content: `Source entry ${index}: ` + 'synthetic immutable source data; '.repeat(30) }));
   try {
@@ -467,6 +493,7 @@ export async function runResponsesInputAndOptionsJourney(context) {
       assert.ok(protectedContext.includes('Imported system instruction.'));
       assert.ok(protectedContext.includes('Imported developer instruction.'));
       assert.ok(input.messages.some(message => message.role === 'assistant' && message.content === 'Imported assistant context.'));
+      assert.equal(input.messages.find(message => message.tool_call_id === 'imported-call')?.content, 'Imported local result.');
       assert.equal(input.temperature, 0.2);
       assert.equal(input.top_p, 0.8);
       assert.equal(input.parallel_tool_calls, false);
@@ -490,9 +517,13 @@ export async function runResponsesInputAndOptionsJourney(context) {
         { role: 'developer', content: [{ type: 'input_text', text: 'Imported developer instruction.' }] },
         { role: 'user', content: 'Earlier imported user context.' },
         { role: 'assistant', content: [{ type: 'output_text', text: 'Imported assistant context.' }] },
+        { type: 'function_call', call_id: 'imported-call', name: 'imported_local', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'imported-call', output: 'Imported local result.' },
         { role: 'user', content: [{ type: 'input_text', text: 'Respond with a JSON object.' }] },
       ], temperature: 0.2, top_p: 0.8, parallel_tool_calls: false, max_output_tokens: 200,
       text: { format: { type: 'json_object' } },
+      tools: [{ type: 'function', name: 'imported_local',
+        parameters: { type: 'object', properties: {}, additionalProperties: false }, strict: true }],
     });
     assert.equal(response.status, 'completed');
     const text = response.output.filter(item => item.type === 'message')
@@ -501,7 +532,7 @@ export async function runResponsesInputAndOptionsJourney(context) {
     assert.equal(response.temperature, 0.2);
     assert.equal(response.top_p, 0.8);
     assert.equal(response.max_output_tokens, 200);
-    assert.deepEqual(response.text, { format: { type: 'json_object' } });
+    assert.deepEqual(response.text?.format, { type: 'json_object' });
     assert.equal(scenario.state.calls, 1);
   } finally { await scenario.finish(); }
 }

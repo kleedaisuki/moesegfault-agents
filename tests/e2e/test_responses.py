@@ -230,5 +230,3 @@ def test_responses_consumes_owned_uploaded_file(
     finally:
         if uploaded is not None:
             responses_sdk.files.delete(uploaded.id)
-
-

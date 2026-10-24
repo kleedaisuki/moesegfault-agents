@@ -41,6 +41,10 @@ pub(super) struct ResponseRun {
 }
 
 impl ResponseRun {
+    pub(super) fn recover_sequence(&mut self) {
+        self.next_sequence = self.next_sequence.max(self.reserved_sequence_end);
+    }
+
     fn value(&self) -> Value {
         let mut value = wire::response_value(
             &self.request,
@@ -101,6 +105,7 @@ enum ResponseTransport {
 pub(super) struct ResponseObserver {
     id: String,
     transport: ResponseTransport,
+    after: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -277,9 +282,36 @@ impl SessionInner {
                         "Cancel and wait for the response before deletion",
                     );
                 }
+                {
+                    let borrowed = self.data.borrow();
+                    let data = borrowed.as_ref().unwrap();
+                    if data.response_head.as_deref() == Some(*id)
+                        && !data.pending_client_tools.is_empty()
+                    {
+                        return util::json_error(
+                            409,
+                            "client_tool_outputs_required",
+                            "Complete or explicitly decline outstanding function calls before deleting their response",
+                        );
+                    }
+                }
+                {
+                    let mut borrowed = self.data.borrow_mut();
+                    let data = borrowed.as_mut().unwrap();
+                    if data.response_head.as_deref() == Some(*id) {
+                        data.response_head = None;
+                    }
+                }
+                self.persist().await?;
                 response.deleted = true;
                 response.request.input = Value::Null;
                 response.request.instructions = None;
+                response.request.tools.clear();
+                response.request.metadata.clear();
+                response.request.text = None;
+                response.request.reasoning = None;
+                response.request.stream_options = None;
+                response.attachments.clear();
                 response.input_items.clear();
                 response.output.clear();
                 response.events.clear();
@@ -310,8 +342,11 @@ impl SessionInner {
                     "Response ID already belongs to another request",
                 );
             }
-            if existing.deleted {
-                return util::json_error(404, "not_found", "Response has been deleted");
+            if !terminal_status(&existing.status) {
+                // Repair a warm retry's failed initial state/alarm publication,
+                // without appending input or admitting a second execution.
+                self.persist().await?;
+                self.arm_alarm().await?;
             }
             return self.observe_response(&existing, request.stream, None).await;
         }
@@ -355,17 +390,17 @@ impl SessionInner {
                 return util::json_error(404, "not_found", "Previous response not retained");
             }
         }
-        let historical_calls = input
-            .messages
-            .iter()
-            .flat_map(|m| m.tool_calls.clone())
-            .collect::<Vec<_>>();
-        let expected = if request.previous_response_id.is_some() {
-            &data.pending_client_tools
-        } else {
-            &historical_calls
-        };
-        if let Err(code) = validate_tool_outputs(expected, &input.tool_outputs) {
+        if request.previous_response_id.is_none() {
+            if let Err(code) = validate_imported_history(&input.messages) {
+                return util::json_error(
+                    400,
+                    code,
+                    "Imported function calls and outputs must be complete, ordered groups",
+                );
+            }
+        } else if let Err(code) =
+            validate_tool_outputs(&data.pending_client_tools, &input.tool_outputs)
+        {
             return util::json_error(
                 400,
                 code,
@@ -421,6 +456,17 @@ impl SessionInner {
         }
         // Credential lookup yields: recheck the head before accepting any input.
         let current = self.snapshot()?;
+        if current.archive_preparing || current.archive_pending || self.closing.get() {
+            return util::json_error(409, "session_busy", "Session archival is still in progress");
+        }
+        if current.record.status == SessionStatus::Closed {
+            self.persist().await?;
+            return util::json_error(
+                409,
+                "response_session_closed",
+                "Readmit the archived session before continuing",
+            );
+        }
         if current.run.is_some()
             || current.response_head != data.response_head
             || current.record.input_revision != data.record.input_revision
@@ -444,10 +490,20 @@ impl SessionInner {
         execution_request.input = resolved.input;
         input = execution_request.normalize().map_err(Error::RustError)?;
         let current = self.snapshot()?;
+        if current.archive_preparing || current.archive_pending || self.closing.get() {
+            return util::json_error(409, "session_busy", "Session archival is still in progress");
+        }
+        if current.record.status == SessionStatus::Closed {
+            self.persist().await?;
+            return util::json_error(
+                409,
+                "response_session_closed",
+                "Readmit the archived session before continuing",
+            );
+        }
         if current.run.is_some()
             || current.response_head != data.response_head
             || current.record.input_revision != data.record.input_revision
-            || self.closing.get()
         {
             return util::json_error(409, "session_busy", "Session changed while resolving input");
         }
@@ -468,16 +524,26 @@ impl SessionInner {
             prefix.push_str("\n\nUser-provided instructions for this response:\n");
             prefix.push_str(&input.instructions.join("\n\n"));
         }
+        if prefix.len() > 256 * 1024 {
+            return util::json_error(
+                400,
+                "instructions_too_large",
+                "Combined instruction prefix exceeds 256 KiB",
+            );
+        }
+        // No await separates this domain preflight from acceptance mutations.
+        // Exhausted revisions and non-idle records cannot partially consume tools.
+        let mut admission = current.record.clone();
+        if admission.append_user_input(util::now_ms()).is_err() || admission.start_run().is_err() {
+            return util::json_error(
+                409,
+                "session_busy",
+                "Session cannot accept another response",
+            );
+        }
         {
             let mut borrowed = self.data.borrow_mut();
             let current = borrowed.as_mut().unwrap();
-            if prefix.len() > 256 * 1024 {
-                return util::json_error(
-                    400,
-                    "instructions_too_large",
-                    "Combined instruction prefix exceeds 256 KiB",
-                );
-            }
             current
                 .history_instructions
                 .extend(input.history_instructions.iter().cloned());
@@ -574,6 +640,7 @@ impl SessionInner {
                 self.response_observers.borrow_mut().push(ResponseObserver {
                     id: response.id.clone(),
                     transport: ResponseTransport::Stream(tx),
+                    after,
                 });
             }
             use futures::StreamExt;
@@ -598,6 +665,7 @@ impl SessionInner {
         self.response_observers.borrow_mut().push(ResponseObserver {
             id: response.id.clone(),
             transport: ResponseTransport::Json(tx),
+            after: None,
         });
         match rx.await {
             Ok(value) => Response::from_json(&value),
@@ -664,6 +732,13 @@ impl SessionInner {
         drop(borrowed);
         self.response_observers.borrow_mut().retain_mut(|observer| {
             if observer.id != id {
+                return true;
+            }
+            if observer.after.is_some_and(|after| {
+                event["sequence_number"]
+                    .as_u64()
+                    .is_some_and(|sequence| sequence <= after)
+            }) {
                 return true;
             }
             match &mut observer.transport {
@@ -749,7 +824,7 @@ impl SessionInner {
         if projected_bytes > MAX_RESPONSE_OUTPUT_BYTES {
             return Err(Error::RustError("response_output_limit".into()));
         }
-        self.validate_response_output(completion, &response.request)?;
+        Self::validate_response_output(completion, &response.request)?;
 
         let index = response.output.len();
         let item_id = format!("msg_{}_{}", run.id, run.round.saturating_sub(1));
@@ -921,11 +996,7 @@ impl SessionInner {
         Ok(())
     }
 
-    fn validate_response_output(
-        &self,
-        completion: &Completion,
-        request: &ResponseRequest,
-    ) -> Result<()> {
+    fn validate_response_output(completion: &Completion, request: &ResponseRequest) -> Result<()> {
         if request.parallel_tool_calls == Some(false) && completion.message.tool_calls.len() > 1 {
             return Err(Error::RustError(
                 "provider_parallel_tool_policy_violation".into(),
@@ -1069,8 +1140,12 @@ impl SessionInner {
                 outstanding_local_calls(&self.snapshot()?.messages, &response.request);
         }
         let value = response.value();
-        let kind = format!("response.{}", response.status);
-        response.event(&kind, json!({"response":value}))?;
+        if response.status == "cancelled" {
+            response.event("error",json!({"code":"response_cancelled","message":"Response cancelled; retrieve its final state using the same response ID","param":null}))?;
+        } else {
+            let kind = format!("response.{}", response.status);
+            response.event(&kind, json!({"response":value}))?;
+        }
         self.write_response(&response).await?;
         Ok(Some(response))
     }
@@ -1083,6 +1158,13 @@ impl SessionInner {
         for observer in observers {
             if observer.id != response.id {
                 remaining.push(observer);
+                continue;
+            }
+            if observer.after.is_some_and(|after| {
+                last["sequence_number"]
+                    .as_u64()
+                    .is_some_and(|sequence| sequence <= after)
+            }) {
                 continue;
             }
             match observer.transport {
@@ -1129,6 +1211,38 @@ fn outstanding_local_calls(
         .collect()
 }
 
+fn validate_imported_history(messages: &[Message]) -> std::result::Result<(), &'static str> {
+    let mut pending = BTreeMap::<&str, bool>::new();
+    for message in messages {
+        if message.role == "tool" {
+            let Some(id) = message.tool_call_id.as_deref() else {
+                return Err("invalid_tool_outputs");
+            };
+            let Some(done) = pending.get_mut(id) else {
+                return Err("invalid_tool_outputs");
+            };
+            if *done {
+                return Err("duplicate_tool_output");
+            }
+            *done = true;
+            continue;
+        }
+        if pending.values().any(|done| !*done) {
+            return Err("incomplete_tool_history");
+        }
+        pending.clear();
+        for call in &message.tool_calls {
+            if pending.insert(&call.id, false).is_some() {
+                return Err("duplicate_tool_call");
+            }
+        }
+    }
+    if pending.values().any(|done| !*done) {
+        return Err("incomplete_tool_history");
+    }
+    Ok(())
+}
+
 fn validate_tool_outputs(
     expected: &[provider::ToolCall],
     provided: &[wire::ToolOutput],
@@ -1165,9 +1279,6 @@ fn input_items(response: &ResponseRun, url: &worker::Url) -> Result<Response> {
         _ => return util::json_error(400, "invalid_order", "Order must be asc or desc"),
     };
     let mut items = response.input_items.clone();
-    for (n, item) in items.iter_mut().enumerate() {
-        item["id"] = json!(format!("in_{}_{}", response.id, n));
-    }
     if desc {
         items.reverse();
     }
@@ -1207,6 +1318,165 @@ fn input_items(response: &ResponseRun, url: &worker::Url) -> Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn response() -> ResponseRun {
+        ResponseRun {
+            id: "resp_test".into(),
+            request: serde_json::from_value(json!({"model":"agent_test","input":"hello"})).unwrap(),
+            created_at: 10,
+            input_items: vec![],
+            output: vec![],
+            events: vec![],
+            status: "queued".into(),
+            error: None,
+            incomplete_reason: None,
+            cancel_requested: false,
+            awaiting_calls: vec![],
+            usage: Usage::default(),
+            next_sequence: 0,
+            reserved_sequence_end: 0,
+            event_bytes: 0,
+            completed_at: None,
+            stream_error: None,
+            stream_item: None,
+            deleted: false,
+            attachments: vec![],
+            attachments_ready: 0,
+        }
+    }
+
+    fn call(id: &str) -> provider::ToolCall {
+        provider::ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: provider::FunctionCall {
+                name: "local".into(),
+                arguments: "{}".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn imported_history_requires_ordered_complete_groups_but_not_global_call_ids() {
+        let mut assistant = Message::text("assistant", "");
+        assistant.tool_calls.push(call("reused"));
+        let output = Message::tool_result("reused", "result");
+        assert!(
+            validate_imported_history(&[
+                assistant.clone(),
+                output.clone(),
+                assistant.clone(),
+                output.clone()
+            ])
+            .is_ok()
+        );
+        assert!(validate_imported_history(&[output.clone(), assistant.clone()]).is_err());
+        assert!(
+            validate_imported_history(&[
+                assistant.clone(),
+                Message::text("user", "next"),
+                output.clone()
+            ])
+            .is_err()
+        );
+        assert!(validate_imported_history(&[assistant.clone()]).is_err());
+        assert!(validate_imported_history(&[assistant, output.clone(), output]).is_err());
+    }
+
+    #[test]
+    fn disclosed_sequences_are_not_reused_after_an_uncertain_provider_reset() {
+        let mut persisted = response();
+        persisted.event("response.created", json!({})).unwrap();
+        persisted.reserved_sequence_end = persisted.next_sequence + 100;
+        let mut live = persisted.clone();
+        let delta = live
+            .event("response.output_text.delta", json!({"delta":"partial"}))
+            .unwrap();
+        let mut restored: ResponseRun =
+            serde_json::from_slice(&serde_json::to_vec(&persisted).unwrap()).unwrap();
+        restored.recover_sequence();
+        let failed = restored.event("response.failed", json!({})).unwrap();
+        assert!(
+            failed["sequence_number"].as_u64().unwrap()
+                > delta["sequence_number"].as_u64().unwrap()
+        );
+    }
+
+    #[test]
+    fn replay_window_eviction_cannot_strand_the_terminal_event() {
+        let mut state = response();
+        let text = "x".repeat(256 * 1024);
+        for _ in 0..80 {
+            state
+                .event("response.output_text.delta", json!({"delta":text}))
+                .unwrap();
+        }
+        state
+            .event(
+                "response.completed",
+                json!({"response":{"status":"completed"}}),
+            )
+            .unwrap();
+        assert!(
+            state.events.first().unwrap()["sequence_number"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(state.events.last().unwrap()["type"], "response.completed");
+        assert!(state.event_bytes <= MAX_RESPONSE_EVENT_BYTES);
+        for pair in state.events.windows(2) {
+            assert!(
+                pair[0]["sequence_number"].as_u64().unwrap()
+                    < pair[1]["sequence_number"].as_u64().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn immutable_public_failure_uses_standard_code_and_safe_platform_extension() {
+        let mut state = response();
+        state.status = "failed".into();
+        state.completed_at = Some(20);
+        state.error = Some("provider_outcome_unknown".into());
+        let original = state.value();
+        let restored: ResponseRun =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(restored.value(), original);
+        assert_eq!(original["error"]["code"], "server_error");
+        assert_eq!(original["agents_error_code"], "provider_outcome_unknown");
+        assert_eq!(original["completed_at"], 20);
+    }
+
+    #[test]
+    fn strict_arguments_and_structured_outputs_are_validated_before_handoff() {
+        let mut request = response().request;
+        request.tools = serde_json::from_value(json!([{"type":"function","name":"local","strict":true,"parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}])).unwrap();
+        let mut completion = Completion {
+            id: "p".into(),
+            model: "m".into(),
+            message: Message::text("assistant", ""),
+            finish_reason: "tool_calls".into(),
+            usage: Usage::default(),
+        };
+        completion.message.tool_calls.push(call("call_1"));
+        assert!(SessionInner::validate_response_output(&completion, &request).is_err());
+        completion.message.tool_calls[0].function.arguments = r#"{"path":"file.txt"}"#.into();
+        assert!(SessionInner::validate_response_output(&completion, &request).is_ok());
+        completion.message.tool_calls.clear();
+        completion.finish_reason = "stop".into();
+        request.text = Some(json!({"format":{"type":"json_object"}}));
+        completion.message.content = json!("[]");
+        assert!(SessionInner::validate_response_output(&completion, &request).is_err());
+        completion.message.content = json!("{\"ok\":true}");
+        assert!(SessionInner::validate_response_output(&completion, &request).is_ok());
+        completion.message.content = json!("");
+        completion
+            .message
+            .extra
+            .insert("refusal".into(), json!("Cannot comply"));
+        assert!(SessionInner::validate_response_output(&completion, &request).is_ok());
+    }
 
     #[test]
     fn function_results_require_exact_matching_set() {
