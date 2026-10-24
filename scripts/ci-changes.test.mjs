@@ -40,3 +40,9 @@ test('actual Worker SDK-schema validators verify both Wasm output and fixture co
     assert.deepEqual(affected([`tests/e2e/${file}`]), { rust: false, worker: true, dashboard: false, container: false, tooling: true });
   }
 });
+
+test('container artifact policy changes exercise the real image promotion path', () => {
+  for (const file of ['container-artifact.mjs', 'container-artifact.test.mjs']) {
+    assert.deepEqual(affected([`scripts/${file}`]), { rust: false, worker: false, dashboard: false, container: true, tooling: true });
+  }
+});

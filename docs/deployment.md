@@ -42,7 +42,57 @@ because it does not supply the required Worker/dashboard artifacts.
 
 Dashboard browser journeys use the Ubuntu 24.04 runner's installed Google Chrome through the existing Playwright executable-path option. The step logs the actual browser version and fails if it is absent; all interaction tests remain mandatory. This avoids re-downloading system fonts through the runner's slow APT mirror (over eleven minutes for 25.9 MB in run `39985741803`; the six browser journeys took 12.2 seconds). This tests the maintained Chrome channel, not an exactly pinned browser build. See the [versioned runner image manifest](https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md) and [Playwright's Chrome support](https://playwright.dev/docs/browsers#google-chrome--microsoft-edge).
 
-The initial deployment uses a manual **CI** dispatch, which forces all areas and produces `worker` and `dashboard` artifacts. Then dispatch **Deploy** on the same commit with `environment=staging` and that successful `source_run`. Deploy verifies exact source SHA, successful CI, workflow identity and non-PR origin. Missing environment-paired secrets stop delivery before infrastructure changes. Container images are published before the Worker changes because Cloudflare Worker/image rollout is not transactional. The deployment points at a commit-tagged Cloudflare registry image and reuses the verified Worker/UI artifacts.
+The initial deployment uses a manual **CI** dispatch, which forces all areas and
+produces `worker`, `dashboard` and `container-image` artifacts. Then dispatch
+**Deploy** on the same commit with `environment=staging` and that successful
+`source_run`. Deploy verifies exact source SHA, successful CI, workflow identity
+and non-PR origin. Missing environment-paired secrets stop delivery before
+infrastructure changes. Container images are published before the Worker changes
+because Cloudflare Worker/image rollout is not transactional. The deployment
+points at a commit-tagged Cloudflare registry image and reuses all three verified
+artifacts from the same CI run.
+
+After the real container journeys succeed, CI uses standard
+[`docker image save`](https://docs.docker.com/reference/cli/docker/image/save/)
+and gzip to preserve the tested image, checks a save/load roundtrip, and retains
+the compressed image artifact for seven days without redundant ZIP compression.
+Its receipt contains the source SHA, immutable local tag, platform, Docker
+image/config ID and compressed archive SHA-256, but no environment or credential
+fields. Deploy verifies the receipt and archive hash **before** Docker load, then
+checks the loaded image identity before Cloudflare publication. The image/config
+ID is not represented as a registry manifest digest; registry publication remains
+separate evidence. Staging and production use the same accepted `source_run`.
+Deploy never rebuilds the container or falls back to a different run. Missing or
+expired artifacts require a new full CI run and staging acceptance, not silently
+regenerated production binaries. This removes a redundant image build from each
+environment rollout while keeping dependency updates inside tested CI.
+
+### Artifact-only Worker diagnostics
+
+The existing registered CI workflow has an optional `diagnostic_run` dispatch
+input. It replays current non-secret fixtures against a retained Worker artifact,
+without Rust/Docker builds, deployed credentials or infrastructure changes:
+
+```sh
+gh workflow run ci.yml --ref BRANCH -f diagnostic_run=40116721317
+```
+
+Using an existing workflow avoids GitHub's
+[default-branch registration requirement](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+for newly added workflows. The source must be a completed trusted same-repository
+CI run with an unexpired `worker` artifact; failed CI is intentionally allowed
+for diagnosis. The receipt distinguishes binary source SHA from fixture source
+SHA. Diagnostics use an isolated concurrency group, skip every normal CI job,
+and publish only a distinctly named diagnostic artifact. They cannot cancel an
+ordinary build or authorize a release.
+
+Deploy rejects the diagnostic run-name prefix and, before downloading artifacts
+or changing infrastructure, requires all six normal CI jobs (`changes`, `rust`,
+`worker`, `dashboard`, `container`, `tooling`) to be completed and successful at
+the exact source/run identity. Skipped or missing jobs are not release evidence.
+The Jobs API lookup is bounded to one 100-job page and fails closed if incomplete;
+this workflow has six required non-matrix jobs. This also excludes docs-only or
+partial green CI from the full-release path.
 
 ```sh
 gh workflow run ci.yml --ref main

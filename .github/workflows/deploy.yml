@@ -34,9 +34,37 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Require successful CI for this exact source
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN}" > .ci-run.json
-          node --input-type=module -e 'import fs from "node:fs";const r=JSON.parse(fs.readFileSync(".ci-run.json"));if(r.head_sha!==process.env.GITHUB_SHA||r.conclusion!=="success"||r.path!==".github/workflows/ci.yml"||r.event==="pull_request")throw Error("CI source/run is not approved for deployment");'
-          rm .ci-run.json
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          const repository = process.env.GITHUB_REPOSITORY;
+          const source = process.env.SOURCE_RUN;
+          if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? '')
+            || !/^[1-9][0-9]{0,14}$/.test(source ?? '')) throw Error('Invalid CI repository or run ID');
+          const api = path => JSON.parse(execFileSync('gh', ['api', `repos/${repository}/${path}`], {
+            encoding: 'utf8', maxBuffer: 2 * 1024 * 1024,
+          }));
+          const r = api(`actions/runs/${source}`);
+          if (r.id !== Number(source) || r.repository?.full_name !== repository
+            || r.head_repository?.full_name !== repository || r.status !== 'completed'
+            || r.head_sha!==process.env.GITHUB_SHA || r.conclusion!=="success"
+            || r.path!==".github/workflows/ci.yml" || r.event==="pull_request"
+            || !['push', 'workflow_dispatch'].includes(r.event)
+            || r.display_title?.startsWith('Worker diagnostics - ')) {
+            throw Error('CI source/run is not approved for deployment');
+          }
+          const page = api(`actions/runs/${source}/jobs?filter=latest&per_page=100`);
+          if (!Array.isArray(page.jobs) || !Number.isInteger(page.total_count)
+            || page.total_count > 100 || page.jobs.length !== page.total_count) {
+            throw Error('CI job list is incomplete or exceeds the release bound');
+          }
+          for (const name of ['changes', 'rust', 'worker', 'dashboard', 'container', 'tooling']) {
+            const jobs = page.jobs.filter(job => job.name === name);
+            if (jobs.length !== 1 || jobs[0].run_id !== r.id || jobs[0].head_sha !== r.head_sha
+              || jobs[0].status !== 'completed' || jobs[0].conclusion !== 'success') {
+              throw Error(`Required release job is not successful: ${name}`);
+            }
+          }
+          NODE
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
@@ -69,14 +97,14 @@ jobs:
           path: apps/dashboard/dist
           run-id: ${{ inputs.source_run }}
           github-token: ${{ github.token }}
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          context: .
-          file: container/Dockerfile
-          load: true
-          tags: magents-workspace:${{ github.sha }}
-          cache-from: type=gha,scope=workspace
+          name: container-image
+          path: .temp/container-release
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Verify and load the exact tested container
+        run: node scripts/container-artifact.mjs load .temp/container-release
       - name: Publish tested container before changing Worker code
         run: npx wrangler containers push "magents-workspace:${GITHUB_SHA}"
       - name: Render immutable deployment configuration
