@@ -177,7 +177,8 @@ export async function runGenericByokJourney({ mf, db, encryptionKey, request, pr
   assert.equal(state.calls, 2);
   const completed = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
   assert.deepEqual(completed.pinned, session.pinned, 'Rotating a key/name must not change an existing session prefix');
-  assert.equal(completed.context_tokens, 150);
+  // The next prompt retains the last assistant completion; run usage aggregates all rounds.
+  assert.equal(completed.context_tokens, 150 + 15);
   if (protocol === 'anthropic') assert.deepEqual(completed.messages.find(message => message.tool_calls?.length).anthropic_content[0], thought);
   await request('DELETE', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
   await assertNoHolds(db, principal.owner);
