@@ -16,10 +16,14 @@ use std::{
 };
 use worker::*;
 
+#[path = "session_observer.rs"]
+mod observer;
 #[path = "session_sse.rs"]
 mod sse;
+use observer::{CompletionResult, Observer};
 
 const STATE_KEY: &str = "session.v1";
+const PROJECTION_ACK_KEY: &str = "session.projection-ack";
 const MAX_TOOL_ROUNDS: u64 = 128;
 type EventSender = mpsc::UnboundedSender<Result<Vec<u8>>>;
 
@@ -78,6 +82,12 @@ struct PersistedSession {
     #[serde(default)]
     archive_preparing: bool,
     #[serde(default)]
+    projection_pending: bool,
+    #[serde(default)]
+    projection_attempts: u8,
+    #[serde(default)]
+    projection_generation: String,
+    #[serde(default)]
     archive_funding: Option<crate::cleanup::CleanupHold>,
     #[serde(default)]
     archive_backstop_generation: Option<u64>,
@@ -90,6 +100,46 @@ struct PersistedSession {
 }
 
 impl PersistedSession {
+    fn complete_run_commit(
+        &mut self,
+        run_id: &str,
+        accounting_pending: bool,
+        error: Option<String>,
+        generation: &str,
+    ) -> Result<()> {
+        if !self.run.as_ref().is_some_and(|run| run.id == run_id) {
+            return Err(Error::RustError("stale_run_completion".into()));
+        }
+        self.run = None;
+        self.record.status = SessionStatus::Idle;
+        self.projection_generation = generation.into();
+        self.projection_pending = true;
+        self.projection_attempts = 0;
+        self.last_error = if accounting_pending {
+            Some("resource_reconciliation_pending".into())
+        } else {
+            error
+        };
+        Ok(())
+    }
+
+    fn mark_projection_dirty(&mut self) {
+        // Identity, not ordering: an old writer may drop unknown metadata while
+        // its separate acknowledgement survives a rollback.
+        self.projection_generation = util::id("projection");
+        self.projection_pending = true;
+    }
+
+    fn ack_projection(&mut self, generation: &str, projected: &SessionRecord) {
+        if !generation.is_empty()
+            && self.projection_generation == generation
+            && &self.record == projected
+        {
+            self.projection_pending = false;
+            self.projection_attempts = 0;
+        }
+    }
+
     fn complete_archive(&mut self, accounting_pending: bool) -> Result<()> {
         if self.record.status != SessionStatus::Closed {
             return Err(Error::RustError("archive_not_committed".into()));
@@ -118,8 +168,7 @@ struct SessionInner {
     data: Rc<RefCell<Option<PersistedSession>>>,
     running: Cell<bool>,
     closing: Cell<bool>,
-    events: RefCell<Option<EventSender>>,
-    result: RefCell<Option<oneshot::Sender<std::result::Result<Value, String>>>>,
+    observer: RefCell<Option<Observer>>,
     persistence: futures::lock::Mutex<()>,
 }
 
@@ -136,8 +185,7 @@ impl DurableObject for Session {
             data: Rc::new(RefCell::new(None)),
             running: Cell::new(false),
             closing: Cell::new(false),
-            events: RefCell::new(None),
-            result: RefCell::new(None),
+            observer: RefCell::new(None),
             persistence: futures::lock::Mutex::new(()),
         });
         let loaded = inner.clone();
@@ -208,6 +256,9 @@ impl DurableObject for Session {
                     journal_count: 0,
                     archive_pending: false,
                     archive_preparing: false,
+                    projection_pending: false,
+                    projection_attempts: 0,
+                    projection_generation: String::new(),
                     archive_funding: None,
                     archive_backstop_generation: None,
                     archive_key: None,
@@ -230,6 +281,7 @@ impl DurableObject for Session {
                     json!(data.last_error.as_deref() == Some("resource_reconciliation_pending"));
                 value["last_error"] = json!(data.last_error);
                 value["checkpoint_pending"] = json!(data.checkpoint_error.is_some());
+                value["projection_pending"] = json!(data.projection_pending);
                 value["checkpoint_error"] = json!(data.checkpoint_error);
                 value["conversation_r2_key"] = json!(data.archive_key);
                 value["run_id"] = json!(data.run.map(|r| r.id));
@@ -400,7 +452,7 @@ impl DurableObject for Session {
                 inner.persist().await?;
                 if input.stream {
                     let (tx, rx) = mpsc::unbounded::<Result<Vec<u8>>>();
-                    *inner.events.borrow_mut() = Some(tx);
+                    *inner.observer.borrow_mut() = Some(Observer::stream(&run_id, tx));
                     inner.arm_alarm().await?;
                     let mut response = Response::from_stream(sse::keep_alive(rx))?;
                     response
@@ -414,7 +466,7 @@ impl DurableObject for Session {
                     Ok(response)
                 } else {
                     let (tx, rx) = oneshot::channel();
-                    *inner.result.borrow_mut() = Some(tx);
+                    *inner.observer.borrow_mut() = Some(Observer::json(&run_id, tx));
                     inner.arm_alarm().await?;
                     match rx.await {
                         Ok(Ok(value)) => Response::from_json(&value),
@@ -486,6 +538,29 @@ impl DurableObject for Session {
             inner.arm_alarm().await?;
             return Response::ok("busy");
         }
+        if inner.snapshot()?.projection_pending {
+            let repaired = inner.repair_projection().await;
+            if !matches!(repaired, Ok(true)) {
+                inner.running.set(false);
+                let _ = inner.arm_alarm().await;
+                return match repaired {
+                    Ok(false) => Response::ok("projection pending"),
+                    Err(error) => Err(error),
+                    Ok(true) => unreachable!(),
+                };
+            }
+        }
+        if inner.snapshot()?.record.status != SessionStatus::Closed
+            && inner.snapshot()?.run.is_none()
+            && !inner.snapshot()?.pending.is_empty()
+        {
+            inner.start_run()?;
+            if let Err(error) = inner.persist().await {
+                inner.running.set(false);
+                let _ = inner.arm_alarm().await;
+                return Err(error);
+            }
+        }
         let snapshot = inner.snapshot()?;
         if snapshot.archive_pending || snapshot.archive_preparing {
             inner.running.set(false);
@@ -542,9 +617,34 @@ impl SessionInner {
     }
 
     async fn persist(&self) -> Result<()> {
+        self.persist_with_observation(false).await
+    }
+
+    async fn persist_with_observation(&self, include_ending_run: bool) -> Result<()> {
         let _guard = self.persistence.lock().await;
-        let data = self.snapshot()?;
+        let mut data = self.snapshot()?;
+        if data.projection_pending {
+            data.mark_projection_dirty();
+            self.data
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .projection_generation = data.projection_generation.clone();
+        }
         save_state(&self.state.storage(), &data).await?;
+        let observe = include_ending_run
+            || data
+                .run
+                .as_ref()
+                .is_none_or(|run| run.ended_at_ms.is_none());
+        self.project(&data, observe).await?;
+        if data.projection_pending {
+            self.ack_projection(data).await?;
+        }
+        Ok(())
+    }
+
+    async fn project(&self, data: &PersistedSession, observe: bool) -> Result<()> {
         let store = Store::new(&self.env);
         if data.record.status == SessionStatus::Closed
             && store
@@ -554,7 +654,7 @@ impl SessionInner {
         {
             return Ok(());
         }
-        if let Some(run) = data.run.as_ref().filter(|r| r.admitted) {
+        if let Some(run) = data.run.as_ref().filter(|r| observe && r.admitted) {
             let meter = crate::resources::ResourceMeter::new(
                 &self.env,
                 &data.record.owner_id,
@@ -567,6 +667,46 @@ impl SessionInner {
                 .await;
         }
         store.update_session(&data.record).await
+    }
+
+    // Called only while holding persistence: no newer durable projection can
+    // overtake this acknowledgement. Live steering may have advanced separately.
+    async fn ack_projection(&self, saved: PersistedSession) -> Result<()> {
+        self.state
+            .storage()
+            .put(PROJECTION_ACK_KEY, saved.projection_generation.clone())
+            .await?;
+        self.data
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .ack_projection(&saved.projection_generation, &saved.record);
+        Ok(())
+    }
+
+    async fn repair_projection(&self) -> Result<bool> {
+        let _guard = self.persistence.lock().await;
+        let mut data = self.snapshot()?;
+        if !data.projection_pending {
+            return Ok(true);
+        }
+        // A waiting append may be newer than the last projection. Publish it
+        // authoritatively first; never repair an older captured Idle record.
+        data.mark_projection_dirty();
+        self.data
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .projection_generation = data.projection_generation.clone();
+        save_state(&self.state.storage(), &data).await?;
+        if self.project(&data, false).await.is_err() {
+            data.projection_attempts = data.projection_attempts.saturating_add(1);
+            save_state(&self.state.storage(), &data).await?;
+            self.data.borrow_mut().as_mut().unwrap().projection_attempts = data.projection_attempts;
+            return Ok(false);
+        }
+        self.ack_projection(data).await?;
+        Ok(true)
     }
 
     async fn arm_alarm(&self) -> Result<()> {
@@ -720,9 +860,14 @@ impl SessionInner {
                     trace.trace_id(),
                 ),
             );
-            if let Some(tx) = self.events.borrow().as_ref() {
+            if let Some(tx) = self
+                .observer
+                .borrow()
+                .as_ref()
+                .and_then(|observer| observer.stream_sender(&run.id))
+            {
                 send_chunk(
-                    tx,
+                    &tx,
                     &run.id,
                     &record.agent_id,
                     json!({"role":"assistant"}),
@@ -933,7 +1078,11 @@ impl SessionInner {
             .set_alarm(util::alarm_at(util::now_ms() + 600_000))
             .await?;
         let definitions = tool_definitions(record);
-        let sender = self.events.borrow().clone();
+        let sender = self
+            .observer
+            .borrow()
+            .as_ref()
+            .and_then(|observer| observer.stream_sender(&run.id));
         let completion = bounded_provider(provider::complete_stream(
             &config,
             &messages,
@@ -970,7 +1119,34 @@ impl SessionInner {
         )
     }
 
-    async fn finish(&self, result: std::result::Result<Value, String>) -> Result<()> {
+    async fn finish(&self, result: CompletionResult) -> Result<()> {
+        let run_id = self.snapshot()?.run.as_ref().unwrap().id.clone();
+        let mut observer = {
+            let mut slot = self.observer.borrow_mut();
+            if slot.as_ref().is_some_and(|o| o.matches(&run_id)) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        let finished = self.finish_inner(result, &mut observer).await;
+        if finished.is_err() {
+            if let Some(observer) = observer {
+                let mut slot = self.observer.borrow_mut();
+                if slot.is_none() {
+                    *slot = Some(observer);
+                }
+            }
+            let _ = self.arm_alarm().await;
+        }
+        finished
+    }
+
+    async fn finish_inner(
+        &self,
+        result: CompletionResult,
+        observer: &mut Option<Observer>,
+    ) -> Result<()> {
         let saved = self.snapshot()?;
         let known = saved.run.as_ref().unwrap().terminal.clone();
         let mut accounting_pending = result.is_err() && known.is_some();
@@ -986,9 +1162,9 @@ impl SessionInner {
                 run.ended_at_ms = Some(util::now_ms());
                 run.terminal_error = result.as_ref().err().cloned();
             }
-            // This boundary precedes settlement. A finalized reservation must
-            // never be charged a fresh persistence observation on recovery.
-            self.persist().await?;
+            // This boundary precedes settlement, preserving its observed D1
+            // charge. Recovery never adds a new event to a finalized reservation.
+            self.persist_with_observation(true).await?;
         }
         let data = self.snapshot()?;
         let run = data.run.as_ref().unwrap();
@@ -1029,52 +1205,72 @@ impl SessionInner {
                 }
             }
         }
+        let success = result.is_ok();
+        self.commit_completion(run, result, accounting_pending, observer)
+            .await?;
+        if !self.snapshot()?.projection_pending
+            && self.snapshot()?.pending.is_empty()
+            && self.snapshot()?.record.idle_action(util::now_ms()) == IdleAction::Archive
         {
-            let mut current = self.data.borrow_mut();
-            let current = current.as_mut().unwrap();
-            current.run = None;
-            current.record.status = SessionStatus::Idle;
-            current.last_error = if accounting_pending {
-                Some("resource_reconciliation_pending".into())
-            } else {
-                result.as_ref().err().cloned()
-            };
-        }
-        // Steering accepted while settlement was in flight becomes a fresh run,
-        // never an acknowledged message left stranded in an idle session.
-        if !self.snapshot()?.pending.is_empty() {
-            self.start_run()?;
-        }
-        self.persist().await?;
-        if let Some(tx) = self.events.borrow_mut().take() {
-            match &result {
-                Ok(_) => send_chunk(
-                    &tx,
-                    &run.id,
-                    &data.record.agent_id,
-                    json!({}),
-                    Some("stop"),
-                    Some(&run.total),
-                ),
-                Err(code) => send_sse(
-                    &tx,
-                    &json!({"error":{"code":code,"message":"Agent run failed; inspect session diagnostics"}}),
-                ),
-            }
-            let _ = tx.unbounded_send(Ok(b"data: [DONE]\n\n".to_vec()));
-        }
-        if let Some(tx) = self.result.borrow_mut().take() {
-            let _ = tx.send(result.clone());
-        }
-        if self.snapshot()?.record.idle_action(util::now_ms()) == IdleAction::Archive {
             self.archive(false).await?;
         } else {
             self.arm_alarm().await?;
         }
         util::emit(
             "run.completed",
-            json!({"session_id":data.record.id,"run_id":run.id,"success":result.is_ok()}),
+            json!({"session_id":data.record.id,"run_id":run.id,"success":success}),
         );
+        Ok(())
+    }
+
+    async fn commit_completion(
+        &self,
+        run: &RunState,
+        result: CompletionResult,
+        accounting_pending: bool,
+        observer: &mut Option<Observer>,
+    ) -> Result<()> {
+        let _guard = self.persistence.lock().await;
+        let mut committed = self.snapshot()?;
+        let generation = util::id("projection");
+        committed.complete_run_commit(
+            &run.id,
+            accounting_pending,
+            result.as_ref().err().cloned(),
+            &generation,
+        )?;
+        // Keep the live terminal run busy until this authoritative commit succeeds.
+        save_state(&self.state.storage(), &committed).await?;
+        self.data
+            .borrow_mut()
+            .as_mut()
+            .unwrap()
+            .complete_run_commit(
+                &run.id,
+                accounting_pending,
+                result.as_ref().err().cloned(),
+                &generation,
+            )?;
+        if let Some(observer) = observer.take() {
+            let accepted = observer.complete(result, &committed.record.agent_id, &run.total);
+            util::emit(
+                "observer.completed",
+                json!({"session_id":committed.record.id,"run_id":run.id,"success":accepted}),
+            );
+        }
+        if self.project(&committed, false).await.is_err() {
+            util::emit(
+                "session.projection_pending",
+                json!({"session_id":committed.record.id,"run_id":run.id,"phase":"projection"}),
+            );
+            return Ok(());
+        }
+        if self.ack_projection(committed).await.is_err() {
+            util::emit(
+                "session.projection_pending",
+                json!({"run_id":run.id,"phase":"ack"}),
+            );
+        }
         Ok(())
     }
 
@@ -1442,6 +1638,14 @@ async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
         return Ok(None);
     };
     let mut data: PersistedSession = serde_json::from_slice(&bytes)?;
+    if data.projection_pending
+        && !data.projection_generation.is_empty()
+        && storage.get::<String>(PROJECTION_ACK_KEY).await?.as_deref()
+            == Some(data.projection_generation.as_str())
+    {
+        data.projection_pending = false;
+        data.projection_attempts = 0;
+    }
     let keys = (0..data.journal_count)
         .map(|n| format!("journal:{n}"))
         .collect::<Vec<_>>();
@@ -1728,14 +1932,25 @@ fn error_family(error: &Error) -> &'static str {
     }
 }
 
+fn projection_retry_delay(attempts: u8) -> u64 {
+    (1000u64 << attempts.min(6)).min(60_000)
+}
+
 fn alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
+    if data.projection_pending {
+        return Some(now.saturating_add(projection_retry_delay(data.projection_attempts)));
+    }
     if data.record.status == SessionStatus::Closed
         && !data.archive_pending
         && !data.archive_preparing
     {
         return None;
     }
-    if data.run.is_some() || data.archive_pending || data.archive_preparing {
+    if data.run.is_some()
+        || !data.pending.is_empty()
+        || data.archive_pending
+        || data.archive_preparing
+    {
         return Some(now.saturating_add(10));
     }
     Some(data.record.idle_deadline_ms().max(now.saturating_add(1000)))
@@ -1832,12 +2047,137 @@ mod tests {
             journal_count: 0,
             archive_pending: false,
             archive_preparing: false,
+            projection_pending: false,
+            projection_attempts: 0,
+            projection_generation: String::new(),
             archive_funding: None,
             archive_backstop_generation: None,
             archive_key: None,
             archive_started_at_ms: None,
             measured_messages: 1,
         }
+    }
+
+    fn completed_run_state() -> PersistedSession {
+        let mut data = state();
+        data.record.status = SessionStatus::Running;
+        data.run = Some(
+            serde_json::from_value(json!({
+                "id":"completed", "round":1, "admitted":true, "total":Usage::default(),
+                "pending_completion":null, "started_at_ms":0,
+                "terminal":{"id":"completed","choices":[{"message":{"content":"answer"}}]},
+                "ended_at_ms":1
+            }))
+            .unwrap(),
+        );
+        data
+    }
+
+    #[test]
+    fn completion_snapshot_does_not_publish_idle_before_authoritative_commit() {
+        let live = completed_run_state();
+        let mut candidate = live.clone();
+        candidate
+            .complete_run_commit("completed", false, None, "projection-first")
+            .unwrap();
+        // A failed save leaves this live terminal available to finalize again.
+        assert_eq!(live.record.status, SessionStatus::Running);
+        assert_eq!(live.run.as_ref().unwrap().id, "completed");
+        assert!(replay_terminal(live.run.as_ref().unwrap()).unwrap().is_ok());
+        assert!(candidate.run.is_none());
+        assert!(candidate.projection_pending);
+        let restored: PersistedSession =
+            serde_json::from_str(&serde_json::to_string(&candidate).unwrap()).unwrap();
+        assert_eq!(restored.record.status, SessionStatus::Idle);
+        assert!(restored.run.is_none());
+        assert!(restored.projection_pending);
+    }
+
+    #[test]
+    fn completion_preserves_late_steering_and_projection_ack_cannot_clear_new_revision() {
+        let mut live = completed_run_state();
+        let projected = live.record.clone();
+        live.record.append_user_input(1234).unwrap();
+        live.pending.push(Message::text("user", "late correction"));
+        live.journal.push(Message::text("user", "late correction"));
+        let revision = live.record.input_revision;
+        live.complete_run_commit("completed", false, None, "projection-first")
+            .unwrap();
+        live.ack_projection(&live.projection_generation.clone(), &projected);
+        assert!(live.projection_pending);
+        assert_eq!(live.record.input_revision, revision);
+        assert_eq!(live.record.last_input_at_ms, 1234);
+        assert_eq!(live.pending.len(), 1);
+        assert_eq!(alarm_deadline(&live, 2000), Some(3000));
+        live.ack_projection(&live.projection_generation.clone(), &live.record.clone());
+        assert!(!live.projection_pending);
+        assert_eq!(alarm_deadline(&live, 2000), Some(2010));
+        live.record.start_run().unwrap();
+        assert_eq!(live.record.last_input_at_ms, 1234);
+        assert_eq!(live.record.input_revision, revision);
+        assert!(
+            live.complete_run_commit("stale", false, None, "projection-stale")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn an_old_projection_ack_cannot_ack_a_later_identical_record() {
+        let mut data = completed_run_state();
+        data.complete_run_commit("completed", false, None, "projection-first")
+            .unwrap();
+        let first = data.projection_generation.clone();
+        let same_record = data.record.clone();
+        data.mark_projection_dirty();
+        data.ack_projection(&first, &same_record);
+        assert!(data.projection_pending);
+        data.ack_projection(&data.projection_generation.clone(), &same_record);
+        assert!(!data.projection_pending);
+    }
+
+    #[test]
+    fn rollback_cannot_alias_a_surviving_projection_ack() {
+        let mut data = completed_run_state();
+        data.complete_run_commit("completed", false, None, "projection-old")
+            .unwrap();
+        let mut old_writer = serde_json::to_value(&data).unwrap();
+        for field in [
+            "projection_pending",
+            "projection_generation",
+            "projection_attempts",
+        ] {
+            old_writer.as_object_mut().unwrap().remove(field);
+        }
+        let mut restored: PersistedSession = serde_json::from_value(old_writer).unwrap();
+        restored.mark_projection_dirty();
+        let record = restored.record.clone();
+        restored.ack_projection("projection-old", &record);
+        assert!(restored.projection_pending);
+        restored.ack_projection("1", &record);
+        assert!(restored.projection_pending);
+        let generation = restored.projection_generation.clone();
+        restored.ack_projection(&generation, &record);
+        assert!(!restored.projection_pending);
+    }
+
+    #[test]
+    fn projection_recovery_defaults_and_backoff_are_bounded() {
+        let data = state();
+        let mut wire = serde_json::to_value(&data).unwrap();
+        wire.as_object_mut().unwrap().remove("projection_pending");
+        wire.as_object_mut().unwrap().remove("projection_attempts");
+        wire.as_object_mut()
+            .unwrap()
+            .remove("projection_generation");
+        let legacy: PersistedSession = serde_json::from_value(wire).unwrap();
+        assert!(!legacy.projection_pending);
+        assert_eq!(legacy.projection_attempts, 0);
+        assert!(legacy.projection_generation.is_empty());
+        assert_eq!(
+            (0..=8).map(projection_retry_delay).collect::<Vec<_>>(),
+            vec![1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 60000]
+        );
+        assert_eq!(projection_retry_delay(u8::MAX), 60000);
     }
 
     #[test]

@@ -205,10 +205,11 @@ fn token(value: &str, max: usize) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_-.:/".contains(&b))
 }
 
-pub fn emit(event: &str, fields: Value) {
-    let event = match event {
+fn event_name(event: &str) -> &str {
+    match event {
         "request.completed"
         | "request.failed"
+        | "observer.completed"
         | "run.started"
         | "run.completed"
         | "run.failed"
@@ -219,11 +220,16 @@ pub fn emit(event: &str, fields: Value) {
         | "session.checkpoint"
         | "session.archived"
         | "session.restored"
+        | "session.projection_pending"
         | "workspace.checkpoint"
         | "workspace.restored"
         | "diagnostics.accepted" => event,
         _ => "operation",
-    };
+    }
+}
+
+pub fn emit(event: &str, fields: Value) {
+    let event = event_name(event);
     worker::console_log!(
         "{}",
         json!({"event":event,"timestamp_ms":crate::util::now_ms(),
@@ -580,6 +586,12 @@ mod tests {
     }
     #[test]
     fn unknown_or_freeform_fields_never_enter_logs() {
+        assert_eq!(event_name("observer.completed"), "observer.completed");
+        assert_eq!(
+            event_name("session.projection_pending"),
+            "session.projection_pending"
+        );
+        assert_eq!(event_name("private event content"), "operation");
         let result = sanitize_fields(json!({"api_key":"secret", "command":"echo secret",
             "error":"user content", "duration_ms":12,"session_id":"ses_123",
             "error_code":"error with secret", "bytes":-1,"tool":"bash"}));

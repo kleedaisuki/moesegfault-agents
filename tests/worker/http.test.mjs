@@ -10,6 +10,8 @@ import { createIdentityFixture, runAuthJourney, runClientAssertionJourney, runIn
 import { createBrowserPrincipal } from './browser-principal.mjs';
 import { createGenericProviderFixture, runGenericByokJourney } from './generic-byok-journey.mjs';
 import { runExportJourney } from './export-journey.mjs';
+import { createCompactionProviderFixture, runCompactionJourney } from './compaction-journey.mjs';
+import { createObserverProviderFixture, runProjectionFaultJourney } from './observer-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -20,6 +22,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const encryptionKey = randomBytes(32);
   const identity = createIdentityFixture();
   const genericProviders = createGenericProviderFixture();
+  const compactionProviders = createCompactionProviderFixture();
+  const observerProvider = createObserverProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -64,10 +68,14 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       RESOURCE_PRICING_JSON: resourcePricing,
       OPENROUTER_API_KEY: 'synthetic-provider-key-never-sent-outside-fixture',
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000',
-      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '10000000',
+      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '20000000',
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
+      const observerResponse = await observerProvider.handle(request);
+      if (observerResponse !== undefined) return observerResponse;
+      const compactionResponse = await compactionProviders.handle(request);
+      if (compactionResponse !== undefined) return compactionResponse;
       if (request.url === 'https://billing.moesegfault.dev/v1/me') {
         billingFetches++;
         assert.equal(request.headers.get('authorization'), 'Bearer synthetic-return-access-token');
@@ -460,6 +468,12 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     await t.test(`generic ${protocol} BYOK preserves route identity and completes tools without model charges`, { timeout: 32000 }, () =>
       runGenericByokJourney({ mf, db, encryptionKey, request, providers: genericProviders, protocol }));
   }
+  for (const protocol of ['openai', 'anthropic']) {
+    await t.test(`generic ${protocol} persists JSON compaction then streams a complete continuation`, { timeout: 40000 }, () =>
+      runCompactionJourney({ mf, db, encryptionKey, request, providers: compactionProviders, protocol }));
+  }
+  await t.test('terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
+    runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
   await t.test('native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
     const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'forward-recovery-owner' });
     const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);

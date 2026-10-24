@@ -70,3 +70,25 @@ Archive preparation persists the selected funding source before export and befor
 ## Remaining operational boundary
 
 A checkpoint error never authorizes destruction of unpersisted user files. The owner receives bounded `checkpoint_error` and `checkpoint_pending` diagnostics; global logs receive no paths, commands, content or keys. Archive retries renew the funded compute lease. If credit or archive-format recovery is unavailable, this becomes an explicit operator repair incident constrained by deployment-wide Container capacity, not an invented successful close or silent data deletion. Production rollout must exercise this incident path as well as happy-path write/release/resume.
+
+## Terminal delivery and management projection
+
+The DO is authoritative; D1's session row is a management projection. Finalization
+captures an observer owned by its run ID before yielding. It retains the live
+terminal run until the completed DO snapshot has committed, then publishes the
+known JSON result or SSE stop/`[DONE]`. A failed D1 projection after that boundary
+cannot discard the answer or repeat inference, tools, or financial settlement.
+
+Completed snapshots carry backward-compatible projection-pending metadata and a
+fresh opaque projection generation. A successful D1 update writes only a small local
+acknowledgement for that generation, rather than rewriting the conversation context.
+Cold load recognizes only the matching acknowledgement. A stale ack cannot clear
+a newer pending generation, even if its public session fields are identical.
+
+All projections and acknowledgements are serialized by the existing persistence
+mutex. Alarm repair publishes the current authoritative revision, not a captured
+old Idle row. Failed repairs back off from one second to sixty seconds and reset
+after acknowledgement. Queued input remains durable and starts through normal
+run admission without advancing the user's append clock. A transport disconnect
+still does not authorize replay, and channel acceptance is not a network-delivery
+guarantee.
