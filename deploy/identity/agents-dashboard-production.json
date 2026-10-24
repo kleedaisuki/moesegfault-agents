@@ -1,0 +1,35 @@
+{
+  "client_id": "agents-dashboard",
+  "display_name": "moeSegFault Agents dashboard",
+  "client_type": "confidential",
+  "token_endpoint_auth_method": "private_key_jwt",
+  "sector_identifier": "subscribe.moesegfault.dev",
+  "subject_salt_revision": 1,
+  "redirect_uris": [
+    {
+      "uri": "https://adash.moesegfault.dev/auth/callback",
+      "match_mode": "exact"
+    }
+  ],
+  "post_logout_redirect_uris": [
+    {
+      "uri": "https://adash.moesegfault.dev/"
+    }
+  ],
+  "scopes": [
+    "openid",
+    "profile",
+    "offline_access"
+  ],
+  "public_jwks": [
+    {
+      "kty": "EC",
+      "x": "5SR7DwbyqQaPq_0qMQBAd8fAWMNZ6mxfZHVZYWIMqkE",
+      "y": "QpEoXjrHkTexiIP4N0H6Zo7Tc_HzVBoJgLLN6LwCsVo",
+      "crv": "P-256",
+      "kid": "agents-dashboard-production-2026-10",
+      "alg": "ES256",
+      "use": "sig"
+    }
+  ]
+}

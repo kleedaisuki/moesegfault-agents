@@ -1,5 +1,6 @@
 /.cache/
 /.temp/
+/.secrets/
 /target/
 **/node_modules/
 **/dist/
