@@ -478,3 +478,72 @@ passive telemetry observed upstream refresh/exchange/revocation 200 responses.
 See [acceptance](acceptance.md#server-authentication-security-update) and
 [Identity](identity-billing.md) for those post-review operational results. They
 close the deployment gate without changing the independent source-review scope.
+
+## v0.2 bounded feature review (2026-10-24)
+
+Scope: generic protocol credentials and migration 0010, Anthropic adaptation,
+TOML configuration transfer, source-journal/workspace downloads, CLI selected-file
+publication, and the logged-out dashboard boundary. This is an incremental review
+of the working-tree v0.2 change, not a repeat of the full dependency audit. No
+production source edits, live production calls, deployment or secret-custody
+reads were performed.
+
+### P2 found and resolved: API-key downloads after allowance rollover
+
+The first archive implementation reserved its R2 read directly. Platform API-key
+authentication does not synchronize allowances, so a key-only client downloading
+a retained checkpoint after its original window expired received
+`allowance_expired`, even when a new verified paid/Free period was eligible. An
+unrelated account request was required to make the download work.
+
+`workspace_download::checkpoint` now synchronizes existing verified allowance
+policy after the owner/generation manifest guard and before financial admission.
+It does not advance the session input clock, execute a tool, start a Container or
+reuse expired credit. Independent `tests/test_download_allowance_sql.py` executes
+the actual production GRANT and reservation SQL: expired admission fails without
+a leftover reservation; eligible rollover and duplicate grant/reservation retries
+produce one current-vintage download hold and no model-run concurrency slot.
+Executed independently: **1 test passed**.
+
+### Remaining reviewed boundaries
+
+- Credentials: protocol/normalized HTTPS route are immutable per ID; rotations
+  preserve legacy account/vendor encryption AAD and pinned IDs. Generic records
+  use their own ID namespace. Migration 0010 retains the exact unique conflict
+  target used by old binaries, preserves existing ciphertext, and fills metadata
+  for old inserts during the migrate/upload window. Owner scoping precedes
+  decrypt/read/update/delete. Independent production-SQL migration tests:
+  `test_provider_keys_sql.py` — **9 passed**.
+- Provider traffic: protocol-specific headers remain separate; redirects are
+  manual and rejected as non-success. BYOK credential failure has no platform
+  environment-key fallback. The Anthropic adapter retains signed thinking blocks,
+  groups tool results before steering, waits for closed blocks/message_stop before
+  tool dispatch, normalizes cache creation/read input, and replaces cumulative
+  output usage. Its stable system cache marker excludes mutable summaries. These
+  source checks align with the primary [streaming](https://platform.claude.com/docs/en/build-with-claude/streaming)
+  and [caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+  contracts; they do not claim real Anthropic/gateway acceptance.
+- Exports: account lookup precedes DO forwarding. Transcript capture preserves a
+  point-in-time source journal and pending list without changing the input clock.
+  Archive access requires a closed, completed checkpoint and exact owner-derived
+  key/generation/receipt; its body remains a native R2 stream. Financial reads
+  have independent download reservations, not run admission or Container leases.
+- CLI: TOML is a typed editable projection with credential references, not secret
+  envelopes, and parser errors do not echo pasted source. Downloads verify length
+  and compressed digest before parsing, publish explicit output paths atomically
+  without clobbering, and never extract archive-selected destination paths.
+  The final selected-file patch additionally requires a single final manifest,
+  exact regular-file size/hash receipt and bounded GNU/raw framing, zstd window
+  and expanded bytes. Links/PAX/sparse entries cannot bypass that selected-file
+  boundary; unsupported framing fails before publication.
+- Dashboard: pending, failed and unauthorized account states render the public
+  entry instead of management UI. Expiry clears CSRF and private query caches;
+  private feature modules render only after authenticated account success.
+
+**Conclusion:** no unresolved substantive blocking defect was found in this
+bounded source review after the download rollover fix. Only the ten SQL tests
+above were independently executed in this pass. Owners' native/parser/UI checks
+and reviewed test assertions are not silently promoted to independent results.
+The **newly compiled v0.2 Worker CI** and **real staging CLI archive/file/transcript
+journeys** remain explicit promotion gates; the old v0.1/native-signer baseline is
+not evidence that these new boundary implementations have run successfully.

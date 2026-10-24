@@ -47,6 +47,42 @@ API credentials, provider credentials, and dashboard sessions are separate
 credential classes. Provider credentials are encrypted at rest and never sent to
 workspace subprocesses.
 
+## Protocol-routed credentials and portable agents
+
+BYOK is a wire-protocol choice, not a list of upstream vendors. New credentials
+select `openai` (Chat Completions) or `anthropic` (Messages), a public HTTPS base
+URL and an API key. Opaque owner-scoped credential IDs allow several endpoints
+using the same protocol. The credential owns protocol and endpoint; an agent
+references its credential and model, never embeds the key. Legacy provider-key
+routes and already pinned model records remain readable during migration.
+Platform-funded model routes retain their price and capability registry checks.
+
+The protocol adapter normalizes model messages, tool calls and reported usage for
+the existing durable harness. It must not execute incomplete streamed tool input
+or drop original journal messages. Anthropic tool results and cache token counts
+are protocol concerns, not new session states. Private network bindings and
+platform credentials are not available to user-selected provider endpoints;
+redirects never forward authorization. Workers' native global-fetch egress
+boundary complements strict URL validation, rather than a separate DNS check
+that cannot pin the subsequent connection.
+
+Agent publication means creating or replacing an agent in the authenticated
+account. Versioned TOML contains editable configuration, not server identity,
+revision, owner metadata or credentials. Existing JSON APIs remain the authority
+for validation, quotas and pinning. The CLI's offline validation and safe local
+file writes improve the workflow without creating a second server data model.
+
+Exports are reads of durable user data. Transcript exports use the original
+append-only journal, not only the compacted prompt. Workspace downloads use the
+committed private R2 checkpoint and do not start a container, run Bash, advance
+the input clock or silently close a running task. Individual file selection
+belongs in the native CLI's bounded archive reader; streaming the existing
+tar.zst avoids decompressing whole workspaces in a memory-constrained Worker.
+
+References: [Cloudflare binding/egress boundary](https://blog.cloudflare.com/workers-environment-live-object-bindings/),
+[Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming),
+and [TOML specification](https://toml.io/en/v1.0.0).
+
 ## Session lifecycle and steering
 
 The user-confirmed inactivity rule is precise:
