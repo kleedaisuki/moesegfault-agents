@@ -562,3 +562,32 @@ The headless owned browser was closed. No account, password, registered JWK, iss
 client, API key or Billing grant was created or rotated; no mail or model request
 was made. This was a server-only signer replacement. The published immutable
 `magents v0.1.0` client release was unchanged.
+
+### Public v0.2.0 production backward-compatibility acceptance
+
+After explicit production/release clearance, public health matched server build
+`265e0ea8bd557d540077afced3bb20b735bbfdfc`. The public Windows `v0.2.0` artifact from
+that same source and `refs/tags/v0.2.0` was checked against the delivery owner's
+verified SHA-256 before execution. Normal BFF login and the existing native
+OS-keyring credential addressed the same owned Free/live production account.
+No new API key was needed.
+
+Crucially, the export target was the **original Closed production session from
+the `8caff373` acceptance**, not newly generated version-0.2 data. Its parent agent
+had already been soft-deleted; its preserved source journal and committed snapshot
+remained independently readable.
+
+| Real public-CLI operation | Observed result |
+| --- | --- |
+| Offline TOML init/validate, publish one owned configuration, download/validate | Editable TOML values round-tripped exactly, without account metadata |
+| JSON conversation export | All 12 original source messages matched semantically, including actual tool calls and results |
+| Workspace archive download | Original 378-byte compressed archive matched its recorded SHA-256 |
+| Exact known-file download | Selected file bytes matched the marker recorded in the original actual bash result |
+| Before/after session reads | Closed status, user-input timestamp/revision, snapshot and complete journal were unchanged |
+| Read-only accounting comparison | No new model or container ledger events; ordinary R2 Class B download charges were allowed |
+
+The new configuration was deleted, normal BFF logout succeeded and a subsequent
+account read returned 401. The owned legacy session/data were not resumed, rewritten
+or deleted. No model execution, container startup, mailbox operation, account
+registration or Billing activation was requested. Receipts and downloaded user data
+remain in the protected task workspace, not repository documentation.

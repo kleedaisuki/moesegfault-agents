@@ -7,7 +7,7 @@ Rust agent sessions on Cloudflare Workers, Durable Objects and on-demand contain
 | API | `https://agents.moesegfault.dev/v1` | `https://agents-staging.moesegfault.dev/v1` |
 | Dashboard | `https://adash.moesegfault.dev` | `https://adash-staging.moesegfault.dev` |
 
-Production and staging are deployed; [v0.1.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.1.0) provides Linux and Windows CLI downloads. Real account login, SDK calls and workspace restoration have passed production acceptance. Subscription access currently uses administrator activation grants, not card checkout or automatic charging/renewal. See [acceptance](docs/acceptance.md) for exact releases, evidence and documented limits.
+Production and staging are deployed; [v0.2.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.2.0) provides Linux and Windows CLI downloads. BYOK supports OpenAI-compatible and Anthropic endpoints; TOML publication and conversation/workspace downloads use the same owner-scoped account. Signed-out adash has its own responsive entry page. Real production acceptance includes new CLI operations against preserved v0.1-era user data. Subscribe management returns refresh verified grants; access still uses activation grants, not automatic charging. See [acceptance](docs/acceptance.md) for exact releases, evidence and limits.
 
 ```mermaid
 flowchart LR
@@ -59,7 +59,7 @@ This implements the documented chat-completions subset, not every OpenAI API. Se
 
 ## Download magents
 
-Download the archive and matching `.sha256` from [v0.1.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.1.0). Maintainers can also run [Package magents](https://github.com/kleedaisuki/moesegfault-agents/actions/workflows/release-magents.yml) manually for 30-day Actions artifacts; these are separate from public release assets.
+Download the archive and matching `.sha256` from [v0.2.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.2.0). Maintainers can also run [Package magents](https://github.com/kleedaisuki/moesegfault-agents/actions/workflows/release-magents.yml) manually for 30-day Actions artifacts; these are separate from public release assets.
 
 | Platform | Archive |
 | --- | --- |

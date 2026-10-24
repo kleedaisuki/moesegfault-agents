@@ -254,3 +254,23 @@ The practical design principle is explicit correlation, not heuristic reconstruc
 carry a bounded context on trusted hops, use native tracing for platform operations,
 and persist content only in its authorized data plane. This keeps tracing overhead
 small and prevents a convenience logging path from becoming a second user-data store.
+
+## v0.2 observer and CI correlation
+
+`observer.completed` reports whether the run-bound channel accepted its terminal
+frames, not acknowledgement by a remote client. `session.projection_pending`
+distinguishes completed authoritative data from a lagging D1 status projection.
+These fixed event names and existing sanitized fields contain no exception text,
+conversation content or credential material.
+
+Staging acceptance can opt in with `MAGENTS_TEST_TRACE_SEED=run_id:run_attempt`.
+The test client derives a stable trace ID, uses fresh span IDs and flags `00`,
+and changes only transport headers. Native sampling remains independent. Public
+CI-derived trace IDs are correlation hints, never authentication or ownership.
+
+One bounded live window for deployment 40100946077, attempt 1, correlated both
+main compaction runs on exact `265e0ea`, including observer/run success and the
+post-compaction input dropping to 385 tokens. It ended after Actions success and
+a twelve-second drain. No model probe was added and raw tail output was not saved.
+The received subset had no native exception, but coverage began after SDK startup;
+that observation does not prove that every unmatched invocation was error-free.

@@ -348,3 +348,17 @@ owned browser was closed. No new account, mailbox, API key, activation, model
 request, container or manual financial write was involved. This is the merged
 consumer business-flow gate, not a claim that the separate broader deployment
 suite or the producer's production release has completed.
+
+### Completed paired production release
+
+Producer promotion 40102195561 completed before Agents production 40102985955
+attempt 2, using their separately accepted sources `6c3586e` and `265e0ea`.
+Production accepts the exact adash return and rejects the staging destination.
+The producer's owned Free/live actor then completed the real same-tab management,
+SSO, reload and return-to-Usage journey. Its account, subscription count, wallet
+and billing profile were unchanged; no activation or funding was requested.
+All seven existing production catalog plans were preserved.
+
+The coordinated service versions and immutable-artifact/migration readback are
+recorded in the [producer's production receipt](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/af4060467997cc57eb68b2910b9b19e0a807480a/docs/deployment/production.md#completed-production-release-receipt).
+This closes the pairing gate above; it does not introduce automatic payment.

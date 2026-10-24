@@ -283,7 +283,7 @@ deployed Identity/Billing and lifecycle acceptance gates.
 
 ## Server authentication security update
 
-Both production hosts now serve
+Both production hosts were deployed at
 `a2059d550c8b0651df740428554e93fcb2bf04dd`. The bounded server-only update moves
 confidential-client private ES256 arithmetic to native Workers Web Crypto without
 changing registered keys, JWT semantics, external APIs, billing or session lifecycle.
@@ -367,3 +367,58 @@ and using a hash jump instead of clicking Access) were retained and reconciled
 before the successful journey; no model submission was replayed. Public native
 archive verification and production compatibility/promotion remain separate
 delivery-owner gates, not implied by this staged result.
+
+## Accepted v0.2.0 release
+
+The immutable `v0.2.0` implementation and serving production build are
+`265e0ea8bd557d540077afced3bb20b735bbfdfc`.
+
+| Gate | Authoritative result |
+| --- | --- |
+| [Full CI 40100503604](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40100503604) | All jobs passed, including 25 actual-Wasm/transport cases and the final projection-failure regression |
+| [Staging 40100946077](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40100946077) | All fourteen real SDK journeys passed in 593.70 seconds, including long-context streaming compaction, steering and workspace restoration |
+| [Production 40102985955](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40102985955) | Attempt 2 succeeded from the identical tested artifacts; both production health endpoints report the exact build |
+| [Native packaging 40102140342](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40102140342) | Linux and Windows native tests/builds and attachment of all four public assets succeeded |
+
+Production attempt 1 partially applied the release: migration 0010 and the Worker
+upload completed, then Cloudflare's container application update returned an
+internal error. The same-run failed-job retry reconciled that declaration and
+completed secret synchronization, diagnostic lifecycle and public smoke checks.
+No schema rollback, source replacement, key generation or allowance adjustment
+was used. Production now has no pending migrations. Both publication logs report
+container manifest digest
+`sha256:9114bc4855b4227dd5f2116cbde291c8cc874b184d49e7634bc1c97336bce206`;
+this is registry publication evidence, not an invented resolved-digest App field.
+
+The deterministic old-Wasm fault was corrected without weakening its oracle:
+while a fixture denies only the final D1 status projection, canonical journal and
+three settled reservations remain readable, SSE still emits `stop` and `[DONE]`,
+and releasing the fault lets an alarm repair D1 using database-only observation.
+No model/tool replay occurs. Run-scoped transports and opaque acknowledgement
+generations also cover late-input ownership and older-writer rollback aliases.
+This fixes a proven lifecycle defect; it does not retroactively identify every
+earlier cloud 500 or early EOF. The final real staging compaction additionally
+had terminal/run correlation captured by a bounded content-free live collector.
+
+The public Windows binary, rather than a debug candidate, then completed normal
+production BFF/native identity and a fresh TOML publish/download roundtrip. Its
+export target was the original v0.1-era Closed session: all twelve messages,
+the 378-byte compressed snapshot hash and the known file bytes were unchanged.
+Reads did not advance user input or create model/container usage; the one new
+configuration was deleted and BFF logout returned subsequent 401. Full evidence
+is in [Identity acceptance](identity-billing.md).
+
+Both public archives have LF-only checksum sidecars, exactly the expected binary,
+license and BUILD-INFO members, and source `265e0ea` / `refs/tags/v0.2.0`:
+
+| Archive | SHA-256 |
+| --- | --- |
+| Windows x86_64 ZIP | `dc063fcedd902ed66d969031fd36f54897b68d4a3da33ca3fd7c5359c3b327d2` |
+| Linux x86_64 tar.gz | `f5261d7bf2c46d91f9b03c75bdc7fca92d6fa39b1e6f3794db302e81152b1877` |
+
+The public Windows executable hash is
+`1b2f2fed96b9ff4dc6c41512031cb8408a35be526e876a4d4179111f1c0b93f4`;
+its real `--version`, offline template/validation and production journeys passed.
+The release is stable, not a draft or prerelease. Existing `v0.1.0` tags/assets
+were not moved or replaced. Publication remains account-private, and subscription
+management does not silently enable card collection or automatic renewal.

@@ -150,3 +150,26 @@ This remains publication evidence, not a resolved-digest field in the App API.
 The independently verified CLI `v0.1.0` tag and four public assets were not moved
 or replaced. See [acceptance](acceptance.md) and [Identity](identity-billing.md)
 for the real owned-account BFF regressions after this promotion.
+
+## v0.2.0 production readback
+
+Runtime `265e0ea8bd557d540077afced3bb20b735bbfdfc` passed full CI 40100503604
+and staging 40100946077 before production 40102985955. Attempt 1 applied 0010
+and uploaded the Worker, but failed at Cloudflare's Container application update;
+the same-run attempt 2 reconciled the unchanged declaration and passed all steps.
+Production has no pending D1 migrations. No reverse migration or user-data reset
+was used; migration 0010 preserves legacy credential identity and encryption.
+
+The final secret-reasserted serving Worker is
+`d198f098-1278-44f8-a2dc-90d62de3a9bc` at 100%, not the intermediate code-upload
+version. Both production host health responses report `265e0ea`. The production
+Container App is version 3 at 100% with maximum 20 instances; staging App version
+12 uses the same accepted commit tag. Their registry publication digest is
+`sha256:9114bc4855b4227dd5f2116cbde291c8cc874b184d49e7634bc1c97336bce206`.
+Namespace, bucket and identity registrations remain environment-paired.
+
+Subscribe/Billing production promotion 40102195561 preceded Agents. The
+[cross-service receipt](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/af4060467997cc57eb68b2910b9b19e0a807480a/docs/deployment/production.md#completed-production-release-receipt)
+records the authoritative bindings/versions and actual production return journey.
+CLI `v0.2.0` is the immutable `265e0ea` tag with four verified public Linux/Windows
+assets; production export acceptance includes the original v0.1 user snapshot.
