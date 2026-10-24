@@ -1,14 +1,19 @@
 """Harness checks against canonical wire fixtures, not deployed-server evidence."""
 import json
+from typing import Any
 
 import httpx
+import pytest
 from openai import OpenAI
+from openai.types.chat import ChatCompletionChunk
+
+from stream_usage import reported_stream_usage
 
 
-def test_sdk_nonstream_session_header_contract():
-    observed = []
+def test_sdk_nonstream_session_header_contract() -> None:
+    observed: list[httpx.Request] = []
 
-    def respond(request):
+    def respond(request: httpx.Request) -> httpx.Response:
         observed.append(request)
         return httpx.Response(200, headers={"x-agents-session": "session-1"}, json={
             "id": "run-1", "object": "chat.completion", "created": 1, "model": "agent-1",
@@ -24,8 +29,8 @@ def test_sdk_nonstream_session_header_contract():
     assert json.loads(observed[0].content)["model"] == "agent-1"
 
 
-def test_sdk_stream_session_header_contract():
-    def respond(request):
+def test_sdk_stream_session_header_contract() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
         assert request.headers["x-agents-session"] == "session-1"
         assert json.loads(request.content)["stream"] is True
         base = {"id": "run-2", "object": "chat.completion.chunk", "created": 1, "model": "agent-1"}
@@ -42,3 +47,28 @@ def test_sdk_stream_session_header_contract():
             chunks = list(response.parse())
     assert chunks[0].choices[0].delta.content == "ok"
     assert chunks[-1].choices[0].finish_reason == "stop"
+
+
+def chunk(*, finish: str | None = None, usage: bool = False, choices: bool = True) -> ChatCompletionChunk:
+    value: dict[str, Any] = {
+        "id": "stream-usage", "object": "chat.completion.chunk", "created": 1,
+        "model": "agent", "choices": [{"index": 0, "delta": {}, "finish_reason": finish}] if choices else [],
+    }
+    if usage:
+        value["usage"] = {"prompt_tokens": 14399, "completion_tokens": 3, "total_tokens": 14402}
+    return ChatCompletionChunk.model_validate(value)
+
+
+@pytest.mark.parametrize("separate_usage", [False, True])
+def test_stream_usage_requires_normal_finish_and_authoritative_counters(separate_usage: bool) -> None:
+    terminal = [chunk(finish="stop", usage=not separate_usage)]
+    if separate_usage:
+        terminal.append(chunk(usage=True, choices=False))
+    usage = reported_stream_usage([chunk(), *terminal])
+    assert (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (14399, 3, 14402)
+
+
+@pytest.mark.parametrize("chunks", [[], [chunk()], [chunk(finish="stop")], [chunk(usage=True)], [chunk(finish="length", usage=True)]])
+def test_stream_usage_rejects_incomplete_or_abnormal_terminal_state(chunks: list[ChatCompletionChunk]) -> None:
+    with pytest.raises(AssertionError):
+        reported_stream_usage(chunks)

@@ -4,12 +4,14 @@ import json
 import os
 import time
 import uuid
+from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
 from openai import OpenAI
 
 from conftest import Http, cleanup_deployed_agent
+from stream_usage import reported_stream_usage
 
 
 @pytest.fixture
@@ -210,7 +212,12 @@ def assert_complete_tool_groups(messages):
     assert not pending, "completed source journal must not leave orphaned tool calls"
 
 
-def test_real_provider_compaction_preserves_pin_and_source_journal(deployed, inference, compaction_ready, managed_agent):
+def test_real_provider_compaction_preserves_pin_and_source_journal(
+    deployed: Http,
+    inference: OpenAI,
+    compaction_ready: None,
+    managed_agent: tuple[dict[str, Any], list[str]],
+) -> None:
     agent, sessions = managed_agent
     # Use the normal registered Flash model and a percentage, never client-side
     # context-window overrides or a tokenizer approximation as the test oracle.
@@ -230,22 +237,25 @@ def test_real_provider_compaction_preserves_pin_and_source_journal(deployed, inf
     payload = (f"Source payload starts {marker}. Preserve this as conversation data; reply ACK only.\n"
                + " alpha beta gamma delta" * 3500
                + f"\nSource payload ends {marker}.")
-    initial = inference.chat.completions.create(
+    # Long prefill/compaction follows the documented streaming observer contract;
+    # disconnecting a nonstream observer does not cancel its durable execution.
+    with inference.chat.completions.create(
         model=agent["id"], messages=[{"role": "user", "content": payload}],
-        extra_headers={"x-agents-session": session_id},
-    )
-    assert initial.usage is not None
+        extra_headers={"x-agents-session": session_id}, stream=True,
+    ) as initial:
+        initial_usage = reported_stream_usage(initial)
     # Provider-reported input counts are authoritative. The fixed corpus bounds
     # this journey to roughly 12–20k tokens rather than a million-token probe.
-    assert 10_500 <= initial.usage.prompt_tokens <= 20_000, "real corpus must cross the 1% threshold without an oversized billable probe"
+    assert 10_500 <= initial_usage.prompt_tokens <= 20_000, "real corpus must cross the 1% threshold without an oversized billable probe"
     before = deployed.json("GET", "/v1/sessions/" + session_id)
     assert before["compact_count"] == 0
     assert before["pinned"] == pinned
     assert any(message["role"] == "user" and message["content"] == payload for message in before["messages"])
-    inference.chat.completions.create(
+    with inference.chat.completions.create(
         model=agent["id"], messages=[{"role": "user", "content": "Call the time tool now and briefly report the current UTC time."}],
-        extra_headers={"x-agents-session": session_id},
-    )
+        extra_headers={"x-agents-session": session_id}, stream=True,
+    ) as continued:
+        reported_stream_usage(continued)
     after = deployed.json("GET", "/v1/sessions/" + session_id)
     assert after["compact_count"] >= 1
     assert after["pinned"] == pinned
