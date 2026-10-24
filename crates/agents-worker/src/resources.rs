@@ -55,7 +55,7 @@ impl ResourcePricing {
 pub struct ResourceMeter<'a> {
     env: &'a Env,
     owner: &'a str,
-    session: &'a str,
+    session: Option<&'a str>,
     run: &'a str,
     pricing: ResourcePricing,
 }
@@ -81,7 +81,7 @@ impl<'a> ResourceMeter<'a> {
         Ok(Self {
             env,
             owner,
-            session,
+            session: Some(session),
             run,
             pricing,
         })
@@ -97,10 +97,38 @@ impl<'a> ResourceMeter<'a> {
         Ok(Self {
             env,
             owner,
-            session,
+            session: Some(session),
             run,
             pricing,
         })
+    }
+
+    pub fn with_account_pricing(
+        env: &'a Env,
+        owner: &'a str,
+        run: &'a str,
+        pricing: ResourcePricing,
+    ) -> Result<Self> {
+        let pricing = ResourcePricing::parse(&serde_json::to_string(&pricing)?)?;
+        Ok(Self {
+            env,
+            owner,
+            session: None,
+            run,
+            pricing,
+        })
+    }
+
+    pub fn account(env: &'a Env, owner: &'a str, run: &'a str) -> Result<Self> {
+        let json = env
+            .var("RESOURCE_PRICING_JSON")
+            .map_err(|_| fail("resource_pricing_not_configured"))?
+            .to_string();
+        Self::with_account_pricing(env, owner, run, ResourcePricing::parse(&json)?)
+    }
+
+    fn session_binding(&self) -> JsValue {
+        self.session.map(text).unwrap_or(JsValue::NULL)
     }
 
     pub fn require_tariff(&self, resource: &Resource, unit: &str) -> Result<()> {
@@ -148,8 +176,8 @@ impl<'a> ResourceMeter<'a> {
         let tariff = self.pricing.tariff(&resource, unit)?;
         let resource = resource_name(&resource)?;
         let db = self.db()?;
-        db.prepare("INSERT INTO resource_observations (run_id,account_id,session_id,event_key,resource,unit,quantity,price_version,observed_at,status) SELECT ?,?,?,?,?,?,NULL,?,NULL,'pending' WHERE EXISTS (SELECT 1 FROM usage_reservations WHERE id=? AND account_id=? AND session_id=? AND state='reserved') ON CONFLICT(run_id,event_key) DO NOTHING")
-            .bind(&[text(self.run),text(self.owner),text(self.session),text(event),text(&resource),text(unit),text(&tariff.price_version),text(self.run),text(self.owner),text(self.session)])?
+        db.prepare("INSERT INTO resource_observations (run_id,account_id,session_id,event_key,resource,unit,quantity,price_version,observed_at,status) SELECT ?,?,?,?,?,?,NULL,?,NULL,'pending' WHERE EXISTS (SELECT 1 FROM usage_reservations WHERE id=? AND account_id=? AND session_id IS ? AND state='reserved') ON CONFLICT(run_id,event_key) DO NOTHING")
+            .bind(&[text(self.run),text(self.owner),self.session_binding(),text(event),text(&resource),text(unit),text(&tariff.price_version),text(self.run),text(self.owner),self.session_binding()])?
             .run().await?;
         let row = self.observation(event).await?;
         if row.resource != resource || row.unit != unit || row.price_version != tariff.price_version
@@ -160,8 +188,8 @@ impl<'a> ResourceMeter<'a> {
     }
 
     async fn observation(&self, event: &str) -> Result<Observation> {
-        self.db()?.prepare("SELECT resource,unit,quantity,price_version,status FROM resource_observations WHERE run_id=? AND account_id=? AND session_id=? AND event_key=?")
-            .bind(&[text(self.run),text(self.owner),text(self.session),text(event)])?
+        self.db()?.prepare("SELECT resource,unit,quantity,price_version,status FROM resource_observations WHERE run_id=? AND account_id=? AND session_id IS ? AND event_key=?")
+            .bind(&[text(self.run),text(self.owner),self.session_binding(),text(event)])?
             .first(None).await?.ok_or_else(|| fail("resource_observation_missing"))
     }
 

@@ -22,7 +22,27 @@ pub async fn maintenance_reservation(
     session: &str,
     id: &str,
 ) -> Result<metering::ReservationRow> {
-    let meter = crate::resources::ResourceMeter::new(env, owner, session, id)?;
+    maintenance_reservation_for(env, owner, Some(session), id).await
+}
+
+pub async fn maintenance_account_reservation(
+    env: &Env,
+    owner: &str,
+    id: &str,
+) -> Result<metering::ReservationRow> {
+    maintenance_reservation_for(env, owner, None, id).await
+}
+
+async fn maintenance_reservation_for(
+    env: &Env,
+    owner: &str,
+    session: Option<&str>,
+    id: &str,
+) -> Result<metering::ReservationRow> {
+    let meter = match session {
+        Some(session) => crate::resources::ResourceMeter::new(env, owner, session, id)?,
+        None => crate::resources::ResourceMeter::account(env, owner, id)?,
+    };
     meter.require_tariff(&Resource::R2Operation, "class_a")?;
     meter.require_tariff(&Resource::R2Operation, "class_b")?;
     let amount = env
@@ -33,11 +53,14 @@ pub async fn maintenance_reservation(
     if amount <= 0 || id.is_empty() {
         return Err(fail("resource_reservation_required"));
     }
-    let hash = format!("{}:{owner}:{}:{session}:{id}", owner.len(), session.len());
+    let hash = match session {
+        Some(session) => format!("{}:{owner}:{}:{session}:{id}", owner.len(), session.len()),
+        None => format!("account:{}:{owner}:{id}", owner.len()),
+    };
     metering::reserve(
         &env.d1("DB")?,
         owner,
-        Some(session),
+        session,
         id,
         &format!("maintenance:{id}"),
         &hash,
@@ -51,7 +74,7 @@ pub async fn maintenance_reservation(
 struct Object {
     object_key: String,
     account_id: String,
-    session_id: String,
+    session_id: Option<String>,
     size_bytes: String,
     billed_through_ms: u64,
     removed_at_ms: Option<u64>,
@@ -83,16 +106,37 @@ pub async fn register_storage_object(
     bytes: u64,
     created_ms: u64,
 ) -> Result<()> {
+    register_storage_object_for(env, owner, Some(session), key, bytes, created_ms).await
+}
+
+pub async fn register_account_storage_object(
+    env: &Env,
+    owner: &str,
+    key: &str,
+    bytes: u64,
+    created_ms: u64,
+) -> Result<()> {
+    register_storage_object_for(env, owner, None, key, bytes, created_ms).await
+}
+
+async fn register_storage_object_for(
+    env: &Env,
+    owner: &str,
+    session: Option<&str>,
+    key: &str,
+    bytes: u64,
+    created_ms: u64,
+) -> Result<()> {
     if key.is_empty() || bytes > i64::MAX as u64 {
         return Err(fail("invalid_storage_observation"));
     }
     let db = env.d1("DB")?;
     db.prepare("INSERT INTO resource_storage_objects(object_key,account_id,session_id,size_bytes,retained_from_ms,billed_through_ms,removed_at_ms,status) VALUES(?,?,?, ?,CAST(? AS INTEGER),CAST(? AS INTEGER),NULL,'active') ON CONFLICT(object_key) DO NOTHING")
-        .bind(&[text(key),text(owner),text(session),text(&bytes.to_string()),text(&created_ms.to_string()),text(&created_ms.to_string())])?.run().await?;
+        .bind(&[text(key),text(owner),optional_text(session),text(&bytes.to_string()),text(&created_ms.to_string()),text(&created_ms.to_string())])?.run().await?;
     let object: Object = db.prepare("SELECT object_key,account_id,session_id,size_bytes,billed_through_ms,removed_at_ms FROM resource_storage_objects WHERE object_key=?")
         .bind(&[text(key)])?.first(None).await?.ok_or_else(||fail("storage_object_missing"))?;
     if object.account_id != owner
-        || object.session_id != session
+        || object.session_id.as_deref() != session
         || object.size_bytes != bytes.to_string()
     {
         return Err(fail("storage_object_conflict"));
@@ -173,7 +217,7 @@ async fn interval(
         .map_err(|_| fail("invalid_resource_tariff"))?;
     let id = interval_id(&object.object_key, object.billed_through_ms, end);
     db.prepare("INSERT INTO resource_storage_deficits(object_key,account_id,session_id,interval_start_ms,interval_end_ms,quantity,amount_microusd,price_version,tariff_json,reservation_id,status) SELECT ?,?,?,CAST(? AS INTEGER),CAST(? AS INTEGER),?,?,?,?,?,'pending' WHERE EXISTS(SELECT 1 FROM resource_storage_objects WHERE object_key=? AND billed_through_ms=CAST(? AS INTEGER)) AND NOT EXISTS(SELECT 1 FROM resource_storage_deficits WHERE object_key=? AND status='pending') ON CONFLICT DO NOTHING")
-        .bind(&[text(&object.object_key),text(&object.account_id),text(&object.session_id),text(&object.billed_through_ms.to_string()),text(&end.to_string()),text(&quantity.to_string()),text(&charge.amount_microusd.get().to_string()),text(&tariff.price_version),text(&serde_json::to_string(tariff)?),text(&id),text(&object.object_key),text(&object.billed_through_ms.to_string()),text(&object.object_key)])?
+        .bind(&[text(&object.object_key),text(&object.account_id),optional_text(object.session_id.as_deref()),text(&object.billed_through_ms.to_string()),text(&end.to_string()),text(&quantity.to_string()),text(&charge.amount_microusd.get().to_string()),text(&tariff.price_version),text(&serde_json::to_string(tariff)?),text(&id),text(&object.object_key),text(&object.billed_through_ms.to_string()),text(&object.object_key)])?
         .run().await?;
     pending(db, &object.object_key)
         .await?
@@ -199,7 +243,7 @@ async fn charge(db: &D1Database, object: &Object, interval: &Interval, now: u64)
     metering::reserve(
         db,
         &object.account_id,
-        Some(&object.session_id),
+        object.session_id.as_deref(),
         id,
         &format!("retention:{id}"),
         id,
@@ -257,6 +301,9 @@ fn interval_id(key: &str, start: u64, end: u64) -> String {
 }
 fn text(value: &str) -> JsValue {
     JsValue::from_str(value)
+}
+fn optional_text(value: Option<&str>) -> JsValue {
+    value.map(text).unwrap_or(JsValue::NULL)
 }
 fn fail(code: &str) -> Error {
     Error::RustError(code.into())
