@@ -1,10 +1,9 @@
 import { useTranslation } from "react-i18next";
 import "./i18n";
 import { Preferences } from "./Preferences";
-import { lazy, Suspense, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowUpRight,
   Bot,
   BookOpen,
   ChevronRight,
@@ -12,9 +11,19 @@ import {
   Layers3,
   LogOut,
 } from "lucide-react";
-import { ApiError, request, json, setCsrfToken, type Account } from "./api";
+import {
+  AUTHENTICATION_REQUIRED_EVENT,
+  ApiError,
+  request,
+  json,
+  setCsrfToken,
+  type Account,
+} from "./api";
 import { ErrorNotice, Empty } from "./ui";
-import { Agents } from "./Agents";
+import { Brand, PublicEntry } from "./PublicEntry";
+const Agents = lazy(() =>
+  import("./Agents").then((module) => ({ default: module.Agents })),
+);
 const Access = lazy(() =>
   import("./Access").then((module) => ({ default: module.Access })),
 );
@@ -25,10 +34,32 @@ const Skills = lazy(() =>
   import("./Skills").then((module) => ({ default: module.Skills })),
 );
 type Page = "agents" | "skills" | "access" | "usage";
+function initialPage(): Page {
+  const page = window.location.hash.slice(1);
+  return page === "skills" || page === "access" || page === "usage"
+    ? page
+    : "agents";
+}
 export function App() {
   const { t } = useTranslation();
-  const [page, setPage] = useState<Page>("agents");
-  const account = useQuery({
+  const cache = useQueryClient();
+  const [page, setPage] = useState<Page>(initialPage);
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    function expireSession() {
+      setExpired(true);
+      setCsrfToken(undefined);
+      void cache.cancelQueries();
+      cache.setQueryData<Account | null>(["account"], null);
+      cache.removeQueries({
+        predicate: (query) => query.queryKey[0] !== "account",
+      });
+    }
+    window.addEventListener(AUTHENTICATION_REQUIRED_EVENT, expireSession);
+    return () =>
+      window.removeEventListener(AUTHENTICATION_REQUIRED_EVENT, expireSession);
+  }, [cache]);
+  const account = useQuery<Account | null>({
     queryKey: ["account"],
     queryFn: async () => {
       const data = await request<Account>("/v1/account");
@@ -42,20 +73,48 @@ export function App() {
   });
   const unauthorized =
     account.error instanceof ApiError && account.error.status === 401;
+  useEffect(() => {
+    if (!unauthorized) return;
+    setCsrfToken(undefined);
+    cache.setQueryData<Account | null>(["account"], null);
+    void cache.cancelQueries({
+      predicate: (query) => query.queryKey[0] !== "account",
+    });
+    cache.removeQueries({
+      predicate: (query) => query.queryKey[0] !== "account",
+    });
+  }, [cache, unauthorized]);
+  if (
+    expired ||
+    unauthorized ||
+    account.isPending ||
+    account.error ||
+    !account.data
+  )
+    return (
+      <PublicEntry
+        pending={account.isPending && !expired}
+        expired={expired && !unauthorized}
+        error={unauthorized || expired ? undefined : account.error}
+        retry={() => void account.refetch()}
+        page={page}
+      />
+    );
+  function navigate(nextPage: Page) {
+    setPage(nextPage);
+    window.history.replaceState(
+      null,
+      "",
+      nextPage === "agents" ? "/" : `/#${nextPage}`,
+    );
+  }
   return (
     <div className="shell">
       <a className="skip-link" href="#main-content">
         {t("Skip to content")}
       </a>
       <aside className="sidebar">
-        <a href="/" className="brand">
-          <span className="brand-icon">
-            m<span>·</span>
-          </span>
-          <span>
-            moeSegFault<small>{t("agents")}</small>
-          </span>
-        </a>
+        <Brand />
         <nav aria-label={t("Main navigation")}>
           {(
             [
@@ -68,7 +127,7 @@ export function App() {
             <button
               key={id}
               className={page === id ? "nav-item active" : "nav-item"}
-              onClick={() => setPage(id)}
+              onClick={() => navigate(id)}
             >
               <Icon size={19} />
               {t(label)}
@@ -97,41 +156,28 @@ export function App() {
         </div>
       </aside>
       <main id="main-content" tabIndex={-1}>
-        {account.isPending ? (
-          <Empty title={t("Connecting to your workspace…")} />
-        ) : unauthorized ? (
-          <div className="welcome">
-            <h1>{t("Agents")}</h1>
-            <a className="button primary" href="/auth/login?return_to=/">
-              {t("Continue with moeSegFault")}
-              <ArrowUpRight size={18} />
-            </a>
-          </div>
-        ) : account.error ? (
-          <>
-            <ErrorNotice error={account.error} />
-            <button onClick={() => account.refetch()}>{t("Try again")}</button>
-          </>
-        ) : (
-          <>
-            {page === "agents" && <Agents />}
-            {page === "skills" && (
-              <Suspense fallback={<Empty title={t("Loading…")} />}>
-                <Skills />
-              </Suspense>
-            )}
-            {page === "access" && (
-              <Suspense fallback={<Empty title={t("Loading…")} />}>
-                <Access />
-              </Suspense>
-            )}
-            {page === "usage" && (
-              <Suspense fallback={<Empty title={t("Loading…")} />}>
-                <UsagePage account={account.data!} />
-              </Suspense>
-            )}
-          </>
-        )}
+        <>
+          {page === "agents" && (
+            <Suspense fallback={<Empty title={t("Loading…")} />}>
+              <Agents />
+            </Suspense>
+          )}
+          {page === "skills" && (
+            <Suspense fallback={<Empty title={t("Loading…")} />}>
+              <Skills />
+            </Suspense>
+          )}
+          {page === "access" && (
+            <Suspense fallback={<Empty title={t("Loading…")} />}>
+              <Access />
+            </Suspense>
+          )}
+          {page === "usage" && (
+            <Suspense fallback={<Empty title={t("Loading…")} />}>
+              <UsagePage account={account.data!} />
+            </Suspense>
+          )}
+        </>
         <ErrorNotice error={logout.error} />
       </main>
     </div>

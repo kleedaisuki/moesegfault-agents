@@ -122,7 +122,7 @@ user-generated files under this asset prefix. This uses the platform's supported
 not a second service worker or application cache. The rule works on the existing
 asset-first routes; it does not override headers on Worker-generated responses.
 
-The bounded six-journey Chromium suite includes en/light desktop, zh/dark desktop,
+The bounded thirteen-journey Chromium suite includes en/light desktop, zh/dark desktop,
 zh/light 320px and en/dark 360px complete management journeys; all four plan names;
 registry creation/selection; streaming then steering; one-time key display;
 provider key storage; diagnostics consent; locale/theme persistence; live System
@@ -131,3 +131,43 @@ The HTTP fixtures test the browser contract, not a deployed Cloudflare/Identity
 acceptance flow. Unit tests cover catalog completeness, localized failures,
 precision above 2^53, resource sums, polling policy, fragmented UTF-8 SSE deltas
 before completion, truncated streams and structured stream errors.
+
+## Public entry and authentication boundary
+
+An account query decides which tree may mount. Session verification and network
+failure have public loading/retry states; a 401 gets a dedicated product/sign-in
+entry, never dashboard navigation, account placeholders or private resource
+requests. A later management/stream 401 unmounts the authenticated tree, clears
+CSRF and private query state, and offers sign-in for the selected page. Only the
+allowlisted `#skills`, `#access`, and `#usage` destinations are forwarded to the
+same-origin BFF; arbitrary fragments are not redirect targets. The dashboard
+modules are lazy-loaded after authentication instead of shipping them eagerly
+with the public entry.
+
+The layout follows the separation and single-primary-action approach visible on
+[Vercel's login page](https://vercel.com/login) and the workspace-first sign-in flow
+documented by [Linear](https://linear.app/docs/login-methods): brand/preferences,
+one account continuation action, and public documentation/CLI links. It does not
+copy their authentication methods or invent demo account/workspace activity. The
+terminal is a static CLI example, not a status readout. Four public-entry browser
+cases verify English/Chinese, light/dark, desktop and 320/360px layouts, with
+separate delayed-auth and expired-auth tests; actual deployed login remains a
+separate end-to-end gate.
+
+## Protocol-based BYOK
+
+Access offers exactly OpenAI-compatible API and Anthropic, with a base URL and
+secret API key plus an optional human-readable connection name. Creation uses
+`POST /v1/provider-keys`, allowing multiple endpoints of the same protocol. The
+list displays metadata only and deletion uses the opaque credential ID, including
+legacy vendor-specific credentials. Existing routes are not edited in place;
+adding a different endpoint creates a new connection, preserving session pins.
+
+BYOK agents accept custom model IDs rather than requiring the platform registry.
+Advanced model limits default to a 131,072-token context budget and 8,192 output
+tokens, remain editable, and are preserved when editing an existing custom agent.
+These are configurable budgets, not a claim that an arbitrary endpoint supports
+them: use its advertised model limits. Compaction remains a percentage of that
+context budget. Platform-funded choices still use the server's priced registry;
+legacy credential namespaces can still offer matching known model suggestions.
+No raw API key enters agent configuration, browser persistence or diagnostics.

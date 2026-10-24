@@ -73,6 +73,7 @@ function mount() {
 }
 beforeEach(() => {
   calls.length = 0;
+  window.history.replaceState(null, "", "/");
   setCsrfToken(undefined);
 });
 afterEach(() => {
