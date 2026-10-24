@@ -9,8 +9,8 @@ export function affected(files, all = false) {
     rust: global || matches(/^crates\//),
     worker: global || matches(/^(crates\/(agents-worker|agents-core|agents-auth)\/|tests\/worker\/|wrangler\.jsonc|package(-lock)?\.json)/),
     dashboard: matches(/^(apps\/dashboard\/|\.github\/workflows\/)/),
-    container: global || matches(/^(crates\/workspace-daemon\/|container\/|tests\/e2e\/(test_workspace_daemon\.py|conftest\.py|requirements\.txt)|\.dockerignore)/),
-    tooling: matches(/^(scripts\/|package(-lock)?\.json|wrangler\.jsonc|\.github\/)/),
+    container: global || matches(/^(crates\/workspace-daemon\/|container\/|tests\/e2e\/(test_workspace_daemon\.py|conftest\.py|requirements\.(txt|lock))|\.dockerignore)/),
+    tooling: matches(/^(scripts\/|package(-lock)?\.json|wrangler\.jsonc|\.github\/|tests\/e2e\/(test_(sdk_contract|deployed|daemon_harness|cleanup)\.py|stream_usage\.py|conftest\.py|requirements\.(txt|lock)))/),
   };
 }
 
