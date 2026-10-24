@@ -266,3 +266,66 @@ then returned 401. Five model calls were recorded across both fixtures, totaling
 3,925 tokens; total posted charges were 7,085 microUSD at inspection, plus the preserved
 uncertain hold, within the authorized synthetic test budget. No production state or
 existing smoke-test tenant was touched.
+
+### Unattended idle and long-task acceptance, 2026-10-24
+
+The follow-up used public build
+`164d0aec3ea9404ef9b94f58847d775caacaa46e`, with the native container inactivity
+timeout configured to 15 minutes while the application session deadline remained
+10 minutes. A released-CLI task key and two new owned sessions were used; the failed
+earlier command was not replayed. The short-workspace task **C** had to produce an
+actual successful tool result before the independent long task **D** was started.
+
+**C: unattended preservation passed.** Its initial write returned actual marker
+stdout and exit code 0. An initial journal read fixed the accepted input timestamp
+and revision. After that verification, no HTTP, CLI, Durable Object, container or
+financial reads or writes targeted C until its first deadline read, at input plus
+637.728 seconds. That response was Closed with a snapshot and no checkpoint or
+billing pending flags. Independently, a teammate subscribed only to the global
+Cloudflare tail and observed checkpoint at 05:05:21.262 UTC and archive at
+05:05:22.707 UTC, the latter input plus **603.880 seconds**. Tail collection made no
+session request and read no credential, so it did not keep the workspace active.
+
+The generation-1, 364-byte workspace archive and its actual R2 manifest were fetched
+and checked against the recorded SHA-256, generation and size; the conversation
+archive was fetched too. The exact owned container instance was inactive. Normal
+explicit resume preserved the pinned configuration, and a new actual bash result
+read the saved marker with exit code 0 in 18 ms. Explicit close then succeeded with
+no checkpoint/billing pending flags. Including restoration, all C reservations were
+settled or released and its recorded total was 6,428 microUSD.
+
+**D: work survives both the idle deadline and client disconnect.** A single user
+turn requested three sequential bash calls with sleeps of 240, 240 and 150 seconds;
+each actual call used `timeout_ms=270000`. There was no request to D between dispatch
+and its first status read at accepted input plus **619.267 seconds**. It remained
+Running with the original input timestamp and revision 1. Later reads, after that
+deadline, inspected progress without appending input or restarting the task.
+
+All three actual tool results were subsequently verified: exit codes 0, durations
+**240,043 / 240,004 / 150,006 ms**, no timeout/cancellation, and the final tool's stdout
+equal to the workspace marker. The global tail observed D's checkpoint at
+05:08:40.551 UTC, followed by archive and successful `run.completed` together at
+05:08:41.826 UTC, input plus **785.227 seconds**. Thus work was not cancelled at ten
+minutes, and completion immediately archived the already-inactive session rather
+than starting another ten-minute interval. The resulting generation-1, 366-byte R2
+workspace archive and conversation archive were retrieved; the compressed digest,
+generation and size matched. Final API flags had no checkpoint/billing pending
+state, the exact container instance reported stopped, and all D reservations were
+settled or released. D's recorded total was 9,629 microUSD, including container,
+model, Worker, Durable Object, D1 and R2-operation entries. C plus D totaled 16,057
+microUSD at inspection, without an unresolved hold in either new fixture.
+
+There is a separate transport qualification: the non-streaming official SDK request
+reported `APIConnectionError`, despite its configured 1,000-second timeout and zero
+retries. Only the exception class was retained by this harness, not its occurrence
+time, cause chain or errno; no proxy/server cause is inferred. The backend task
+nevertheless completed its original intent without a second POST. This verifies
+durable execution across a client disconnect, **not** a successful end-to-end
+non-streaming response through every intermediary. A bounded streamed-tool journey
+must separately exercise standard SSE keepalive and final SDK parsing.
+
+The older never-ready session was also revisited through its normal public API under
+this build: one explicit close returned 200, cleared checkpoint pending and its
+checkpoint error, and retained `billing_pending=true` with
+`resource_reconciliation_pending`. The original command was not replayed and no
+uncertain financial hold was refunded or directly altered.

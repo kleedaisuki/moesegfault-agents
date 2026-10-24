@@ -172,3 +172,27 @@ The first verify-only preparation run `40062408884` passed Rust/WASM and contrac
 Replacement preparation CI [run 40062552657](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/40062552657) is likewise `delivery=verify-only`: it may create validation artifacts but must not deploy either environment. Production source/audience/catalog preparation remains Billing `e7990ed`, with the independent security patch `5c65890` on top.
 
 Preparation run **40062552657 completed successfully**: frontend/deployment contracts, Rust tests/WASM builds, audit, and immutable package all passed. Both **Deploy staging** and **Explicit production promotion** were skipped, as intended for `verify-only`. This verifies the prepared source without changing either environment; it does not clear the separate Agents runtime long-task/inactivity acceptance gate or satisfy the upstream requirement for an actually staged artifact before production promotion.
+
+## Formal production Identity registration receipt — 2026-10-24
+
+Root cleared the existing user-authorized Identity/Billing onboarding gate after the accepted Agents staging journeys (source `164d0ae`, SDK tests, real inactivity/archive/resume, 785-second long run, zero run holds, and corrected Pro allowance handoff). This clearance covers client/audience/catalog onboarding, **not deployment of the Agents production application**, production activation issuance, or money collection.
+
+Immediately before mutation, the temporary Identity checkout fetched upstream, confirmed reviewed source `18e0cf80e0876406b1a6491faa19776bc7a28367`, recomposed the production stream with the official script, and listed the remote pending migrations. The list contained **exactly** `0014_oauth_client_magents.sql` and `0015_oauth_client_agents-dashboard.sql`. An exact-ID preflight returned only existing enabled `subscribe`; neither new client existed. No other migration or conflicting client was overwritten.
+
+The official pinned Wrangler applied those two forward-only migrations to `moesegfault-identity-production` with explicit production configuration. Both succeeded. Remote public-metadata readback established:
+
+| Client | Type / authentication | Sector / revision | State |
+| --- | --- | --- | --- |
+| `agents-dashboard` | confidential / `private_key_jwt` | `subscribe.moesegfault.dev` / 1 | enabled |
+| `magents` | native / `none` | `subscribe.moesegfault.dev` / 1 | enabled |
+| Existing `subscribe` | confidential / `private_key_jwt` | `subscribe.moesegfault.dev` / 1 | enabled, unchanged |
+
+Readback also confirmed dashboard exact callback `https://adash.moesegfault.dev/auth/callback`; native `http://127.0.0.1/callback` with `native_loopback_any_port`; both clients' exact scopes `openid`, `profile`, `offline_access`; dashboard key ID `agents-dashboard-production-2026-10`, algorithm ES256; and both applied migration-history filenames. No Identity Worker code or secret was changed, no existing sector/subject mapping was mutated, and no production user session or activation was created.
+
+### Billing promotion sequencing issue identified before mutation
+
+The existing official Billing production job is restricted to `ref=main` and checks out that ref's production configuration. The verified immutable artifact includes WASM/frontend assets, **not** the branch's Wrangler production configuration. Consequently, simply dispatching main against branch artifact `5c65890` would omit the prepared production audiences/catalog. Dispatching a production job on the branch would be skipped by the existing gate; a local alternate upload would not satisfy the official promotion workflow. This was escalated before any production Billing mutation rather than weakening the gate or silently merging main. The production job also includes unrelated amail service-secret provisioning, which requires a deliberately scoped release decision.
+
+Meanwhile [Billing staging run 40065305487](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/40065305487) was dispatched at the already reviewed branch source `5c65890` with `delivery=staging-only` to establish the required genuinely staged artifact, not merely a verify-only package. This does not itself apply production audiences/plans. No production administrator recipient/key, grant, or payment-provider configuration has been changed by this step.
+
+Billing source `5c65890f43b6d4fdfc77dd7ff500610c8bef219d` now has a **successful actual staging deployment**, [run 40065305487](https://github.com/kleedaisuki/moesegfault-subscriptions/actions/runs/40065305487), with serving Billing version `b7719d91-0a53-4b1e-97a5-16e03159ee0e` and Subscribe version `295ad88c-8fed-4874-99d0-862c87619f7a`. Official serving capture readback and bounded post-release smoke passed. A separate process using the existing native keyring and real released CLI read the original owned fixture: same account, Pro, limits 200/100/20, available test credit `179938855` microUSD after earlier real task usage. No new grant, login, code issuance, or production account was created for this readback. Production Billing promotion remains pending the main/configuration binding decision above.

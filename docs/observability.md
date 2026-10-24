@@ -198,6 +198,43 @@ platform span/trace ID. This time-only run did not allocate a workspace or chang
 snapshot, so no `session.checkpoint` event was expected or claimed. R2 lifecycle
 expiration and diagnostic-upload retention were not exercised by this bounded test.
 
+### Passive workspace-checkpoint acceptance — 2026-10-24
+
+On build `164d0aec3ea9404ef9b94f58847d775caacaa46e`, a separate content-safe global
+tail observed two existing idle/long-task acceptance sessions, C and D. The collector
+read only their session/agent identifiers from the test owner's fixture metadata,
+read no API keys, created no resources or model turns, and made **zero session HTTP
+or CLI calls**. It therefore did not renew their activity or interfere with the
+owner's no-polling idle windows. Subscription ran from 04:57:56 to 05:08:47 UTC and
+stopped once both sessions' checkpoint/archive events had arrived.
+
+| Session | Checkpoint UTC | Snapshot SHA-256 | Generation / archive bytes | Archive UTC |
+| --- | --- | --- | --- | --- |
+| C — `22bb5edf-84e0-49b2-b5a8-5a63a263f93f` | 05:05:21.262 | `f6cde33a44641dcfb15612a67dae32529a41dd08a23a969894907c0134eacd76` | 1 / 364 | 05:05:22.707 |
+| D — `d442190c-f32d-4b29-abb3-e54ba61d30c2` | 05:08:40.551 | `e4dae40fce3ca654bef56a6d99fd216f7b9c6b4d644ac6bef9290cb21c58340f` | 1 / 366 | 05:08:41.826 |
+
+For both sessions, live `session.checkpoint` contained `session_id`, `snapshot_id`,
+`workspace_revision` and `snapshot_bytes`. The subsequent `session.archived` matched
+the owner's session/agent identifiers and exact build above. These are maintenance
+checkpoints: they correctly omitted active `run_id`, `trace_id` and `build_id`; build
+and agent provenance is joined through the matching session archive, not invented
+as extra checkpoint fields. D's observed provider/bash events and successful
+`run.completed` shared `run_8e13a6898c6b46179fbbaad2e05e6b8e` and its application
+trace; the run-start event preceded this subscription and was not claimed captured.
+
+This supplements the earlier time-only test with actual workspace snapshot-reference
+ingestion. The watcher also saw the owner's later C restore/close traffic; its first
+checkpoint/archive pair above is kept distinct from that later archival. Events can
+arrive out of timestamp order across Cloudflare tail batches. No unexpected event
+fields were observed. Request/headers/body/raw exceptions were discarded in memory,
+Wrangler disk logging remained disabled, and only allowlisted C/D event fields were
+persisted in `.cache/telemetry/164d0ae-checkpoint-events.json`; the checked joins and
+zero-request observation scope are in `164d0ae-checkpoint-watch.json` beside it.
+
+This verifies archive-time snapshot metadata and content-free provenance joins, not
+workspace archive contents, ten-minute timing semantics independently of the owner's
+test, native Cloudflare trace-UI ancestry, or R2/diagnostic retention expiration.
+
 ## Sources and engineering rationale
 
 - [Cloudflare custom spans](https://developers.cloudflare.com/workers/observability/traces/custom-spans/):
