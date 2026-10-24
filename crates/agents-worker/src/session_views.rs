@@ -365,9 +365,14 @@ mod tests {
             }
             source.push(Message::text("assistant", "Checks completed."));
             let legacy = serde_json::to_vec(&json!({"messages":&source})).unwrap();
-            let recent = page("benchmark", &source, query("", "benchmark").unwrap()).unwrap();
-            let recent_bytes = serde_json::to_vec(&recent).unwrap().len();
-            let prior_end = recent.after_cursor.clone();
+            let (recent_bytes, prior_end, recent_messages) = {
+                let recent = page("benchmark", &source, query("", "benchmark").unwrap()).unwrap();
+                (
+                    serde_json::to_vec(&recent).unwrap().len(),
+                    recent.after_cursor.clone(),
+                    recent.end - recent.start,
+                )
+            };
             let mut summary = json!({
                 "id":"benchmark","agent_id":"agent-benchmark","status":"idle",
                 "input_revision":1,"last_input_at_ms":0,"context_tokens":35000,
@@ -424,7 +429,7 @@ mod tests {
             reports.push(json!({
                 "tool_stdout_bytes":output_bytes,"initial_messages":source.len()-2,
                 "legacy_initial_json_bytes":legacy.len(),"recent_page_json_bytes":recent_bytes,
-                "recent_page_messages":recent.end-recent.start,
+                "recent_page_messages":recent_messages,
                 "initial_view_json_bytes":initial_summary,"updated_view_json_bytes":updated_summary,
                 "append_page_json_bytes":delta_bytes,"append_page_messages":delta.data.len(),
                 "unchanged_polls":30,"legacy_requests":32,"optimized_requests":34,
