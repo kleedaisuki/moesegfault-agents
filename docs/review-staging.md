@@ -455,3 +455,26 @@ verification backends; that is not a claim of a vulnerability-free lockfile.
 The scoped residual assessment remains: no runtime private-RSA operation found,
 and no runtime private EC arithmetic remains in the affected Rust implementation.
 Reassess if another signing/decryption path or fallback is introduced.
+
+### Exact-source compiled-WASM CI gate completed
+
+[CI run 40076378439](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40076378439)
+passed for exact source `a2059d550c8b0651df740428554e93fcb2bf04dd` on
+2026-10-24. The new compiled Rust Worker suite passed **18/18**, including native
+Web Crypto callback, refresh and revocation assertions independently verified
+against the registered synthetic public key, plus invalid-zero-scalar rejection
+before token exchange or authentication. The reviewed cached Worker log records
+the exact checkout revision and successful test outcomes.
+
+This closes the new mitigation's compiled-WASM CI gate without rewriting the
+pre-test assessment above. Staging deployment run 40076671584 was queued when
+recorded; real deployed BFF regression is a separate pending step, not implied by
+CI. No additional local test or live call was made for this evidence update.
+
+Delivery-owner completion: staging 40076671584 subsequently passed all fourteen
+deployed SDK journeys, followed by production promotion 40077421671. Owned BFF
+refresh, fresh callback and logout passed separately in both realms; bounded
+passive telemetry observed upstream refresh/exchange/revocation 200 responses.
+See [acceptance](acceptance.md#server-authentication-security-update) and
+[Identity](identity-billing.md) for those post-review operational results. They
+close the deployment gate without changing the independent source-review scope.

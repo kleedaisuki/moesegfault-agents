@@ -56,7 +56,7 @@ This implements the documented chat-completions subset, not every OpenAI API. Se
 
 ## Download magents
 
-Download the archive and matching `.sha256` from a [published release](https://github.com/kleedaisuki/moesegfault-agents/releases), when available. Before the first binary release, maintainers can run [Package magents](https://github.com/kleedaisuki/moesegfault-agents/actions/workflows/release-magents.yml) manually and download its 30-day Actions artifacts. A workflow file alone does not mean binaries have been published.
+Download the archive and matching `.sha256` from [v0.1.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.1.0). Maintainers can also run [Package magents](https://github.com/kleedaisuki/moesegfault-agents/actions/workflows/release-magents.yml) manually for 30-day Actions artifacts; these are separate from public release assets.
 
 | Platform | Archive |
 | --- | --- |
@@ -70,7 +70,7 @@ For Actions downloads, unzip the artifact wrapper first. Verify the inner archiv
 sha256sum --check magents-*.tar.gz.sha256
 tar -xzf magents-VERSION-x86_64-unknown-linux-gnu.tar.gz
 ./magents --version
-./magents --api-url https://agents-staging.moesegfault.dev auth login
+./magents auth login
 ```
 
 ```powershell
@@ -80,7 +80,7 @@ $expected = ((Get-Content "$archive.sha256" -Raw).Trim() -split '\s+')[0]
 if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Checksum mismatch' }
 Expand-Archive -LiteralPath $archive -DestinationPath magents
 .\magents\magents.exe --version
-.\magents\magents.exe --api-url https://agents-staging.moesegfault.dev auth login
+.\magents\magents.exe auth login
 ```
 
 Move the verified binary to a directory on your `PATH` if desired. Interactive login uses Windows Credential Manager or Linux Secret Service; Linux desktop users need a running, unlocked Secret Service implementation such as GNOME Keyring or KWallet and a session D-Bus. There is no plaintext credential fallback. Headless environments can supply `MAGENTS_API_KEY` for API-key-authorized operations; account/skill/provider-key management still requires human login. macOS binary distribution is not included yet; build from source with `cargo install --locked --path crates/magents` when Rust and the platform keychain are available.

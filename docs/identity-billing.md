@@ -8,12 +8,12 @@ The dashboard is a confidential OIDC Backend for Frontend (BFF), not a browser O
 | --- | --- | --- |
 | Issuer | `https://identity-staging.moesegfault.dev` | `https://identity.moesegfault.dev` |
 | Dashboard callback | `https://adash-staging.moesegfault.dev/auth/callback` | `https://adash.moesegfault.dev/auth/callback` |
-| Dashboard client registration request | `agents-dashboard-staging` | `agents-dashboard` |
-| Native client registration request | `magents-staging` | `magents` |
+| Dashboard client | `agents-dashboard-staging` | `agents-dashboard` |
+| Native client | `magents-staging` | `magents` |
 | Native redirect | `http://127.0.0.1/callback`, `native_loopback_any_port` | Independently registered same loopback policy |
 | Required Billing sector | `subscribe-staging.moesegfault.dev` | `subscribe.moesegfault.dev` |
 
-The staging clients were provisioned and read back through the reviewed upstream deployment path; `deploy/identity/` contains their non-secret manifests and registration SQL copies. See [deployment onboarding](deployment-onboarding.md) for exact verification evidence and the reviewed shared-sector ownership policy. Production entries remain registration requests, not deployed capability. Never switch to an unrelated sector or join users by username. Production follows staging acceptance and explicit promotion; no staging secret is reused.
+Both environments' clients were provisioned through the reviewed upstream deployment path; `deploy/identity/` contains non-secret manifests and registration SQL copies. See [deployment onboarding](deployment-onboarding.md) for verification evidence and the reviewed shared-sector ownership policy, and the production protocol acceptance below for the real BFF/native journey. Never switch to an unrelated sector or join users by username. Production followed staging acceptance and explicit promotion; no staging secret is reused.
 
 Live production discovery was checked on 2026-10-23 and advertised Authorization Code, S256 PKCE, RS256 ID/access JWTs, `private_key_jwt`/`none`, refresh rotation, UserInfo and RP-initiated logout. The application loads discovery instead of hardcoding its endpoints and rejects issuer or endpoint-origin drift. See [Identity integration contract](https://github.com/kleedaisuki/moesegfault-indentity/blob/main/docs/integrating-app.md), [OAuth security BCP](https://www.rfc-editor.org/rfc/rfc9700.html), and [native app BCP](https://www.rfc-editor.org/rfc/rfc8252.html).
 
@@ -24,6 +24,25 @@ Required bindings are `DB` (application D1) and `AUTH_SESSIONS` (`AuthSession`, 
 Only public client IDs, issuer and native redirect are served by `GET /auth/config`. Browser tokens never appear in responses, localStorage, sessionStorage or frontend bundles. D1 stores encrypted token envelopes and BYOK keys. AES-256-GCM includes owner/purpose authenticated data: a copied database value cannot be substituted for another account, provider or session. The envelope has a format byte, a fresh 96-bit nonce and authenticated ciphertext. Back up encryption keys in deployment secret custody; replacing the key without a migration invalidates existing ciphertext. `key_version` identifies BYOK credential replacement, not a supported master-key rotation workflow.
 
 API keys are 256-bit random `mag_` secrets. D1 stores SHA-256 digests, never recoverable API key values. Creation discloses the plaintext once. API keys can use product APIs but cannot mint/revoke management keys, read BYOK secret values, change provider keys or send diagnostics; native human tokens and browser sessions own those management operations.
+
+### Native confidential-client signing boundary
+
+`auth_crypto.rs` performs private ES256 operations with native Worker Web Crypto:
+import the existing P-256 JWK as non-extractable and sign-only, then use ECDSA/SHA-256.
+`agents-auth::prepare_client_assertion` only validates metadata and frames the JWT;
+assembly requires the 64-byte IEEE-P1363 `r || s` signature. The registered JWK,
+ES256/kid, `iss=sub=client_id`, token-endpoint audience, two-minute expiry and fresh
+JTI are unchanged. Import/sign failures fail closed, with no Rust private-scalar,
+PKCS#8 or software-signing fallback. The original JWK remains a deployment secret;
+this is a private-arithmetic boundary, not a claim of hardware key isolation.
+
+This scoped mitigation follows the timing-variability advisory
+[RUSTSEC-2026-0387](https://github.com/RustSec/advisory-db/blob/main/crates/crypto-bigint/RUSTSEC-2026-0387.md),
+the [Worker Web Crypto API](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/)
+and [W3C ECDSA operations](https://www.w3.org/TR/webcrypto/#ecdsa-operations).
+Direct `p256` is test-only; transitive `crypto-bigint` remains in public verification
+dependencies. This does not claim an advisory-free lockfile or change issuer, client,
+token purpose, registration or key rotation policy.
 
 ## Browser lifecycle
 
@@ -502,3 +521,43 @@ grant totaling 1,000,000 microUSD. Current available credit was 999,126 microUSD
 consistent with ongoing retained-storage metering rather than a new login grant.
 There was no registration, model/mail call, new key, password/token inspection,
 deployment or second account request in this final asset check.
+
+### Native-signer staging protocol regression
+
+After public health matched server build
+`a2059d550c8b0651df740428554e93fcb2bf04dd`, the existing owned staging profile exercised
+expired-access refresh, a fresh public authorization callback and normal CSRF logout.
+Refresh returned 200 for the same principal and increased the stored rotation version.
+The callback returned 302 and a 200 Pro/test account response, with a newly recorded
+BFF session. Logout returned 200, removed that local session, and a following account
+read returned 401.
+
+An independent, bounded global tail captured actual Identity upstream refresh,
+authorization-code exchange and revocation **all returning 200**, with no failed
+provider event. Thus remote revocation success was observed separately from the
+application's best-effort local logout response. The test used no new account, key,
+mailbox, model request or Billing activation, and closed its headless owned profile.
+Production subsequently passed its separate deployment clearance and regression below.
+
+### Native-signer production protocol regression
+
+After independent promotion clearance and exact public health build
+`a2059d550c8b0651df740428554e93fcb2bf04dd`, the existing owned production profile
+completed expired-access refresh with HTTP 200 and an increased stored rotation
+version. A fresh authorization callback returned 302 and a 200 account response for
+the same Free/live principal, with a new BFF session recorded. Normal CSRF logout
+returned 200, removed that local session, and the following account read returned 401.
+
+The independent production global-tail collector observed Identity refresh,
+authorization-code exchange and remote revocation each returning 200 during this
+coordinated window; it stopped at 08:20:22 UTC. Safe receipts are in
+`.cache/telemetry/a2059d55-production-identity-{events,watch}.json`. These observations
+support this owned-account protocol regression: they are bounded phase/status
+evidence, not a token inspection, Identity SSO logout claim or proof of all possible
+authentication paths. In particular, remote revocation was observed independently,
+not inferred from the application's best-effort local logout response.
+
+The headless owned browser was closed. No account, password, registered JWK, issuer,
+client, API key or Billing grant was created or rotated; no mail or model request
+was made. This was a server-only signer replacement. The published immutable
+`magents v0.1.0` client release was unchanged.

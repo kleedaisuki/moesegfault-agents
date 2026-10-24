@@ -67,7 +67,7 @@ CI also runs the compiled Wasm inside workerd with actual D1 and Durable Objects
 
 Native Workers Rate Limiting bindings protect ingress before database authentication, then bound per-account requests and mutations. Staging and production use distinct namespaces. Initial per-60-second limits are 2,400 requests per hashed ingress IP, 1,200 per authenticated account, and 120 account mutations. Responses include `429 request_rate_exceeded` and `Retry-After`. These are inexpensive, approximate per-Cloudflare-location abuse controls, **not** globally exact financial or concurrency admission; D1's atomic constraints remain authoritative for those. Normal management-plane operations are included in the bounded service surface rather than generating a recursive ledger event for every management/ledger query.
 
-## Verified active release readback — 2026-10-24
+## Verified initial release readback — 2026-10-24
 
 Read-only Cloudflare API inspection at 06:22–06:24 UTC verified both **100% serving
 versions**, rather than relying only on local Wrangler configuration. Their
@@ -129,3 +129,24 @@ all sixteen HTTP/transport cases under the patched toolchain. Targeted tooling C
 also runs `npm audit --audit-level=high`. These are operator development dependencies;
 the deployed Rust services and distributed Rust CLI archives do not run Undici.
 The immutable `v0.1.0` implementation tag is not moved to rewrite build history.
+
+## Native-signer server promotion
+
+The server-only security update at
+`a2059d550c8b0651df740428554e93fcb2bf04dd` supersedes the initial serving build
+above. Full [CI 40076378439](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40076378439)
+passed before [staging 40076671584](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40076671584)
+and then [production 40077421671](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40077421671)
+were promoted from its exact artifacts. Staging's fourteen deployed SDK cases
+passed; both production host health responses reported the exact new commit.
+Production Wrangler reported Worker version `fec10e58-928d-453e-81a3-72d065f46bb6`.
+
+The existing client registrations and signing/envelope keys were retained. The
+change isolates private ES256 arithmetic in native Web Crypto, with no software
+fallback, and does not alter the data schema or container daemon. Both deployment
+logs report the new commit's container tag with the unchanged publication digest
+`sha256:58feb5ef6d58bce367f44cc6e388d3cd7dcb1a8a5a2ab5be4c85fe256bb4d3e0`.
+This remains publication evidence, not a resolved-digest field in the App API.
+The independently verified CLI `v0.1.0` tag and four public assets were not moved
+or replaced. See [acceptance](acceptance.md) and [Identity](identity-billing.md)
+for the real owned-account BFF regressions after this promotion.

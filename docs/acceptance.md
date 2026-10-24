@@ -204,7 +204,7 @@ The long task's non-streaming SDK connection had detached, so this proves durabl
 
 ## Released production state
 
-The immutable implementation is `8caff37333cf148a62c804e75cc9189203e8f167`:
+The initial public implementation is `8caff37333cf148a62c804e75cc9189203e8f167`:
 [full CI](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067168672),
 [all fourteen staging SDK journeys](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067574002),
 and [successful production deployment](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40068971874).
@@ -280,3 +280,35 @@ CI fixture's sanitizer does not yet export those new event fields, and this run
 does not claim to validate that diagnostic-export path. These results establish
 the cleanup correction for the tested revision, not a substitute for the separate
 deployed Identity/Billing and lifecycle acceptance gates.
+
+## Server authentication security update
+
+Both production hosts now serve
+`a2059d550c8b0651df740428554e93fcb2bf04dd`. The bounded server-only update moves
+confidential-client private ES256 arithmetic to native Workers Web Crypto without
+changing registered keys, JWT semantics, external APIs, billing or session lifecycle.
+There is no software private-signing fallback; the scoped RustSec assessment is in
+[the independent review](review-staging.md).
+
+- [Exact-source full CI 40076378439](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40076378439)
+  passed every job. Eighteen actual-Worker/transport cases include independently
+  verified callback, refresh and revocation assertions and invalid-scalar rejection
+  before exchange or authenticated-session creation.
+- [Staging deployment 40076671584](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40076671584)
+  passed all fourteen real SDK journeys in 583.71 seconds. Owned-account BFF
+  expired refresh, fresh callback and logout also passed, with separately observed
+  upstream Identity refresh, authorization exchange and revocation returning 200.
+- [Production deployment 40077421671](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40077421671)
+  succeeded; both public health responses reported this exact build. The existing
+  owned Free/live account passed expired BFF refresh, fresh callback, same-principal
+  validation and logout followed by 401. A separate bounded global tail observed
+  all three upstream Identity phases returning 200 in that owned test window;
+  those phase events are not claimed to contain build or subject fields.
+  No account, mailbox, API key, model request
+  or allocation grant was created for this narrow production regression.
+
+The public `v0.1.0` CLI archives and their immutable source tag remain unchanged:
+native PKCE clients do not hold or use the BFF's private signing key. Prior real
+workspace, unattended-clock, long-stream and production model acceptance remains
+applicable to the unchanged runtime paths; those expensive probes were not replayed
+merely for an isolated authentication implementation update.
