@@ -1,3 +1,4 @@
+mod file_import;
 mod process;
 mod snapshot;
 
@@ -17,7 +18,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use futures_util::StreamExt;
 use process::{ExecRequest, ExecResult};
@@ -105,6 +106,10 @@ fn router(state: Arc<App>) -> Router {
         .route("/v1/exec", post(exec))
         .route("/v1/exec/{id}", get(exec_status).delete(cancel_exec))
         .route("/v1/snapshot", get(snapshot))
+        .route(
+            "/v1/files/{id}",
+            put(file_import::import).layer(DefaultBodyLimit::disable()),
+        )
         .route(
             "/v1/restore",
             post(restore).layer(DefaultBodyLimit::disable()),
@@ -524,7 +529,13 @@ mod tests {
     async fn all_routes_require_internal_auth() {
         let temp = crate::test_dir();
         let app = router(app(temp.path().to_owned()));
-        for path in ["/health", "/v1/status", "/v1/snapshot", "/v1/exec/run-1"] {
+        for path in [
+            "/health",
+            "/v1/status",
+            "/v1/snapshot",
+            "/v1/exec/run-1",
+            "/v1/files/file-1",
+        ] {
             let response = app
                 .clone()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
@@ -585,6 +596,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn file_import_rejects_invalid_or_incomplete_bodies_before_publication() {
+        let temp = crate::test_dir();
+        let state = app(temp.path().to_owned());
+        let app = router(state.clone());
+        let digest = hex::encode(Sha256::digest(b"expected"));
+        let cases = [
+            ("8", "invalid", "expected", StatusCode::BAD_REQUEST),
+            (
+                "67108865",
+                digest.as_str(),
+                "",
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                "8",
+                digest.as_str(),
+                "short",
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            ("4", digest.as_str(), "longer", StatusCode::BAD_REQUEST),
+            ("8", digest.as_str(), "incorrect", StatusCode::BAD_REQUEST),
+        ];
+        for (length, hash, body, expected) in cases {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri("/v1/files/file-1")
+                        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                        .header(header::CONTENT_LENGTH, length)
+                        .header("x-content-sha256", hash)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        assert!(!state.store.current().unwrap().join("uploads").exists());
+        assert_eq!(state.revision.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
