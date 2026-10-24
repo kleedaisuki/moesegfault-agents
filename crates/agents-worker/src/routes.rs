@@ -302,6 +302,9 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "agents", id] => agents(req, env, owner, Some(id)).await,
         ["v1", "agents", id, "sessions"] => agent_sessions(req, env, owner, id).await,
         ["v1", "sessions", id] => session_route(req, env, owner, id, None).await,
+        ["v1", "sessions", id, "workspace", "archive"] => {
+            session_route(req, env, owner, id, Some("workspace-archive")).await
+        }
         ["v1", "sessions", id, action] => session_route(req, env, owner, id, Some(action)).await,
         ["v1", "sessions"] if req.method() == Method::Get => Response::from_json(
             &json!({"object":"list","data":Store::new(env).list_sessions(owner).await?}),
@@ -749,6 +752,29 @@ async fn session_route(
     };
     match (req.method(), action) {
         (Method::Get, None) => forward(env, &session, Method::Get, "/status", None).await,
+        (Method::Get, Some("export")) => {
+            let Some(format) = crate::exports::requested_format(&req.url()?) else {
+                return crate::exports::invalid_format();
+            };
+            forward(
+                env,
+                &session,
+                Method::Get,
+                &format!("/export?format={}", format.as_str()),
+                None,
+            )
+            .await
+        }
+        (Method::Get, Some("workspace-archive")) => {
+            if req.url()?.query().is_some() {
+                return util::json_error(
+                    400,
+                    "invalid_request_error",
+                    "Workspace downloads do not accept query fields",
+                );
+            }
+            forward(env, &session, Method::Get, "/workspace/archive", None).await
+        }
         (Method::Delete, None) => forward(env, &session, Method::Delete, "/close", None).await,
         (Method::Post, Some("resume")) => {
             let store = Store::new(env);

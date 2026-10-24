@@ -27,6 +27,8 @@ use crate::{
     telemetry::{NativeSpan, TraceContext},
 };
 
+#[path = "workspace_download.rs"]
+mod download;
 #[path = "workspace_lease.rs"]
 mod lease;
 #[path = "workspace_transport.rs"]
@@ -776,6 +778,13 @@ impl<'a> Workspace<'a> {
                 archive_bytes: manifest.stats.archive_bytes,
                 entries: manifest.stats.entries,
             }))
+    }
+
+    pub async fn download_checkpoint(
+        &self,
+        expected: &agents_core::WorkspaceSnapshot,
+    ) -> Result<worker::Response> {
+        download::checkpoint(self, expected).await
     }
 
     pub async fn checkpoint(&self) -> Result<CheckpointStats> {

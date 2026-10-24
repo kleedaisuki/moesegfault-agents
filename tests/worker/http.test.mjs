@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture, runAuthJourney, runClientAssertionJourney, runInvalidClientKeyJourney } from './auth-journey.mjs';
+import { createBrowserPrincipal } from './browser-principal.mjs';
 import { createGenericProviderFixture, runGenericByokJourney } from './generic-byok-journey.mjs';
+import { runExportJourney } from './export-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -264,6 +266,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       assert.deepEqual(afterEviction.messages, beforeEviction.messages, 'DO reconstruction must bulk-load the persisted message codec without data loss');
       assert.deepEqual(afterEviction.pending_messages, beforeEviction.pending_messages);
       assert.equal(afterEviction.last_error, beforeEviction.last_error);
+      await runExportJourney({ mf, db, request, sessionId: session.id, key, createBrowserPrincipal, encryptionKey });
       clearTimeout(timer);
       const redirectedSession = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201);
       redirectProvider = true;

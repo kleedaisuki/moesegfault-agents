@@ -2,6 +2,7 @@ mod allowances;
 mod auth;
 mod checkpoint_gc;
 mod cleanup;
+mod exports;
 mod metering;
 mod provider;
 mod reconcile;

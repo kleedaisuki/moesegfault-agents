@@ -235,6 +235,47 @@ impl DurableObject for Session {
                 value["run_id"] = json!(data.run.map(|r| r.id));
                 Response::from_json(&value)
             }
+            (Method::Get, "/export") => {
+                let Some(format) = crate::exports::requested_format(&req.url()?) else {
+                    return crate::exports::invalid_format();
+                };
+                let borrowed = inner.data.borrow();
+                let data = borrowed
+                    .as_ref()
+                    .ok_or_else(|| Error::RustError("session_not_initialized".into()))?;
+                crate::exports::Transcript {
+                    session: data.record.clone(),
+                    messages: data.journal.clone(),
+                    pending_messages: data.pending.clone(),
+                    input_tokens: data.input_tokens,
+                    compact_count: data.compact_count,
+                    exported_at_ms: util::now_ms(),
+                }
+                .response(format)
+            }
+            (Method::Get, "/workspace/archive") => {
+                let (record, archive_pending, checkpoint_error) = {
+                    let borrowed = inner.data.borrow();
+                    let data = borrowed
+                        .as_ref()
+                        .ok_or_else(|| Error::RustError("session_not_initialized".into()))?;
+                    (
+                        data.record.clone(),
+                        data.archive_pending || data.archive_preparing || data.run.is_some(),
+                        data.checkpoint_error.is_some(),
+                    )
+                };
+                if let Err((status, code, message)) = crate::exports::workspace_ready(
+                    &record,
+                    archive_pending || inner.running.get() || inner.closing.get(),
+                    checkpoint_error,
+                ) {
+                    return util::json_error(status, code, message);
+                }
+                Workspace::new(&inner.state, &inner.env, &record.owner_id, &record.id)
+                    .download_checkpoint(record.workspace_snapshot.as_ref().unwrap())
+                    .await
+            }
             (Method::Post, "/resume") => {
                 if inner.running.get() || inner.closing.get() || inner.snapshot()?.archive_pending {
                     return util::json_error(409, "session_busy", "Session is busy");
