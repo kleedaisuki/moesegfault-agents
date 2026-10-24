@@ -486,3 +486,19 @@ deployment owner's separate API-key probe returned 403
 `human_authentication_required`, which remains the intended management boundary,
 not a reason to grant API keys diagnostic-report privileges. The browser was closed
 afterward and production account/billing state was not touched.
+
+### Public release asset: final production account check
+
+The final check used the anonymously downloaded **public `v0.1.0` Windows release**,
+not the earlier `928c533` CI artifact. Its published BUILDINFO/digest were independently
+verified by the delivery owner against source
+`8caff37333cf148a62c804e75cc9189203e8f167` and `refs/tags/v0.1.0`.
+
+`magents --version` reported 0.1.0. Using the existing production OS-keyring login,
+offline status initially reported expired; one normal `account` request refreshed
+successfully and returned the same owned principal, Free and live billing mode.
+Read-only inspection of that owned account still found exactly one included-credit
+grant totaling 1,000,000 microUSD. Current available credit was 999,126 microUSD,
+consistent with ongoing retained-storage metering rather than a new login grant.
+There was no registration, model/mail call, new key, password/token inspection,
+deployment or second account request in this final asset check.
