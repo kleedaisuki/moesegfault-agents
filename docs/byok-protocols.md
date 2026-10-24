@@ -107,3 +107,35 @@ those integration gates or a real upstream acceptance.
 - [Anthropic fine-grained tool JSON streaming](https://platform.claude.com/docs/en/agents-and-tools/tool-use/fine-grained-tool-streaming)
 - [Anthropic prompt caching and usage](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - [DeepSeek Anthropic-compatible API](https://api-docs.deepseek.com/guides/anthropic_api/)
+
+## Long-prefill observer acceptance
+
+Staging deployment 40090870920 at `43cf770020fd86b4b91cb29ff4ddc78ad1c1ca5e`
+passed thirteen of fourteen legacy SDK cases. The large-corpus compaction case
+received HTTP 500 on its **initial nonstreaming turn, before compaction**. The
+owned durable journal nevertheless contained the 80,662-byte source and `ACK`;
+authoritative ledger readback showed one 14,402-token model completion and a
+92.244-second completed, settled execution. The failed observer is not evidence
+that the model task failed or that compacted history was lost. Historical native
+exception evidence was unavailable; the original transport/infrastructure cause
+was not established and no model or financial state was rewritten.
+
+One separately authorized, fresh controlled journey on that unchanged build used
+the same corpus, model, instructions and 1% threshold, with SDK retries disabled.
+Its nonstream initial turn returned 200 in 14.126 seconds; the next user turn
+returned 200 in 32.900 seconds, performed one actual compaction and a time-tool
+exchange, preserved the pin and complete source journal, and settled cleanly.
+Content-free live telemetry independently observed both successful runs. This
+distinguishes a verified functioning compaction path from an unknown earlier
+observer failure; a later success does not retroactively establish its cause.
+
+The long-corpus regression now uses the already documented streaming transport,
+requiring terminal `stop` and reported usage while keeping the original measured
+10,500–20,000 input-token range, percentage, pin, source and tool-group assertions.
+Other SDK cases retain nonstream coverage. No automatic execution retry or timeout
+increase is introduced. A separate bounded recovery change preserves the known
+session header and a sanitized error family if the `/run` DO fetch throws; it
+keeps the original HTTP error classification and makes no claim that input was
+accepted. It improves discovery and future diagnostics, not the unproven original
+root cause. [Cloudflare's DO error guidance](https://developers.cloudflare.com/durable-objects/best-practices/error-handling/)
+likewise requires deciding whether a side-effecting operation is safe before retry.

@@ -406,4 +406,76 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     await t.test(`generic ${protocol} BYOK preserves route identity and completes tools without model charges`, { timeout: 32000 }, () =>
       runGenericByokJourney({ mf, db, encryptionKey, request, providers: genericProviders, protocol }));
   }
+  await t.test('native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
+    const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'forward-recovery-owner' });
+    const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false }, 201, principal.apiKey);
+    const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, principal.apiKey);
+    const before = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+    const walletBefore = await db.prepare('SELECT spent_microusd,reserved_microusd FROM usage_accounts WHERE account_id=?1').bind(principal.owner).first();
+    const sentinel = 'synthetic-private-native-do-error-never-disclose';
+    const throwingWorker = convertV4MiniflareOptions({
+      name: 'throwing-session-fixture', modules: true, compatibilityDate: '2026-10-23',
+      script: `export class ThrowingSession {
+        constructor() { this.calls = 0; }
+        fetch(request) {
+          if (new URL(request.url).pathname === '/count') return Response.json({ calls: this.calls });
+          this.calls++;
+          throw new Error(${JSON.stringify(sentinel)});
+        }
+      }; export default { fetch() { return new Response(null, {status:404}); } };`,
+      durableObjects: { SELF: { className: 'ThrowingSession', useSQLite: true } },
+    }).workers[0];
+    const failures = [];
+    const primary = mfOptions.workers[0];
+    const throwingOptions = {
+      ...mfOptions,
+      workers: [{ ...primary, config: { ...primary.config, env: { ...primary.config.env,
+        SESSIONS: { type: 'durable-object', worker: 'throwing-session-fixture', exportName: 'ThrowingSession' },
+      } } }, throwingWorker],
+      // Suppress the intentionally throwing fixture's stack; inspect only structured application diagnostics.
+      handleStructuredLogs(record) {
+        try {
+          const entry = JSON.parse(record.message);
+          if (entry.event === 'request.failed') failures.push(entry);
+        } catch { /* Non-JSON platform exception text is not application telemetry. */ }
+      },
+    };
+    try {
+      await mf.setOptions(throwingOptions);
+      db = await mf.getD1Database('DB');
+      const response = await mf.dispatchFetch('https://agents.test/v1/chat/completions', {
+        method: 'POST', headers: { Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': 'application/json', 'X-Agents-Session': session.id },
+        body: JSON.stringify({ model: agent.id, messages: [{ role: 'user', content: 'Synthetic forward rejection.' }], stream: false }),
+      });
+      const body = await response.text();
+      assert.equal(response.status, 500);
+      assert.equal(response.headers.get('x-agents-session'), session.id, 'A failed observer must retain the known session recovery handle');
+      assert.equal(JSON.parse(body).error.code, 'internal_error');
+      assert.ok(!body.includes(sentinel));
+      const namespace = await mf.getDurableObjectNamespace('SESSIONS');
+      const counter = await namespace.get(namespace.idFromName(`${principal.owner}:${session.id}`)).fetch('https://fixture/count');
+      assert.equal((await counter.json()).calls, 1, 'A rejected DO fetch must never be replayed');
+      const deadline = Date.now() + 1000;
+      while (failures.length === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(failures.length, 1);
+      const event = failures[0];
+      assert.deepEqual(Object.keys(event.fields).sort(), ['phase', 'trace_id', 'session_id', 'agent_id', 'outcome', 'error_code', 'status'].sort());
+      assert.equal(event.fields.phase, 'session_forward');
+      assert.equal(event.fields.session_id, session.id);
+      assert.equal(event.fields.agent_id, agent.id);
+      assert.equal(event.fields.status, 500);
+      assert.equal(event.fields.error_code, 'internal_error');
+      assert.match(event.fields.trace_id, /^[0-9a-f]{32}$/);
+      assert.ok(['javascript', 'binding', 'd1', 'serialization', 'runtime', 'platform'].includes(event.fields.outcome));
+      assert.ok(!JSON.stringify(event).includes(sentinel));
+      assert.deepEqual(await db.prepare('SELECT spent_microusd,reserved_microusd FROM usage_accounts WHERE account_id=?1').bind(principal.owner).first(), walletBefore);
+    } finally {
+      await mf.setOptions(mfOptions);
+      db = await mf.getD1Database('DB');
+    }
+    const after = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+    assert.deepEqual(after.messages, before.messages);
+    assert.equal(after.input_revision, before.input_revision);
+    assert.equal(after.last_input_at_ms, before.last_input_at_ms);
+  });
 });

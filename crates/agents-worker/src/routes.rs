@@ -907,19 +907,85 @@ async fn run(
     messages: Vec<Message>,
     stream: bool,
 ) -> Result<Response> {
-    let response = forward(
+    let response = match forward(
         env,
         session,
         Method::Post,
         "/run",
         Some(json!({"messages":messages,"stream":stream})),
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            let failure = RunForwardFailure::new(&error, &session.id);
+            crate::telemetry::emit(
+                "request.failed",
+                json!({
+                    "phase":"session_forward", "trace_id":env.trace.trace_id(),
+                    "session_id":session.id, "agent_id":session.agent_id,
+                    "outcome":failure.error_family, "error_code":failure.code,
+                    "status":failure.status,
+                }),
+            );
+            failure.response()?
+        }
+    };
     let mut response = own_headers(response);
     response
         .headers_mut()
         .set("X-Agents-Session", &session.id)?;
     Ok(response)
+}
+
+struct RunForwardFailure<'a> {
+    session_id: &'a str,
+    status: u16,
+    code: &'static str,
+    message: &'static str,
+    error_family: &'static str,
+}
+
+impl<'a> RunForwardFailure<'a> {
+    fn new(error: &worker::Error, session_id: &'a str) -> Self {
+        let text = match error {
+            worker::Error::RustError(code) => code.clone(),
+            _ => error.to_string(),
+        };
+        let (status, code, message) = classify_error(&text);
+        let error_family = match error {
+            worker::Error::JsError(_)
+            | worker::Error::UnknownJsError { .. }
+            | worker::Error::Internal(_) => "javascript",
+            worker::Error::BindingError(_) => "binding",
+            worker::Error::D1(_) => "d1",
+            worker::Error::SerdeJsonError(_) | worker::Error::SerdeWasmBindgenError(_) => {
+                "serialization"
+            }
+            worker::Error::RustError(_) => "runtime",
+            _ => "platform",
+        };
+        Self {
+            session_id,
+            status,
+            code,
+            message,
+            error_family,
+        }
+    }
+
+    fn session_header(&self) -> (&'static str, &str) {
+        ("X-Agents-Session", self.session_id)
+    }
+
+    fn response(&self) -> Result<Response> {
+        // A failed observer cannot prove whether the durable input was accepted.
+        // Preserve its discoverable session without retrying or relabeling state.
+        let mut response = util::json_error(self.status, self.code, self.message)?;
+        let (name, value) = self.session_header();
+        response.headers_mut().set(name, value)?;
+        Ok(response)
+    }
 }
 
 async fn forward(
@@ -1065,5 +1131,53 @@ mod tests {
             assert!(!valid_byok_model(&invalid));
         }
         assert_eq!(classify_error("credential_route_immutable").0, 409);
+    }
+
+    #[test]
+    fn forwarding_failures_preserve_status_and_session_without_exposing_native_messages() {
+        for (error, status, code, family) in [
+            (
+                worker::Error::JsError("synthetic-secret native exception".into()),
+                500,
+                "internal_error",
+                "javascript",
+            ),
+            (
+                worker::Error::BindingError("synthetic-secret binding detail".into()),
+                500,
+                "internal_error",
+                "binding",
+            ),
+            (
+                worker::Error::RustError("budget_exceeded".into()),
+                402,
+                "insufficient_credits",
+                "runtime",
+            ),
+            (
+                worker::Error::RustError("provider returned HTTP 429".into()),
+                502,
+                "provider_error",
+                "runtime",
+            ),
+        ] {
+            let failure = RunForwardFailure::new(&error, "known-owned-session");
+            assert_eq!(
+                (failure.status, failure.code, failure.error_family),
+                (status, code, family)
+            );
+            assert_eq!(
+                failure.session_header(),
+                ("X-Agents-Session", "known-owned-session")
+            );
+            assert!(!failure.message.contains("synthetic-secret"));
+            let safe = crate::telemetry::sanitize_fields(json!({
+                "outcome":failure.error_family, "error_code":failure.code,
+                "raw_error":error.to_string(),
+            }));
+            assert_eq!(safe["outcome"], family);
+            assert_eq!(safe["error_code"], code);
+            assert!(safe.get("raw_error").is_none());
+        }
     }
 }
