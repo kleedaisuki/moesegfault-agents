@@ -3,7 +3,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use axum::{
     Json,
     body::Body,
@@ -171,7 +171,7 @@ fn install(
         .into_std();
     ensure!(file.metadata()?.len() == bytes, "import length changed");
     assign(&file, 0o600)?;
-    file.sync_all()?;
+    file.sync_all().context("sync imported file")?;
     source
         .hard_link(name, &destination, "content")
         .map_err(|err| {
@@ -197,7 +197,11 @@ fn directory(parent: &Dir, name: &str) -> anyhow::Result<Dir> {
     }
     let dir = parent.open_dir(name)?;
     if created {
-        assign(&dir.try_clone()?.into_std_file(), 0o700)?;
+        // Linux capability directories may be O_PATH descriptors. Reopen the
+        // same directory for fchmod/fchown rather than weakening those checks.
+        #[cfg(unix)]
+        assign(&dir.open(".")?.into_std(), 0o700)
+            .context("assign imported directory ownership and permissions")?;
         sync_dir(parent)?;
     }
     Ok(dir)
@@ -240,7 +244,9 @@ fn assign(file: &std::fs::File, mode: u32) -> anyhow::Result<()> {
 
 fn sync_dir(dir: &Dir) -> anyhow::Result<()> {
     #[cfg(unix)]
-    dir.try_clone()?.into_std_file().sync_all()?;
+    dir.open(".")?
+        .sync_all()
+        .context("sync imported directory")?;
     let _ = dir;
     Ok(())
 }
@@ -263,6 +269,22 @@ mod tests {
         for id in ["", ".", "..", "a/b", "a\\b", "C:foo", "é", &"a".repeat(129)] {
             assert!(!valid_id(id), "{id}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capability_directories_support_permissions_and_durable_publication() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = crate::test_dir();
+        let root = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        let imported = directory(&root, "uploads").unwrap();
+        sync_dir(&imported).unwrap();
+        let handle = imported.open(".").unwrap().into_std();
+        assert!(handle.metadata().unwrap().is_dir());
+        assert_eq!(
+            handle.metadata().unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[test]
