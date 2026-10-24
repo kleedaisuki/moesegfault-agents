@@ -179,6 +179,16 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "billing_unavailable",
             "Pricing for this resource is not configured; contact the service administrator",
         ),
+        "workspace_startup_timeout" => (
+            503,
+            "workspace_startup_timeout",
+            "The workspace did not become ready within its startup deadline; no command was replayed",
+        ),
+        "workspace_startup_unavailable" => (
+            503,
+            "workspace_startup_unavailable",
+            "The workspace could not start or become ready; no command was replayed",
+        ),
         "workspace_unavailable" | "workspace_state_encoding_failed" | "tool_outcome_unknown" => (
             503,
             "workspace_unavailable",
@@ -900,6 +910,16 @@ mod tests {
             ("invalid_callback", 400, "invalid_callback"),
             ("unknown_skill", 400, "invalid_skill"),
             ("workspace_unavailable", 503, "workspace_unavailable"),
+            (
+                "workspace_startup_timeout",
+                503,
+                "workspace_startup_timeout",
+            ),
+            (
+                "workspace_startup_unavailable",
+                503,
+                "workspace_startup_unavailable",
+            ),
             (
                 "workspace_state_encoding_failed",
                 503,

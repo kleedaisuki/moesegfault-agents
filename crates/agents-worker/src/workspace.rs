@@ -36,10 +36,14 @@ use lease::ComputeLease;
 use transport::{Deadline, TimedResponse};
 
 const PORT: u16 = 8080;
+const STARTUP_BUDGET_MS: u64 = 120_000;
+const STARTUP_PROBE_MS: u64 = 5_000;
+const INACTIVITY_FALLBACK_MS: u64 = 15 * 60 * 1000;
 const BATCH_TOOLS: u64 = 8;
 const BATCH_BYTES: u64 = 64 * 1024 * 1024;
 const CONTAINER_CLOCK: &str = "workspace:container-clock";
 const RELEASE_INTENT: &str = "workspace:release-intent";
+const STARTUP_PENDING: &str = "workspace:startup-pending";
 
 /// A session DO is the sole writer. Its caller must serialize workspace operations,
 /// including checkpoint/release, against tool execution.
@@ -75,6 +79,8 @@ struct ReleaseIntent {
     lease_id: Option<String>,
     destroyed_at_ms: Option<u64>,
     outcome: Option<ReleaseOutcome>,
+    #[serde(default)]
+    startup_pending: bool,
 }
 
 impl ReleaseIntent {
@@ -272,7 +278,34 @@ impl<'a> Workspace<'a> {
         if !self.container()?.running() {
             return Ok(());
         }
-        self.renew_compute_lease().await
+        self.renew_compute_lease().await?;
+        self.configure_inactivity_if_running().await
+    }
+
+    /// This native fallback survives DO inactivity, not DO reinstantiation.
+    /// It never renews funding or changes the session's user-input deadline.
+    pub async fn configure_inactivity_if_running(&self) -> Result<()> {
+        let container = self.container()?;
+        if !container.running() {
+            return Ok(());
+        }
+        self.configure_inactivity(&container).await
+    }
+
+    async fn configure_inactivity(&self, container: &Container) -> Result<()> {
+        let lease = self
+            .lease()
+            .current()
+            .await?
+            .ok_or_else(|| Error::RustError("workspace_lease_missing".into()))?;
+        let timeout = inactivity_timeout_ms(lease.expires_ms, worker::Date::now().as_millis())?;
+        let method = js_sys::Reflect::get(container.as_ref(), &"setInactivityTimeout".into())?
+            .dyn_into::<js_sys::Function>()?;
+        let promise = method
+            .call1(container.as_ref(), &JsValue::from_f64(timeout as f64))?
+            .dyn_into::<js_sys::Promise>()?;
+        wasm_bindgen_futures::JsFuture::from(promise).await?;
+        Ok(())
     }
 
     async fn renew_compute_lease(&self) -> Result<()> {
@@ -407,7 +440,7 @@ impl<'a> Workspace<'a> {
             self.release().await?;
             self.state.storage().delete(RELEASE_INTENT).await?;
         }
-        let container = self.container()?;
+        let container = self.container().map_err(|_| startup_unavailable())?;
         if !container.running() {
             if let Some(old) = self
                 .state
@@ -442,6 +475,9 @@ impl<'a> Workspace<'a> {
                 }
             }
             self.renew_compute_lease().await?;
+            // Until readiness and restore commit, the previous R2 manifest is
+            // authoritative and this incarnation cannot have dispatched Bash.
+            self.state.storage().put(STARTUP_PENDING, true).await?;
             self.state
                 .storage()
                 .put(
@@ -454,24 +490,36 @@ impl<'a> Workspace<'a> {
                 )
                 .await?;
             self.arm_usage().await?;
-            start_container(&container, &self.token().await?)?;
+            start_container(&container, &self.token().await?).map_err(|_| startup_unavailable())?;
+            self.configure_inactivity(&container).await?;
+        } else {
+            self.ensure_compute_lease().await?;
         }
-        self.ensure_compute_lease().await?;
         self.arm_usage().await?;
         let mut health = None;
-        let ready_until = worker::Date::now().as_millis().saturating_add(30_000);
+        // Cold image placement can outlast a short command. This budget is
+        // independent of Bash timeout_ms and never starts a second container.
+        let ready_until = worker::Date::now()
+            .as_millis()
+            .saturating_add(STARTUP_BUDGET_MS);
         while worker::Date::now().as_millis() < ready_until {
-            let probe_until = worker::Date::now()
-                .as_millis()
-                .saturating_add(5_000)
-                .min(ready_until);
+            let probe_until = startup_probe_until(worker::Date::now().as_millis(), ready_until);
             if let Ok(mut response) = self
                 .request_until(Method::Get, "/health", None, &[], probe_until)
                 .await
             {
+                if startup_status_is_fatal(response.status_code()) {
+                    return Err(startup_unavailable());
+                }
                 if response.status_code() == 200 {
-                    health = Some(response.json::<Value>().await?);
-                    break;
+                    match response.json::<Value>().await {
+                        Ok(value) => {
+                            health = Some(value);
+                            break;
+                        }
+                        Err(_) if worker::Date::now().as_millis() >= probe_until => {}
+                        Err(_) => return Err(startup_unavailable()),
+                    }
                 }
             }
             Delay::from(Duration::from_millis(
@@ -481,14 +529,14 @@ impl<'a> Workspace<'a> {
             ))
             .await;
         }
-        let health = health.ok_or_else(|| {
-            Error::RustError("Workspace did not become ready in 30 seconds".into())
-        })?;
-        let boot = health["boot_id"]
-            .as_str()
-            .ok_or_else(|| Error::RustError("Workspace health omitted boot_id".into()))?;
+        let health = health.ok_or_else(|| Error::RustError("workspace_startup_timeout".into()))?;
+        let boot = health["boot_id"].as_str().ok_or_else(startup_unavailable)?;
         let storage = self.state.storage();
         if storage.get::<String>("workspace:boot").await?.as_deref() == Some(boot) {
+            if storage.get::<bool>(STARTUP_PENDING).await?.unwrap_or(false) {
+                storage.put("workspace:tools", 0_u64).await?;
+                storage.delete(STARTUP_PENDING).await?;
+            }
             return Ok(());
         }
         let bucket = self.env.bucket("WORKSPACES")?;
@@ -548,7 +596,37 @@ impl<'a> Workspace<'a> {
         }
         storage.put("workspace:boot", boot).await?;
         storage.put("workspace:tools", 0_u64).await?;
+        storage.delete(STARTUP_PENDING).await?;
         Ok(())
+    }
+
+    async fn startup_pending(&self) -> Result<bool> {
+        let storage = self.state.storage();
+        if storage.get::<bool>(STARTUP_PENDING).await?.unwrap_or(false) {
+            return Ok(true);
+        }
+        // Legacy compatibility is deliberately narrower than a failed task:
+        // no committed boot and no dispatch fence prove it never reached Bash.
+        if storage.get::<String>("workspace:boot").await?.is_some()
+            || storage
+                .get::<UsageClock>(CONTAINER_CLOCK)
+                .await?
+                .is_none_or(|clock| clock.quantity == 0)
+        {
+            return Ok(false);
+        }
+        let dispatches = storage
+            .list_with_options(
+                worker::ListOptions::new()
+                    .prefix("workspace:dispatch:")
+                    .limit(1),
+            )
+            .await?;
+        if dispatches.size() != 0 {
+            return Ok(false);
+        }
+        storage.put(STARTUP_PENDING, true).await?;
+        Ok(true)
     }
 
     pub async fn execute_bash(&self, args: Value) -> Result<Value> {
@@ -701,7 +779,7 @@ impl<'a> Workspace<'a> {
     }
 
     pub async fn checkpoint(&self) -> Result<CheckpointStats> {
-        if !self.container()?.running() {
+        if self.startup_pending().await? || !self.container()?.running() {
             return Ok(CheckpointStats::default());
         }
         self.checkpoint_active().await
@@ -864,8 +942,9 @@ impl<'a> Workspace<'a> {
                     .await?
                     .unwrap_or_default();
                 let running = self.container()?.running();
-                validate_checkpoint_source(running, &clock)?;
-                let checkpoint = if running {
+                let startup_pending = self.startup_pending().await?;
+                validate_checkpoint_source(running, &clock, startup_pending)?;
+                let checkpoint = if running && !startup_pending {
                     let checkpoint = self.checkpoint_active().await?;
                     self.arm_usage().await?;
                     checkpoint
@@ -882,6 +961,7 @@ impl<'a> Workspace<'a> {
                     lease_id: self.lease().current().await?.map(|lease| lease.id),
                     destroyed_at_ms: None,
                     outcome: None,
+                    startup_pending,
                 };
                 storage.put(RELEASE_INTENT, &intent).await?;
                 intent
@@ -891,13 +971,18 @@ impl<'a> Workspace<'a> {
             self.detach_release(&intent).await?;
             return Ok(outcome);
         }
-        if self.container()?.running() {
+        let running = self.container()?.running();
+        if running || intent.startup_pending {
             match self.container()?.destroy(None).await {
                 Ok(()) => {
-                    intent.destroyed_at_ms = Some(worker::Date::now().as_millis());
+                    if running {
+                        intent.destroyed_at_ms = Some(worker::Date::now().as_millis());
+                    }
                     storage.put(RELEASE_INTENT, &intent).await?;
                 }
-                Err(error) if self.container()?.running() => return Err(error),
+                Err(error) if self.container()?.running() || intent.startup_pending => {
+                    return Err(error);
+                }
                 Err(_) => {} // Confirmed stopped, but no trustworthy exit time.
             }
         }
@@ -982,8 +1067,32 @@ impl<'a> Workspace<'a> {
     }
 }
 
-fn validate_checkpoint_source(running: bool, clock: &UsageClock) -> Result<()> {
-    if !running && clock.quantity != 0 {
+fn startup_unavailable() -> Error {
+    Error::RustError("workspace_startup_unavailable".into())
+}
+
+fn inactivity_timeout_ms(expires_ms: u64, now_ms: u64) -> Result<u64> {
+    let remaining = expires_ms.saturating_sub(now_ms);
+    if remaining == 0 {
+        return Err(Error::RustError("workspace_compute_lease_expired".into()));
+    }
+    Ok(remaining.min(INACTIVITY_FALLBACK_MS))
+}
+
+fn startup_probe_until(now_ms: u64, ready_until: u64) -> u64 {
+    now_ms.saturating_add(STARTUP_PROBE_MS).min(ready_until)
+}
+
+fn startup_status_is_fatal(status: u16) -> bool {
+    (300..500).contains(&status) && !matches!(status, 408 | 425 | 429)
+}
+
+fn validate_checkpoint_source(
+    running: bool,
+    clock: &UsageClock,
+    startup_pending: bool,
+) -> Result<()> {
+    if !running && clock.quantity != 0 && !startup_pending {
         return Err(Error::RustError(
             "workspace_container_exit_before_checkpoint".into(),
         ));
@@ -1067,6 +1176,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_inactivity_duration_is_positive_and_clamped_to_existing_funding() {
+        assert_eq!(inactivity_timeout_ms(1_800_000, 0).unwrap(), 900_000);
+        assert_eq!(inactivity_timeout_ms(120_000, 0).unwrap(), 120_000);
+        assert_eq!(inactivity_timeout_ms(120_000, 119_999).unwrap(), 1);
+        assert!(inactivity_timeout_ms(120_000, 120_000).is_err());
+        assert!(inactivity_timeout_ms(120_000, 120_001).is_err());
+    }
+
+    #[test]
+    fn cold_start_probes_share_one_bounded_two_minute_budget() {
+        let start = 10_000;
+        let end = start + STARTUP_BUDGET_MS;
+        assert_eq!(STARTUP_BUDGET_MS, 120_000);
+        assert_eq!(startup_probe_until(start, end), start + 5_000);
+        assert_eq!(startup_probe_until(end - 1, end), end);
+        assert_eq!(startup_probe_until(end, end), end);
+    }
+
+    #[test]
+    fn unrecoverable_health_status_has_a_fixed_safe_failure() {
+        for status in [301, 400, 401, 403, 404] {
+            assert!(startup_status_is_fatal(status));
+        }
+        for status in [200, 408, 425, 429, 500, 503] {
+            assert!(!startup_status_is_fatal(status));
+        }
+        assert!(
+            matches!(startup_unavailable(), Error::RustError(code) if code == "workspace_startup_unavailable")
+        );
+    }
+
+    #[test]
     fn workspace_keys_are_fixed_length_and_unambiguous() {
         assert_eq!(digest_key("../owner").len(), 64);
         assert_ne!(digest_key("a/b"), digest_key("a%2fb"));
@@ -1102,6 +1243,7 @@ mod tests {
             lease_id: None,
             destroyed_at_ms: None,
             outcome: None,
+            startup_pending: false,
         };
         assert!(intent.completed_outcome(true).unwrap().is_none());
         intent.outcome = Some(ReleaseOutcome {
@@ -1124,9 +1266,35 @@ mod tests {
             quantity: 1,
             ..UsageClock::default()
         };
-        assert!(validate_checkpoint_source(false, &active).is_err());
-        assert!(validate_checkpoint_source(true, &active).is_ok());
-        assert!(validate_checkpoint_source(false, &UsageClock::default()).is_ok());
+        assert!(validate_checkpoint_source(false, &active, false).is_err());
+        assert!(validate_checkpoint_source(true, &active, false).is_ok());
+        assert!(validate_checkpoint_source(false, &UsageClock::default(), false).is_ok());
+        assert!(validate_checkpoint_source(false, &active, true).is_ok());
+    }
+
+    #[test]
+    fn startup_release_preserves_unknown_time_and_legacy_journals_do_not_gain_startup_proof() {
+        let intent = ReleaseIntent {
+            id: "startup-release".into(),
+            checkpoint: CheckpointStats::default(),
+            clock: UsageClock {
+                quantity: 1,
+                since_ms: 42,
+                ..UsageClock::default()
+            },
+            lease_id: Some("lease-1".into()),
+            destroyed_at_ms: None,
+            outcome: None,
+            startup_pending: true,
+        };
+        let mut wire = serde_json::to_value(intent).unwrap();
+        let restored: ReleaseIntent = serde_json::from_value(wire.clone()).unwrap();
+        assert!(restored.startup_pending);
+        assert!(restored.destroyed_at_ms.is_none());
+        assert!(restored.clock.end_ms.is_none());
+        wire.as_object_mut().unwrap().remove("startup_pending");
+        let legacy: ReleaseIntent = serde_json::from_value(wire).unwrap();
+        assert!(!legacy.startup_pending);
     }
     #[test]
     fn pending_release_journal_preserves_original_clock_without_inventing_an_end() {
@@ -1149,6 +1317,7 @@ mod tests {
                 checkpoint: CheckpointStats::default(),
                 accounting_pending: true,
             }),
+            startup_pending: false,
         };
         let restored: ReleaseIntent =
             serde_json::from_str(&serde_json::to_string(&intent).unwrap()).unwrap();

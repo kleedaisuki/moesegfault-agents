@@ -92,6 +92,7 @@ impl PersistedSession {
             return Err(Error::RustError("archive_not_committed".into()));
         }
         self.archive_pending = false;
+        self.checkpoint_error = None;
         if accounting_pending {
             self.last_error = Some("resource_reconciliation_pending".into());
         } else if self.last_error.as_deref() == Some("workspace_checkpoint_pending") {
@@ -126,10 +127,19 @@ pub struct Session {
 
 impl DurableObject for Session {
     fn new(state: State, env: Env) -> Self {
-        let data = Rc::new(RefCell::new(None));
-        let loaded = data.clone();
-        let storage = state.storage();
-        let _init = state.block_concurrency_while(async move {
+        let inner = Rc::new(SessionInner {
+            state,
+            env,
+            data: Rc::new(RefCell::new(None)),
+            running: Cell::new(false),
+            closing: Cell::new(false),
+            events: RefCell::new(None),
+            result: RefCell::new(None),
+            persistence: futures::lock::Mutex::new(()),
+        });
+        let loaded = inner.clone();
+        let _init = inner.state.block_concurrency_while(async move {
+            let storage = loaded.state.storage();
             let restored = load_state(&storage).await?;
             if let Some(data) = &restored {
                 match alarm_deadline(data, util::now_ms()) {
@@ -144,22 +154,30 @@ impl DurableObject for Session {
                     }
                     None => storage.delete_alarm().await?,
                 }
+                if data.record.pinned.workspace {
+                    let workspace = Workspace::new(
+                        &loaded.state,
+                        &loaded.env,
+                        &data.record.owner_id,
+                        &data.record.id,
+                    );
+                    if let Err(error) = workspace.configure_inactivity_if_running().await {
+                        let Some(code) = unfunded_inactivity_code(&error) else {
+                            return Err(error);
+                        };
+                        util::emit(
+                            "workspace.inactivity_unfunded",
+                            json!({
+                                "session_id":data.record.id,"error_code":code,
+                            }),
+                        );
+                    }
+                }
             }
-            *loaded.borrow_mut() = restored;
+            *loaded.data.borrow_mut() = restored;
             Ok(())
         });
-        Self {
-            inner: Rc::new(SessionInner {
-                state,
-                env,
-                data,
-                running: Cell::new(false),
-                closing: Cell::new(false),
-                events: RefCell::new(None),
-                result: RefCell::new(None),
-                persistence: futures::lock::Mutex::new(()),
-            }),
-        }
+        Self { inner }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -1492,6 +1510,8 @@ fn safe_error_code(error: &Error) -> String {
         "resource_pricing_not_configured",
         "workspace_state_encoding_failed",
         "workspace_unavailable",
+        "workspace_startup_timeout",
+        "workspace_startup_unavailable",
         "resource_tariff_missing",
         "model_price_unconfigured",
         "provider_outcome_unknown",
@@ -1596,7 +1616,11 @@ fn tool_infrastructure_error(error: &Error) -> Error {
     let tokens = text
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .collect::<Vec<_>>();
-    let code = if tokens.contains(&"budget_exceeded") {
+    let code = if tokens.contains(&"workspace_startup_timeout") {
+        "workspace_startup_timeout"
+    } else if tokens.contains(&"workspace_startup_unavailable") {
+        "workspace_startup_unavailable"
+    } else if tokens.contains(&"budget_exceeded") {
         "budget_exceeded"
     } else if tokens.iter().any(|token| {
         matches!(
@@ -1681,6 +1705,18 @@ fn replay_terminal(run: &RunState) -> Option<std::result::Result<Value, String>>
         .or_else(|| run.terminal_error.clone().map(Err))
 }
 
+fn unfunded_inactivity_code(error: &Error) -> Option<&'static str> {
+    match error {
+        Error::RustError(code) if code == "workspace_compute_lease_expired" => {
+            Some("workspace_compute_lease_expired")
+        }
+        Error::RustError(code) if code == "workspace_lease_missing" => {
+            Some("workspace_lease_missing")
+        }
+        _ => None,
+    }
+}
+
 fn apply_resume(
     data: &mut PersistedSession,
     admitted: SessionRecord,
@@ -1759,6 +1795,20 @@ mod tests {
             archive_started_at_ms: None,
             measured_messages: 1,
         }
+    }
+
+    #[test]
+    fn unfunded_inactivity_recovery_never_hides_native_api_failures() {
+        for code in ["workspace_compute_lease_expired", "workspace_lease_missing"] {
+            assert_eq!(
+                unfunded_inactivity_code(&Error::RustError(code.into())),
+                Some(code)
+            );
+        }
+        assert!(unfunded_inactivity_code(&Error::BindingError("native failure".into())).is_none());
+        assert!(
+            unfunded_inactivity_code(&Error::RustError("workspace_lease_corrupt".into())).is_none()
+        );
     }
 
     #[test]
@@ -2001,6 +2051,7 @@ mod tests {
         data.archive_pending = true;
         data.journal.push(Message::text("user", "preserved"));
         let pinned = data.record.pinned.prefix_hash();
+        data.checkpoint_error = Some("workspace_container_exit_before_checkpoint".into());
         data.complete_archive(true).unwrap();
         assert!(!data.archive_pending);
         assert_eq!(data.record.status, SessionStatus::Closed);
@@ -2010,6 +2061,14 @@ mod tests {
         );
         assert_eq!(data.journal[0].content, "preserved");
         assert_eq!(data.record.pinned.prefix_hash(), pinned);
+        let restored: PersistedSession =
+            serde_json::from_str(&serde_json::to_string(&data).unwrap()).unwrap();
+        assert!(!restored.archive_pending);
+        assert!(restored.checkpoint_error.is_none());
+        assert_eq!(
+            restored.last_error.as_deref(),
+            Some("resource_reconciliation_pending")
+        );
         let mut uncommitted = state();
         uncommitted.archive_pending = true;
         assert!(uncommitted.complete_archive(true).is_err());
@@ -2038,6 +2097,11 @@ mod tests {
             safe_error_code(&tool_infrastructure_error(&unknown)),
             "tool_outcome_unknown"
         );
+        for code in ["workspace_startup_timeout", "workspace_startup_unavailable"] {
+            let error = Error::RustError(code.into());
+            assert!(correctable_tool_error(&error).is_none());
+            assert_eq!(safe_error_code(&tool_infrastructure_error(&error)), code);
+        }
         let corrupt = Error::SerdeJsonError(serde_json::from_str::<Value>("{").unwrap_err());
         assert_eq!(
             safe_error_code(&tool_infrastructure_error(&corrupt)),
