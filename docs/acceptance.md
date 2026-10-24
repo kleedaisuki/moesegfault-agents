@@ -202,6 +202,44 @@ The native-lifecycle source passed its next full CI and was deployed as `164d0ae
 
 The long task's non-streaming SDK connection had detached, so this proves durable continuation and final persistence, **not** a successful non-streaming transport response. Subsequent source adds standard SSE comment keepalives; a shorter real streamed task with a stricter read timeout is its separate acceptance gate. Full private timing, storage, ledger and passive-provenance evidence is summarized in [Identity/Billing](identity-billing.md) and [Observability](observability.md).
 
+## Released production state
+
+The immutable implementation is `8caff37333cf148a62c804e75cc9189203e8f167`:
+[full CI](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067168672),
+[all fourteen staging SDK journeys](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067574002),
+and [successful production deployment](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40068971874).
+Both public production hosts returned the exact build. A new, independently owned
+production Free fixture completed public email verification/signup, confidential
+BFF and published native PKCE login, same-account checks, time, actual Bash write,
+R2 archive/hash verification, explicit resume and actual Bash readback. Its one
+Free grant was `1000000` microUSD; six provider calls consumed model/resource
+credit totaling `858` microUSD, with no remaining holds. Test keys/configurations
+and the isolated single-recipient Rust mail receiver were cleaned up. No existing
+production user, password, paid allocation or payment collection was changed.
+
+| Original capability | Evidence and boundary |
+| --- | --- |
+| Rust Worker/DO harness; multiple configurations and per-session ownership | Published crates and migrations; real config/session/owner-isolation SDK cases; distinct serving namespaces verified in the control plane |
+| Harness time / sandboxed Bash, batched compressed R2 state | Actual time/tool results; production write/archive/hash/restore/readback; sixteen Docker journeys including 120 independent exit-race executions; original detached-writer and corrupted-archive assertions retained |
+| Stable server-managed instructions/tools/skills and cache behavior | Real pin-preservation and percentage-compaction cases; skill registry/version SQL tests; deterministic prefix tests; measured warm cache hits and bounded cold journal reads in performance notes |
+| Steering and input-only inactivity, including long work | Real busy steering; passive unattended checkpoint at 603.880 seconds; 785.227-second task and all three successful long Bash results, with no input-clock advance |
+| Long streamed API transport | A single real 150-second Bash task completed in 161.785 seconds with a 45-second SDK read timeout, ten standard keepalives, normal `stop` and `[DONE]`; heartbeat branches and delayed-provider actual-Wasm regression also pass |
+| Exact credits, model/resource billing, tiers and quotas | Production Free/usage/settlement; real thirty-day Pro activation and single replacement to 180 USD-equivalent credit; sixty SQL tests and 108 independent conservation sequences; atomic Free quota case |
+| BYOK | The original published Wasm executed two time-tool rounds with the exact user-owned mock provider key, rejected another owner's reference, charged zero model cost while charging resources, and released holds. This is compiled-Rust integration with a mocked upstream, not a claim of an external customer's key being used |
+| Moe account login, refresh/logout/key lifecycle | Actual staged and production BFF/native sign-in and same subject; real staged refresh/independence/revocation cases, production revoked-key 401; no human profile scraping, forged JWT or account seeding for these journeys |
+| Adash i18n, appearance/mobile; Rust CLI discovery | Dashboard interaction/build and six Chrome responsive/theme/language journeys; real authenticated model chooser/capability readback; actual published Windows CLI login and Linux/Windows native release builds |
+| Content-free telemetry, tracing/provenance, consent and storage classes | Live time and passive workspace event joins; actual capture settings and private/isolated buckets; real consent false/true/unknown-field diagnostics results 400/202/400 with one dedicated seven-day report; financial/user data excluded from telemetry GC |
+| Actions delivery and public CLI artifacts | Exact-source CI/deploy gates; registry publication digests match; native release recovery 40072066883 verified the existing tag without moving it; both public archives' SHA-256, LF sidecars and `BUILD-INFO` were independently checked |
+
+The release is [v0.1.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.1.0),
+with Linux x86_64 and Windows x86_64 archives. Billing access uses authorized
+administrator activation grants; there is no card checkout or automatic debit.
+Current model metadata documents the supported providers and text-only Chat
+Completions subset. Native tracing capture/sampling and application correlation
+were verified; no dashboard screenshot is substituted for an unobserved native
+trace waterfall. Unknown historical staging spending remains an explicit hold,
+not a forged zero charge or a reason to destroy user data.
+
 ### Process-exit race regression (2026-10-24)
 
 [CI run 40065762512](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40065762512),
@@ -215,6 +253,30 @@ across six shell/short-lived-child/`setsid` exit patterns. Every individual POST
 must return 200 with normal completion; requests are not retried to manufacture
 a pass. Each delayed writer targets a unique file, and a single final one-second
 wait verifies none survived. Command and HTTP timeouts are three and ten seconds
-respectively. This expanded native-container regression requires another real
-Linux run; local collection plus portable harness success does not establish
-that the underlying cleanup defect is fixed.
+respectively. Local collection and portable harness success alone did not
+establish that the underlying cleanup defect was fixed.
+
+The corrected source passed [full CI 40067168672](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067168672)
+at exact main revision `8caff37333cf148a62c804e75cc9189203e8f167`:
+
+- [Native Rust job 120792787036](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067168672/job/120792787036)
+  passed all **33 daemon tests**, including the deterministic real-Linux sequence
+  that opens a child's status handle, kills/reaps the child, and observes `ESRCH`
+  rather than `ErrorKind::NotFound`. The same cleanup classifier accepts that
+  disappeared-task outcome while rejecting permission/resource/unknown errors.
+- [Container job 120792786991](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067168672/job/120792786991)
+  passed **16 real HTTP journeys in 4.73 seconds**, including both the original
+  detached writer case and all 120 distinct stress executions with the no-writer
+  assertion. Restart again observed loopback port `32768 -> 32769` and a new
+  process boot identity.
+- All other full-CI jobs succeeded. No failed command was automatically replayed
+  and the original safety assertion was not weakened or skipped.
+
+The source correction is grounded in a deterministic kernel-lifetime regression,
+not merely repeating the old suite until green. The old failed CI logs lacked an
+underlying errno, so they cannot retrospectively identify its exact syscall.
+New daemon cleanup events are content-free static-stage/numeric-errno logs; this
+CI fixture's sanitizer does not yet export those new event fields, and this run
+does not claim to validate that diagnostic-export path. These results establish
+the cleanup correction for the tested revision, not a substitute for the separate
+deployed Identity/Billing and lifecycle acceptance gates.

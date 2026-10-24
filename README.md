@@ -7,7 +7,7 @@ Rust agent sessions on Cloudflare Workers, Durable Objects and on-demand contain
 | API | `https://agents.moesegfault.dev/v1` | `https://agents-staging.moesegfault.dev/v1` |
 | Dashboard | `https://adash.moesegfault.dev` | `https://adash-staging.moesegfault.dev` |
 
-These are deployment targets, not a claim that an environment has passed acceptance. Staging is delivered and verified before production. See [acceptance](docs/acceptance.md) for recorded evidence and limitations.
+Production and staging are deployed; [v0.1.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.1.0) provides Linux and Windows CLI downloads. Real account login, SDK calls and workspace restoration have passed production acceptance. Subscription access currently uses administrator activation grants, not card checkout or automatic charging/renewal. See [acceptance](docs/acceptance.md) for exact releases, evidence and documented limits.
 
 ```mermaid
 flowchart LR
@@ -34,7 +34,7 @@ import os
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://agents-staging.moesegfault.dev/v1",
+    base_url="https://agents.moesegfault.dev/v1",
     api_key=os.environ["MAGENTS_API_KEY"],
 )
 response = client.chat.completions.with_raw_response.create(

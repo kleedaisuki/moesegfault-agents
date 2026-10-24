@@ -193,8 +193,13 @@ names as UTF-8. Zombie/dead states cannot write and are excluded.
 or the full error chain. Container acceptance retains the original detached
 writer assertion and adds 120 independent short-lived/`setsid` executions, each
 requiring HTTP 200 without retries, followed by an assertion that no delayed
-writer created a file. The next exact-revision CI run must validate the fix;
-the older green run alone is not acceptance for this race correction.
+writer created a file. At exact revision
+`8caff37333cf148a62c804e75cc9189203e8f167`,
+[CI 40067168672](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067168672)
+passed all 33 native daemon tests (including the real stale-status-FD regression)
+and all 16 real container HTTP cases, including the 120-execution stress case.
+The current fixture sanitizer does not yet export the new cleanup event fields;
+their content-free logging contract is distinct from that untested export path.
 
 Request logs contain execution IDs, safe endpoint/method/status, durations,
 traceparent and generated request IDs, but never commands, tool output, file

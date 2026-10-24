@@ -329,3 +329,160 @@ this build: one explicit close returned 200, cleared checkpoint pending and its
 checkpoint error, and retained `billing_pending=true` with
 `resource_reconciliation_pending`. The original command was not replayed and no
 uncertain financial hold was refunded or directly altered.
+
+### Stream keepalive and final fixture cleanup, 2026-10-24
+
+After public health identified exact build
+`8caff37333cf148a62c804e75cc9189203e8f167`, one new streamed task was issued through
+the official OpenAI SDK. Its sole requested bash call slept for 150 seconds and then
+printed a unique marker. The HTTP read timeout was **45 seconds**, with
+`max_retries=0`; thus a silent 150-second interval could not pass merely by using a
+large client timeout. A private read-only byte-stream tee observed the same response
+that the SDK parsed, without issuing a second request.
+
+The request completed normally in **161.785 seconds**. Ten standard SSE comments
+arrived at approximately 15-second intervals, the SDK parsed 20 chunks and a final
+`finish_reason=stop`, and the wire contained `[DONE]`. The journal had exactly one
+actual bash call and result: **150,020 ms**, exit code 0, no timeout, and stdout equal
+to the marker. This separately closes the streamed-transport qualification above;
+it does not retroactively attribute the older non-streaming disconnect to a specific
+intermediary. The session was normally closed, and all its reservations finalized;
+the recorded model/resource total was 2,107 microUSD.
+
+The same task-owned account also completed a headless dashboard check without another
+model call. Its authenticated API returned four `available_models` and two
+`available_platform_models`, both OpenRouter. The actual New agent dialog offered
+OpenRouter and BYOK as enabled providers and two platform model suggestions, rather
+than advertising the unconfigured platform DeepSeek route. The isolated browser was
+closed afterward.
+
+C, D and the streamed session were confirmed closed; all three temporary agent
+configurations were soft-deleted and absent from the normal owner listing. The
+published CLI revoked the task-specific API key, and using that key afterward
+returned 401. A native refresh that required reauthentication was not replayed:
+the same fixture completed a fresh official PKCE login through its isolated SSO
+profile before the final CLI revocation. No human browser profile was reused.
+Read-only financial inspection found no held reservations or pending resource
+observations in these three fixtures. Their combined recorded amount was 18,185
+microUSD at the final inspection, including 21 microUSD of subsequently metered R2
+retention. The older uncertain startup hold remains separate and untouched.
+
+### Production protocol-acceptance preparation: read-only gate
+
+Before any production application acceptance, exact-identifier existence queries were
+restricted to the two explicitly managed test-inbox recipients. Both already existed
+as verified email identifiers in production Identity. Only existence booleans were
+read; neither principal data nor credentials were queried. No OTP was sent and no
+production account, password, subscription, allowance or email route was changed.
+
+This task has not established ownership of a dedicated production credential for
+either existing identity. Its staging password and OAuth credentials must not be
+tried against production, and an unrelated existing account must not be reset.
+The current private test-inbox configuration and operational checks are explicitly
+staging-only, so they are not automatically a production verification-mail contract.
+A production journey remains gated on an established agent-owned production test
+credential or a reviewed, exact-recipient production-appropriate mailbox for a new
+independent Free account, followed by explicit application-live clearance. A new
+production acceptance must use a distinct password, browser profile and issuer/client
+registrations; it must not acquire Pro or alter any existing account's quota.
+
+A subsequently authorized read-only check covered exactly the three clearly
+agent/test-owned amail aliases already used by this task, not other addresses.
+All three were absent from production Identity, so one existing alias was selected
+for a new, independent Free acceptance account. A distinct production password was
+prepared privately; no signup or OTP request has occurred. The proposed additional
+mail receiver was cancelled before any resource was created.
+
+The existing amail session needs attention before that signup: local status still
+reported authenticated, but its access expiry was past, and the first ordinary
+read-only address listing failed during refresh. It was not retried. Normal human
+amail browser reauthorization is required before relying on it to retrieve the new
+Identity OTP; neither a task-owned test credential nor a human browser profile can
+be substituted for that mailbox owner's authorization. No address, budget, quota or
+production account was changed while preparing this path.
+
+### Production protocol acceptance: completed, 2026-10-24
+
+After production app-live clearance and exact public health build
+`8caff37333cf148a62c804e75cc9189203e8f167`, a **new independently owned Free account**
+was created through the ordinary public Identity UI. The old amail authorization
+remained unavailable; it was not refreshed repeatedly, impersonated, or used through
+a human browser profile. Instead, the explicitly approved fallback created a new
+production-purpose, exact-recipient mail receiver, completely separate from the
+staging-only fixture and every existing amail alias.
+
+That temporary receiver used the Rust Worker SDK, a new private R2 bucket and one
+literal Email Routing rule on the already configured owner domain. It enforced the
+exact random recipient, an advertised and streamed 64-KiB cap, complete-message
+collection and atomic first-write-only storage at `verification.eml`. HTTP publication,
+logs and traces were disabled; R2 public endpoints were disabled and a one-day expiry
+was configured as a backstop. The actual compiled-WASM/R2 checks covered recipient,
+oversize, truncated-stream and duplicate-write rejection before deployment. No
+catch-all, MX, staging receiver or existing user route was changed.
+
+The sole public email-transaction request returned 201. Actual inbound delivery
+produced a 6,670-byte MIME object, retrieved privately using the official R2 CLI and
+parsed with Python's standard MIME parser. Its exact recipient and expected sender
+matched, and one verification code was extracted without printing it. The owned
+route was removed before submitting the code. Public verification returned 200; the
+remote raw-mail object was deleted, and public password registration returned 201.
+No sender outbox/body, direct principal insert, synthetic JWT or administrator grant
+substituted for delivery and authentication.
+
+| Production user journey | Observed result |
+| --- | --- |
+| Normal BFF callback | Authenticated as the new account; Free, live mode, 1,000,000 microUSD; limits 2 configurations / 2 sessions / 1 run |
+| Published native CLI `928c533` | Official production PKCE + loopback and OS credential store; separate-process account matched the BFF privately; credit still 1,000,000 |
+| Model metadata | Four registered models; two platform-funded models, both OpenRouter |
+| One agent / one session / three sequential user turns | Actual time tool; actual bash marker write; close; explicit resume; a new actual bash `cat` returned the saved marker with exit code 0 |
+| Workspace provenance | Generation 1, 378-byte archive; actual R2 manifest, compressed archive and conversation archive downloaded; digest, generation and size matched |
+| Final closure | No checkpoint or billing pending flags; exact owned container instance inactive; all reservations settled or released |
+| Model/resource accounting | Six provider calls, 4,871 tokens, 370 microUSD model charge; container, Worker, Durable Object, D1 and R2-operation ledger entries present |
+| Free funding invariant | Exactly one 1,000,000-microUSD grant; final inspected spend 858 microUSD, held 0, available 999,142 microUSD |
+| Disposable API access | Agent soft-deleted; released CLI revoked the key; official OpenAI SDK then returned 401 |
+
+The account is intentionally preserved for future operator acceptance. Its independent
+production password, username, email, fixed issuer/client identifiers and purpose are
+held only in the ignored `.secrets/production/acceptance-account.json`, whose ACL was
+verified as limited to the current Windows user and SYSTEM. Temporary plaintext
+password copies and local raw verification mail were removed; native OAuth credentials
+remain in the OS credential store. No values from that secret record belong in docs,
+Git, Docker build contexts, telemetry or agent messages.
+
+Finally, the unique receiver Worker and private bucket were deleted and their absence
+verified, along with the already removed exact route and fixed mail object. Only
+ownership-receipted resources created for this one acceptance were removed. Existing
+production accounts, passwords, subscriptions, quotas and amail authorization were
+not changed; no Pro grant, payment or cross-user test was performed.
+
+### Diagnostic consent: real authenticated HTTP acceptance
+
+The existing owned staging account's normal BFF cookie and account-provided CSRF
+token were used for exactly three diagnostic POSTs. Its headless browser profile
+was task-owned, not a human profile. The submitted metadata was limited to synthetic
+client/version/platform/error-code identifiers and a random request UUID; no model
+call, new key, email operation, raw log or actual path was involved.
+
+| Request | HTTP result | Owned-account report count |
+| --- | --- | --- |
+| Valid bounded metadata, `consent=false` | 400 `invalid_diagnostic` | Unchanged at 0 |
+| Same metadata, `consent=true` | 202, `accepted=true`, `retention_days=7` | Exactly 1 |
+| Metadata plus unsupported `raw_path` field, with no real path value | 400 `invalid_diagnostic` | Remained 1 |
+
+Only the accepted owned report was inspected. Its D1 row contained the empty JSON
+payload `{}` and a 604,800-second expiry interval. Its actual object was retrieved
+from the dedicated DIAGNOSTICS bucket, not a workspace/conversation bucket. The
+submission's complete key set and values matched the synthetic allowlisted request;
+the remaining fields were only the expected server report/owner identifiers,
+schema version and receipt/expiry timestamps. The object expiry interval was also
+exactly seven days. JSON equality was checked semantically, without treating object
+key order as payload meaning. No additional submission was made for that local
+validation correction.
+
+The synthetic report was left to normal retention, with no database deletion or
+seven-day clock manipulation. This verifies explicit-consent admission, strict
+field rejection and separate storage; physical expiry was not simulated. The
+deployment owner's separate API-key probe returned 403
+`human_authentication_required`, which remains the intended management boundary,
+not a reason to grant API keys diagnostic-report privileges. The browser was closed
+afterward and production account/billing state was not touched.

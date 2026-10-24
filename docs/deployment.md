@@ -4,7 +4,7 @@
 
 Staging and production have separate Workers, D1 databases, R2 buckets, Identity clients, signing keys, encryption keys, Billing issuer/audience configuration and hostnames. `wrangler.jsonc` contains public resource identifiers only. Production registrations and secrets must exist and staging acceptance must pass before production delivery.
 
-Initial resources were provisioned in the Cloudflare account belonging to this repository's operator. Production resources remain unused until release approval. Re-running deployment must not recreate databases or overwrite encryption keys. Changing `DATA_ENCRYPTION_KEY` without re-encrypting existing data makes BYOK and OAuth token envelopes unreadable.
+Initial resources were provisioned in the Cloudflare account belonging to this repository's operator. Production is activated only after release approval; the verified initial release is recorded below. Re-running deployment must not recreate databases or overwrite encryption keys. Changing `DATA_ENCRYPTION_KEY` without re-encrypting existing data makes BYOK and OAuth token envelopes unreadable.
 
 ## GitHub Actions
 
@@ -66,3 +66,66 @@ CI also runs the compiled Wasm inside workerd with actual D1 and Durable Objects
 ## Request abuse controls
 
 Native Workers Rate Limiting bindings protect ingress before database authentication, then bound per-account requests and mutations. Staging and production use distinct namespaces. Initial per-60-second limits are 2,400 requests per hashed ingress IP, 1,200 per authenticated account, and 120 account mutations. Responses include `429 request_rate_exceeded` and `Retry-After`. These are inexpensive, approximate per-Cloudflare-location abuse controls, **not** globally exact financial or concurrency admission; D1's atomic constraints remain authoritative for those. Normal management-plane operations are included in the bounded service surface rather than generating a recursive ledger event for every management/ledger query.
+
+## Verified active release readback — 2026-10-24
+
+Read-only Cloudflare API inspection at 06:22–06:24 UTC verified both **100% serving
+versions**, rather than relying only on local Wrangler configuration. Their
+version-specific bindings carry `BUILD_ID=8caff37333cf148a62c804e75cc9189203e8f167`.
+The serving deployment stayed unchanged across each readback.
+
+| Realm | Worker version | D1 database | Session namespace | AuthSession namespace |
+| --- | --- | --- | --- | --- |
+| Production | `532518a8-a04d-41e6-8453-8426c3717eda` | `4b7789d6-538f-40d1-a658-138d1688214c` | `6ed66cca67e448879b33379b7d51cbc2` | `326d03a6f9e24ff1b338965acbea26ec` |
+| Staging | `d08b2222-db22-4001-9cf0-161a96bd20f6` | `f52d24b2-90eb-4156-8048-33c1da11b181` | `00b9db0fcc03436eb146b61fbc7811d8` | `3a97c96b34ad4554a19b4ea675c0c8d5` |
+
+The exact scripts are `moesegfault-agents-production` and
+`moesegfault-agents-staging`. Production's Identity issuer, client IDs,
+callback/dashboard origins and Billing origin match its public configuration;
+staging uses its separate `-staging` registrations and origins. Billing mode is
+`live` in production and `test` in staging. Secret binding presence was checked
+by name only; secret values were neither retrieved nor compared.
+
+The six bound buckets follow
+`moesegfault-agents-{workspaces,conversations,diagnostics}-{production,staging}`.
+All six have managed public access disabled and zero custom domains. Both
+diagnostics buckets have the enabled seven-day object deletion rule and one-day
+incomplete multipart abort rule. No user object contents or session records were
+read during this audit.
+
+The active Worker resource and script settings agree: persisted invocation logs
+are enabled at sampling `1`, persisted traces at `0.1`, query-string redaction is
+on, Logpush is off, and there are no tail consumers. These are verified capture
+settings, not a claim that every request is trace-sampled. The sanitized operator
+receipt is `.cache/deployment-runtime-audit-safe.json`; it contains only public
+resource references, fixed public settings and secret names.
+
+Container App metadata independently matches those Session namespaces:
+production App `a0334311-659f-45d3-92a0-16cc378d14c5`, active version `1` at
+100% with maximum 20 instances; staging App
+`a03bce76-eb9d-4db6-a9a1-e486fab9fe60`, active version `7` at 100% with maximum
+5 instances. Both App and active Version configurations reference the exact
+`magents-workspace:8caff37333cf148a62c804e75cc9189203e8f167` commit tag.
+**The App/Version APIs did not expose a resolved image SHA256 digest.** This audit
+therefore verifies the configured tag, not byte-identical resolved images; neither
+the App version nor deployment configuration ID is a digest. Registry credential
+creation was outside this read-only audit. The sanitized image metadata receipt
+is `.cache/deployment-image-audit-safe.json`.
+
+Separate publication-time evidence is available in the official deployment logs:
+the final Docker registry push in both [staging 40067574002](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40067574002)
+and [production 40068971874](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40068971874)
+reports the same `8caff37333cf148a62c804e75cc9189203e8f167` tag with manifest digest
+`sha256:58feb5ef6d58bce367f44cc6e388d3cd7dcb1a8a5a2ab5be4c85fe256bb4d3e0`.
+This is the image publication digest, not the Buildx helper-image digest or an
+Actions download checksum; it does not add a resolved-digest field to the App API.
+
+## Maintained deployment-tool security
+
+The deployment/test Node toolchain pins Miniflare's Undici to patched `7.30.1`
+without changing Wrangler `4.152.0` or Miniflare `5.20261019.2-beta`. A fresh audit
+reported zero vulnerabilities, and the published Rust/Wasm artifact still passed
+all sixteen HTTP/transport cases under the patched toolchain. Targeted tooling CI
+also runs `npm audit --audit-level=high`. These are operator development dependencies;
+the deployed Rust services and distributed Rust CLI archives do not run Undici.
+The immutable `v0.1.0` implementation tag is not moved to rewrite build history.
