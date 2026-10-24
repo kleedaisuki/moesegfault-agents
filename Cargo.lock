@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "agents-auth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "agents-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "serde",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "agents-worker"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agents-auth",
  "agents-core",
@@ -2028,7 +2028,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "magents"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "agents-core",
  "anyhow",
@@ -4393,7 +4393,7 @@ dependencies = [
 
 [[package]]
 name = "workspace-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
