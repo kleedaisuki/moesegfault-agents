@@ -38,6 +38,13 @@ struct ModelPrice {
     revision: String,
 }
 
+impl ModelPrice {
+    fn valid(&self) -> bool {
+        !self.revision.is_empty()
+            && self.cached_input_microusd_per_million <= self.input_microusd_per_million
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct CompletionReservation {
     model: ModelConfig,
@@ -495,25 +502,59 @@ impl<'a> Store<'a> {
         Ok(())
     }
 
+    pub fn available_platform_models(&self, models: &[ModelConfig]) -> Vec<ModelConfig> {
+        let pricing = self
+            .env
+            .var("MODEL_PRICING_JSON")
+            .ok()
+            .map(|value| value.to_string());
+        platform_models(models, pricing.as_deref())
+    }
+
     fn model_price(&self, provider: Provider, model: &str) -> Result<ModelPrice> {
         let registry: std::collections::BTreeMap<String, ModelPrice> =
             decode(&self.env.var("MODEL_PRICING_JSON")?.to_string())?;
-        let provider = match provider {
-            Provider::OpenRouter => "openrouter",
-            Provider::DeepSeek => "deepseek",
-            Provider::Byok => return Err(fail("byok_has_no_platform_model_price")),
-        };
+        let key = platform_price_key(provider, model)
+            .ok_or_else(|| fail("byok_has_no_platform_model_price"))?;
         let price = registry
-            .get(&format!("{provider}/{model}"))
+            .get(&key)
             .cloned()
             .ok_or_else(|| fail("model_price_unconfigured"))?;
-        if price.revision.is_empty()
-            || price.cached_input_microusd_per_million > price.input_microusd_per_million
-        {
+        if !price.valid() {
             return Err(fail("invalid_model_price"));
         }
         Ok(price)
     }
+}
+
+fn platform_price_key(provider: Provider, model: &str) -> Option<String> {
+    let provider = match provider {
+        Provider::OpenRouter => "openrouter",
+        Provider::DeepSeek => "deepseek",
+        Provider::Byok => return None,
+    };
+    Some(format!("{provider}/{model}"))
+}
+
+fn platform_models(models: &[ModelConfig], pricing: Option<&str>) -> Vec<ModelConfig> {
+    let registry = pricing
+        .and_then(|value| {
+            serde_json::from_str::<std::collections::BTreeMap<String, ModelPrice>>(value).ok()
+        })
+        .unwrap_or_default();
+    let priced: std::collections::HashSet<&str> = registry
+        .iter()
+        .filter(|(_, price)| price.valid())
+        .map(|(key, _)| key.as_str())
+        .collect();
+    models
+        .iter()
+        .filter(|model| {
+            platform_price_key(model.provider, &model.model)
+                .is_some_and(|key| priced.contains(key.as_str()))
+        })
+        .cloned()
+        .collect()
 }
 
 fn now_seconds() -> i64 {
@@ -695,6 +736,83 @@ fn number(value: u64) -> Result<JsValue> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn platform_catalog_requires_a_valid_price_for_the_exact_provider_and_model() {
+        let openrouter = ModelConfig {
+            model: "test-model".into(),
+            ..ModelConfig::default()
+        };
+        let direct = ModelConfig {
+            provider: Provider::DeepSeek,
+            ..openrouter.clone()
+        };
+        let byok = ModelConfig {
+            provider: Provider::Byok,
+            ..openrouter.clone()
+        };
+        let unpriced = ModelConfig {
+            model: "unpriced".into(),
+            ..openrouter.clone()
+        };
+        let models = vec![openrouter.clone(), direct.clone(), byok, unpriced];
+        let pricing = serde_json::json!({
+            "openrouter/test-model":{"input_microusd_per_million":10,"cached_input_microusd_per_million":1,"output_microusd_per_million":20,"revision":"v1"},
+            "byok/test-model":{"input_microusd_per_million":10,"cached_input_microusd_per_million":1,"output_microusd_per_million":20,"revision":"v1"},
+            "deepseek/unregistered":{"input_microusd_per_million":10,"cached_input_microusd_per_million":1,"output_microusd_per_million":20,"revision":"v1"}
+        }).to_string();
+        assert_eq!(platform_models(&models, Some(&pricing)), vec![openrouter]);
+        assert_eq!(models.len(), 4);
+        let direct_pricing = serde_json::json!({"deepseek/test-model":{
+            "input_microusd_per_million":10,"cached_input_microusd_per_million":1,"output_microusd_per_million":20,"revision":"v1"
+        }}).to_string();
+        assert_eq!(
+            platform_models(&models, Some(&direct_pricing)),
+            vec![direct]
+        );
+    }
+
+    #[test]
+    fn platform_catalog_uses_the_same_price_validity_as_inference() {
+        let models = [ModelConfig {
+            model: "test-model".into(),
+            ..ModelConfig::default()
+        }];
+        for (input, cached, revision, valid) in [
+            (10, 1, "v1", true),
+            (0, 0, "free", true),
+            (10, 11, "v1", false),
+            (10, 1, "", false),
+        ] {
+            let price = ModelPrice {
+                input_microusd_per_million: input,
+                cached_input_microusd_per_million: cached,
+                output_microusd_per_million: 20,
+                revision: revision.into(),
+            };
+            assert_eq!(price.valid(), valid);
+            let pricing = serde_json::json!({"openrouter/test-model":price}).to_string();
+            assert_eq!(
+                platform_models(&models, Some(&pricing)).len(),
+                usize::from(valid)
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_malformed_pricing_never_advertises_platform_support() {
+        let models = [ModelConfig::default()];
+        for pricing in [
+            None,
+            Some(""),
+            Some("{}"),
+            Some("[]"),
+            Some("{\"broken\":{}}"),
+            Some("private invalid config"),
+        ] {
+            assert!(platform_models(&models, pricing).is_empty());
+        }
+    }
 
     fn session_json(timestamp: &str) -> String {
         let agent =

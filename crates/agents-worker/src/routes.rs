@@ -304,8 +304,11 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
             let data = Store::new(env).list_agents(owner).await?.into_iter().map(|agent| {
                 json!({"id":agent.id,"object":"model","created":agent.created_at_ms / 1000,"owned_by":owner})
             }).collect::<Vec<_>>();
+            let available_models = model_registry(env)?;
+            let available_platform_models =
+                Store::new(env).available_platform_models(&available_models);
             Response::from_json(
-                &json!({"object":"list","data":data,"available_models":model_registry(env)?}),
+                &json!({"object":"list","data":data,"available_models":available_models,"available_platform_models":available_platform_models}),
             )
         }
         ["v1", "chat", "completions"] if req.method() == Method::Post => {
