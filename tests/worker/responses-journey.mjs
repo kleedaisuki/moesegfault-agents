@@ -95,7 +95,7 @@ async function waitUntil(predicate, milliseconds = 8000) {
   }
 }
 
-async function fixture({ mf, db, encryptionKey, request, providers }, name, actions, options = {}) {
+async function fixture({ mf, db, encryptionKey, request, providers, diagnostic }, name, actions, options = {}) {
   const { context_window = 8192, ...agentOptions } = options;
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: `responses-${name}-owner` });
   const state = providers.register(name, actions);
@@ -109,6 +109,8 @@ async function fixture({ mf, db, encryptionKey, request, providers }, name, acti
     compaction_percent: 80, ...agentOptions,
   }, 201, principal.apiKey);
   const observations = { responses: [], events: [] };
+  let primaryFailure;
+  const expectedUnknown = new Set();
   function observe(value) {
     if (value?.object === 'response') observations.responses.push(value);
     return value;
@@ -136,7 +138,7 @@ async function fixture({ mf, db, encryptionKey, request, providers }, name, acti
   async function read(id, suffix = '', expected = 200) {
     return observe(await request('GET', `/v1/responses/${id}${suffix}`, undefined, expected, principal.apiKey));
   }
-  async function finish() {
+  async function cleanup() {
     const sessions = await bounded(request('GET', `/v1/agents/${agent.id}/sessions`, undefined, 200, principal.apiKey));
     for (const session of sessions.data) {
       await waitUntil(async () => {
@@ -145,15 +147,39 @@ async function fixture({ mf, db, encryptionKey, request, providers }, name, acti
       });
       await bounded(request('DELETE', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey));
     }
-    const held = await db.prepare("SELECT COUNT(*) AS count FROM usage_reservations WHERE account_id=?1 AND state='reserved'")
-      .bind(principal.owner).first('count');
-    assert.equal(held, 0, 'Terminal/archive cleanup must not leave a run or storage funding hold');
+    let held = { results: [] };
+    let settleFailure;
+    try {
+      await waitUntil(async () => {
+        held = await db.prepare("SELECT id,session_id,idempotency_key,CAST(reserved_microusd AS TEXT) AS amount,state FROM usage_reservations WHERE account_id=?1 AND state='reserved'")
+          .bind(principal.owner).all();
+        return held.results.every(row => expectedUnknown.has(row.idempotency_key));
+      }, 2000);
+    } catch (error) { settleFailure = error; }
+    if (settleFailure || held.results.length) {
+      const resources = await db.prepare("SELECT resource,status,COUNT(*) AS count FROM resource_observations WHERE account_id=?1 GROUP BY resource,status")
+        .bind(principal.owner).all();
+      diagnostic?.(JSON.stringify({ event: 'response.fixture_unresolved_holds', scenario: name,
+        provider_calls: state.calls, holds: held.results, resource_phases: resources.results }));
+    }
+    if (settleFailure) throw settleFailure;
+    assert.deepEqual(new Set(held.results.map(row => row.idempotency_key)), expectedUnknown,
+      'Only the explicitly identified unknown provider receipts may remain after bounded settlement');
+    assert.ok(held.results.every(row => row.amount === '0'), 'BYOK unknown receipts cannot manufacture a platform model charge');
     await request('DELETE', `/v1/agents/${agent.id}`, undefined, 200, principal.apiKey);
     await principal.browser('DELETE', `/v1/provider-keys/${credential.id}`);
-    if (state.failure) throw state.failure;
     checkSchema();
   }
-  return { state, principal, agent, invoke, read, finish, observations, checkSchema };
+  async function finish() {
+    const errors = [...new Set([primaryFailure, state.failure].filter(Boolean))];
+    try { await cleanup(); }
+    catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, `Responses ${name}: primary and cleanup failures retained`);
+  }
+  function recordFailure(error) { primaryFailure ??= error; }
+  function expectUncertain(responseId) { expectedUnknown.add(`completion:${responseId}:round:0`); }
+  return { state, principal, agent, invoke, read, finish, observations, checkSchema, recordFailure, expectUncertain };
 }
 
 export async function runResponsesNodeSdkJourney(context) {
@@ -191,7 +217,8 @@ export async function runResponsesNodeSdkJourney(context) {
     assert.deepEqual((await context.request('GET', `/v1/sessions/${sdk.sessionId}`, undefined, 200, scenario.principal.apiKey)).messages,
       beforeDelete.messages, 'Deleting one response representation cannot erase source history');
     assert.equal(scenario.state.calls, 4, 'SDK reads, replay and stale-parent rejection cannot dispatch inference');
-  } finally { await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }
 
 export async function runResponsesLocalToolsJourney(context) {
@@ -239,7 +266,8 @@ export async function runResponsesLocalToolsJourney(context) {
     assert.equal(resumed.previous_response_id, handoff.id);
     assert.equal(scenario.state.calls, 2);
     assert.deepEqual(await scenario.read(handoff.id), handoff);
-  } finally { await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }
 
 export async function runResponsesCompactionJourney(context) {
@@ -258,11 +286,17 @@ export async function runResponsesCompactionJourney(context) {
     { text: 'After the second compact without request override.', check: input => checkPrompt(input, false) },
   ], { compaction_percent: 1 });
   try {
-    const first = await scenario.invoke({ input: 'Keep the goal.', instructions: custom });
+    // Two source items make the next turn compactable under the runtime's
+    // minimum-history guard; the test must observe two real compactions.
+    const first = await scenario.invoke({ input: [
+      { role: 'user', content: 'Keep the goal.' }, { role: 'user', content: 'Preserve the original source context.' },
+    ], instructions: custom });
     const sessionId = first.headers.get('x-agents-session');
     const before = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
     const second = await scenario.invoke({ previous_response_id: first.value.id, input: 'Continue after compact.', instructions: custom });
-    const third = await scenario.invoke({ previous_response_id: second.value.id, input: 'Continue without request override.' });
+    const third = await scenario.invoke({ previous_response_id: second.value.id, input: [
+      { role: 'user', content: 'Continue without request override.' }, { role: 'user', content: 'Retain the fixed instructions.' },
+    ] });
     assert.equal(third.value.status, 'completed');
     assert.equal(third.value.instructions, null);
     const after = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
@@ -271,7 +305,8 @@ export async function runResponsesCompactionJourney(context) {
     assert.deepEqual(after.messages.slice(0, before.messages.length), before.messages);
     assert.deepEqual(await scenario.read(first.value.id), first.value);
     assert.equal(scenario.state.calls, 5);
-  } finally { await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }
 
 export async function runResponsesBackgroundRaceJourney(context) {
@@ -302,14 +337,15 @@ export async function runResponsesBackgroundRaceJourney(context) {
     release();
     await waitUntil(async () => (await scenario.read(accepted.id)).status === 'completed');
     assert.deepEqual(await scenario.read(initial.value.id), initial.value);
-  } finally { release(); await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { release(); await scenario.finish(); }
 }
 
 export async function runResponsesStorageAndFailureJourney(context) {
   const scenario = await fixture(context, 'storage-failure', [
     { text: 'Ephemeral successful answer.' },
-    { error: 503 },
     { text: 'Output reached the configured budget.', finish: 'length' },
+    { error: 503 },
   ]);
   try {
     const ephemeral = await scenario.invoke({ input: 'Do not retain a retrievable response.', store: false });
@@ -318,17 +354,23 @@ export async function runResponsesStorageAndFailureJourney(context) {
     await scenario.read(ephemeral.value.id, '', 404);
     await scenario.invoke({ previous_response_id: ephemeral.value.id, input: 'No retained parent.' }, 404);
     await context.request('DELETE', `/v1/sessions/${ephemeral.headers.get('x-agents-session')}`, undefined, 200, scenario.principal.apiKey);
+    const limited = await scenario.invoke({ input: 'Return a budget-limited response.' });
+    assert.equal(limited.value.status, 'incomplete');
+    assert.equal(limited.value.incomplete_details?.reason, 'max_output_tokens');
+    await context.request('DELETE', `/v1/sessions/${limited.headers.get('x-agents-session')}`, undefined, 200, scenario.principal.apiKey);
     const failed = await scenario.invoke({ input: 'Return an explicit provider failure.', background: true });
     await waitUntil(async () => (await scenario.read(failed.value.id)).status === 'failed');
     const failure = await scenario.read(failed.value.id);
     assert.equal(typeof failure.error?.code, 'string');
     assert.equal(failure.output.length, 0, 'An upstream error cannot fabricate a successful assistant answer');
+    scenario.expectUncertain(failed.value.id);
+    const unknownLedger = await context.db.prepare("SELECT COUNT(*) AS count FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=?1 AND r.idempotency_key=?2")
+      .bind(scenario.principal.owner, `completion:${failed.value.id}:round:0`).first('count');
+    assert.equal(unknownLedger, 0, 'Unreported upstream usage cannot be settled as a fictional zero');
     await context.request('DELETE', `/v1/sessions/${failed.headers.get('x-agents-session')}`, undefined, 200, scenario.principal.apiKey);
-    const limited = await scenario.invoke({ input: 'Return a budget-limited response.' });
-    assert.equal(limited.value.status, 'incomplete');
-    assert.equal(limited.value.incomplete_details?.reason, 'max_output_tokens');
     assert.equal(scenario.state.calls, 3, 'Failures, retrieval and no-store rejection cannot replay execution');
-  } finally { await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }
 
 export async function runResponsesCancellationJourney(context) {
@@ -383,7 +425,8 @@ export async function runResponsesCancellationJourney(context) {
     assert.equal(scenario.state.calls, 1, 'Cancellation and late completion cannot dispatch a replacement inference');
     const after = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
     assert.equal(after.input_revision, before.input_revision, 'Cancellation is not new user input');
-  } finally { release(); await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { release(); await scenario.finish(); }
 }
 
 export async function runResponsesIdempotencyRaceJourney(context) {
@@ -415,13 +458,14 @@ export async function runResponsesIdempotencyRaceJourney(context) {
     assert.deepEqual(await replay.json(), first, 'Idempotency retry returns the original response even after the chain advances');
     await scenario.invoke({ input: 'A different canonical request.' }, 409, { 'Idempotency-Key': 'synthetic-duplicate-create' });
     assert.equal(scenario.state.calls, 2);
-  } finally { await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }
 
 export async function runSessionViewsJourney(context) {
   const scenario = await fixture(context, 'history-pages', [
     { text: 'Imported source context acknowledged.' }, { text: 'New append acknowledged.' },
-  ], { context_window: 131072 });
+  ], { context_window: 262144, compaction_percent: 99 });
   const input = Array.from({ length: 110 }, (_, index) => ({ role: 'user',
     content: `Source entry ${index}: ` + 'synthetic immutable source data; '.repeat(30) }));
   try {
@@ -480,7 +524,8 @@ export async function runSessionViewsJourney(context) {
     context.diagnostic?.(JSON.stringify({ event: 'session.bandwidth_fixture', source_entries: 111,
       legacy_bytes: Buffer.byteLength(legacyText), metadata_bytes: Buffer.byteLength(smallText),
       unchanged_body_bytes: 0, delta_entries: delta.data.length, delta_bytes: Buffer.byteLength(JSON.stringify(delta)) }));
-  } finally { await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }
 
 export async function runResponsesInputAndOptionsJourney(context) {
@@ -507,9 +552,14 @@ export async function runResponsesInputAndOptionsJourney(context) {
       { fabricated_parameter: true },
       { input: [{ type: 'function_call_output', call_id: 'orphan', output: 'fake output' }] },
       { tools: [{ type: 'function', name: 'time', parameters: { type: 'object' } }] },
+      { max_output_tokens: 513 },
+      { tool_choice: { type: 'function', name: 'undeclared_local_function' } },
     ]) {
       await scenario.invoke({ input: 'Reject invalid control before execution.', ...invalid }, 400);
       assert.equal(scenario.state.calls, 0);
+      const sessions = await context.request('GET', `/v1/agents/${scenario.agent.id}/sessions`, undefined, 200, scenario.principal.apiKey);
+      assert.equal(sessions.data.filter(session => session.status !== 'closed').length, 0,
+        'Rejected fresh requests cannot consume live-session quota');
     }
     const { value: response } = await scenario.invoke({
       input: [
@@ -534,7 +584,8 @@ export async function runResponsesInputAndOptionsJourney(context) {
     assert.equal(response.max_output_tokens, 200);
     assert.deepEqual(response.text?.format, { type: 'json_object' });
     assert.equal(scenario.state.calls, 1);
-  } finally { await scenario.finish(); }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }
 
 export async function runResponsesUnknownUsageJourney(context) {
@@ -552,78 +603,6 @@ export async function runResponsesUnknownUsageJourney(context) {
       .bind(scenario.principal.owner).all();
     assert.deepEqual(modelRows.results, [{ amount: '0', price_version: 'byok' }]);
     assert.equal(scenario.state.calls, 1);
-  } finally { await scenario.finish(); }
-}
-
-export async function runResponsesMidstreamResetJourney(context) {
-  let release;
-  const partialWait = new Promise(resolve => { release = resolve; });
-  const scenario = await fixture(context, 'midstream-reset', [{ partialWait }]);
-  let reader;
-  try {
-    const raw = await bounded(context.mf.dispatchFetch('https://agents.test/v1/responses', {
-      method: 'POST', headers: { Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: scenario.agent.id, input: 'Produce a streamed answer.', stream: true }),
-    }));
-    assert.equal(raw.status, 200);
-    const sessionId = raw.headers.get('x-agents-session');
-    reader = raw.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    const disclosed = [];
-    let delta;
-    while (!delta) {
-      const part = await bounded(reader.read());
-      assert.equal(part.done, false, 'The controlled upstream must disclose text before its terminal result');
-      buffer += decoder.decode(part.value, { stream: true });
-      let boundary;
-      while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-        const block = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        const data = block.split('\n').find(line => line.startsWith('data: '));
-        if (!data) continue;
-        const event = JSON.parse(data.slice(6));
-        disclosed.push(event);
-        if (event.type === 'response.output_text.delta') delta = event;
-      }
-    }
-    const responseId = disclosed.find(event => event.type === 'response.created').response.id;
-    assert.ok(Number.isSafeInteger(delta.sequence_number));
-    await bounded(context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sessionId}` }));
-    await waitUntil(async () => (await scenario.read(responseId)).status === 'failed');
-    const final = await scenario.read(responseId);
-    assert.equal(final.error?.code, 'server_error');
-    assert.equal(final.agents_error_code, 'provider_outcome_unknown');
-    const replay = await context.mf.dispatchFetch(`https://agents.test/v1/responses/${responseId}?stream=true&starting_after=${delta.sequence_number}`, {
-      headers: { Authorization: `Bearer ${scenario.principal.apiKey}` },
-    });
-    assert.equal(replay.status, 200);
-    const events = (await bounded(replay.text())).split('\n\n')
-      .map(block => block.split('\n').find(line => line.startsWith('data: '))).filter(Boolean)
-      .map(line => JSON.parse(line.slice(6)));
-    assert.ok(events.length > 0);
-    assert.ok(events.every(event => event.sequence_number > delta.sequence_number),
-      'Recovery must not reuse a sequence number already disclosed before reset');
-    assert.equal(events.at(-1).type, 'response.failed');
-    assert.equal(events.at(-1).response.id, responseId);
-    assert.equal(scenario.state.calls, 1, 'An uncertain external operation cannot be repeated after isolate replacement');
-    const outstanding = await context.db.prepare("SELECT idempotency_key,state FROM usage_reservations WHERE account_id=?1 AND state='reserved'")
-      .bind(scenario.principal.owner).all();
-    assert.ok(outstanding.results.some(row => row.idempotency_key.startsWith('completion:')),
-      'Unknown provider usage must remain an explicit unresolved receipt, not fabricated zero settlement');
-    const modelRows = await context.db.prepare("SELECT COUNT(*) AS count FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=?1 AND l.resource='model'")
-      .bind(scenario.principal.owner).first('count');
-    assert.equal(modelRows, 0);
-    scenario.observations.events.push(...disclosed, ...events);
-    scenario.checkSchema();
-    context.diagnostic?.(JSON.stringify({ event: 'response.midstream_reset_fixture', disclosed_sequence: delta.sequence_number,
-      terminal_sequence: events.at(-1).sequence_number, provider_calls: scenario.state.calls,
-      unresolved_completion_receipts: outstanding.results.filter(row => row.idempotency_key.startsWith('completion:')).length }));
-    // This isolated Miniflare account intentionally retains the unknown receipt.
-    // Releasing it would claim nonexistent provider evidence. Suite disposal,
-    // unlike a real account operation, removes the complete synthetic database.
-  } finally {
-    release();
-    if (reader) await bounded(reader.cancel()).catch(() => {});
-  }
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
 }

@@ -13,8 +13,23 @@ WORKER_BUILD_DIR=.cache/integration/worker-fixed node --test tests/worker/*.test
 ```
 
 The selected directory must contain `worker/shim.mjs`, `index.js`, and
-`index_bg.wasm`. Node and Python (standard-library SQLite only) are required.
+`index_bg.wasm`. Node and Python are required; migration parsing uses the
+standard-library SQLite module.
 Override `PYTHON` if its executable is not named `python`.
+
+Responses wire checks also require the locked Python SDK environment:
+
+```sh
+python3 -m venv .cache/e2e-venv
+.cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
+MAGENTS_SCHEMA_PYTHON=.cache/e2e-venv/bin/python node --test tests/worker/*.test.mjs
+```
+
+For a focused shared-fixture diagnosis, set `MAGENTS_WORKER_CASE` to a subjourney
+name substring and select `http.test.mjs`. This does not replace a complete gate;
+CI leaves that filter unset. The independent hard-crash test forcibly terminates
+only its owned Node/workerd process group and restores persistent storage in a
+new process. Idle DO eviction cannot simulate a crash with active I/O references.
 
 This runs the actual compiled Rust Worker inside workerd through Miniflare, with
 real D1, SQLite-backed Session/AuthSession Durable Objects, R2, and rate limit

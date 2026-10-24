@@ -15,13 +15,19 @@ import { createObserverProviderFixture, runProjectionFaultJourney } from './obse
 import { createResponsesProviderFixture, runResponsesNodeSdkJourney, runResponsesLocalToolsJourney,
   runResponsesCompactionJourney, runResponsesBackgroundRaceJourney, runResponsesStorageAndFailureJourney,
   runResponsesCancellationJourney, runResponsesIdempotencyRaceJourney, runSessionViewsJourney,
-  runResponsesInputAndOptionsJourney, runResponsesUnknownUsageJourney, runResponsesMidstreamResetJourney } from './responses-journey.mjs';
+  runResponsesInputAndOptionsJourney, runResponsesUnknownUsageJourney } from './responses-journey.mjs';
 import { runSpaceJourney } from './space-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
 const key = 'mag_integration_synthetic_key_not_a_real_credential';
 const hash = createHash('sha256').update(key).digest('base64url');
+
+function selected(context, name, ...arguments_) {
+  const filter = process.env.MAGENTS_WORKER_CASE;
+  if (filter && !name.includes(filter)) return Promise.resolve();
+  return context.test(name, ...arguments_);
+}
 
 test('compiled Rust Worker: authenticated D1 and session DO user journey', { timeout: 180000 }, async (t) => {
   const encryptionKey = randomBytes(32);
@@ -171,11 +177,11 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     assert.equal(response.status, expected, `${method} ${endpoint}: ${text}`);
     return JSON.parse(text);
   }
-  await t.test('unknown credentials fail without touching the key', async () => {
+  await selected(t, 'unknown credentials fail without touching the key', async () => {
     await request('GET', '/v1/models', undefined, 401, 'mag_unknown');
     assert.equal((await db.prepare("SELECT last_used_at FROM api_keys WHERE id='key'").first()).last_used_at, null);
   });
-  await t.test('first API key use binds an integer across Wasm -> JavaScript -> D1', async () => {
+  await selected(t, 'first API key use binds an integer across Wasm -> JavaScript -> D1', async () => {
     const models = await request('GET', '/v1/models');
     assert.deepEqual(models.data, []);
     assert.deepEqual(models.available_models.map(model => [model.provider, model.model]), [['openrouter', 'test-model'], ['deepseek', 'unpriced-direct-model']]);
@@ -186,17 +192,17 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     await request('GET', '/v1/models');
     assert.equal((await db.prepare("SELECT last_used_at FROM api_keys WHERE id='key'").first()).last_used_at, row.last_used_at);
   });
-  await t.test('browser auth lifecycle uses real AuthSession DO and integer D1 values', () =>
+  await selected(t, 'browser auth lifecycle uses real AuthSession DO and integer D1 values', () =>
     runAuthJourney({ mf, db, encryptionKey, origin: 'https://agents.test' }));
-  await t.test('callback and refresh ES256 assertions verify against the registered client key', () =>
+  await selected(t, 'callback and refresh ES256 assertions verify against the registered client key', () =>
     runClientAssertionJourney({ mf, db, origin: 'https://agents.test', identity }));
-  await t.test('invalid confidential-client scalar fails before exchange without authenticating', () =>
+  await selected(t, 'invalid confidential-client scalar fails before exchange without authenticating', () =>
     runInvalidClientKeyJourney({ mf, db, origin: 'https://agents.test', identity, updatePrivateJwk: async jwk => {
       mfOptions.workers[0].config.env.IDENTITY_CLIENT_PRIVATE_JWK = { type: 'text', value: JSON.stringify(jwk) };
       await mf.setOptions(mfOptions);
       db = await mf.getD1Database('DB');
     } }));
-  await t.test('subscription return authenticates, bypasses a warm snapshot and preserves grants on refresh failure', async () => {
+  await selected(t, 'subscription return authenticates, bypasses a warm snapshot and preserves grants on refresh failure', async () => {
     const guest = await mf.dispatchFetch('https://agents.test/billing/return?plan=agents-pro&return_to=https://evil.test', { redirect: 'manual' });
     assert.equal(guest.status, 302);
     assert.equal(guest.headers.get('location'), 'https://agents.test/auth/login?return_to=%2Fbilling%2Freturn');
@@ -241,7 +247,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       db = await mf.getD1Database('DB');
     }
   });
-  await t.test('agent CRUD, immutable session prefix, DO close and revocation', async (t) => {
+  await selected(t, 'agent CRUD, immutable session prefix, DO close and revocation', async (t) => {
     const agent = await request('POST', '/v1/agents', { name: 'Integration', instructions: 'Pinned original instructions', model: { provider: 'openrouter', model: 'test-model' }, workspace: false }, 201);
     assert.equal((await request('GET', '/v1/models')).data[0].id, agent.id);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201);
@@ -250,10 +256,10 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     const stored = await db.prepare('SELECT config_snapshot_json FROM sessions WHERE id=?1').bind(session.id).first();
     assert.ok(stored.config_snapshot_json.includes('Pinned original instructions'));
     assert.ok(!stored.config_snapshot_json.includes('Changed instructions'));
-    await t.test('read a live DO session through HTTP', () => request('GET', `/v1/sessions/${session.id}`));
-    await t.test('close a DO session through HTTP', () => request('DELETE', `/v1/sessions/${session.id}`));
+    await selected(t, 'read a live DO session through HTTP', () => request('GET', `/v1/sessions/${session.id}`));
+    await selected(t, 'close a DO session through HTTP', () => request('DELETE', `/v1/sessions/${session.id}`));
     assert.equal((await db.prepare('SELECT status FROM sessions WHERE id=?1').bind(session.id).first()).status, 'closed');
-    await t.test('archived session resumes once and the same public retry is idempotent', async () => {
+    await selected(t, 'archived session resumes once and the same public retry is idempotent', async () => {
       const resumed = await request('POST', `/v1/sessions/${session.id}/resume`, {});
       assert.equal(resumed.status, 'idle');
       assert.deepEqual(resumed.pinned, session.pinned);
@@ -278,7 +284,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     await db.prepare("UPDATE api_keys SET revoked_at=1 WHERE id='key'").run();
     await request('GET', '/v1/models', undefined, 401);
   });
-  await t.test('non-streaming SDK call advances alarm, invokes time, and settles two model rounds', async () => {
+  await selected(t, 'non-streaming SDK call advances alarm, invokes time, and settles two model rounds', async () => {
     await db.prepare("UPDATE api_keys SET revoked_at=NULL WHERE id='key'").run();
     const agent = await request('POST', '/v1/agents', { name: 'Tool continuation', model: { provider: 'openrouter', model: 'test-model' }, tools: ['time'], workspace: false }, 201);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201);
@@ -358,7 +364,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       clearTimeout(timer);
     }
   });
-  await t.test('slow provider receives SSE comment heartbeat before data and closes after DONE', { timeout: 32000 }, async () => {
+  await selected(t, 'slow provider receives SSE comment heartbeat before data and closes after DONE', { timeout: 32000 }, async () => {
     const heartbeatKey = 'mag_heartbeat_synthetic_fixture_only';
     await db.batch([
       db.prepare("INSERT INTO accounts(id,issuer,subject,created_at,updated_at) VALUES('heartbeat-owner','https://identity.test','heartbeat',0,0)"),
@@ -410,7 +416,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       slowProvider = false;
     }
   });
-  await t.test('BYOK uses the owned key, isolates credentials, and charges resources but no model cost', { timeout: 12000 }, async () => {
+  await selected(t, 'BYOK uses the owned key, isolates credentials, and charges resources but no model cost', { timeout: 12000 }, async () => {
     const owner = 'byok-owner';
     const cookie = randomBytes(32).toString('base64url');
     const csrf = randomBytes(32).toString('base64url');
@@ -475,41 +481,39 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     }
   });
   for (const protocol of ['openai', 'anthropic']) {
-    await t.test(`generic ${protocol} BYOK preserves route identity and completes tools without model charges`, { timeout: 32000 }, () =>
+    await selected(t, `generic ${protocol} BYOK preserves route identity and completes tools without model charges`, { timeout: 32000 }, () =>
       runGenericByokJourney({ mf, db, encryptionKey, request, providers: genericProviders, protocol }));
   }
   for (const protocol of ['openai', 'anthropic']) {
-    await t.test(`generic ${protocol} persists JSON compaction then streams a complete continuation`, { timeout: 40000 }, () =>
+    await selected(t, `generic ${protocol} persists JSON compaction then streams a complete continuation`, { timeout: 40000 }, () =>
       runCompactionJourney({ mf, db, encryptionKey, request, providers: compactionProviders, protocol }));
   }
-  await t.test('terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
+  await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, diagnostic: value => t.diagnostic(value) });
-  await t.test('Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>
+  await selected(t, 'Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>
     runSpaceJourney(responseContext()));
-  await t.test('Responses actual Node SDK streams, recovers and returns local function results', { timeout: 16000 }, () =>
+  await selected(t, 'Responses actual Node SDK streams, recovers and returns local function results', { timeout: 16000 }, () =>
     runResponsesNodeSdkJourney(responseContext()));
-  await t.test('Responses mixed server/local tools reject partial results and resume an archived head', { timeout: 16000 }, () =>
+  await selected(t, 'Responses mixed server/local tools reject partial results and resume an archived head', { timeout: 16000 }, () =>
     runResponsesLocalToolsJourney(responseContext()));
-  await t.test('Responses repeated compaction retains exact fixed and request-scoped instructions', { timeout: 16000 }, () =>
+  await selected(t, 'Responses repeated compaction retains exact fixed and request-scoped instructions', { timeout: 16000 }, () =>
     runResponsesCompactionJourney(responseContext()));
-  await t.test('Responses concurrent children admit one linear background execution', { timeout: 16000 }, () =>
+  await selected(t, 'Responses concurrent children admit one linear background execution', { timeout: 16000 }, () =>
     runResponsesBackgroundRaceJourney(responseContext()));
-  await t.test('Responses no-store, upstream failure and output-budget terminals remain distinct', { timeout: 16000 }, () =>
+  await selected(t, 'Responses no-store, upstream failure and output-budget terminals remain distinct', { timeout: 16000 }, () =>
     runResponsesStorageAndFailureJourney(responseContext()));
-  await t.test('Responses durable cancellation cannot replay or revive an accepted execution', { timeout: 16000 }, () =>
+  await selected(t, 'Responses durable cancellation cannot replay or revive an accepted execution', { timeout: 16000 }, () =>
     runResponsesCancellationJourney(responseContext()));
-  await t.test('Responses concurrent idempotency receipt creates one session and one run', { timeout: 16000 }, () =>
+  await selected(t, 'Responses concurrent idempotency receipt creates one session and one run', { timeout: 16000 }, () =>
     runResponsesIdempotencyRaceJourney(responseContext()));
-  await t.test('history metadata validators and cursor pages reduce bytes without changing legacy history', { timeout: 16000 }, () =>
+  await selected(t, 'history metadata validators and cursor pages reduce bytes without changing legacy history', { timeout: 16000 }, () =>
     runSessionViewsJourney(responseContext()));
-  await t.test('Responses typed context and generation controls are implemented rather than silently ignored', { timeout: 16000 }, () =>
+  await selected(t, 'Responses typed context and generation controls are implemented rather than silently ignored', { timeout: 16000 }, () =>
     runResponsesInputAndOptionsJourney(responseContext()));
-  await t.test('Responses unknown reasoning preserves exact known usage without inventing a breakdown', { timeout: 16000 }, () =>
+  await selected(t, 'Responses unknown reasoning preserves exact known usage without inventing a breakdown', { timeout: 16000 }, () =>
     runResponsesUnknownUsageJourney(responseContext()));
-  await t.test('Responses midstream isolate replacement preserves sequence high-water without replaying uncertain inference', { timeout: 16000 }, () =>
-    runResponsesMidstreamResetJourney(responseContext()));
-  await t.test('native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
+  await selected(t, 'native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
     const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'forward-recovery-owner' });
     const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, principal.apiKey);
