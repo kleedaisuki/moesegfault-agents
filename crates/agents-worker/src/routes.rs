@@ -116,6 +116,9 @@ pub(crate) fn error_response(error: &worker::Error) -> Result<Response> {
 }
 
 fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
+    if let Some(error) = attachment_input_error(text) {
+        return error;
+    }
     // D1 wraps trigger failures in a database error. Match a complete error token,
     // not arbitrary substrings, and never return the underlying error text.
     if text
@@ -245,6 +248,16 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "space_quota_exceeded",
             "Your Space storage limit has been reached",
         ),
+        "space_limit_exceeded" => (
+            409,
+            "space_limit_exceeded",
+            "Your Space storage or file-count limit has been reached",
+        ),
+        "storage_debt" => (
+            402,
+            "storage_debt",
+            "Resolve your account's storage balance before uploading more files",
+        ),
         "invalid_workspace_version" | "invalid_workspace_restore" => (
             400,
             "invalid_workspace_version",
@@ -289,6 +302,99 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
         }
         _ => (500, "internal_error", "The request could not be completed"),
     }
+}
+
+fn attachment_input_error(text: &str) -> Option<(u16, &'static str, &'static str)> {
+    const ERRORS: &[(&str, u16, &str)] = &[
+        (
+            "invalid_attachment",
+            400,
+            "The attachment contains invalid or unsupported fields",
+        ),
+        (
+            "invalid_file_input",
+            400,
+            "Provide exactly one supported file source",
+        ),
+        ("invalid_file_id", 400, "The file ID is invalid"),
+        (
+            "invalid_file_name",
+            400,
+            "The attachment filename is invalid",
+        ),
+        ("invalid_file_data", 400, "The inline file data is invalid"),
+        (
+            "invalid_image_source",
+            400,
+            "Use an owned image file or a supported base64 image source",
+        ),
+        (
+            "invalid_image_detail",
+            400,
+            "Image detail must be auto, low, or high",
+        ),
+        (
+            "invalid_image_size",
+            400,
+            "The image is empty or exceeds the supported image size or count",
+        ),
+        (
+            "unsupported_image_type",
+            400,
+            "Use a PNG, JPEG, GIF, or WebP image",
+        ),
+        (
+            "file_requires_workspace",
+            400,
+            "Enable a workspace to use binary or large file attachments",
+        ),
+        (
+            "too_many_input_items",
+            400,
+            "The request contains too many input items",
+        ),
+        (
+            "too_many_content_parts",
+            400,
+            "The message contains too many content parts",
+        ),
+        (
+            "attachments_too_large",
+            413,
+            "The attachments exceed the supported inline content limit",
+        ),
+        (
+            "file_too_large",
+            413,
+            "The file exceeds the supported upload size limit",
+        ),
+        (
+            "invalid_file_checksum",
+            400,
+            "Provide a valid SHA-256 file checksum",
+        ),
+        (
+            "invalid_file_upload",
+            400,
+            "The file upload request is invalid",
+        ),
+        ("invalid_file_request", 400, "The file request is invalid"),
+        ("invalid_space_request", 400, "The Space request is invalid"),
+        (
+            "file_length_required",
+            411,
+            "Provide the file content length",
+        ),
+        (
+            "file_upload_conflict",
+            409,
+            "This file upload identity was used with different contents",
+        ),
+    ];
+    ERRORS
+        .iter()
+        .find(|(code, _, _)| *code == text)
+        .map(|&(code, status, message)| (status, code, message))
 }
 
 async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
@@ -1185,6 +1291,57 @@ async fn forward_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_input_errors_are_bounded_client_errors_not_retryable_server_failures() {
+        for code in [
+            "invalid_attachment",
+            "invalid_file_input",
+            "invalid_file_id",
+            "invalid_file_name",
+            "invalid_file_data",
+            "invalid_image_source",
+            "invalid_image_detail",
+            "invalid_image_size",
+            "unsupported_image_type",
+            "file_requires_workspace",
+            "too_many_input_items",
+            "too_many_content_parts",
+            "invalid_file_checksum",
+            "invalid_file_upload",
+            "invalid_file_request",
+            "invalid_space_request",
+        ] {
+            let (status, actual, message) = classify_error(code);
+            assert_eq!(status, 400, "{code}");
+            assert_eq!(actual, code);
+            assert!(!message.contains("SQL"));
+            assert!(!message.contains("spaces/"));
+        }
+        for code in ["attachments_too_large", "file_too_large"] {
+            let (status, actual, _) = classify_error(code);
+            assert_eq!(status, 413, "{code}");
+            assert_eq!(actual, code);
+        }
+        assert_eq!(classify_error("file_not_found").0, 404);
+        assert_eq!(classify_error("file_length_required").0, 411);
+        assert_eq!(classify_error("file_upload_conflict").0, 409);
+        assert_eq!(classify_error("space_limit_exceeded").0, 409);
+        assert_eq!(classify_error("storage_debt").0, 402);
+        for code in [
+            "file_integrity_error",
+            "file_platform_unavailable",
+            "file_upload_failed",
+            "space_not_found",
+            "invalid_image_source: private bytes",
+            "private-file_requires_workspace",
+            "file_not_found: owner-secret",
+        ] {
+            let (status, actual, message) = classify_error(code);
+            assert_eq!((status, actual), (500, "internal_error"), "{code}");
+            assert!(!message.contains(code));
+        }
+    }
 
     #[test]
     fn safe_errors_preserve_actionable_status_without_leaking_backend_details() {

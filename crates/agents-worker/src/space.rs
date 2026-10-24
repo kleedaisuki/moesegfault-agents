@@ -642,7 +642,13 @@ pub async fn save_bytes_idempotent(
     )
     .await?;
     if response.status_code() != 200 {
-        return Err(fail("file_upload_failed"));
+        let status = response.status_code();
+        let (_, body) = response.into_parts();
+        let code = match body {
+            worker::ResponseBody::Body(bytes) => local_upload_error_code(status, &bytes),
+            _ => "file_upload_failed",
+        };
+        return Err(fail(code));
     }
     let mut response = response;
     let value: Value = response.json().await?;
@@ -652,6 +658,24 @@ pub async fn save_bytes_idempotent(
     get_owned_file(env, owner, id)
         .await?
         .ok_or_else(|| fail("file_upload_failed"))
+}
+
+fn local_upload_error_code(status: u16, body: &[u8]) -> &'static str {
+    if body.len() > 4096 {
+        return "file_upload_failed";
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return "file_upload_failed";
+    };
+    match (status, value["error"]["code"].as_str()) {
+        (400, Some("invalid_file_request")) => "invalid_file_request",
+        (402, Some("storage_debt")) => "storage_debt",
+        (402, Some("insufficient_credits")) => "insufficient_credits",
+        (409, Some("space_limit_exceeded")) => "space_limit_exceeded",
+        (409, Some("file_upload_pending")) => "file_upload_pending",
+        (413, Some("file_too_large")) => "file_too_large",
+        _ => "file_upload_failed",
+    }
 }
 
 async fn inline_file(env: &Env, owner: &str, key: &str) -> Result<Option<OwnedFile>> {
@@ -1116,5 +1140,35 @@ mod tests {
         assert!(!upload_may_dispatch(120_000, 120_000));
         assert!(!upload_may_dispatch(180_000, 120_000));
         assert!(!upload_may_dispatch(u64::MAX, u64::MAX));
+    }
+
+    #[test]
+    fn inline_upload_preserves_only_known_local_errors() {
+        for (status, code) in [
+            (400, "invalid_file_request"),
+            (402, "storage_debt"),
+            (402, "insufficient_credits"),
+            (409, "space_limit_exceeded"),
+            (409, "file_upload_pending"),
+            (413, "file_too_large"),
+        ] {
+            let body = serde_json::to_vec(
+                &json!({"error":{"code":code,"message":"private contents must not propagate"}}),
+            )
+            .unwrap();
+            assert_eq!(local_upload_error_code(status, &body), code);
+            assert_eq!(local_upload_error_code(500, &body), "file_upload_failed");
+        }
+        for body in [
+            b"not json".as_slice(),
+            br#"{"error":{"code":"file_integrity_error","message":"private"}}"#.as_slice(),
+            br#"{"error":{"code":"file_upload_failed"}}"#.as_slice(),
+        ] {
+            assert_eq!(local_upload_error_code(400, body), "file_upload_failed");
+        }
+        assert_eq!(
+            local_upload_error_code(409, &vec![b' '; 4097]),
+            "file_upload_failed"
+        );
     }
 }
