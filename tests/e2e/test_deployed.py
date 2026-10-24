@@ -5,12 +5,13 @@ import os
 import time
 import uuid
 from typing import Any
+from collections.abc import Iterator
 from urllib.parse import urlsplit
 
 import pytest
 from openai import OpenAI
 
-from conftest import Http, cleanup_deployed_agent
+from conftest import Http, cleanup_deployed_agent, correlation_headers
 from stream_usage import reported_stream_usage
 
 
@@ -31,10 +32,11 @@ def managed_agent(deployed):
 
 
 @pytest.fixture
-def inference(deployed):
+def inference(deployed: Http) -> Iterator[OpenAI]:
     if os.getenv("MAGENTS_TEST_INFERENCE") != "1":
         pytest.skip("real billed model calls require MAGENTS_TEST_INFERENCE=1 and funded provider configuration")
-    with OpenAI(api_key=deployed.token, base_url=deployed.origin + "/v1", timeout=180, max_retries=0) as client:
+    with OpenAI(api_key=deployed.token, base_url=deployed.origin + "/v1", timeout=180,
+                max_retries=0, default_headers=correlation_headers() or None) as client:
         yield client
 
 

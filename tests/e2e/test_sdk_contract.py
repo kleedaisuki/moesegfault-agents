@@ -1,5 +1,10 @@
 """Harness checks against canonical wire fixtures, not deployed-server evidence."""
 import json
+import hashlib
+import re
+import http.client
+import urllib.request
+from unittest.mock import MagicMock
 from typing import Any
 
 import httpx
@@ -8,6 +13,45 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionChunk
 
 from stream_usage import reported_stream_usage
+from conftest import Http, correlation_headers
+
+
+@pytest.mark.parametrize("seed", [None, "40094317517:1"])
+def test_opt_in_ci_trace_correlation(seed: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    if seed is None:
+        monkeypatch.delenv("MAGENTS_TEST_TRACE_SEED", raising=False)
+    else:
+        monkeypatch.setenv("MAGENTS_TEST_TRACE_SEED", seed)
+    headers = correlation_headers()
+    if seed is None:
+        assert headers == {}
+    else:
+        trace = hashlib.sha256(seed.encode()).hexdigest()[:32]
+        assert re.fullmatch(f"00-{trace}-[0-9a-f]{{16}}-00", headers["traceparent"])
+        assert correlation_headers()["traceparent"] != headers["traceparent"]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("traceparent") == headers.get("traceparent")
+        assert "traceparent" not in request.content.decode()
+        return httpx.Response(200, json={"object": "list", "data": []})
+
+    with OpenAI(api_key="fixture-only", base_url="https://fixture.invalid/v1",
+                default_headers=headers or None, http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
+        assert client.models.list().data == []
+
+    def urlopen(request: urllib.request.Request, timeout: float) -> MagicMock:
+        actual = request.get_header("Traceparent")
+        if seed is None:
+            assert actual is None
+        else:
+            assert actual is not None and actual.split("-")[1] == trace
+        response = MagicMock(status=200, headers=http.client.HTTPMessage())
+        response.__enter__.return_value = response
+        response.read.return_value = b"{}"
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert Http("https://fixture.invalid", "fixture-only").request("GET", "/healthz")[0] == 200
 
 
 def test_sdk_nonstream_session_header_contract() -> None:

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import http.client
 import os
 import pathlib
@@ -7,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from typing import Any
 
 import pytest
 
@@ -14,13 +16,26 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
+def correlation_headers() -> dict[str, str]:
+    """Opt-in CI-attempt correlation, independent of native tracing and sampling."""
+    seed = os.getenv("MAGENTS_TEST_TRACE_SEED")
+    if not seed:
+        return {}
+    trace_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
+    if trace_id == "0" * 32:
+        trace_id = "1" + trace_id[1:]
+    return {"traceparent": f"00-{trace_id}-{uuid.uuid4().hex[:16]}-00"}
+
+
 class Http:
     def __init__(self, origin, token):
         self.origin = origin.rstrip("/")
         self.token = token
 
-    def request(self, method, path, data=None, headers=None, authenticated=True, timeout=180):
-        values = {"User-Agent": "magents-acceptance/0.1"}
+    def request(self, method: str, path: str, data: Any = None,
+                headers: dict[str, str] | None = None, authenticated: bool = True,
+                timeout: float = 180) -> tuple[int, http.client.HTTPMessage, bytes]:
+        values = {"User-Agent": "magents-acceptance/0.1", **correlation_headers()}
         if authenticated:
             values["Authorization"] = f"Bearer {self.token}"
         if data is not None and not isinstance(data, bytes):
