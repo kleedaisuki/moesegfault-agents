@@ -36,6 +36,7 @@ from openai import OpenAI
 client = OpenAI(
     base_url="https://agents.moesegfault.dev/v1",
     api_key=os.environ["MAGENTS_API_KEY"],
+    max_retries=0,
 )
 response = client.chat.completions.with_raw_response.create(
     model=os.environ["MAGENTS_AGENT_ID"],
@@ -51,6 +52,8 @@ answer = client.chat.completions.create(
     extra_headers={"x-agents-session": session_id},
 )
 ```
+
+Automatic SDK retries are disabled: losing a response does not prove that an accepted run failed. For long tasks, create a session first and use streaming; inspect the session before resubmitting input.
 
 This implements the documented chat-completions subset, not every OpenAI API. See [HTTP contracts](docs/api.md) and [CLI](docs/cli.md).
 

@@ -31,6 +31,7 @@ from openai import OpenAI
 client = OpenAI(
     base_url="https://agents.moesegfault.dev/v1",
     api_key=os.environ["MAGENTS_API_KEY"],
+    max_retries=0,
 )
 agent_id = "<id from agents create or dashboard>"
 raw = client.chat.completions.with_raw_response.create(
@@ -117,6 +118,7 @@ across all of an owner's sessions, including API keys and browser/CLI callers.
 | POST | `/v1/agents` | Create; 201 + `AgentConfig` |
 | GET | `/v1/agents/{id}` | `AgentConfig` or 404 |
 | PUT | `/v1/agents/{id}` | Replace editable configuration; increment revision |
+| PATCH | `/v1/agents/{id}` | Merge supplied top-level editable fields; increment revision |
 | DELETE | `/v1/agents/{id}` | Soft-delete configuration; existing session pins remain independent |
 
 Creation/replacement body:

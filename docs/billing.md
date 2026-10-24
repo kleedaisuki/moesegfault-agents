@@ -325,3 +325,26 @@ Configuration readiness is not production rollout evidence. The producer owns
 its release, and Agents promotion requires live production allowlist/readback
 plus its own integrated staging gate. See the upstream
 [production contract](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/6c3586eb6681b21daf0c61af658c3c9f9fb4c974/docs/deployment/production.md).
+
+### Integrated consumer readback
+
+After public Agents health matched merged source
+`b6d9b474f63df8b3fd7d370bde23724c4658e2ef`, the existing owned Pro/test actor
+completed a fresh real same-tab Manage subscription trip through the hosted
+Subscribe UI. Its actual approved return reached `/billing/return` with 302 and
+then `/#usage`; the account and plan remained the same.
+
+A second trip browsed products, reloaded and returned through the actual UI
+links. In **10,068 ms**, inside the existing 60-second freshness window, the
+account's authoritative `subscription_snapshots.fetched_at` increased. The
+allowance grant count, credited sum and wallet budget stayed unchanged. This
+checks forced refresh and idempotent funding without issuing another activation
+or trying to replay the earlier consumed Free-to-Go capability.
+
+Removing only this actor's Agents cookie while at Subscribe exercised normal
+OIDC recovery back through the fixed return route to the same Pro account.
+Normal logout returned 200 and the following account read returned 401; the
+owned browser was closed. No new account, mailbox, API key, activation, model
+request, container or manual financial write was involved. This is the merged
+consumer business-flow gate, not a claim that the separate broader deployment
+suite or the producer's production release has completed.

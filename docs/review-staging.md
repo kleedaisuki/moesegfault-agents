@@ -565,3 +565,75 @@ Combined-source CI, staging return acceptance and the producer's actual
 production destination rollout remain separate release gates. The producer is
 responsible for its own production release; a configured allowlist is not proof
 that it is serving.
+
+## Run observer / D1 projection finalization review
+
+Bounded review of the isolated v0.2 release worktree's `session.rs` and new
+`session_observer.rs`. The supplied deterministic negative control on source b6
+failed the final Running-to-Idle D1 projection after the DO had completed and the
+financial reservations had settled, leaving the live SSE observer without terminal
+frames. This establishes that specific finalization defect; it does **not** prove
+the cause of the earlier historical 77-second SSE incident or a JavaScript queue
+hypothesis. Neither is claimed repaired by inference.
+
+**Source verdict: no blocking residual found in the reviewed finalization patch.**
+
+- The terminal run remains live/busy while a candidate completion snapshot is
+  saved to authoritative DO storage. A failed save cannot publish live Idle or
+  report success; the run terminal and its captured observer remain available for
+  retry. A successful DO commit precedes live run removal and notification.
+- The observer is captured before finalization's first await and carries a run
+  ID. Old completion cannot consume or stream into a newer run's attachment.
+  Channel acceptance is distinguished from network delivery; disconnect does not
+  authorize provider/tool replay.
+- Known completion notification no longer depends on the non-authoritative D1
+  listing projection. A durable serde-defaulted pending flag and bounded
+  1/2/4/.../60-second retry deadline retain repair work without inventing model
+  completion or forgiving financial uncertainty.
+- Persistence, projection and acknowledgement share the existing mutex. Repair
+  projects the current canonical snapshot, not an old captured Idle record. Its
+  acknowledgement clears the live flag only when the record still matches;
+  queued steering/new-run persistence cannot be overtaken by an older durable
+  acknowledgement. Late input remains pending and receives ordinary run quota
+  and funding admission, without advancing its input clock a second time.
+- Projection-only repair invokes no provider/tool path or monetary settlement.
+  Existing terminal/inflight fences and end-of-execution accounting remain intact.
+
+Independently executed native checks in this isolated worktree: observer transport
+suite **5 passed**, completion/late-input state checks **2 passed**, and legacy
+serde/backoff check **1 passed**. No production source was edited by the reviewer.
+The fresh compiled-WASM positive fault test remains a required gate; native tests
+are not a claim that the final-projection fault has already turned green on
+workerd or in staging.
+
+Minor integration note sent to runtime: the new observer/projection event names
+were not yet in `telemetry::emit`'s event allowlist at initial review, so their
+fields survived under the generic `operation` event. This does not affect state,
+transport completion or funding correctness; coordinate telemetry naming before
+claiming those exact event names are emitted.
+
+### Final projection acknowledgement refinement — source-only re-review
+
+The final patch uses a tiny separate `session.projection-ack` KV value rather
+than rewriting the large session snapshot just to acknowledge a D1 projection.
+Each dirty publication has a fresh opaque `projection_generation` from the
+existing UUID helper. Completion's candidate snapshot and live transition share
+one explicitly generated identity. Acknowledgements clear pending only for an
+exact **nonempty** generation; live acknowledgement also checks the projected
+record. Cold loading applies the same nonempty identity fence.
+
+This replaces an interim monotonic u64 design with a concrete rollback alias:
+a legacy writer can discard unknown serde fields while leaving the separate ACK
+KV untouched, reset a counter to zero, and allow a later unprojected generation
+1 to match an old ACK 1. The opaque identity eliminates that reuse after legacy
+rewrites without an ordering requirement, migration counter, exhaustion branch
+or new dependency. A source regression covers a legacy writer dropping the new
+metadata and rejection of both stale numeric and prior-generation ACKs.
+
+Source-only final verdict: no blocking residual found in the generation/ACK
+boundary. Existing mutex serialization, current-state repair, bounded backoff,
+run-scoped observers and financial/provider replay fences remain unchanged.
+No further local compilation or tests were run for this final refinement. The
+previous eight native results above describe the earlier observer/state patch,
+not an independently executed test of this nonce refinement; fresh exact-source
+compiled-WASM fault-positive CI remains the release gate.
