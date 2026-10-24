@@ -16,12 +16,14 @@ mod native_crypto;
 const SESSION_COOKIE: &str = "__Host-magents_session";
 const LOGIN_COOKIE: &str = "__Host-magents_login";
 const SESSION_SECONDS: i64 = 14 * 86400;
+pub const BILLING_RETURN_PATH: &str = "/billing/return";
 
 #[derive(Clone)]
 pub struct AuthContext {
     pub account_id: String,
     pub csrf_token: Option<String>,
     pub via_api_key: bool,
+    pub billing_refresh_failed: bool,
 }
 
 #[derive(Deserialize)]
@@ -30,6 +32,11 @@ struct BrowserSession {
     tokens_encrypted: String,
     csrf_hash: String,
     expires_at: i64,
+}
+
+#[derive(Deserialize)]
+struct BillingSubscriptions {
+    subscriptions: Vec<agents_auth::billing::Subscription>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -265,6 +272,7 @@ pub async fn authenticate(req: &Request, env: &Env) -> Result<AuthContext> {
                 account_id,
                 csrf_token: None,
                 via_api_key: true,
+                billing_refresh_failed: false,
             });
         }
         let claims = verify_token(
@@ -280,6 +288,7 @@ pub async fn authenticate(req: &Request, env: &Env) -> Result<AuthContext> {
             account_id,
             csrf_token: None,
             via_api_key: false,
+            billing_refresh_failed: false,
         });
     }
     let token = cookie(req, SESSION_COOKIE).ok_or_else(|| failure("unauthorized"))?;
@@ -290,7 +299,7 @@ pub async fn authenticate(req: &Request, env: &Env) -> Result<AuthContext> {
         .get_stub()?;
     let init = RequestInit {
         method: Method::Post,
-        body: Some(json!({"token_hash":hash}).to_string().into()),
+        body: Some(json!({"token_hash":hash,"refresh_billing":req.method() == Method::Get && req.path() == BILLING_RETURN_PATH}).to_string().into()),
         ..Default::default()
     };
     let mut reply = stub
@@ -326,6 +335,7 @@ pub async fn authenticate(req: &Request, env: &Env) -> Result<AuthContext> {
             .to_owned(),
         csrf_token: Some(csrf_token.into()),
         via_api_key: false,
+        billing_refresh_failed: session["billing_refresh_failed"] == true,
     })
 }
 
@@ -576,13 +586,18 @@ async fn callback(req: &Request, env: &Env) -> Result<Response> {
 }
 
 async fn synchronize_subscription(env: &Env, account_id: &str, access_token: &str) -> Result<()> {
-    fetch_subscriptions(env, account_id, access_token).await?;
+    fetch_subscriptions(env, account_id, access_token, false).await?;
     crate::allowances::sync(env, account_id).await
 }
 
-async fn fetch_subscriptions(env: &Env, account_id: &str, access_token: &str) -> Result<()> {
+async fn fetch_subscriptions(
+    env: &Env,
+    account_id: &str,
+    access_token: &str,
+    force: bool,
+) -> Result<bool> {
     let Some(origin) = env.var("BILLING_API_ORIGIN").ok().map(|v| v.to_string()) else {
-        return Ok(());
+        return Ok(false);
     };
     let issuer = setting(env, "IDENTITY_ISSUER")?;
     let expected = if issuer == "https://identity-staging.moesegfault.dev" {
@@ -594,10 +609,12 @@ async fn fetch_subscriptions(env: &Env, account_id: &str, access_token: &str) ->
         return Err(failure("billing_environment_mismatch"));
     }
     let db = env.d1("DB")?;
-    let existing = db.prepare("SELECT fetched_at FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents' AND fetched_at>?2")
-        .bind(&[account_id.into(),d1_integer(now()-60)?])?.first::<Value>(None).await?;
-    if existing.is_some() {
-        return Ok(());
+    if !force {
+        let existing = db.prepare("SELECT fetched_at FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents' AND fetched_at>?2")
+            .bind(&[account_id.into(),d1_integer(now()-60)?])?.first::<Value>(None).await?;
+        if existing.is_some() {
+            return Ok(true);
+        }
     }
     let headers = Headers::new();
     headers.set("Authorization", &format!("Bearer {access_token}"))?;
@@ -612,20 +629,65 @@ async fn fetch_subscriptions(env: &Env, account_id: &str, access_token: &str) ->
     record_upstream(&mut response, "billing", "subscription").await;
     if response.status_code() != 200 {
         // Stale grants never extend access. A temporary outage does not block Free login.
-        return Ok(());
+        return Ok(false);
     }
-    let profile: Value = response.json().await?;
-    let subscriptions = profile["subscriptions"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let relevant: Vec<Value> = subscriptions
+    let profile: BillingSubscriptions = response.json().await?;
+    let relevant: Vec<_> = profile
+        .subscriptions
         .into_iter()
-        .filter(|s| s["product_id"] == "agents")
+        .filter(|subscription| subscription.product_id == "agents")
         .collect();
     db.prepare("INSERT INTO subscription_snapshots(account_id,product_id,subscription_json,fetched_at,valid_until) VALUES(?1,'agents',?2,?3,?4) ON CONFLICT(account_id,product_id) DO UPDATE SET subscription_json=excluded.subscription_json,fetched_at=excluded.fetched_at,valid_until=excluded.valid_until")
         .bind(&[account_id.into(),serde_json::to_string(&relevant)?.into(),d1_integer(now())?,d1_integer(now()+300)?])?.run().await?;
-    Ok(())
+    Ok(true)
+}
+
+pub async fn handle_billing_return(req: Request, env: &Env) -> Result<Response> {
+    if req.method() != Method::Get {
+        return error_response("not_found", 404);
+    }
+    let app = setting(env, "APP_ORIGIN")?;
+    if cookie(&req, SESSION_COOKIE).is_none() {
+        return secure_response(redirect_response(
+            format!("{app}/auth/login?return_to=%2Fbilling%2Freturn").parse()?,
+        )?);
+    }
+    let context = match authenticate(&req, env).await {
+        Ok(context) => context,
+        Err(_) => {
+            return secure_response(redirect_response(
+                format!("{app}/auth/login?return_to=%2Fbilling%2Freturn").parse()?,
+            )?);
+        }
+    };
+    if context.csrf_token.is_none() {
+        return error_response("browser_session_required", 403);
+    }
+    let destination = if context.billing_refresh_failed {
+        "/?billing_refresh=failed#usage"
+    } else {
+        "/#usage"
+    };
+    secure_response(redirect_response(format!("{app}{destination}").parse()?)?)
+}
+
+fn subscription_url(issuer: &str) -> Result<String> {
+    let (subscribe, dashboard) = if issuer == "https://identity-staging.moesegfault.dev" {
+        (
+            "https://subscribe-staging.moesegfault.dev/",
+            "https://adash-staging.moesegfault.dev",
+        )
+    } else {
+        (
+            "https://subscribe.moesegfault.dev/",
+            "https://adash.moesegfault.dev",
+        )
+    };
+    let mut url = url::Url::parse(subscribe)?;
+    url.query_pairs_mut()
+        .append_pair("app", "agents")
+        .append_pair("return_to", &format!("{dashboard}{BILLING_RETURN_PATH}"));
+    Ok(url.into())
 }
 
 pub async fn handle_account(
@@ -664,12 +726,7 @@ async fn account_response(env: &Env, context: &AuthContext) -> Result<Response> 
         .usage(&context.account_id)
         .await?;
     let credit = wallet.budget_microusd - wallet.spent_microusd - wallet.reserved_microusd;
-    let subscribe =
-        if setting(env, "IDENTITY_ISSUER")? == "https://identity-staging.moesegfault.dev" {
-            "https://subscribe-staging.moesegfault.dev/"
-        } else {
-            "https://subscribe.moesegfault.dev/"
-        };
+    let subscribe = subscription_url(&setting(env, "IDENTITY_ISSUER")?)?;
     secure_response(Response::from_json(
         &json!({"account_id":context.account_id,"plan":tier,"limits":{"agents":limits.agent_configs,"agent_configs":limits.agent_configs,"concurrent_sessions":limits.concurrent_sessions,"concurrent_runs":limits.concurrent_runs},"credit_microusd":credit,"csrf_token":context.csrf_token,"subscription_url":subscribe,"billing_mode":env.var("BILLING_MODE").ok().map(|v|v.to_string()).filter(|s|s=="test"||s=="live")}),
     )?)
@@ -848,7 +905,20 @@ async fn session_request(mut req: Request, env: &Env, storage: &Storage) -> Resu
             }
         }
     }
-    Response::from_json(&json!({"account_id":row.account_id,"csrf_token":secrets.csrf_token}))
+    let billing_refresh_failed = if body["refresh_billing"] == true {
+        let refreshed = match secrets.oauth["access_token"].as_str() {
+            Some(access_token) => fetch_subscriptions(env, &row.account_id, access_token, true)
+                .await
+                .unwrap_or(false),
+            None => false,
+        };
+        !refreshed || crate::allowances::sync(env, &row.account_id).await.is_err()
+    } else {
+        false
+    };
+    Response::from_json(
+        &json!({"account_id":row.account_id,"csrf_token":secrets.csrf_token,"billing_refresh_failed":billing_refresh_failed}),
+    )
 }
 
 async fn oauth_form(env: &Env, endpoint: &str, fields: &[(&str, &str)]) -> Result<Response> {
@@ -964,4 +1034,37 @@ pub async fn cleanup_expired(env: &Env) -> Result<()> {
     let diagnostics = db.prepare("DELETE FROM diagnostic_reports WHERE id IN (SELECT id FROM diagnostic_reports WHERE expires_at<=?1 LIMIT 500)").bind(&[d1_integer(cutoff)?])?;
     db.batch(vec![login, sessions, diagnostics]).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod subscription_return_tests {
+    use super::*;
+
+    #[test]
+    fn subscription_handoff_is_environment_paired_and_has_a_fixed_return() {
+        for (issuer, subscribe, dashboard) in [
+            (
+                "https://identity-staging.moesegfault.dev",
+                "https://subscribe-staging.moesegfault.dev",
+                "https://adash-staging.moesegfault.dev",
+            ),
+            (
+                "https://identity.moesegfault.dev",
+                "https://subscribe.moesegfault.dev",
+                "https://adash.moesegfault.dev",
+            ),
+        ] {
+            let url = url::Url::parse(&subscription_url(issuer).unwrap()).unwrap();
+            assert_eq!(url.origin().ascii_serialization(), subscribe);
+            assert_eq!(url.path(), "/");
+            assert!(url.fragment().is_none());
+            let query: std::collections::BTreeMap<_, _> = url.query_pairs().collect();
+            assert_eq!(query.len(), 2);
+            assert_eq!(query.get("app").map(|value| value.as_ref()), Some("agents"));
+            assert_eq!(
+                query["return_to"],
+                format!("{dashboard}{BILLING_RETURN_PATH}")
+            );
+        }
+    }
 }

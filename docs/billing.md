@@ -60,6 +60,40 @@ SDK access every five minutes or relaxing Identity audience checks.
 Regression evidence is in `tests/test_subscription_snapshots_sql.py` (actual shared SQL,
 API-key use after browser logout, refresh deadlines, tenant isolation and idempotent funding)
 and the Rust `sdk_only_paid_grant_survives_refresh_ttl_but_not_subscription_expiry` test.
+
+### Subscribe management return
+
+The dashboard account response supplies an environment-paired `subscription_url`
+with `app=agents` and an exact HTTPS `return_to` ending in `/billing/return` on
+the corresponding `adash` origin. This is a product continuation, not an OAuth
+redirect URI or evidence of payment. The dashboard follows it in the same tab;
+Subscribe alone owns activation and must accept the exact destination in its
+own environment's return allowlist.
+
+`GET /billing/return` is explicitly Worker-first, not static SPA fallback. It
+authenticates its own host-only Agents browser session; an absent or expired
+session starts ordinary OIDC with the same safe local return path. Inside the
+session's serialized AuthSession, a server-owned flag fetches Billing using that
+session's current access token, bypassing the normal 60-second snapshot-fetch
+coalescing window. It never trusts a query-supplied plan, payer, tier or return
+destination, and cannot import a different Subscribe principal's grant.
+
+After a typed successful Billing response and allowance reconciliation it
+redirects to `/#usage`. The new document selects Usage & plan from that existing
+hash and cold-loads account and usage data, so no stale React Query state from
+the departing dashboard can mask a new activation or renewal. Normal API reads
+and API-key grant validity remain unchanged.
+
+A failed request, non-200 response, or malformed subscription array does not
+replace the last verified snapshot or call a temporary outage a successful
+refresh. The return lands at `/?billing_refresh=failed#usage` with an explicit
+retry link back to the fixed return endpoint. Existing grants still expire at
+their real period end. No bearer token or refresh capability enters browser URLs.
+
+The initial rollout is **staging only**. Before promoting the Agents code to
+production, the independently deployed Subscribe production allowlist must first
+accept exactly `https://adash.moesegfault.dev/billing/return`; adding only the
+staging destination is not proof that the production round trip is enabled.
 ## Local policy
 
 `agents_auth::billing::PlanPolicy` is local entitlement-to-limit policy, not an

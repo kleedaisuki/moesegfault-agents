@@ -181,5 +181,7 @@
   "Context window": "Context window",
   "Maximum output tokens": "Maximum output tokens",
   "Use your API’s model limits. Context compaction is calculated from this window.": "Use your API’s model limits. Context compaction is calculated from this window.",
-  "Output tokens must be smaller than the context window.": "Output tokens must be smaller than the context window."
+  "Output tokens must be smaller than the context window.": "Output tokens must be smaller than the context window.",
+  "Your subscription could not be refreshed. Existing access has not been removed.": "Your subscription could not be refreshed. Existing access has not been removed.",
+  "Retry subscription refresh": "Retry subscription refresh"
 }

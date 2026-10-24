@@ -27,6 +27,10 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   let redirectTargetCalls = 0;
   let slowProvider = false;
   let byokProviderKey = null;
+  let billingAvailable = true;
+  let billingMalformed = false;
+  let billingFetches = 0;
+  let billingSubscriptions = [];
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const temp = await mkdtemp(path.join(root, '.temp/worker-integration-'));
   process.env.TMP = process.env.TEMP = process.env.TMPDIR = temp;
@@ -64,6 +68,11 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
+      if (request.url === 'https://billing.moesegfault.dev/v1/me') {
+        billingFetches++;
+        assert.equal(request.headers.get('authorization'), 'Bearer synthetic-return-access-token');
+        return Response.json(billingAvailable ? billingMalformed ? {} : { subscriptions: billingSubscriptions } : { error: 'unavailable' }, { status: billingAvailable ? 200 : 503 });
+      }
       const genericResponse = await genericProviders.handle(request);
       if (genericResponse !== undefined) return genericResponse;
       if (request.url.startsWith('https://redirect-target.test/')) {
@@ -169,6 +178,51 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       await mf.setOptions(mfOptions);
       db = await mf.getD1Database('DB');
     } }));
+  await t.test('subscription return authenticates, bypasses a warm snapshot and preserves grants on refresh failure', async () => {
+    const guest = await mf.dispatchFetch('https://agents.test/billing/return?plan=agents-pro&return_to=https://evil.test', { redirect: 'manual' });
+    assert.equal(guest.status, 302);
+    assert.equal(guest.headers.get('location'), 'https://agents.test/auth/login?return_to=%2Fbilling%2Freturn');
+    assert.equal(billingFetches, 0);
+    mfOptions.workers[0].config.env.BILLING_API_ORIGIN = { type: 'text', value: 'https://billing.moesegfault.dev' };
+    await mf.setOptions(mfOptions);
+    db = await mf.getD1Database('DB');
+    try {
+      const owner = 'billing-return-owner';
+      const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner, oauth: { access_token: 'synthetic-return-access-token' } });
+      const now = Math.floor(Date.now() / 1000);
+      await db.prepare("INSERT INTO subscription_snapshots(account_id,product_id,subscription_json,fetched_at,valid_until) VALUES(?1,'agents','[]',?2,?3)").bind(owner, now, now + 300).run();
+      assert.equal((await principal.browser('GET', '/v1/account')).plan, 'free');
+      billingSubscriptions = [{ id: 'synthetic-agents-grant', product_id: 'agents', plan_id: 'agents-go', status: 'active', current_period_start: now - 10, current_period_end: now + 2592000, entitlements: ['agents.access', 'agents.tier.go'] }];
+      const returned = await mf.dispatchFetch('https://agents.test/billing/return?plan=agents-pro', { headers: { Cookie: principal.cookie }, redirect: 'manual' });
+      assert.equal(returned.status, 302);
+      assert.equal(returned.headers.get('location'), 'https://agents.test/#usage');
+      assert.equal(billingFetches, 1, 'The return must bypass even a just-fetched Free snapshot');
+      assert.equal((await principal.browser('GET', '/v1/account')).plan, 'go', 'The query plan never grants Pro');
+      billingSubscriptions[0].current_period_end += 2592000;
+      const renewed = await mf.dispatchFetch('https://agents.test/billing/return', { headers: { Cookie: principal.cookie }, redirect: 'manual' });
+      assert.equal(renewed.headers.get('location'), 'https://agents.test/#usage');
+      assert.equal(billingFetches, 2, 'A second immediate return must fetch the extended period');
+      const snapshot = await db.prepare("SELECT subscription_json FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents'").bind(owner).first('subscription_json');
+      assert.equal(JSON.parse(snapshot)[0].current_period_end, billingSubscriptions[0].current_period_end);
+      billingAvailable = false;
+      const failed = await mf.dispatchFetch('https://agents.test/billing/return', { headers: { Cookie: principal.cookie }, redirect: 'manual' });
+      assert.equal(failed.headers.get('location'), 'https://agents.test/?billing_refresh=failed#usage');
+      assert.equal((await principal.browser('GET', '/v1/account')).plan, 'go');
+      assert.equal(await db.prepare("SELECT subscription_json FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents'").bind(owner).first('subscription_json'), snapshot);
+      assert.equal(await db.prepare('SELECT COUNT(*) AS count FROM browser_sessions WHERE account_id=?1').bind(owner).first('count'), 1);
+      billingAvailable = true;
+      billingMalformed = true;
+      const malformed = await mf.dispatchFetch('https://agents.test/billing/return', { headers: { Cookie: principal.cookie }, redirect: 'manual' });
+      assert.equal(malformed.headers.get('location'), 'https://agents.test/?billing_refresh=failed#usage');
+      assert.equal(await db.prepare("SELECT subscription_json FROM subscription_snapshots WHERE account_id=?1 AND product_id='agents'").bind(owner).first('subscription_json'), snapshot, 'Malformed 200 JSON must not erase a valid paid grant');
+    } finally {
+      billingAvailable = true;
+      billingMalformed = false;
+      delete mfOptions.workers[0].config.env.BILLING_API_ORIGIN;
+      await mf.setOptions(mfOptions);
+      db = await mf.getD1Database('DB');
+    }
+  });
   await t.test('agent CRUD, immutable session prefix, DO close and revocation', async (t) => {
     const agent = await request('POST', '/v1/agents', { name: 'Integration', instructions: 'Pinned original instructions', model: { provider: 'openrouter', model: 'test-model' }, workspace: false }, 201);
     assert.equal((await request('GET', '/v1/models')).data[0].id, agent.id);

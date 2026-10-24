@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderDeploymentConfig } from './deploy-config.mjs';
+import { readFile } from 'node:fs/promises';
 
 const sha = '0123456789abcdef0123456789abcdef01234567';
 const account = '0123456789abcdef0123456789abcdef';
 const target = () => ({ vars: { EXISTING: 'retained', BUILD_ID: 'stale' }, d1_databases: [{ migrations_dir: 'migrations' }], containers: [{ image: 'container/Dockerfile', image_build_context: '.' }] });
 const input = () => ({ main: 'build/worker/shim.mjs', assets: { directory: 'apps/dashboard/dist' }, build: { command: 'unused' }, env: { staging: target(), production: target() } });
+
+test('the fixed billing return reaches authenticated Worker code instead of SPA assets', async () => {
+  const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  assert.ok(config.assets.run_worker_first.includes('/billing/return'));
+});
 
 test('each rendered environment links the Worker and immutable container to the same Git SHA', () => {
   for (const environment of ['staging', 'production']) {
