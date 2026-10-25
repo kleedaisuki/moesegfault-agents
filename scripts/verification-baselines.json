@@ -205,5 +205,94 @@
       "passed_checks": 8,
       "executed_tests": 150
     }
+  },
+  {
+    "source_sha": "52662678f09ba7e65ceda467ec40557241aea090",
+    "run_id": "40200312248",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12601223432,
+    "receipt_artifact": "verification-dashboard",
+    "receipt_artifact_id": 12601323295,
+    "verified_checks": [
+      {
+        "id": "ui:apps/dashboard/e2e/agent-routing.spec.ts",
+        "status": "passed_current",
+        "input_fingerprint": "d1daf4f094340c74b3ed376464fbb7c04c5a9b581abe4176ce13d675f8e686a5",
+        "receipt_path": "dashboard.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "ui:apps/dashboard/src/AgentRouting.test.tsx",
+        "status": "passed_current",
+        "input_fingerprint": "00da52b56ee3b710d7e01e25f4a5f0525a400d17ce96d298f3f666f3fbd0a382",
+        "receipt_path": "dashboard.json",
+        "executed_tests": 16
+      },
+      {
+        "id": "ui:apps/dashboard/src/Agents.test.tsx",
+        "status": "passed_current",
+        "input_fingerprint": "6d7f4f6323b7e4a2d2286a2a07ba68fe602d7ec6cfbaa5a026ec8b217fd646fe",
+        "receipt_path": "dashboard.json",
+        "executed_tests": 3
+      }
+    ],
+    "evidence": {
+      "passed_checks": 3,
+      "executed_tests": 21
+    }
+  },
+  {
+    "source_sha": "52662678f09ba7e65ceda467ec40557241aea090",
+    "run_id": "40200312248",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12601677846,
+    "verified_checks": [
+      {
+        "id": "node:scripts/deploy-config.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "d6b7475a67e1e419b94d182915cbd699f6bff72d6e2b42f477cbc60b239f71a4",
+        "receipt_path": "tooling.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "65520fc8ada541ba76f3b28ecda6b74ff3e22a927c1307fa1ee418d1cef4c7a1",
+        "receipt_path": "tooling.json",
+        "executed_tests": 32
+      },
+      {
+        "id": "node:scripts/deploy-workflow.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "d858c5953da512a36e0fee09e42492be71aa3dc5458e465830e44cf18843b989",
+        "receipt_path": "tooling.json",
+        "executed_tests": 7
+      },
+      {
+        "id": "node:scripts/incremental-checks.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "d7f65a57ec2b282fb63b42115c70a643319b692c529340df0e431df3d7625f09",
+        "receipt_path": "tooling.json",
+        "executed_tests": 23
+      },
+      {
+        "id": "pytest:tests/e2e/test_python_kernel_bridge.py",
+        "status": "passed_current",
+        "input_fingerprint": "a035f4276e6204d928badf9304737fbd0db625fb4d96cc82362b3e124ba30e7d",
+        "receipt_path": "tooling.json",
+        "executed_tests": 15
+      }
+    ],
+    "evidence": {
+      "passed_checks": 5,
+      "executed_tests": 83
+    }
   }
 ]

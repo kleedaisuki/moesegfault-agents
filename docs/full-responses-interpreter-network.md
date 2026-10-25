@@ -24,6 +24,40 @@ Unix sockets remain necessary for Jupyter. No existing root service exports an
 unrestricted Internet relay or descriptor-passing service to UID 1001; any new
 Unix service reachable by that UID must preserve that invariant.
 
+### IPykernel's optional multiprocessing pipe
+
+Selecting the upstream `ipc` transport is insufficient with IPykernel 6.17:
+`IPKernelApp.init_iopub` still creates `IOPubThread(..., pipe=True)`, whose optional
+fork-output relay binds `tcp://127.0.0.1`. libzmq 4.3.4 resolves a local bind through
+its NIC resolver before creating the TCP socket. The Linux resolver calls
+`getifaddrs` and asserts success; the denied NETLINK socket therefore causes a
+native SIGABRT before Python's `ZMQError` handler can catch anything. The real
+container regression reported `kernel_died`, exit `-6`, and permission denied.
+The observed diagnostic did not identify the native source site, so the targeted
+real-image normal-print result is still required to confirm this runtime cause.
+
+The trusted kernel entrypoint now uses a small `IPKernelApp` framework subclass
+that retains the ordinary IOPub socket/thread but sets `pipe=False`. It does not
+patch global Python sockets or allow additional OS address families. Main-process
+Python stdout, rich results and ordinary Jupyter messages retain their IPC path.
+Code should capture subprocess output explicitly (for example
+`subprocess.run(..., capture_output=True)`) instead of relying on the optional
+cross-fork TCP IOPub relay. The normal print and real networking-denial journeys
+must both pass in the actual image; a pure framework-extension test is not that
+execution proof.
+
+The interpreter filter's default action remains Allow and does not deny `clone3`
+or thread scheduling syscalls. No errno substitution or thread-policy exception
+is part of this fix. If a later actual native diagnostic identifies `thread.cpp`,
+inspect the outer runtime's thread policy and glibc's `clone3` fallback rather
+than assuming every SIGABRT is the resolver path.
+
+Upstream call chain:
+
+- [IPykernel 6.17 `init_iopub`](https://github.com/ipython/ipykernel/blob/v6.17.0/ipykernel/kernelapp.py#L313-L322).
+- [Optional TCP relay](https://github.com/ipython/ipykernel/blob/v6.17.0/ipykernel/iostream.py#L110-L128).
+- [libzmq 4.3.4 NIC resolver assertion](https://github.com/zeromq/libzmq/blob/v4.3.4/src/ip_resolver.cpp#L488-L507).
+
 The real-container tests exercise working Jupyter/Unix IPC, denial of all four
 ordinary network families, inherited subprocess denial, io_uring/x32 denial and
 unchanged Bash socket creation. They make no external network requests. GHA must

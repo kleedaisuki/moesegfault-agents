@@ -167,6 +167,27 @@ def startup_kind(error: Exception) -> str:
     return "initialization_error"
 
 
+def kernel_main() -> None:
+    from ipykernel.kernelapp import IPKernelApp
+    from ipykernel.iostream import IOPubThread
+    import zmq
+
+    class IPCOnlyKernelApp(IPKernelApp):
+        def init_iopub(self) -> None:
+            self.iopub_socket = self.context.socket(zmq.PUB)
+            self.iopub_socket.linger = 1000
+            self.iopub_port = self._bind_socket(self.iopub_socket, self.iopub_port)
+            self.configure_tornado_logger()
+            # IPykernel 6.x's optional fork-output pipe binds TCP even when its
+            # main transport is IPC. libzmq's NIC resolver aborts on seccomp's
+            # denied getifaddrs NETLINK socket before Python can catch ZMQError.
+            self.iopub_thread = IOPubThread(self.iopub_socket, pipe=False)
+            self.iopub_thread.start()
+            self.iopub_socket = self.iopub_thread.background_socket
+
+    IPCOnlyKernelApp.launch_instance(argv=sys.argv[2:])
+
+
 class StartupCapture:
     """Drain continuously; only a bounded diagnostic tail is retained."""
 
@@ -253,7 +274,7 @@ def start(args: argparse.Namespace) -> tuple[Any, Any]:
             ip=str(args.runtime / "kernel"),
             cache_ports=False,
         )
-        manager.kernel_spec.argv = [sys.executable, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"]
+        manager.kernel_spec.argv = [sys.executable, "-I", str(Path(__file__).resolve()), "--kernel", "-f", "{connection_file}"]
         stage = "launch"
         manager.start_kernel(
             cwd=str(args.directory),
@@ -306,4 +327,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "--kernel":
+        kernel_main()
+    else:
+        raise SystemExit(main())

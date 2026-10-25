@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, mkdirSync, mkdtempSync } from 'node:fs';
-import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks } from './incremental-checks.mjs';
+import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks, rustTestArguments } from './incremental-checks.mjs';
 mkdirSync('.temp', { recursive: true });
 const directory = mkdtempSync('.temp/incremental-checks-test-');
 const source = 'a'.repeat(40), baseline = 'b'.repeat(40);
@@ -185,4 +185,24 @@ test('existing Agents edits select only the three changed assertions and the new
     assert.match(check.argv.at(-1),/independent agent service routing/);
     assert.match(check.argv.at(-1),/preserves existing custom BYOK model limits/);
   }
+});
+
+test('Rust unit selection compiles only its declared target, not unrelated old integration benchmarks', () => {
+  const lib=rustTestArguments('agents-worker','namespace_identity','crates/agents-worker/src/auxiliary_context.rs');
+  assert.ok(lib.includes('--lib'));
+  assert.ok(!lib.includes('--test'));
+  assert.deepEqual(rustTestArguments('magents','session_header','crates/magents/tests/space_responses.rs').slice(5,7),['--test','space_responses']);
+  assert.deepEqual(rustTestArguments('workspace-daemon','memory','crates/workspace-daemon/src/interpreter.rs').slice(5,7),['--bin','workspace-daemon']);
+});
+
+test('ignored benchmarks are not converted into automatic zero-test or expensive runs', () => {
+  const text='#[test]\n#[ignore]\nfn expensive_benchmark() {}\n#[ignore = "manual"]\n#[test]\nfn second_benchmark() {}\n#[test]\nfn actual_increment() {}\n';
+  assert.deepEqual(changedRustTests(text,[[1,20]]),['actual_increment']);
+});
+test('a built exact Worker can run actual journeys despite independent unit assertion failures', () => {
+  const workflow=readFileSync('.github/workflows/ci.yml','utf8');
+  const worker=workflow.slice(workflow.indexOf('\n  worker:'),workflow.indexOf('\n  container:'));
+  assert.ok(worker.indexOf('node scripts/bundle-worker.mjs')<worker.indexOf('Compile changed Worker tests'));
+  assert.match(worker,/worker-journeys\n\s+if: \$\{\{ !cancelled\(\) && \(steps\.worker_bundle\.outcome == 'success' \|\| steps\.worker_reuse\.outcome == 'success'\)/);
+  assert.match(worker,/name: worker\n/);
 });

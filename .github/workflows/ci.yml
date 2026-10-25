@@ -146,6 +146,7 @@ jobs:
           name: incremental-plan
           path: .cache/verification
       - name: Reuse the sealed identical Worker artifact
+        id: worker_reuse
         if: needs.changes.outputs.worker_build != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -164,9 +165,6 @@ jobs:
           cache-on-failure: true
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
         if: needs.changes.outputs.worker_build == 'true'
-      - name: Compile changed Worker tests without replaying accepted cases
-        run: cargo test --locked -p agents-worker --lib --no-run
-      - run: node scripts/incremental-checks.mjs run worker-rust
       - run: cargo install --locked worker-build --version 0.8.7
         if: needs.changes.outputs.worker_build == 'true'
       - run: worker-build --release
@@ -178,17 +176,33 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node scripts/bundle-worker.mjs
+        id: worker_bundle
         if: needs.changes.outputs.worker_build == 'true'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always() && needs.changes.outputs.worker_build == 'true' && steps.worker_bundle.outcome == 'success'
+        with:
+          name: worker
+          path: crates/agents-worker/build
+          retention-days: 7
+      - name: Compile changed Worker tests without replaying accepted cases
+        id: worker_unit_compile
+        if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
+        run: cargo test --locked -p agents-worker --lib --no-run
+      - run: node scripts/incremental-checks.mjs run worker-rust
+        if: ${{ !cancelled() && steps.worker_unit_compile.outcome == 'success' }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         with:
           python-version: '3.13'
           cache: pip
           cache-dependency-path: tests/e2e/requirements.lock
       - name: Install the strict SDK wire-schema validator
+        if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
       - run: node scripts/incremental-checks.mjs run worker-journeys
+        if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         env:
           MAGENTS_SCHEMA_PYTHON: .cache/e2e-venv/bin/python
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -197,12 +211,6 @@ jobs:
           name: performance-v3
           path: .cache/perf/v3/*.json
           if-no-files-found: warn
-          retention-days: 7
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: always() && needs.changes.outputs.worker_build == 'true'
-        with:
-          name: worker
-          path: crates/agents-worker/build
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()

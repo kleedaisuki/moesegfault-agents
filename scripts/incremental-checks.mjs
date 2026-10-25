@@ -49,12 +49,15 @@ export function changedRustTests(content, ranges) {
   const lines = content.split('\n');
   const tests = [];
   let attribute = false;
+  let ignored = false;
   for (let i = 0; i < lines.length; i++) {
     if (/^\s*#\[(?:[\w:]+::)?test(?:\([^\]]*\))?\]/.test(lines[i])) attribute = true;
+    if (/^\s*#\[ignore(?:[\](= ]|$)/.test(lines[i])) ignored = true;
     const match = lines[i].match(/^\s*(?:async\s+)?fn\s+([a-zA-Z0-9_]+)\s*\(/);
     if (!match) continue;
-    if (attribute) tests.push({ name: match[1], start: i + 1 });
+    if (attribute && !ignored) tests.push({ name: match[1], start: i + 1 });
     attribute = false;
+    ignored = false;
   }
   return tests.filter((test, index) => ranges.some(([start, end]) =>
     start < (tests[index + 1]?.start ?? lines.length + 1) && end >= test.start))
@@ -71,6 +74,12 @@ function command(id, argv, reason, env = {}) {
 }
 const python = (...args) => ['.cache/e2e-venv/bin/python', ...args];
 
+export function rustTestArguments(crate, name, file) {
+  const target = file.includes('/tests/') ? ['--test', path.basename(file, '.rs')]
+    : ['agents-worker', 'agents-core', 'agents-auth'].includes(crate) ? ['--lib'] : ['--bin', crate];
+  return ['cargo', 'test', '--locked', '-p', crate, ...target, name, '--', '--nocapture'];
+}
+
 export function selections(source, base, files) {
   const checks = { rust: [], worker: [], dashboard: [], container: [], tooling: [], current_sdk: [] };
   for (const file of files) {
@@ -79,7 +88,7 @@ export function selections(source, base, files) {
       const names = changedRustTests(read(source, file), changedLines(source, base, file));
       const job = crate === 'agents-worker' ? 'worker' : 'rust';
       for (const name of names) checks[job].push({ ...command(`rust:${crate}:${name}`,
-        ['cargo', 'test', '--locked', '-p', crate, name, '--', '--nocapture'], `Changed test in ${file}`), source_file: file });
+        rustTestArguments(crate, name, file), `Changed test in ${file}`), source_file: file });
 
     }
     if (/^tests\/test_.*\.py$/.test(file)) checks.rust.push(command(`python:${file}`, ['python3', '-m', 'unittest', 'discover', '-s', 'tests', '-p', path.basename(file), '-v'], `Changed offline contract ${file}`));

@@ -27,6 +27,42 @@ def bridge() -> ModuleType:
     return module
 
 
+def test_framework_extension_never_initializes_the_optional_tcp_fork_pipe(
+    bridge: ModuleType, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    socket: Any = SimpleNamespace(linger=0)
+    background: object = object()
+
+    class Thread:
+        def __init__(self, output: Any, *, pipe: bool) -> None:
+            assert output is socket and pipe is False
+            self.background_socket: object = background
+            calls.append("ipc-thread")
+
+        def start(self) -> None:
+            calls.append("started")
+
+    class App:
+        @classmethod
+        def launch_instance(cls, *, argv: list[str]) -> None:
+            assert argv == ["-f", "connection.json"]
+            app: Any = cls()
+            app.context = SimpleNamespace(socket=lambda kind: socket)
+            app.iopub_port = 3
+            app._bind_socket = lambda output, port: port
+            app.configure_tornado_logger = lambda: calls.append("logger")
+            app.init_iopub()
+            assert app.iopub_socket is background and socket.linger == 1000
+
+    monkeypatch.setitem(sys.modules,"ipykernel.kernelapp",SimpleNamespace(IPKernelApp=App))
+    monkeypatch.setitem(sys.modules,"ipykernel.iostream",SimpleNamespace(IOPubThread=Thread))
+    monkeypatch.setitem(sys.modules,"zmq",SimpleNamespace(PUB=1))
+    monkeypatch.setattr(sys,"argv",["python_kernel.py","--kernel","-f","connection.json"])
+    bridge.kernel_main()
+    assert calls == ["logger","ipc-thread","started"]
+
+
 def test_startup_stderr_is_bounded_and_never_returned_raw(bridge: ModuleType) -> None:
     capture: Any = bridge.StartupCapture(io.BytesIO(b"private-path-sentinel" * 1000 + b"Operation not permitted (src/tcp.cpp:123)"))
     capture.thread.join(timeout=1)
