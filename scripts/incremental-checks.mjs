@@ -78,8 +78,8 @@ export function selections(source, base, files) {
       const crate = file.split('/')[1];
       const names = changedRustTests(read(source, file), changedLines(source, base, file));
       const job = crate === 'agents-worker' ? 'worker' : 'rust';
-      for (const name of names) checks[job].push(command(`rust:${crate}:${name}`,
-        ['cargo', 'test', '--locked', '-p', crate, name, '--', '--nocapture'], `Changed test in ${file}`));
+      for (const name of names) checks[job].push({ ...command(`rust:${crate}:${name}`,
+        ['cargo', 'test', '--locked', '-p', crate, name, '--', '--nocapture'], `Changed test in ${file}`), source_file: file });
 
     }
     if (/^tests\/test_.*\.py$/.test(file)) checks.rust.push(command(`python:${file}`, ['python3', '-m', 'unittest', 'discover', '-s', 'tests', '-p', path.basename(file), '-v'], `Changed offline contract ${file}`));
@@ -108,7 +108,14 @@ export function selections(source, base, files) {
   }
   if (files.some(file => /^apps\/dashboard\//.test(file))) {
     const tests = files.filter(file => /^apps\/dashboard\/.*\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
-    for (const file of tests) checks.dashboard.push(command(`ui:${file}`, ['npm', '--prefix', 'apps/dashboard', 'test', '--', file.replace('apps/dashboard/', '')], `Changed UI contract ${file}`));
+    for (const file of tests) {
+      const browser = file.startsWith('apps/dashboard/e2e/');
+      const argv = browser ? ['npm', '--prefix', 'apps/dashboard', 'run', 'test:browser', '--', file.replace('apps/dashboard/', '')]
+        : ['npm', '--prefix', 'apps/dashboard', 'test', '--', file.replace('apps/dashboard/', '')];
+      if (!browser && /\/(?:AgentRouting|Agents)\.test\.tsx$/.test(file)) argv.push('-t',
+        'independent agent service routing|preserves an existing model while metadata loads|preserves an existing BYOK model while|preserves existing custom BYOK model limits');
+      checks.dashboard.push(command(`ui:${file}`, argv, `Changed ${browser ? 'browser' : 'unit'} UI contract ${file}`));
+    }
   }
   for (const job of Object.keys(checks)) checks[job] = [...new Map(checks[job].map(check => [check.id, check])).values()];
   return checks;
@@ -134,6 +141,81 @@ function remediation(source, check) {
     if (excluded.length) selected.argv.splice(selected.argv.length - 1, 0, '--test-skip-pattern', `^(?:${excluded.join('|')})$`);
   }
   return selected;
+}
+
+const CHECK_COMMON = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/agents-worker/Cargo.toml', 'crates/agents-core', 'crates/agents-auth', 'crates/agents-worker/src/util.rs', 'crates/agents-worker/src/resources.rs'];
+const TOOL_CHECK_INPUTS = {
+  'paid-route-policy.test.mjs': ['tests/e2e/paid-route-policy.mjs', 'crates/agents-worker/src/provider.rs', 'crates/agents-worker/src/provider_config.rs', 'wrangler.jsonc'],
+  'test_paid_route_policy.py': ['tests/e2e/paid_route_policy.py', 'tests/e2e/conftest.py', 'crates/agents-worker/src/provider.rs', 'crates/agents-worker/src/provider_config.rs', 'wrangler.jsonc'],
+  'test_current_responses_sdk_contract.py': ['tests/e2e/current_responses_sdk.py', 'tests/e2e/response_checks.py', 'tests/e2e/validate_responses_wire.py', 'tests/e2e/requirements-current.lock'],
+  'test_full_responses_sdk_contract.mjs': ['tests/e2e/full-responses-sdk.mjs', 'tests/e2e/paid-route-policy.mjs', 'tests/e2e/current_responses_sdk.py', 'tests/e2e/requirements-current.lock'],
+  'test_deepseek_usage_probe.py': ['scripts/deepseek-usage-probe.py'],
+  'test_egress_client.py': ['container/egress_client.py'],
+  'test_python_kernel_bridge.py': ['container/python_kernel.py', 'container/egress_client.py'],
+  'incremental-checks.test.mjs': ['scripts/incremental-checks.mjs', '.github/workflows/ci.yml'],
+  'bundle-worker.test.mjs': ['scripts/bundle-worker.mjs', 'wrangler.jsonc'],
+  'deploy-workflow.test.mjs': ['.github/workflows/deploy.yml'],
+  'deploy-config.test.mjs': ['scripts/deploy-config.mjs', 'wrangler.jsonc'],
+  'deploy-provenance.test.mjs': ['scripts/deploy-provenance.mjs', 'scripts/incremental-checks.mjs', 'scripts/deploy-config.mjs', 'scripts/container-artifact.mjs', '.github/workflows/deploy.yml'],
+};
+const checkFiles = new Map();
+
+export function checkInputPaths(source, check, runGit = git) {
+  const direct = check.argv.find(argument => /^(?:tests|scripts|apps)\/.*\.(?:py|mjs|[jt]sx?)(?:::|$)/.test(argument))?.split('::')[0];
+  if (check.argv[0] === 'cargo') {
+    const crate = check.argv[check.argv.indexOf('-p') + 1];
+    if (crate !== 'agents-worker') return ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', `crates/${crate}`, 'crates/agents-core', 'crates/agents-auth'];
+    let own = check.source_file;
+    if (!own) {
+      const name = check.id.split(':').at(-1);
+      own = runGit('grep', '-l', '-E', `fn[[:space:]]+${name}[[:space:]]*[(]`, source, '--', 'crates/agents-worker/src').split('\n')[0]?.slice(41);
+    }
+    if (!own) throw Error(`Cannot bind Rust check source: ${check.id}`);
+    const base = path.basename(own);
+    const groups = [
+      [/^provider/, /\/(?:provider[^/]*|responses_controls|responses_wire|responses_schema)\.rs$/],
+      [/^(?:session|conversation|workspace|response_(?:routes|index|websocket)|resources)/, /\/(?:session[^/]*|conversation[^/]*|workspace[^/]*|response_[^/]*|store[^/]*|resources|cleanup|checkpoint_gc|space)\.rs$/],
+      [/^(?:store|model_|auxiliary|context_prefix)/, /\/(?:store[^/]*|model_[^/]*|auxiliary[^/]*|responses_auxiliary|context_prefix|metering|resources)\.rs$/],
+      [/^(?:hosted|image|search|file|tool|vector)/, /\/(?:hosted[^/]*|image[^/]*|search[^/]*|file[^/]*|tool[^/]*|vector[^/]*|workspace_blobs|space|metering|resources)\.rs$/],
+      [/^(?:responses_|response_preflight|prompt_templates|context_management)/, /\/(?:responses_[^/]*|response_preflight|context_prefix|prompt_templates|context_management|tools|hosted_bindings|skills)\.rs$/],
+      [/^deepseek_tokenizer/, /\/(?:deepseek_tokenizer|provider_responses|provider_config)\.rs$/],
+    ];
+    const pattern = groups.find(([match]) => match.test(base))?.[1];
+    const key = `${source}:worker-files`;
+    if (!checkFiles.has(key)) checkFiles.set(key, runGit('ls-tree', '-r', '--name-only', source, '--', 'crates/agents-worker/src').split('\n').filter(Boolean));
+    const files = pattern ? checkFiles.get(key).filter(file => pattern.test(file)) : checkFiles.get(key);
+    return [...new Set([...CHECK_COMMON, own, ...files, ...(base.startsWith('deepseek_tokenizer') ? ['third_party/deepseek-recipe'] : [])])].sort();
+  }
+  if (direct?.startsWith('apps/dashboard/')) return [...COMPONENTS.dashboard, 'package.json', 'package-lock.json'];
+  if (direct?.startsWith('tests/worker/')) return [...COMPONENTS.worker, 'migrations', 'tests/worker', 'tests/e2e/response_checks.py', 'tests/e2e/validate_responses_wire.py', 'tests/e2e/requirements.lock'];
+  if (direct && Object.hasOwn(TOOL_CHECK_INPUTS, path.basename(direct))) {
+    return [...new Set([direct, ...TOOL_CHECK_INPUTS[path.basename(direct)], 'package.json', 'package-lock.json', 'tests/e2e/requirements.lock'])].sort();
+  }
+  // Unknown contracts retain conservative component coverage rather than assume
+  // that their test file has no shared implementation or fixture dependencies.
+  return direct?.startsWith('tests/test_') ? [...COMPONENTS.native, direct, 'migrations', 'tests/fixtures'] : [...COMPONENTS.tooling, direct].filter(Boolean);
+}
+
+export function checkFingerprint(source, check, runGit = git) {
+  if (!SHA.test(source)) throw Error('Invalid check source');
+  const paths = checkInputPaths(source, check, runGit);
+  const tree = runGit('ls-tree', '-r', source, '--', ...paths);
+  return createHash('sha256').update(JSON.stringify({ version: 1, id: check.id, argv: check.argv, env: check.env,
+    expected_test: check.expected_test, expected_tests: check.expected_tests, paths })).update('\0').update(tree).digest('hex');
+}
+
+export function reuseChecks(source, checks, baselines, hash = checkFingerprint) {
+  const pending = [], reused = [];
+  for (const original of checks) {
+    const check = { ...original, input_fingerprint: hash(source, original) };
+    const proof = [...baselines].reverse().flatMap(base => (base.verified_checks ?? []).map(record => ({ base, record })))
+      .find(({ record }) => record.id === check.id && record.input_fingerprint === check.input_fingerprint && record.status === "passed_current" && record.executed_tests > 0);
+    if (!proof) { pending.push(check); continue; }
+    reused.push({ ...check, status: 'reused_verified', source_sha: proof.base.source_sha, run_id: proof.base.run_id,
+      artifact_name: proof.base.receipt_artifact, artifact_id: proof.base.receipt_artifact_id ?? null,
+      receipt_path: proof.record.receipt_path, executed_tests: proof.record.executed_tests });
+  }
+  return { checks: pending, reused_checks: reused };
 }
 
 export function containerSelection(checks, scope) {
@@ -183,9 +265,15 @@ export function plan(source, baselines, containerScope = 'incremental') {
   checks.container = container.checks;
   components.container.validation_scope = container.validation_scope;
   components.container.deferred_checks = container.deferred_checks;
+  const reusedChecks = [];
+  for (const job of Object.keys(checks)) {
+    const selected = reuseChecks(source, checks[job], baselines);
+    checks[job] = selected.checks;
+    reusedChecks.push(...selected.reused_checks.map(check => ({...check, job})));
+  }
   const requiredJobs = ['changes', ...Object.entries(components).filter(([component, details]) => details.action === 'build' || checks[JOBS[component]].length > 0 || (component === 'tooling' && checks.current_sdk.length > 0)).map(([component]) => JOBS[component])];
   return { schema_version: 1, source_sha: source, policy: 'incremental-only', diagnostic_only_components: containerScope === 'startup-1g' ? ['container'] : [], planned_checks_are_not_results: true,
-    required_jobs: requiredJobs, required_remediations: [...new Set(Object.values(components).flatMap(component => (component.baseline.unresolved_checks ?? []).map(check => check.id)))], receipt_paths: { rust: ['rust.json', 'native-build.json'], worker: ['worker-rust.json', 'worker-journeys.json'], dashboard: ['dashboard.json'], container: ['container.json'], tooling: ['tooling.json', 'current_sdk.json'] },
+    required_jobs: requiredJobs, reused_checks: reusedChecks, required_remediations: [...new Set(Object.values(components).flatMap(component => (component.baseline.unresolved_checks ?? []).map(check => check.id)))], receipt_paths: { rust: ['rust.json', 'native-build.json'], worker: ['worker-rust.json', 'worker-journeys.json'], dashboard: ['dashboard.json'], container: ['container.json'], tooling: ['tooling.json', 'current_sdk.json'] },
     changed_files: [...changedFiles].sort(), native_packages: nativePackages, components, checks };
 }
 
@@ -194,6 +282,7 @@ export function executedTests(argv, output) {
   if (argv.includes('unittest')) return Number(/Ran (\d+) tests? in/.exec(output)?.[1] ?? 0);
   if (argv.includes('pytest')) return ['passed', 'failed'].reduce((sum, kind) => sum + Number(new RegExp('(?:^|[ ,=])(\\d+) ' + kind + '(?:[ ,=]|$)', 'm').exec(output)?.[1] ?? 0), 0);
   if (argv[0] === 'node' && argv.includes('--test')) return ['pass', 'fail'].reduce((sum, kind) => sum + Number(new RegExp('^# ' + kind + ' (\\d+)$', 'm').exec(output)?.[1] ?? 0), 0);
+  if (argv[0] === 'npm' && argv.includes('test:browser')) return Number(/(?:^|\s)(\d+) passed(?:\s|$)/m.exec(output.replace(/\u001b\[[0-9;]*m/g, ''))?.[1] ?? 0);
   if (argv[0] === 'npm') return Number(/Tests\s+(\d+) passed/.exec(output.replace(/\u001b\[[0-9;]*m/g, ''))?.[1] ?? 0);
   throw Error('Unknown selected test runner');
 }
@@ -218,10 +307,15 @@ export function runChecks(receipt, job, execute = spawnSync, directory = OUTPUT)
     const observed = requiredNames.every(name => (result.stdout ?? '').includes(`# Subtest: ${name}`));
     const passed = result.status === 0 && tests > 0 && observed;
     console.log('::endgroup::');
-    results.push({ id: check.id, argv: check.argv, env: check.env, status: passed ? 'passed_current' : 'failed_current', executed_tests: tests, duration_ms: Date.now() - started });
+    const failure = passed ? undefined : { process_status: result.status, signal: result.signal ?? null,
+      transport_error: result.error?.message?.slice(0, 512) ?? null,
+      stderr_tail: (result.stderr ?? '').slice(-16384), stdout_tail: (result.stdout ?? '').slice(-4096) };
+    results.push({ id: check.id, argv: check.argv, env: check.env, status: passed ? 'passed_current' : 'failed_current', executed_tests: tests, duration_ms: Date.now() - started, input_fingerprint: check.input_fingerprint, failure });
     writeFileSync(`${directory}/${job}.json`, JSON.stringify({ schema_version: 1, source_sha: receipt.source_sha, job, results }, null, 2) + '\n');
     if (!passed) {
       failures.push(check.id);
+      // Uncaught termination can discard pending asynchronous stderr writes.
+      writeFileSync(2, `\nFailure tail for ${check.id}:\n${failure.stderr_tail}\n${failure.stdout_tail}\n`);
       if (check.argv[0] === 'cargo' && /could not compile|error\[E\d+\]|failed to (?:run custom build|resolve|get )/.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
         throw Error(`Compilation failed; remaining checks of the same crate are not recompiled: ${check.id}`);
       }
@@ -238,6 +332,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental');
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
     for (const [component, details] of Object.entries(receipt.components)) {
       const job = JOBS[component];
       const required = details.action === 'build' || receipt.checks[job].length > 0 || (job === 'tooling' && receipt.checks.current_sdk.length > 0);

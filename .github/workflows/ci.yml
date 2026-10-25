@@ -36,6 +36,7 @@ jobs:
       rust: ${{ steps.paths.outputs.rust }}
       worker: ${{ steps.paths.outputs.worker }}
       dashboard: ${{ steps.paths.outputs.dashboard }}
+      dashboard_browser: ${{ steps.paths.outputs.dashboard_browser }}
       container: ${{ steps.paths.outputs.container }}
       tooling: ${{ steps.paths.outputs.tooling }}
       worker_build: ${{ steps.paths.outputs.worker_build }}
@@ -113,9 +114,15 @@ jobs:
           cache: npm
           cache-dependency-path: apps/dashboard/package-lock.json
       - run: npm ci
+      - run: npm run build
+      - name: Use the installed Chrome for selected browser increments
+        if: needs.changes.outputs.dashboard_browser == 'true'
+        run: |
+          chrome=$(command -v google-chrome)
+          "$chrome" --version
+          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$chrome" >> "$GITHUB_ENV"
       - run: node scripts/incremental-checks.mjs run dashboard
         working-directory: .
-      - run: npm run build
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard
@@ -157,6 +164,8 @@ jobs:
           cache-on-failure: true
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
         if: needs.changes.outputs.worker_build == 'true'
+      - name: Compile changed Worker tests without replaying accepted cases
+        run: cargo test --locked -p agents-worker --lib --no-run
       - run: node scripts/incremental-checks.mjs run worker-rust
       - run: cargo install --locked worker-build --version 0.8.7
         if: needs.changes.outputs.worker_build == 'true'

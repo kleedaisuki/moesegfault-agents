@@ -110,5 +110,100 @@
       "passed_checks": 15,
       "executed_tests": 34
     }
+  },
+  {
+    "source_sha": "366aee2cc2fc469fc32fd5d849370cf9e878740c",
+    "run_id": "40196587758",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12599802477,
+    "verified_checks": [
+      {
+        "id": "rust:workspace-daemon:startup_diagnostics_accept_only_fixed_machine_labels",
+        "status": "passed_current",
+        "input_fingerprint": "1f04a044fcec1490d407a08952b6001bee1918dd13d6d23022a5f070cbe81876",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      }
+    ],
+    "evidence": {
+      "passed_checks": 1,
+      "executed_tests": 1
+    }
+  },
+  {
+    "source_sha": "366aee2cc2fc469fc32fd5d849370cf9e878740c",
+    "run_id": "40196587758",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12600486473,
+    "verified_checks": [
+      {
+        "id": "node:scripts/incremental-checks.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "e5ec863543cd6e64349546f08dfe5fd13fa963824eac16657ce853a11b26aef7",
+        "receipt_path": "tooling.json",
+        "executed_tests": 16
+      },
+      {
+        "id": "node:tests/e2e/paid-route-policy.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "61cb36caa630ea7e1125f2553f340120efab87f29f90a2e88baeb6812eebfe42",
+        "receipt_path": "tooling.json",
+        "executed_tests": 13
+      },
+      {
+        "id": "pytest:tests/e2e/test_deepseek_usage_probe.py",
+        "status": "passed_current",
+        "input_fingerprint": "55c7f82eba48abfd6a6cebed16fbe02d6a5a402a947a314b3adb4765d30a1d54",
+        "receipt_path": "tooling.json",
+        "executed_tests": 15
+      },
+      {
+        "id": "pytest:tests/e2e/test_egress_client.py",
+        "status": "passed_current",
+        "input_fingerprint": "afab02a68b46573d5ce9a8e0007f1facc8fc795f86c44ea837e6f638bbeb9f27",
+        "receipt_path": "tooling.json",
+        "executed_tests": 3
+      },
+      {
+        "id": "node:tests/e2e/test_full_responses_sdk_contract.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "ab7490abf2d148562c74be182162c20ae64c6dfb64f2071be3143650deb83a25",
+        "receipt_path": "tooling.json",
+        "executed_tests": 11
+      },
+      {
+        "id": "pytest:tests/e2e/test_paid_route_policy.py",
+        "status": "passed_current",
+        "input_fingerprint": "fe28373bfd341eae5af2dc795d4987efc678b7787f46bf4a3d4ebfebb408ac64",
+        "receipt_path": "tooling.json",
+        "executed_tests": 33
+      },
+      {
+        "id": "pytest:tests/e2e/test_python_kernel_bridge.py",
+        "status": "passed_current",
+        "input_fingerprint": "1f139ccd8aa00ccee03f408d9dcd44a9b396e93e5e9039cd1a69a244056177d3",
+        "receipt_path": "tooling.json",
+        "executed_tests": 14
+      },
+      {
+        "id": "pytest:tests/e2e/test_current_responses_sdk_contract.py",
+        "status": "passed_current",
+        "input_fingerprint": "f49ee939dbf00d89128236b8d7d1b5c3aebf5a37d058a86569382bdf34f16c16",
+        "receipt_path": "current_sdk.json",
+        "executed_tests": 45
+      }
+    ],
+    "evidence": {
+      "passed_checks": 8,
+      "executed_tests": 150
+    }
   }
 ]

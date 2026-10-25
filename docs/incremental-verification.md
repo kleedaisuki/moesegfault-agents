@@ -115,3 +115,29 @@ each Rust test filter. Current SDK checks remain independent of a failed legacy
 offline check. Pytest temporary data is always beneath the project's `.temp`,
 including operator-probe test receipts; its production safety guard is not
 relaxed to accommodate system temporary directories.
+
+## Check-level seals inside partial jobs
+
+A reviewed catalog entry can carry `verified_checks`, each binding its ID,
+`passed_current` result, positive executed count, historical receipt path and
+`input_fingerprint`. The entry also pins source/run and the verification artifact
+name/ID. `checkFingerprint(source, check)` hashes the exact argv/environment,
+required leaf titles and a finite dependency group: its implementation, shared
+fixtures, applicable package/toolchain locks and runtime contracts. Known offline
+SDK/payer/probe/bridge/tooling checks have explicit groups. Rust groups bind their
+source module and shared protocol/provider/state dependencies; unknown contracts
+fall back to conservative component inputs, never the test file alone.
+
+Plans move an unchanged, positively proven check to `reused_checks` with status
+`reused_verified`, retaining the historical source/run/artifact/receipt and actual
+count. That label is not `passed_current`. New receipts include the fingerprint;
+legacy structured receipts can be recomputed against their original exact plan.
+Deployment independently verifies the historical result and both old/current
+input fingerprints, including recipe equality. An old failed or zero-test
+receipt cannot close a remediation. This permits a passed check in an otherwise
+failed job to remain sealed while only its failing or changed neighbors rerun.
+
+Compilation-only Worker checks run with Actions' inherited stdio before filtered
+unit execution, so a long warning stream cannot hide the compiler's actual error.
+Failures also retain bounded output tails in structured receipts and print their
+critical tails synchronously before termination.

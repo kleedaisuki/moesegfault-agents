@@ -73,7 +73,44 @@ fn startup_failure(value: &Value) -> Option<StartupFailure> {
             )
         })
         .unwrap_or("unknown");
-    Some(StartupFailure(format!("code_kernel_{stage}_{kind}")))
+    let mut code = format!("code_kernel_{stage}_{kind}");
+    if let Some(outcome) = value["outcome"]
+        .as_str()
+        .filter(|outcome| matches!(*outcome, "kernel_died" | "readiness_timeout"))
+    {
+        code.push('_');
+        code.push_str(outcome);
+    }
+    if let Some(status) = value["exit_status"]
+        .as_i64()
+        .filter(|status| (-128..=255).contains(status))
+    {
+        code.push_str(&format!("_exit_{status}"));
+    }
+    if let Some(site) = value["site"].as_str().filter(|site| {
+        matches!(
+            *site,
+            "libzmq_tcp"
+                | "libzmq_ip"
+                | "libzmq_signaler"
+                | "libzmq_context"
+                | "libzmq_ipc"
+                | "kernel_iostream"
+                | "kernel_debugger"
+                | "kernel_application"
+        )
+    }) {
+        code.push('_');
+        code.push_str(site);
+    }
+    if let Some(errno) = value["errno_class"]
+        .as_str()
+        .filter(|errno| matches!(*errno, "permission_denied" | "address_family_unsupported"))
+    {
+        code.push('_');
+        code.push_str(errno);
+    }
+    Some(StartupFailure(code))
 }
 
 #[derive(Debug)]

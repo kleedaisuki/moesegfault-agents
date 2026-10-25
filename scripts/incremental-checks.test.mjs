@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, mkdirSync, mkdtempSync } from 'node:fs';
-import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection } from './incremental-checks.mjs';
+import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks } from './incremental-checks.mjs';
 mkdirSync('.temp', { recursive: true });
 const directory = mkdtempSync('.temp/incremental-checks-test-');
 const source = 'a'.repeat(40), baseline = 'b'.repeat(40);
@@ -120,4 +120,69 @@ test('startup diagnostic is one finite case and cannot silently imply full capab
   assert.ok(selected.deferred_checks[1].argv.some(arg=>arg.endsWith('[None]')));
   assert.deepEqual(containerSelection([network],'incremental').checks,[network]);
   assert.throws(()=>containerSelection([],'startup-1g; echo unsafe'),/Invalid finite/);
+});
+
+test('per-check reuse binds the exact recipe and explicit shared implementation inputs', () => {
+  const check={id:'node:tests/e2e/paid-route-policy.test.mjs',argv:['node','--test','tests/e2e/paid-route-policy.test.mjs'],env:{}};
+  let paths=[];
+  const hash=checkFingerprint(source,check,(...args)=>{paths=args;return '100644 blob abc\towned';});
+  assert.ok(paths.includes('tests/e2e/paid-route-policy.mjs'));
+  assert.ok(paths.includes('crates/agents-worker/src/provider_config.rs'));
+  assert.ok(paths.includes('package-lock.json'));
+  assert.ok(!paths.includes('scripts/incremental-checks.mjs'));
+  assert.notEqual(hash,checkFingerprint(source,{...check,env:{NEW_BEHAVIOR:'1'}},()=> '100644 blob abc\towned'));
+  assert.notEqual(hash,checkFingerprint(source,check,()=> '100644 blob changed\towned'));
+});
+test('pure provider checks include wire dependencies but not an unrelated Session implementation', () => {
+  const check={id:'rust:agents-worker:provider_roundtrip',source_file:'crates/agents-worker/src/provider_responses.rs',argv:['cargo','test','-p','agents-worker','provider_roundtrip'],env:{}};
+  const paths=checkInputPaths(source,check,()=>['crates/agents-worker/src/provider_responses.rs','crates/agents-worker/src/responses_wire.rs','crates/agents-worker/src/session.rs'].join('\n'));
+  assert.ok(paths.includes('crates/agents-worker/src/responses_wire.rs'));
+  assert.ok(!paths.includes('crates/agents-worker/src/session.rs'));
+  assert.ok(paths.includes('Cargo.lock'));
+});
+test('a verified unchanged check becomes reused_verified rather than passed_current', () => {
+  const check={id:'node:new',argv:['node','--test','new.test.mjs'],env:{}};
+  const seal={source_sha:baseline,run_id:'12345',components:[],receipt_artifact:'verification-tooling',receipt_artifact_id:42,verified_checks:[{id:check.id,status:'passed_current',input_fingerprint:'same',receipt_path:'tooling.json',executed_tests:2}]};
+  const result=reuseChecks(source,[check],[seal],()=> 'same');
+  assert.equal(result.checks.length,0);
+  assert.equal(result.reused_checks[0].status,'reused_verified');
+  assert.equal(result.reused_checks[0].source_sha,baseline);
+  assert.equal(result.reused_checks[0].receipt_path,'tooling.json');
+  assert.equal(result.reused_checks[0].executed_tests,2);
+  assert.equal(reuseChecks(source,[check],[seal],()=> 'changed').checks.length,1);
+});
+test('failed and zero-test historical receipts never authorize check reuse', () => {
+  const check={id:'node:new',argv:['node','--test','new.test.mjs'],env:{}};
+  for(const proof of [{status:'failed_current',executed_tests:1},{status:'passed_current',executed_tests:0}]) {
+    const seal={source_sha:baseline,run_id:'12345',components:[],verified_checks:[{id:check.id,input_fingerprint:'same',...proof}]};
+    assert.equal(reuseChecks(source,[check],[seal],()=> 'same').checks.length,1);
+  }
+});
+test('failed check receipts preserve a bounded tail even when process output cannot flush', () => {
+  const plan={source_sha:source,checks:{tooling:[{id:'node:tail',argv:['node','--test','tail.test.mjs'],env:{},reason:'Actual diagnosis'}]}};
+  assert.throws(()=>runChecks(plan,'tooling',()=>({status:1,stdout:'# fail 1\n',stderr:'Compiler diagnostic tail'}),directory),/failed/);
+  const row=JSON.parse(readFileSync(`${directory}/tooling.json`,'utf8')).results[0];
+  assert.equal(row.failure.stderr_tail,'Compiler diagnostic tail');
+  assert.equal(row.executed_tests,1);
+});
+
+test('new browser specs use focused Playwright rather than an empty Vitest match', () => {
+  const selected=selections(source,baseline,['apps/dashboard/e2e/agent-routing.spec.ts','apps/dashboard/src/agent-routing.test.tsx']);
+  assert.equal(selected.dashboard.length,2);
+  const browser=selected.dashboard.find(check=>check.argv.includes('test:browser'));
+  assert.ok(browser.argv.includes('e2e/agent-routing.spec.ts'));
+  assert.equal(executedTests(browser.argv,'  2 passed (1.5s)'),2);
+  const unit=selected.dashboard.find(check=>!check.argv.includes('test:browser'));
+  assert.ok(unit.argv.includes('src/agent-routing.test.tsx'));
+  assert.equal(executedTests(unit.argv,'Tests 15 passed'),15);
+});
+
+test('existing Agents edits select only the three changed assertions and the new routing group', () => {
+  const selected=selections(source,baseline,['apps/dashboard/src/AgentRouting.test.tsx','apps/dashboard/src/Agents.test.tsx']);
+  assert.equal(selected.dashboard.length,2);
+  for(const check of selected.dashboard) {
+    assert.ok(check.argv.includes('-t'));
+    assert.match(check.argv.at(-1),/independent agent service routing/);
+    assert.match(check.argv.at(-1),/preserves existing custom BYOK model limits/);
+  }
 });

@@ -7,6 +7,7 @@ import binascii
 import argparse
 from collections.abc import Callable
 import importlib.util
+import io
 from pathlib import Path
 import queue
 from types import ModuleType, SimpleNamespace
@@ -24,6 +25,24 @@ def bridge() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_startup_stderr_is_bounded_and_never_returned_raw(bridge: ModuleType) -> None:
+    capture: Any = bridge.StartupCapture(io.BytesIO(b"private-path-sentinel" * 1000 + b"Operation not permitted (src/tcp.cpp:123)"))
+    capture.thread.join(timeout=1)
+    assert not capture.thread.is_alive()
+    assert len(capture.snapshot()) == 8192
+    value: dict[str, Any] = bridge.startup_detail(
+        RuntimeError("Kernel died before replying to kernel_info: private-message-sentinel"),
+        SimpleNamespace(poll=lambda: -6), capture,
+    )
+    assert value == {"outcome":"kernel_died","exit_status":-6,"site":"libzmq_tcp","errno_class":"permission_denied"}
+    assert "private" not in str(value)
+    assert bridge.startup_site(b"private-path-or-secret") == "unknown"
+    assert bridge.startup_site(b"ipykernel/iostream.py warning followed by src/tcp.cpp:123") == "libzmq_tcp"
+    capture.discard()
+    capture.drain(io.BytesIO(b"later-user-stderr-must-not-be-retained"))
+    assert capture.snapshot() == b"" and capture.collecting is False
 
 
 @pytest.mark.parametrize("failed_stage", ["construct", "launch", "channels", "ready"])

@@ -920,7 +920,10 @@ mod tests {
         fn publication_barrier_never_duplicates_or_reorders_ready_deltas(count in 0usize..128) {
             let mut barrier = PublicationBarrier::default();
             barrier.begin("resp",&json!({"sequence_number":0})).unwrap();
-            for sequence in 1..=count { proptest::prop_assert!(barrier.hold("resp",&json!({"sequence_number":sequence}))); }
+            for sequence in 1..=count {
+                let held = barrier.hold("resp", &json!({"sequence_number":sequence}));
+                proptest::prop_assert!(held);
+            }
             let (_,events) = barrier.take().unwrap();
             proptest::prop_assert_eq!(events.len(),count+1);
             for (sequence,event) in events.iter().enumerate() {

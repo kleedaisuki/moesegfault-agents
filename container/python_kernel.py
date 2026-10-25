@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import queue
 import sys
+import subprocess
+import threading
 import tempfile
 from typing import Any
 
@@ -165,8 +167,82 @@ def startup_kind(error: Exception) -> str:
     return "initialization_error"
 
 
+class StartupCapture:
+    """Drain continuously; only a bounded diagnostic tail is retained."""
+
+    def __init__(self, pipe: Any) -> None:
+        self.bytes: bytearray = bytearray()
+        self.collecting: bool = True
+        self.lock: threading.Lock = threading.Lock()
+        self.thread: threading.Thread = threading.Thread(target=self.drain, args=(pipe,), daemon=True)
+        self.thread.start()
+
+    def drain(self, pipe: Any) -> None:
+        try:
+            while chunk := pipe.read(4096):
+                with self.lock:
+                    if self.collecting:
+                        self.bytes.extend(chunk)
+                        if len(self.bytes) > 8192:
+                            del self.bytes[:-8192]
+        except (OSError, ValueError):
+            pass
+
+    def snapshot(self) -> bytes:
+        self.thread.join(timeout=0.2)
+        with self.lock:
+            return bytes(self.bytes)
+
+    def discard(self) -> None:
+        with self.lock:
+            self.collecting = False
+            self.bytes.clear()
+
+
+def startup_site(raw: bytes) -> str:
+    latest: tuple[int, str] = (-1, "unknown")
+    for marker, name in (
+        (b"src/tcp.cpp:", "libzmq_tcp"),
+        (b"src/ip.cpp:", "libzmq_ip"),
+        (b"src/signaler.cpp:", "libzmq_signaler"),
+        (b"src/ctx.cpp:", "libzmq_context"),
+        (b"src/ipc_listener.cpp:", "libzmq_ipc"),
+        (b"ipykernel/iostream.py", "kernel_iostream"),
+        (b"ipykernel/debugger.py", "kernel_debugger"),
+        (b"ipykernel/kernelapp.py", "kernel_application"),
+    ):
+        position: int = raw.rfind(marker)
+        if position > latest[0]:
+            latest = (position, name)
+    return latest[1]
+
+
+def startup_detail(error: Exception, process: Any, capture: StartupCapture | None) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    if isinstance(error, RuntimeError):
+        message: str = str(error)
+        if message.startswith("Kernel died before replying to kernel_info"):
+            value["outcome"] = "kernel_died"
+        elif message.startswith("Kernel didn't respond"):
+            value["outcome"] = "readiness_timeout"
+    if process is not None:
+        status: Any = process.poll()
+        if isinstance(status, int) and -128 <= status <= 255:
+            value["exit_status"] = status
+    if capture is not None:
+        raw: bytes = capture.snapshot()
+        value["site"] = startup_site(raw)
+        if b"Operation not permitted" in raw or b"Permission denied" in raw:
+            value["errno_class"] = "permission_denied"
+        elif b"Address family not supported" in raw:
+            value["errno_class"] = "address_family_unsupported"
+    return value
+
+
 def start(args: argparse.Namespace) -> tuple[Any, Any]:
     stage: str = "import"
+    process: Any = None
+    capture: StartupCapture | None = None
     try:
         from jupyter_client import KernelManager
 
@@ -184,18 +260,23 @@ def start(args: argparse.Namespace) -> tuple[Any, Any]:
             env=dict(os.environ),
             stdin=open(os.devnull, "rb"),
             stdout=open(os.devnull, "wb"),
-            stderr=open(os.devnull, "wb"),
+            stderr=subprocess.PIPE,
         )
+        process = getattr(getattr(manager, "provisioner", None), "process", None)
+        if process is not None and process.stderr is not None:
+            capture = StartupCapture(process.stderr)
         stage = "channels"
         client: Any = manager.blocking_client()
         client.start_channels()
         stage = "ready"
         client.wait_for_ready(timeout=25)
+        if capture is not None:
+            capture.discard()
         return manager, client
     except Exception as error:
         # Startup happens before user execution. Only bounded machine labels,
         # never dependency exception text, paths or environment, cross the pipe.
-        send({"type": "startup_error", "stage": stage, "kind": startup_kind(error)})
+        send({"type": "startup_error", "stage": stage, "kind": startup_kind(error), **startup_detail(error, process, capture)})
         raise SystemExit(1) from None
 
 
