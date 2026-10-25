@@ -192,7 +192,7 @@ export async function runChatRecoveryJourney(context) {
     scenario.expectUncertain(failed.state.runId);
     gates[4].release();
     const unknown = await bounded(failed.observed.done);
-    assert.equal(unknown.error?.code, 'provider_error');
+    assert.equal(unknown.error?.code, 'provider_http_error');
     assert.equal(unknown.stopCount, 0);
     assert.equal(unknown.terminal, null);
     const failedReceipt = await receipt(failed.sessionId, failed.state.runId);

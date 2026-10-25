@@ -1,13 +1,19 @@
 //! Repair a lost Chat observation by reading its original durable run result.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, future::Future, rc::Rc, time::Duration};
 
 use agents_core::SessionRecord;
 use eventsource_stream::{Event, Eventsource};
-use futures::{StreamExt, future::Either, stream::LocalBoxStream};
+use futures::{
+    FutureExt, Stream, StreamExt,
+    future::{AbortHandle, Either, LocalBoxFuture},
+    stream::{Abortable, LocalBoxStream},
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use wasm_bindgen::{JsCast, closure::Closure};
+use web_sys::{AbortSignal, Event as AbortEvent};
 use worker::{Delay, Env, Response, Result};
 
 use crate::{routes, session::sse, telemetry::TraceContext, util};
@@ -18,8 +24,11 @@ const RECOVERY_MS: u64 = 120_000;
 // 16 MiB completion bound; ordinary streaming keeps only a digest and byte count.
 const MAX_RECEIPT_BYTES: usize = 32 * 1024 * 1024;
 const DONE: &[u8] = b"data: [DONE]\n\n";
+const RECOVERY_PING: &[u8] = b":\n\n";
 
 type Events = LocalBoxStream<'static, std::result::Result<Event, ()>>;
+type RecoveryResult = std::result::Result<VecDeque<Vec<u8>>, Failure>;
+type Recovery = LocalBoxFuture<'static, RecoveryResult>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Failure {
@@ -27,6 +36,7 @@ enum Failure {
     Mismatch,
     Overloaded,
     Timeout,
+    Cancelled,
 }
 
 impl Failure {
@@ -36,6 +46,7 @@ impl Failure {
             Self::Mismatch => "chat_observation_mismatch",
             Self::Overloaded => "chat_observation_overloaded",
             Self::Timeout => "chat_observation_timeout",
+            Self::Cancelled => "chat_observation_cancelled",
         }
     }
 }
@@ -46,7 +57,7 @@ enum Action {
     Recover,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Progress {
     bytes: usize,
     digest: Sha256,
@@ -151,6 +162,7 @@ struct Target {
     session: SessionRecord,
     trace: TraceContext,
     run: String,
+    signal: AbortSignal,
 }
 
 enum Read {
@@ -160,6 +172,9 @@ enum Read {
 
 impl Target {
     async fn read(&self) -> std::result::Result<Read, Failure> {
+        if self.signal.aborted() {
+            return Err(Failure::Cancelled);
+        }
         let mut response = routes::read_chat_run(&self.env, &self.session, &self.trace, &self.run)
             .await
             .map_err(|error| {
@@ -196,6 +211,9 @@ impl Target {
         let started = util::now_ms();
         let mut budget = Budget::default();
         let result = self.recover_until(progress, started, &mut budget).await;
+        if self.signal.aborted() || result.as_ref().err() == Some(&Failure::Cancelled) {
+            return Err(Failure::Cancelled);
+        }
         util::emit(
             "observer.recovery",
             json!({
@@ -216,6 +234,9 @@ impl Target {
         budget: &mut Budget,
     ) -> std::result::Result<VecDeque<Vec<u8>>, Failure> {
         loop {
+            if self.signal.aborted() {
+                return Err(Failure::Cancelled);
+            }
             let now = util::now_ms().saturating_sub(started);
             let remaining = budget.begin(now)?;
             let request = Box::pin(self.read());
@@ -362,8 +383,9 @@ fn frame(data: &str) -> Vec<u8> {
 
 struct Relay {
     source: Option<Events>,
-    target: Target,
+    target: Rc<Target>,
     progress: Progress,
+    recovery: Option<Recovery>,
     frames: VecDeque<Vec<u8>>,
     done: bool,
 }
@@ -371,7 +393,12 @@ struct Relay {
 impl Relay {
     fn fail(&mut self, failure: Failure) {
         self.source = None;
+        self.recovery = None;
         self.done = true;
+        if failure == Failure::Cancelled {
+            self.frames.clear();
+            return;
+        }
         self.frames.push_back(frame(&json!({"error":{
             "code":failure.code(),"type":"agents_error",
             "message":"Original run observation unavailable; inspect this session and run before retrying.",
@@ -421,12 +448,23 @@ impl Relay {
                 self.done = true;
                 return Some((Ok(DONE.to_vec()), self));
             }
-            match self.target.recover(&self.progress).await {
-                Ok(frames) => {
+            if self.recovery.is_none() {
+                let target = self.target.clone();
+                let progress = self.progress.clone();
+                self.recovery = Some(async move { target.recover(&progress).await }.boxed_local());
+            }
+            let recovery = self.recovery.take().unwrap();
+            let timer = Box::pin(Delay::from(Duration::from_millis(100)));
+            match recovery_tick(recovery, timer).await {
+                RecoveryTick::Ready(Ok(frames)) => {
                     self.frames = frames;
                     self.done = true;
                 }
-                Err(error) => self.fail(error),
+                RecoveryTick::Ready(Err(error)) => self.fail(error),
+                RecoveryTick::Pending(recovery) => {
+                    self.recovery = Some(recovery);
+                    return Some((Ok(RECOVERY_PING.to_vec()), self));
+                }
             }
         }
     }
@@ -437,6 +475,7 @@ pub(crate) async fn wrap(
     session: SessionRecord,
     trace: TraceContext,
     mut response: Response,
+    signal: AbortSignal,
 ) -> Result<Response> {
     if response.status_code() != 200
         || !response
@@ -468,31 +507,247 @@ pub(crate) async fn wrap(
         .boxed_local();
     let relay = Relay {
         source: Some(source),
-        target: Target {
+        target: Rc::new(Target {
             env,
             session,
             trace,
             run,
-        },
+            signal: signal.clone(),
+        }),
         progress: Progress::default(),
+        recovery: None,
         frames: VecDeque::new(),
         done: false,
     };
     let output = futures::stream::unfold(relay, Relay::next).boxed_local();
-    Ok(Response::from_stream(sse::keep_alive(output))?
+    let (handle, registration) = AbortHandle::new_pair();
+    let guard = Cancellation::new(signal, handle)?;
+    let output = Abortable::new(sse::keep_alive(output).boxed_local(), registration);
+    let output = scoped(output, guard).boxed_local();
+    Ok(Response::from_stream(output)?
         .with_status(status)
         .with_headers(headers))
+}
+
+enum RecoveryTick {
+    Ready(RecoveryResult),
+    Pending(Recovery),
+}
+
+async fn recovery_tick<T>(recovery: Recovery, timer: T) -> RecoveryTick
+where
+    T: Future<Output = ()> + Unpin,
+{
+    // A quiet broken client may not notify Request.signal until another write.
+    // Keep this one recovery future alive across comment-only liveness probes.
+    match futures::future::select(recovery, timer).await {
+        Either::Left((result, _)) => RecoveryTick::Ready(result),
+        Either::Right(((), recovery)) => RecoveryTick::Pending(recovery),
+    }
+}
+
+struct Cancellation {
+    signal: AbortSignal,
+    callback: Closure<dyn FnMut(AbortEvent)>,
+}
+
+impl Cancellation {
+    fn new(signal: AbortSignal, handle: AbortHandle) -> Result<Self> {
+        let callback_handle = handle.clone();
+        let callback =
+            Closure::wrap_assert_unwind_safe(
+                Box::new(move |_: AbortEvent| callback_handle.abort())
+                    as Box<dyn FnMut(AbortEvent)>,
+            );
+        let guard = Self { signal, callback };
+        guard
+            .signal
+            .add_event_listener_with_callback("abort", guard.callback.as_ref().unchecked_ref())?;
+        // Register before inspecting the state so an intervening abort cannot
+        // leave a pending observer detached from its cancellation notification.
+        if guard.signal.aborted() {
+            handle.abort();
+        }
+        Ok(guard)
+    }
+}
+
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        // Detach the native EventTarget before releasing its wasm trampoline.
+        let _ = self
+            .signal
+            .remove_event_listener_with_callback("abort", self.callback.as_ref().unchecked_ref());
+    }
+}
+
+fn scoped<S, G>(source: S, guard: G) -> impl Stream<Item = Result<Vec<u8>>>
+where
+    S: Stream<Item = Result<Vec<u8>>> + Unpin,
+{
+    // Abortable ends polling on abort, but still owns its inner stream. Release
+    // that pending pull and the native listener as soon as EOF is observed.
+    futures::stream::unfold(Some((source, guard)), |state| async move {
+        let (mut source, guard) = state?;
+        let item = source.next().await?;
+        if item.as_ref().map_or(true, |bytes| bytes == DONE) {
+            Some((item, None))
+        } else {
+            Some((item, Some((source, guard))))
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{FutureExt, executor::block_on};
     use proptest::prelude::*;
+    use std::{
+        cell::Cell,
+        pin::Pin,
+        rc::Rc,
+        task::{Context, Poll},
+    };
+
+    struct PendingRead {
+        polled: Rc<Cell<bool>>,
+        dropped: Rc<Cell<bool>>,
+    }
+
+    impl Stream for PendingRead {
+        type Item = Result<Vec<u8>>;
+
+        fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.polled.set(true);
+            Poll::Pending
+        }
+    }
+
+    impl Drop for PendingRead {
+        fn drop(&mut self) {
+            self.dropped.set(true);
+        }
+    }
+
+    struct ListenerProbe(Rc<Cell<bool>>);
+
+    impl Drop for ListenerProbe {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
 
     fn terminal(run: &str) -> Value {
         json!({"id":run,"object":"chat.completion.chunk","created":123,"model":"agent",
             "choices":[{"index":0,"delta":{},"finish_reason":"stop"}],
             "usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}})
+    }
+
+    #[test]
+    fn native_abort_releases_a_pending_pull_and_listener_before_stream_gc() {
+        let polled = Rc::new(Cell::new(false));
+        let dropped = Rc::new(Cell::new(false));
+        let listener = Rc::new(Cell::new(false));
+        let source = PendingRead {
+            polled: polled.clone(),
+            dropped: dropped.clone(),
+        };
+        let (handle, registration) = AbortHandle::new_pair();
+        let mut output = scoped(
+            Abortable::new(source, registration),
+            ListenerProbe(listener.clone()),
+        )
+        .boxed_local();
+        assert!(output.next().now_or_never().is_none());
+        assert!(polled.get());
+        assert!(!dropped.get() && !listener.get());
+        handle.abort();
+        assert!(block_on(output.next()).is_none());
+        assert!(dropped.get() && listener.get());
+    }
+
+    #[test]
+    fn preaborted_observation_never_starts_its_pending_read() {
+        let polled = Rc::new(Cell::new(false));
+        let dropped = Rc::new(Cell::new(false));
+        let listener = Rc::new(Cell::new(false));
+        let source = PendingRead {
+            polled: polled.clone(),
+            dropped: dropped.clone(),
+        };
+        let (handle, registration) = AbortHandle::new_pair();
+        handle.abort();
+        let mut output = scoped(
+            Abortable::new(source, registration),
+            ListenerProbe(listener.clone()),
+        )
+        .boxed_local();
+        assert!(block_on(output.next()).is_none());
+        assert!(!polled.get());
+        assert!(dropped.get() && listener.get());
+    }
+
+    #[test]
+    fn terminal_done_releases_its_listener_without_an_extra_pull() {
+        let dropped = Rc::new(Cell::new(false));
+        let listener = Rc::new(Cell::new(false));
+        let probe = ListenerProbe(dropped.clone());
+        let source = futures::stream::iter([Ok(DONE.to_vec())]).map(move |item| {
+            let _ = &probe;
+            item
+        });
+        let (_handle, registration) = AbortHandle::new_pair();
+        let mut output = scoped(
+            Abortable::new(source, registration),
+            ListenerProbe(listener.clone()),
+        )
+        .boxed_local();
+        assert_eq!(block_on(output.next()).unwrap().unwrap(), DONE);
+        assert!(dropped.get() && listener.get());
+    }
+
+    #[test]
+    fn recovery_comments_preserve_one_pending_read_budget_and_prefix() {
+        let starts = Rc::new(Cell::new(0));
+        let dropped = Rc::new(Cell::new(false));
+        let mut progress = Progress::default();
+        progress.delta(&json!({"content":"雪"})).unwrap();
+        let progress = progress.clone();
+        let (sender, receiver) = futures::channel::oneshot::channel::<String>();
+        let started = starts.clone();
+        let lifetime = ListenerProbe(dropped.clone());
+        let mut recovery: Recovery = async move {
+            let _lifetime = lifetime;
+            started.set(started.get() + 1);
+            let mut budget = Budget::default();
+            budget.begin(0).unwrap();
+            let text = receiver.await.unwrap();
+            assert_eq!(budget.reads, 1);
+            assert_eq!(progress.bytes, "雪".len());
+            Ok(VecDeque::from([progress
+                .suffix(&text)
+                .unwrap()
+                .as_bytes()
+                .to_vec()]))
+        }
+        .boxed_local();
+        for _ in 0..10 {
+            recovery = match block_on(recovery_tick(recovery, futures::future::ready(()))) {
+                RecoveryTick::Pending(recovery) => recovery,
+                RecoveryTick::Ready(_) => {
+                    panic!("a comment restarted or completed the pending read")
+                }
+            };
+            assert_eq!(starts.get(), 1);
+            assert!(!dropped.get());
+        }
+        sender.send("雪 tail".into()).unwrap();
+        match block_on(recovery_tick(recovery, futures::future::pending::<()>())) {
+            RecoveryTick::Ready(Ok(frames)) => assert_eq!(frames[0], b" tail"),
+            _ => panic!("the original pending read must provide the terminal result"),
+        }
+        assert!(dropped.get());
     }
 
     proptest! {

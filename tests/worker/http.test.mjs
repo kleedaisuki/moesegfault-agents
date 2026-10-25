@@ -65,6 +65,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') },
     ],
     compatibilityDate: '2026-10-23',
+    compatibilityFlags: ['enable_request_signal'],
     resourcePersistencePath: path.join(temp, 'storage'),
     d1Databases: ['DB'],
     r2Buckets: ['WORKSPACES', 'CONVERSATIONS', 'DIAGNOSTICS'],

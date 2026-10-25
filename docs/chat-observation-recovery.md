@@ -139,6 +139,18 @@ Dropping the public response stream must drop the relay, pending read and timer.
 Do not spawn `waitUntil` recovery or keep repairing an observer after the caller
 has left. The alarm-owned execution continues independently, as before.
 
+The incoming `Request.signal` is explicitly enabled with `enable_request_signal`
+and is bound only to the observer's scoped `AbortHandle`, never to execution or
+its provider/tool requests. A live pending stream pull is not reliably disposed
+just because its outer body was cancelled. Native quiet-stream probes also show
+that transport cancellation may not be reported until another write. Therefore
+only a pending recovery emits a compact `:\n\n` comment every 100 ms, retaining
+the same recovery future/read budget across ticks. This bounds its additional
+payload to 3,600 bytes over the 120-second recovery window (excluding HTTP/TLS
+overhead); ordinary streams retain their existing 15-second heartbeat. The abort
+listener is unregistered before its Rust Closure is released, and abort quietly
+drops the in-flight observation rather than sending an error after the client left.
+
 The same immutable receipt can later repair a detached private JSON observation,
 but that must reuse the read primitive, not add another admission/retry mechanism.
 Do not register a replacement in-memory Observer as the recovery primitive:

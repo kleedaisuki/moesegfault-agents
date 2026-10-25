@@ -1028,6 +1028,7 @@ async fn session_route(
         }
         (Method::Post, Some("resume")) => resume_session(env, owner, session).await,
         (Method::Post, Some("messages")) => {
+            let signal = req.inner().signal();
             let append: Append = match body(&mut req).await {
                 Ok(input) => input,
                 Err(response) => return Ok(response),
@@ -1054,7 +1055,7 @@ async fn session_route(
             if let Err(message) = validate_messages(&append.messages) {
                 return Ok(bad_request(message));
             }
-            run(env, &session, append.messages, append.stream).await
+            run(env, &session, append.messages, append.stream, signal).await
         }
         (Method::Post, Some("steer")) => {
             let steer: Steer = match body(&mut req).await {
@@ -1120,6 +1121,7 @@ pub(crate) async fn resume_session(
 }
 
 async fn chat(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
+    let signal = req.inner().signal();
     let session_id = req.headers().get("X-Agents-Session")?;
     let input: Chat = match body(&mut req).await {
         Ok(input) => input,
@@ -1154,7 +1156,7 @@ async fn chat(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result<R
             Err(response) => return Ok(response),
         }
     };
-    run(env, &session, input.messages, input.stream).await
+    run(env, &session, input.messages, input.stream, signal).await
 }
 
 async fn run(
@@ -1162,6 +1164,7 @@ async fn run(
     session: &SessionRecord,
     messages: Vec<Message>,
     stream: bool,
+    signal: web_sys::AbortSignal,
 ) -> Result<Response> {
     let response = match forward(
         env,
@@ -1193,6 +1196,7 @@ async fn run(
             session.clone(),
             env.trace.clone(),
             response,
+            signal,
         )
         .await?
     } else {
