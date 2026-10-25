@@ -8,8 +8,14 @@ on:
         default: staging
         required: true
       source_run:
-        description: Successful CI run ID for this exact commit
+        description: Successful incremental CI run for this exact candidate and sealed component baselines
         type: string
+        required: true
+      acceptance_profile:
+        description: Explicit NEW staged work only; none does not claim user acceptance
+        type: choice
+        options: [none, direct-deepseek-usage-probe, responses-increment]
+        default: none
         required: true
 
 permissions:
@@ -29,47 +35,48 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
       SOURCE_RUN: ${{ inputs.source_run }}
+      ACCEPTANCE_PROFILE: ${{ inputs.acceptance_profile }}
       DEPLOY_CONFIG: .temp/deploy.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Require successful CI for this exact source
+        with:
+          fetch-depth: 0
+      - name: Require completed normal incremental CI for this candidate
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
-          const repository = process.env.GITHUB_REPOSITORY;
-          const source = process.env.SOURCE_RUN;
-          if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? '')
-            || !/^[1-9][0-9]{0,14}$/.test(source ?? '')) throw Error('Invalid CI repository or run ID');
-          const api = path => JSON.parse(execFileSync('gh', ['api', `repos/${repository}/${path}`], {
-            encoding: 'utf8', maxBuffer: 2 * 1024 * 1024,
-          }));
-          const r = api(`actions/runs/${source}`);
-          if (r.id !== Number(source) || r.repository?.full_name !== repository
-            || r.head_repository?.full_name !== repository || r.status !== 'completed'
-            || r.head_sha!==process.env.GITHUB_SHA || r.conclusion!=="success"
-            || r.path!==".github/workflows/ci.yml" || r.event==="pull_request"
-            || !['push', 'workflow_dispatch'].includes(r.event)
-            || r.display_title?.startsWith('Worker diagnostics - ')) {
-            throw Error('CI source/run is not approved for deployment');
-          }
-          const page = api(`actions/runs/${source}/jobs?filter=latest&per_page=100`);
-          if (!Array.isArray(page.jobs) || !Number.isInteger(page.total_count)
-            || page.total_count > 100 || page.jobs.length !== page.total_count) {
-            throw Error('CI job list is incomplete or exceeds the release bound');
-          }
-          for (const name of ['changes', 'rust', 'worker', 'dashboard', 'container', 'tooling']) {
-            const jobs = page.jobs.filter(job => job.name === name);
-            if (jobs.length !== 1 || jobs[0].run_id !== r.id || jobs[0].head_sha !== r.head_sha
-              || jobs[0].status !== 'completed' || jobs[0].conclusion !== 'success') {
-              throw Error(`Required release job is not successful: ${name}`);
-            }
-          }
+          const repository = process.env.GITHUB_REPOSITORY, source = process.env.SOURCE_RUN;
+          if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? '') || !/^[1-9][0-9]{0,14}$/.test(source ?? '')) throw Error('Invalid CI identity');
+          if (process.env.DEPLOY_ENVIRONMENT !== 'staging' && process.env.ACCEPTANCE_PROFILE !== 'none') throw Error('Paid acceptance is staging-only');
+          const run = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/actions/runs/${source}`], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 }));
+          if (run.id !== Number(source) || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
+            || run.status !== 'completed' || run.conclusion !== 'success' || run.head_sha !== process.env.GITHUB_SHA
+            || run.path !== '.github/workflows/ci.yml' || !['push', 'workflow_dispatch'].includes(run.event)
+            || run.display_title?.startsWith('Worker diagnostics - ')) throw Error('CI candidate identity is not approved');
           NODE
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
           cache: npm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: incremental-plan
+          path: .temp/deploy-verification/planned
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+      - name: Verify source fingerprints, sealed baselines and actual selected-check results
+        id: provenance
+        run: node scripts/deploy-provenance.mjs --plan .temp/deploy-verification/planned/plan.json --run "$SOURCE_RUN"
       - run: npm ci --ignore-scripts
+      - name: Reject an unavailable selected native increment runner before infrastructure changes
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
+        run: |
+          node --input-type=module <<'NODE'
+          const runner = await import('./tests/e2e/full-responses-sdk.mjs');
+          if (typeof runner.assertExecutionWorkspace !== 'function' || typeof runner.requireLiveDeploymentProvenance !== 'function' || typeof runner.countRootWithoutAdmission !== 'function') throw Error('Selected native increment runner is not ready at this source');
+          runner.assertExecutionWorkspace(process.cwd(), process.env.GITHUB_SHA, process.env);
+          runner.requireLiveDeploymentProvenance({MAGENTS_TEST_DEPLOYMENT_PROVENANCE:'.temp/deploy-verification/deployment-provenance.json'}, process.env.GITHUB_SHA, process.cwd());
+          NODE
       - name: Require environment-paired credentials before changing infrastructure
         env:
           IDENTITY_CLIENT_PRIVATE_JWK: ${{ inputs.environment == 'staging' && secrets.STAGING_IDENTITY_CLIENT_PRIVATE_JWK || inputs.environment == 'production' && secrets.PRODUCTION_IDENTITY_CLIENT_PRIVATE_JWK || '' }}
@@ -77,41 +84,59 @@ jobs:
         run: |
           test -n "$IDENTITY_CLIENT_PRIVATE_JWK" || { echo 'Missing registered client signing key'; exit 1; }
           test -n "$DATA_ENCRYPTION_KEY" || { echo 'Missing data-encryption key'; exit 1; }
-      - name: Require staging acceptance credentials before changing infrastructure
-        if: inputs.environment == 'staging'
+      - name: Require only the selected NEW staging journey credentials
+        if: inputs.environment == 'staging' && inputs.acceptance_profile != 'none'
         env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           MAGENTS_TEST_API_KEY: ${{ secrets.STAGING_SMOKE_API_KEY }}
           MAGENTS_TEST_OTHER_API_KEY: ${{ secrets.STAGING_SECONDARY_API_KEY }}
         run: |
-          test -n "$MAGENTS_TEST_API_KEY" || { echo 'Missing staging acceptance credential'; exit 1; }
-          test -n "$MAGENTS_TEST_OTHER_API_KEY" || { echo 'Missing secondary staging tenant credential'; exit 1; }
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+          test -n "$DEEPSEEK_API_KEY" || { echo 'Missing direct DeepSeek route'; exit 1; }
+          if [ "$ACCEPTANCE_PROFILE" = responses-increment ]; then
+            test -n "$MAGENTS_TEST_API_KEY" || { echo 'Missing owned staging key'; exit 1; }
+            test -n "$MAGENTS_TEST_OTHER_API_KEY" || { echo 'Missing secondary owner key'; exit 1; }
+          fi
+      - name: Never replay paid stage work through an Actions rerun
+        if: inputs.environment == 'staging' && inputs.acceptance_profile != 'none'
+        run: test "$GITHUB_RUN_ATTEMPT" = 1 || { echo 'Inspect the original accepted operations; paid stage actions are not replayable'; exit 1; }
+      - name: Reject any previously sealed operator-probe intent
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
+        run: |
+          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=v030-direct-deepseek-usage-probe-intent&per_page=100" --jq '.total_count')
+          test "$count" = 0 || { echo 'An operator probe was already reserved; reconcile that exact attempt, never redispatch'; exit 1; }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: worker
           path: crates/agents-worker/build
-          run-id: ${{ inputs.source_run }}
+          run-id: ${{ steps.provenance.outputs.worker_artifact_run }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dashboard
           path: apps/dashboard/dist
-          run-id: ${{ inputs.source_run }}
+          run-id: ${{ steps.provenance.outputs.dashboard_artifact_run }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: container-image
           path: .temp/container-release
-          run-id: ${{ inputs.source_run }}
+          run-id: ${{ steps.provenance.outputs.container_artifact_run }}
           github-token: ${{ github.token }}
-      - name: Verify and load the exact tested container
+      - name: Verify and load the exact tested daemon source and image
+        env:
+          GITHUB_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
         run: node scripts/container-artifact.mjs load .temp/container-release
-      - name: Publish tested container before changing Worker code
-        run: npx wrangler containers push "magents-workspace:${GITHUB_SHA}"
-      - name: Render immutable deployment configuration
+      - name: Publish that tested image once for both runtime-profile apps
+        env:
+          CONTAINER_SOURCE_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
+        run: npx wrangler containers push "magents-workspace:${CONTAINER_SOURCE_SHA}"
+      - name: Render the deployment identity and shared immutable daemon image
+        env:
+          CONTAINER_SOURCE_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
         run: node scripts/deploy-config.mjs
       - name: Migrate only the selected environment
         run: npx wrangler d1 migrations apply DB --remote --env "$DEPLOY_ENVIRONMENT" --config .temp/deploy.json
-      - name: Deploy source and immutable container
+      - name: Deploy the verified component bundle
         run: npx wrangler deploy --env "$DEPLOY_ENVIRONMENT" --config .temp/deploy.json
       - name: Sync environment-paired credentials
         env:
@@ -122,34 +147,67 @@ jobs:
         run: node scripts/worker-secrets.mjs "$DEPLOY_ENVIRONMENT"
       - name: Enforce opt-in diagnostic retention
         run: npx wrangler r2 bucket lifecycle set "moesegfault-agents-diagnostics-${DEPLOY_ENVIRONMENT}" --file deploy/r2-diagnostics-lifecycle.json --force
-      - name: Public deployed boundary smoke
+      - name: Verify public deployment identity without model work
         run: |
           if [ "$DEPLOY_ENVIRONMENT" = staging ]; then host=agents-staging.moesegfault.dev; else host=agents.moesegfault.dev; fi
-          curl --fail --retry 5 --retry-delay 5 "https://${host}/healthz" | jq --exit-status --arg build "$GITHUB_SHA" '.status == "ok" and .build_id == $build'
-          status=$(curl -s -o /dev/null -w '%{http_code}' "https://${host}/v1/agents")
-          test "$status" = 401
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        if: inputs.environment == 'staging'
+          curl --fail --retry 5 --retry-delay 5 "https://${host}/healthz" > .temp/deployed-health.json
+          jq --exit-status --arg build "$GITHUB_SHA" '.status == "ok" and .build_id == $build' .temp/deployed-health.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        if: inputs.environment == 'staging' && inputs.acceptance_profile != 'none'
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: tests/e2e/requirements.lock
-      - name: Authenticated user journey
-        if: inputs.environment == 'staging'
+      - name: Persist the single authorized operator-probe intent before dispatch
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
+        run: |
+          mkdir -p .temp/v0.3-full-acceptance/direct-deepseek-capability
+          node --input-type=module -e "import fs from 'node:fs'; fs.writeFileSync('.temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json', JSON.stringify({purpose:'operator_usage_probe_intent_not_execution_proof',source:process.env.GITHUB_SHA,run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT}),{flag:'wx'});"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
+        with:
+          name: v030-direct-deepseek-usage-probe-intent
+          path: .temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json
+          retention-days: 90
+      - name: One bounded native direct-DeepSeek usage observation
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MAGENTS_DEEPSEEK_PROBE_CLEARED_SOURCE: ${{ github.sha }}
+        run: python scripts/deepseek-usage-probe.py --source "$GITHUB_SHA" --ci-run "$SOURCE_RUN" --operator-cost-confirmed
+      - name: New Responses, Conversations, forks, auxiliary and WebSocket increment only
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         env:
           MAGENTS_TEST_API_ORIGIN: https://agents-staging.moesegfault.dev
           MAGENTS_TEST_API_KEY: ${{ secrets.STAGING_SMOKE_API_KEY }}
           MAGENTS_TEST_OTHER_API_KEY: ${{ secrets.STAGING_SECONDARY_API_KEY }}
-          MAGENTS_TEST_INFERENCE: '1'
-          MAGENTS_TEST_WORKSPACE: '1'
-          MAGENTS_TEST_QUOTA: '1'
-          MAGENTS_TEST_COMPACTION: '1'
-          MAGENTS_TEST_REQUIRE_ALL: '1'
+          MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
+          MAGENTS_TEST_DIRECT_MODEL: deepseek-flash
           MAGENTS_TEST_TRACE_SEED: ${{ github.run_id }}:${{ github.run_attempt }}
+          MAGENTS_TEST_DEPLOYMENT_PROVENANCE: .temp/deploy-verification/deployment-provenance.json
         run: |
-          test -n "$MAGENTS_TEST_API_KEY" || { echo 'Missing staging acceptance credential'; exit 1; }
-          test -n "$MAGENTS_TEST_OTHER_API_KEY" || { echo 'Missing secondary staging tenant credential'; exit 1; }
-          python3 -m venv .cache/e2e-venv
-          .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
-          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_deployed.py tests/e2e/test_responses.py tests/e2e/test_space.py -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest
-          node tests/e2e/responses-sdk.mjs
+          python -m venv .cache/e2e-current-venv
+          .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
+          node tests/e2e/full-responses-sdk.mjs --source "$GITHUB_SHA" --scope core --allow-model-calls --max-paid-submissions 9 --current-python .cache/e2e-current-venv/bin/python --output ".temp/v0.3-full-acceptance/$GITHUB_SHA/$GITHUB_RUN_ID-responses.json"
+      - name: Record honest deployment and selected-acceptance status
+        if: always()
+        env:
+          OUTCOME: ${{ job.status }}
+        run: |
+          mkdir -p .temp/deploy-verification
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const profile=process.env.ACCEPTANCE_PROFILE;
+          const accepted=profile==='none'?'not_selected':process.env.OUTCOME!=='success'?'failed_or_not_observed':profile==='direct-deepseek-usage-probe'?'operator_observation_recorded':'selected_increment_passed';
+          fs.writeFileSync('.temp/deploy-verification/deployment-receipt.json', JSON.stringify({source_sha:process.env.GITHUB_SHA,source_run:process.env.SOURCE_RUN,environment:process.env.DEPLOY_ENVIRONMENT,acceptance_profile:profile,job_status:process.env.OUTCOME,acceptance_status:accepted,production_clearance:'external_root_decision_required'}));
+          NODE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: deployment-increment-evidence
+          path: |
+            .temp/deploy-verification/deployment-provenance.json
+            .temp/deploy-verification/deployment-receipt.json
+            .temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json
+            .temp/v0.3-full-acceptance/direct-deepseek-capability/attempt.json
+            .temp/v0.3-full-acceptance/${{ github.sha }}/${{ github.run_id }}-responses.json
+            .temp/v0.3-full-acceptance/${{ github.sha }}/${{ github.run_id }}-responses-current-python.json
+          retention-days: 14
