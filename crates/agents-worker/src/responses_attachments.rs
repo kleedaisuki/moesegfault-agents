@@ -66,10 +66,12 @@ pub async fn resolve(
     }
     let mut budget = Budget::default();
     for (item_index, item) in items.iter_mut().enumerate() {
-        if item["role"] != "user" {
-            continue;
-        }
-        let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) else {
+        let key = match (item["type"].as_str(), item["role"].as_str()) {
+            (Some("function_call_output"), _) => "output",
+            (_, Some("user")) => "content",
+            _ => continue,
+        };
+        let Some(parts) = item.get_mut(key).and_then(Value::as_array_mut) else {
             continue;
         };
         if parts.len() > MAX_PARTS {

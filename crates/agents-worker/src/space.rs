@@ -65,7 +65,7 @@ impl OwnedFile {
         };
         let mut value = json!({"id":self.id,"object":"file","bytes":self.bytes,
             "created_at":self.created_at_ms/1000,"filename":self.filename,
-            "purpose":self.purpose,"status":status,"sha256":self.sha256,
+            "purpose":self.purpose,"status":status,"sha256":self.sha256,"content_type":self.content_type,
             "updated_at":self.updated_at_ms/1000});
         if self.status != "processed" {
             value["diagnostics"] =
@@ -1112,6 +1112,30 @@ fn not_found() -> Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_metadata_preserves_declared_content_type_without_storage_identity() {
+        let file = OwnedFile {
+            id: "file-image".into(),
+            account_id: "private-owner".into(),
+            filename: "image-without-extension".into(),
+            purpose: "user_data".into(),
+            content_type: "image/png".into(),
+            object_key: "private-object".into(),
+            bytes: 123,
+            sha256: "ab".repeat(32),
+            status: "processed".into(),
+            reservation_id: "private-reservation".into(),
+            created_at_ms: 1000,
+            updated_at_ms: 2000,
+        };
+        let public = file.public();
+        assert_eq!(public["content_type"], "image/png");
+        assert_eq!(public["filename"], "image-without-extension");
+        for private in ["account_id", "object_key", "reservation_id", "diagnostics"] {
+            assert!(public.get(private).is_none(), "{private}");
+        }
+    }
 
     #[test]
     fn filenames_are_display_names_not_paths() {

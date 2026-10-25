@@ -1082,7 +1082,11 @@ impl SessionInner {
         Ok(())
     }
 
-    fn validate_response_output(completion: &Completion, request: &ResponseRequest) -> Result<()> {
+    fn validate_response_output(
+        completion: &Completion,
+        request: &ResponseRequest,
+        first_round: bool,
+    ) -> Result<()> {
         let calls = &completion.message.tool_calls;
         let refusal = completion
             .message
@@ -1698,10 +1702,7 @@ mod tests {
                 arguments: "{}".into(),
             },
         }];
-        let output = |id: &str| wire::ToolOutput {
-            call_id: id.into(),
-            output: "ok".into(),
-        };
+        let output = |id: &str| wire::ToolOutput { call_id: id.into() };
         assert!(validate_tool_outputs(&expected, &[output("a")]).is_ok());
         assert!(validate_tool_outputs(&expected, &[]).is_err());
         assert!(validate_tool_outputs(&expected, &[output("b")]).is_err());

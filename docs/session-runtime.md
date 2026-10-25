@@ -136,6 +136,18 @@ layer. Canonical source messages and original input items remain separate from t
 compacted inference view. File input receipts retain references rather than
 duplicating expanded text/image content in the public input-items representation.
 
+Local `function_call_output.output` accepts the same bounded text/image/file
+parts as user inputs. Call-set validation precedes owner-scoped file resolution
+and publication. The source journal retains native typed image content, while
+input-item retrieval preserves the original file references and typed output
+parts. Anthropic places images inside their correlated native `tool_result`.
+The Chat-protocol adapter cannot send images in a tool-role message, so its pure
+provider projection leaves all contiguous tool results together and then adds
+untrusted user image context labelled by `call_id`. This context is not a new
+canonical user message or a privileged instruction. String/text-only results keep
+their established provider representation. The call-set validator stores only
+call IDs rather than duplicating output bytes.
+
 Background cancellation is a durable request observed at a safe execution
 boundary. A known pending model/compaction result is journaled and financially
 recorded first; cancellation does not turn consumed inference into fictitious zero

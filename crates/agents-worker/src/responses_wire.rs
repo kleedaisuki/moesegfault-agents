@@ -81,7 +81,6 @@ pub struct ResponseTool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolOutput {
     pub call_id: String,
-    pub output: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -472,7 +471,12 @@ fn canonical_input_item(item: &Value) -> Result<Value, String> {
             json!([{"type":"input_text","text":text}])
         };
     }
-    if let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) {
+    let content_key = if kind == "function_call_output" {
+        "output"
+    } else {
+        "content"
+    };
+    if let Some(parts) = item.get_mut(content_key).and_then(Value::as_array_mut) {
         for part in parts {
             if part.get("type").and_then(Value::as_str) == Some("input_image")
                 && part.get("detail").is_none()
@@ -568,16 +572,12 @@ fn normalize_item(item: &Value, normalized: &mut NormalizedInput) -> Result<(), 
             )?;
             let call_id = required_string(item, "call_id")?;
             identifier(call_id, "call_id")?;
-            let output = text_content(
-                item.get("output").ok_or("Function output is required")?,
-                false,
-            )?;
-            normalized
-                .messages
-                .push(Message::tool_result(call_id, &output));
+            let mut message = Message::tool_result(call_id, "");
+            message.content =
+                user_content(item.get("output").ok_or("Function output is required")?)?;
+            normalized.messages.push(message);
             normalized.tool_outputs.push(ToolOutput {
                 call_id: call_id.into(),
-                output,
             });
             Ok(())
         }
@@ -1137,11 +1137,9 @@ mod tests {
             [
                 ToolOutput {
                     call_id: "call_one".into(),
-                    output: "contents".into()
                 },
                 ToolOutput {
                     call_id: "call_two".into(),
-                    output: "more".into()
                 }
             ]
         );
@@ -1149,6 +1147,83 @@ mod tests {
         assert_eq!(output[0]["type"], "function_call");
         assert_eq!(output[0]["call_id"], "call_one");
         assert_ne!(output[0]["id"], output[1]["id"]);
+    }
+
+    #[test]
+    fn function_output_media_keeps_typed_history_and_native_content() {
+        let output = json!([
+            {"type":"input_text","text":"local chart 雪"},
+            {"type":"input_image","image_url":"data:image/png;base64,AQID"}
+        ]);
+        let normalized = request(json!([{
+            "type":"function_call_output","call_id":"call_chart","output":output
+        }]))
+        .normalize()
+        .unwrap();
+        assert_eq!(normalized.messages[0].role, "tool");
+        assert_eq!(
+            normalized.messages[0].tool_call_id.as_deref(),
+            Some("call_chart")
+        );
+        assert_eq!(
+            normalized.messages[0].content[0],
+            json!({"type":"text","text":"local chart 雪"})
+        );
+        assert_eq!(
+            normalized.messages[0].content[1]["image_url"]["detail"],
+            "auto"
+        );
+        assert_eq!(normalized.input_items[0]["output"][0], output[0]);
+        assert_eq!(
+            normalized.input_items[0]["output"][1]["type"],
+            "input_image"
+        );
+        assert_eq!(normalized.input_items[0]["output"][1]["detail"], "auto");
+    }
+
+    #[test]
+    fn function_output_files_use_the_same_preflight_and_aggregate_media_limits() {
+        let valid = request(json!([{
+            "type":"function_call_output","call_id":"call_chart","output":[
+                {"type":"input_file","file_id":"file_owned"},
+                {"type":"input_image","file_id":"file_chart","detail":"low"}
+            ]
+        }]));
+        let normalized = valid.normalize_structure().unwrap();
+        assert_eq!(
+            normalized.input_items[0]["output"][0]["file_id"],
+            "file_owned"
+        );
+        assert_eq!(
+            normalized.input_items[0]["output"][1]["file_id"],
+            "file_chart"
+        );
+        assert!(
+            valid.normalize().is_err(),
+            "File references must be resolved before inference"
+        );
+        for part in [
+            json!({"type":"input_image","image_url":"https://example.invalid/a.png"}),
+            json!({"type":"input_file","file_id":"../private"}),
+            json!({"type":"input_image","file_id":"file_chart","detail":"invalid"}),
+        ] {
+            assert!(
+                request(
+                    json!([{"type":"function_call_output","call_id":"call_chart","output":[part]}])
+                )
+                .normalize_structure()
+                .is_err()
+            );
+        }
+        let images = vec![json!({"type":"input_image","file_id":"file_chart"}); MAX_IMAGES];
+        assert!(
+            request(json!([
+                {"role":"user","content":[{"type":"input_image","file_id":"file_chart"}]},
+                {"type":"function_call_output","call_id":"call_chart","output":images}
+            ]))
+            .normalize_structure()
+            .is_err()
+        );
     }
 
     #[test]

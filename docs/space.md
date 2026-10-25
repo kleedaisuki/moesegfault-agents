@@ -53,11 +53,16 @@ processed file has this SDK-compatible representation:
   "created_at": 1792860000,
   "updated_at": 1792860000,
   "filename": "notes.md",
+  "content_type": "text/markdown",
   "purpose": "user_data",
   "status": "processed",
   "sha256": "<64 lowercase hex characters>"
 }
 ```
+
+The additive `content_type` field preserves the upload's declared media type,
+including after renaming. It is not a claim that file bytes have been decoded or
+verified as that media format; clients must not infer media type from filenames.
 
 An interrupted upload remains discoverable: SDK status is `uploaded` while
 publication is pending and `error` after failure. The additive `diagnostics`

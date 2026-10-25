@@ -20,6 +20,8 @@ use crate::{
 
 #[path = "provider_anthropic.rs"]
 mod anthropic;
+#[path = "provider_tool_media.rs"]
+mod tool_media;
 
 const MAX_COMPLETION_BYTES: usize = 16 * 1024 * 1024;
 
@@ -453,7 +455,8 @@ fn openai_body_with_options(
     stream: bool,
     options: &GenerationOptions,
 ) -> worker::Result<Value> {
-    let mut body = json!({"model":config.model,"messages":messages,"stream":stream});
+    let mut body = json!({"model":config.model,"stream":stream});
+    body["messages"] = Value::Array(tool_media::openai_messages(messages)?);
     if stream {
         body["stream_options"] = json!({"include_usage":true});
     }

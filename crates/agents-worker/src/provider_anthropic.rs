@@ -148,8 +148,13 @@ fn content_blocks(message: &Message) -> Result<Vec<Value>, String> {
                 .as_deref()
                 .filter(|id| !id.is_empty())
                 .ok_or("Anthropic tool result requires a call ID")?;
+            let content = if message.content.is_string() {
+                message.content.clone()
+            } else {
+                Value::Array(user_blocks(&message.content)?)
+            };
             Ok(vec![json!({"type":"tool_result", "tool_use_id":id,
-                "content":text_content(&message.content)?})])
+                "content":content})])
         }
         "assistant" => assistant_blocks(message),
         _ => Err("unsupported Anthropic message role".into()),
@@ -857,6 +862,53 @@ mod tests {
         assert_eq!(body["max_tokens"], 1024);
         assert!(body.get("session_id").is_none());
         assert!(body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn native_tool_result_images_remain_inside_the_correlated_result_group() {
+        let mut image = Message::tool_result("call-1", "");
+        image.content = json!([
+            {"type":"text","text":"local chart 雪"},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,AQID","detail":"low"}}
+        ]);
+        let messages = vec![
+            Message::text("user", "Read local output"),
+            parse_completion(message(
+                vec![
+                    time_block(),
+                    json!({"type":"tool_use","id":"call-2","name":"time","input":{}}),
+                ],
+                "tool_use",
+            ))
+            .unwrap()
+            .message,
+            image,
+            Message::tool_result("call-2", "text result unchanged"),
+            Message::text("user", "queued steering"),
+        ];
+        let original = serde_json::to_value(&messages).unwrap();
+        let body = request_body(
+            &config(),
+            &messages,
+            &crate::tools::registered_tools(false),
+            true,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&messages).unwrap(), original);
+        let results = &body["messages"][2]["content"];
+        assert_eq!(results.as_array().unwrap().len(), 3);
+        assert_eq!(results[0]["tool_use_id"], "call-1");
+        assert_eq!(
+            results[0]["content"][0],
+            json!({"type":"text","text":"local chart 雪"})
+        );
+        assert_eq!(
+            results[0]["content"][1],
+            json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"}})
+        );
+        assert_eq!(results[1]["tool_use_id"], "call-2");
+        assert_eq!(results[1]["content"], "text result unchanged");
+        assert_eq!(results[2]["text"], "queued steering");
     }
 
     #[test]
