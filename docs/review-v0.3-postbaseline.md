@@ -297,3 +297,46 @@ not an exact-source compiled or live acceptance receipt. Those gates, including
 the original strict SDK terminal/usage oracle and full staging journey, remain
 required. No production changes, builds, credentials, application calls, model
 calls, collector changes or deployment operations were performed by this review.
+
+## Responses GET-resumption acceptance design review (2026-10-25)
+
+Inspected the client-only observation change after `b2fce85`, the architecture
+decision and the compaction journey diff. **No substantive weakening of the
+requested end state or stream integrity oracle was found.** Responses already
+exposes durable per-ID `GET` streaming with `starting_after`; explicitly using
+that feature is not a replacement execution or a claim that one TCP connection
+never fails. The failed earlier one-connection journey remains a failed result.
+
+`observe_response` accepts only an already accepted stream, fixed response ID
+and SDK client, not a model, prompt, tool output or create callback. Its body
+contains only read-only SDK retrieval, with automatic SDK retries disabled and
+an explicit reconnection budget. It checkpoints after schema/identity/sequence
+validation, rejects duplicate/backward replay and accepts durable allocation
+gaps. Missing first events replay from the beginning rather than using `-1`.
+Authentication/status failures, expired cursors, cancellation/domain terminal
+events, schema failures and caller interruption are not observation retries.
+
+The authentic initial prefix and authentic replay suffix pass the unchanged
+`checked_stream` implementation, including its one-terminal, ordered sequence
+and exact delta-text equality assertions. Resumed completion must also equal
+canonical retrieval; that snapshot is a comparison, never a source of invented
+events, terminal status or usage. Returning on a genuine terminal deliberately
+does not wait for a later clean EOF. The healthy helper performs zero GETs; the
+separate ordinary strict transport journeys remain unchanged.
+
+The compaction journey retains its original fixed/custom marker, exact pin,
+source-prefix, payload and complete server-tool-group assertions, adds canonical
+terminal equality and reports the actual resumption count. It does not rerun
+the expensive prefill or silently call create again. Pinned-SDK mock contracts
+compare the full reconstructed event list with the uncut baseline and cover
+zero initial events, Unicode, failed replay connection, cursor/identity/schema
+violations, 403/404/410/429, failed/incomplete/cancelled outcomes, budget exhaustion
+and caller interruption. The combined local observation, existing Responses,
+SDK and cleanup probe passed 72 checks; exact-source Actions and deployed acceptance
+remain required. A discoverable GET-resumption integration example is also part
+of the final documentation handoff, not another server relay.
+
+This review used synthetic, network-isolated SDK checks only. It did not issue
+application/model requests, alter credentials, change backend source or weaken
+`checked_stream`. A later successful gate must be described as completing with
+its observed number of resumptions, not as an uninterrupted-stream success.
