@@ -1,10 +1,10 @@
-# Responses and local functions
+# Responses, branches and local tools
 
-Use `magents responses --help`, then operation help. `model` means an owned agent
-ID, not the provider's model name. Legacy `magents run` still uses Chat
-Completions; do not silently change an existing integration's protocol.
+Use `magents responses --help` and operation help from the installed binary.
+`model` is an owned agent ID, not the upstream model name. `magents run` retains
+Chat Completions; do not silently change an existing integration's protocol.
 
-## Select the smallest appropriate interface
+## Select the smallest interface
 
 ```sh
 magents responses run AGENT_ID 'Investigate this problem' --stream
@@ -14,64 +14,85 @@ magents responses show RESPONSE_ID
 magents responses inputs RESPONSE_ID --limit 20
 ```
 
-`create FILE` accepts the actual Responses JSON contract, or `-` for stdin, up to
-1 MiB; Responses JSON output has a separate 16 MiB bound. Use it for custom `instructions`, file inputs, local function definitions
-and generation controls. Do not invent CLI-specific wrappers around that JSON.
-Ordinary non-streaming operations emit complete JSON; text streams go to stdout
-and reported response/session IDs to stderr. A completed response containing
-`function_call` items is a normal handoff even when there is no final text.
-Background JSON with `queued` or `in_progress` status and exit 0 proves submission,
-not completion. Adding `--stream` follows execution and still requires a successful
-terminal event; an accepted/created event followed by EOF does not succeed.
+`create FILE` accepts actual Responses JSON, or `-` for stdin, rather than a
+CLI-specific wrapper. Use it for typed input, request instructions, local tools
+and generation controls. JSON output, event JSONL and text output are different
+modes; save disclosed response/session IDs before consuming the body. A queued
+background response proves acceptance, not successful completion. A completed
+client-tool handoff need not contain final text.
 
-Continuation uses the current `previous_response_id` and only new inputs. Do not
-replay the full conversation. Arbitrary historical and workspace forks are not
-supported. Agent instructions remain pinned; request custom instructions survive
-compaction within their response but are not implicitly inherited by the next
-response. Resend a stable request customization when it should apply again.
+Check the selected release and server capability before using expanded fields.
+The full contract includes historical conversation/workspace branches,
+Conversations, rich tools, WebSocket lanes/steering and compact/count; source
+registration or a newer CLI parser is not proof that the selected realm has
+activated or accepted them. Do not call a narrow baseline the full release.
+
+## Continue or branch deliberately
+
+Send only new input or pending results with `previous_response_id`; do not resend
+source history. The expanded implementation uses a warm same-agent head when
+eligible; a historical, concurrent or different-owned-agent continuation may
+create an independent Session from the immutable parent boundary. Same-agent
+children keep the original pin; a different target agent receives its own pin,
+not the parent's tool authority. Workspace inheritance must come from a retained
+sealed boundary, never today's mutable source workspace. Older unsealed parents
+can report unavailable history rather than inventing a workspace snapshot.
+
+A branch is new authorized work, not observation recovery. Save a new intent/key
+for it. An omitted model resolves from the parent; choosing another owned agent
+is deliberate branching, not a way to bypass quotas. Conversation-bound request
+semantics are separate; do not invent a `magents conversations`, `ws`, `compact`
+or `count` command unless the installed subgroup help actually exposes it. Use
+an accepted SDK/HTTP interface when the CLI has no dedicated operation.
+
+Server/agent instructions stay pinned. Request `instructions` survives compaction
+inside its response but is not inherited as a later top-level override. Resend
+that customization deliberately; neither instructions nor historical context
+grant server-tool or cross-owner permissions.
 
 ## Return local results, never infer an executable
 
-Read the returned `function_call` name, arguments and `call_id`. Match the name to
-an explicitly authorized local implementation; a function declaration from a
-response is not permission to run shell code or install a program. The CLI does
-not execute these functions. After execution, create a continuation with every
-pending result exactly once:
+Match a returned call's declared type, name, arguments and `call_id` to an
+explicitly authorized local implementation. A function/custom/namespace
+declaration is not permission to run arbitrary shell code, install a program or
+send credentials to a model-selected endpoint. The CLI does not execute it.
+For a completed function handoff, send all outstanding results exactly once:
 
 ```json
 {
   "model": "AGENT_ID",
   "previous_response_id": "RESPONSE_ID",
-  "input": [{
-    "type": "function_call_output",
-    "call_id": "CALL_ID",
-    "output": "Authorized result"
-  }]
+  "input": [{"type": "function_call_output", "call_id": "CALL_ID", "output": "Authorized result"}]
 }
 ```
 
-Do not fabricate missing results or resend already consumed ones. Server tools
-remain server-executed and cannot be replaced by a local function of the same
-reserved name.
+Use each tool's actual pending/result shape for richer types; do not coerce MCP
+approval, custom, computer or shell results into fictitious function outputs.
+Never fabricate missing results or re-run already recorded side effects. Hosted
+service calls execute in the harness, not as caller-local aliases; configuring
+`tool_services` does not authorize arbitrary local tool execution.
 
-## Recover with reads and event cursors
+## Recover observation with GET only
 
 ```sh
 magents responses show RESPONSE_ID --stream --events
 magents responses show RESPONSE_ID --stream --events --starting-after 17
 ```
 
-`--events` emits typed JSONL including `sequence_number`; save the last consumed
-number for reconnection. A GET reconnect observes the same execution rather than
-creating another one, and the cursor avoids old event transfer. Check process exit
-status: EOF, `[DONE]` alone or failed/incomplete/cancelled terminal is not success.
-Preserve the response ID and inspect it after failure instead of replaying input.
+`--events` emits typed JSONL with `sequence_number`; checkpoint only processed
+events. With no processed event, omit the cursor, never send `-1`. Reconnect to
+the same response ID, append only authentic newer events and require a real
+terminal. EOF, `[DONE]` alone, failed/incomplete/cancelled status or an invented
+snapshot is not successful stream completion. Preserve the existing observation
+prefix; do not resend POST, prompts, tool outputs or shell commands to repair it.
 
-An explicitly chosen `--idempotency-key OPERATION_KEY` on create/run identifies the
-same exact operation under the server's retention rules. Keep the request unchanged
-when intentionally retrying it; use a new key only for genuinely new work. There
-are no automatic retries. `responses cancel ID` requests cancellation, not undo of
-side effects; `responses delete ID` removes that response representation, not the
-Space, session or accounting history. Obtain authorization for either action.
+`--idempotency-key OPERATION_KEY` identifies one exact create/run request under
+server retention rules; save it before dispatch. A changed body/binding needs a
+new intended operation, not a replacement key used to hide uncertainty. There
+are no automatic execution retries. Cancellation is not undo; deletion removes
+that response representation, not its Space, source journal or financial history.
+Obtain authorization for either mutation.
 
-Full contract and examples: [CLI Responses](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/cli.md#responses).
+Canonical interfaces: [Responses and SDK recovery](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/api.md),
+[expanded contract](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-contract.md),
+[CLI](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/cli.md#responses).

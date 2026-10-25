@@ -16,38 +16,55 @@ not to the installed skill folder.
 
 Read the matching document opening and concrete code before proposing an edit.
 Do not apply historical acceptance receipts as commands to redeploy an old SHA.
+Full Responses decisions supersede the old linear-only boundary: branches,
+Conversations, rich native items, lanes/steering, auxiliary routes and real hosted
+execution are named capabilities, not parser-completeness claims.
 
 ## Select the smallest informative checks
 
+Read `docs/incremental-acceptance.md` and the committed selector plan. Seal/reuse
+passing baselines by original component/source/dependency fingerprint unless a
+new failure justifies a regression. Execute new/changed behavior and actual failed
+cases, not broad old suites or paid trajectories just to reconstruct a green
+aggregate. Reused/skipped checks are not new passes at this SHA. A newly executed
+selector needs a positive current result; per-check reuse retains the matching
+old/current input fingerprints and actual historical result even when unrelated
+component inputs changed. A failed historical job stays failed, and diagnostic-only
+components cannot become promotion evidence.
+
 Read `rust-toolchain.toml` and use the lockfile. Prefer Actions and its Cargo/npm/
-BuildKit caches for the full Rust/Wasm, browser and container matrices. Inspect
+BuildKit caches for changed Rust/Wasm, browser and container components. Inspect
 available caches before local compilation; do not cold-build the workspace to
 validate a Markdown or UI-text change. A targeted local check is useful when its
 cost and effect fit the current machine.
 
-Examples, from the checkout, when relevant:
-
-```sh
-cargo test --locked -p agents-core
-cargo test --locked -p magents
-python -m unittest discover -s tests -p 'test_*sql.py' -q
-npm run test:tooling
-```
+Choose the specific new property/SQL/SDK/browser case from the increment. Compile
+changed artifacts when necessary; do not rerun old full package/suite commands
+merely because another capability was added.
 
 `npm run test:worker` requires an already built Worker artifact. A native unit
 test or wasm type check does not prove `worker-build` packaging or workerd HTTP
 behavior. Do not run the root workspace daemon directly with elevated privileges
 on a developer host: its UID-wide cleanup is designed for a dedicated container.
 
-Use a property test where an invariant spans values or interleavings: pinned
-prefix stability, exact credit conservation, opaque-generation acknowledgement,
-or archive roundtrips. Add a regression that fails for the demonstrated defect,
+Use a property test where an invariant spans values or interleavings: Unicode and
+item boundaries, pinned-prefix stability, exact credit conservation, immutable
+branches, lane scheduling, opaque generations or archive roundtrips. Add a
+regression that fails for the demonstrated defect,
 not a wording check or a weakened assertion.
 
 For an affected user flow, exercise the actual binary/SDK/browser and its real
 protocol boundary. Mock transport first; use an authorized isolated account for
-necessary hosted acceptance. Observe accepted work before retrying; retain an
+necessary hosted acceptance. Retain a legacy SDK gate and use a current SDK for
+new typed fields, Conversations, lanes and auxiliary operations. Observe actual
+headers: OpenAI Node 7.43.0's convenience `idempotencyKey` has been seen to
+send none; use explicit `Idempotency-Key` plus saved intent when identity matters.
+Paid LLM checks use direct DeepSeek, not OpenRouter; authorized image checks may
+use the approved image route. Observe accepted work before retrying; retain an
 unknown outcome rather than deleting state to make cleanup look successful.
+Report implemented, registered, newly executed, reused and pending evidence
+separately. Exact terminal/text/source-history/owner/ledger assertions must not be
+weakened to make a new capability pass.
 
 Full map: [architecture](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/architecture.md)
 and [acceptance](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/acceptance.md).

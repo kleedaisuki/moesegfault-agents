@@ -46,7 +46,7 @@ magents byok set CREDENTIAL_ID
 
 The `add` and `set` commands require human hidden-key entry. Do not script key input through flags, chat, or environment dumps. Use `byok add --help` / `set --help` for installed-version options.
 
-The protocols are `openai` (alias `openai-compatible`) and `anthropic`, not a list of vendor names. OpenAI-compatible routes append `/chat/completions` to the supplied base; include `/v1` when required. Anthropic normalizes a missing `/v1`, then appends `/messages`. Endpoints must be public HTTPS hostnames without userinfo, queries, or fragments; IP literals and local/internal names are rejected, and redirects are not followed.
+The protocols are `openai` (alias `openai-compatible`) and `anthropic`, not a list of vendor names. The legacy OpenAI model transport appends `/chat/completions` to the supplied base; include `/v1` when required. A candidate agent can select native `/responses` with `model.protocol="responses"` while retaining its OpenAI-family credential; this is not a third `byok add` auth protocol. Anthropic normalizes a missing `/v1`, then appends `/messages`. Endpoints must be public HTTPS hostnames without userinfo, queries, or fragments; IP literals and local/internal names are rejected, and redirects are not followed.
 
 An existing credential's protocol and normalized endpoint are immutable. `set ID` rotates the key, optionally renaming it; add a new credential to change route, then update the agent. Previously pinned sessions retain their credential reference. `byok delete ID` removes an owned credential and can affect its consumers; do not use deletion as a connectivity test.
 

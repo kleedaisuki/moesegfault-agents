@@ -1,199 +1,185 @@
-# Responses clients
+# Typed Responses and durable observation
 
-Use this reference for the separate `/v1/responses` surface. Existing Chat Completions requests retain their narrower contract. These examples share a trusted-backend client; running them invokes the selected service and may incur charges. For offline verification inject a mock transport into the actual installed SDK, not an assumed HTTP library.
+Use `/v1/responses` with an owned agent ID as `model`. Existing Chat Completions
+keeps its narrower input contract. These examples describe established request
+shapes, not proof that a development increment is deployed. Check the selected
+realm/release and capability evidence before using candidate-only interfaces;
+registration, schemas and an installed SDK method are not execution acceptance.
+Offline documentation work does not authorize paid calls.
+
+## Create and continue
 
 ```python
 import os
 from openai import OpenAI
 
-origin = os.environ.get("MAGENTS_ORIGIN", "https://agents.moesegfault.dev").rstrip("/")
-agent_id = os.environ["MAGENTS_AGENT_ID"]
-client = OpenAI(
-    base_url=f"{origin}/v1",
-    api_key=os.environ["MAGENTS_API_KEY"],
-    max_retries=0,
-)
-```
-
-An explicitly selected staging origin is `https://agents-staging.moesegfault.dev`; keys and IDs belong to that realm. Never supply an upstream model name as `model`, a provider key as the platform key, or `/v1` twice.
-
-## Synchronous response and linear continuation
-
-```python
+origin: str = os.environ.get("MAGENTS_ORIGIN", "https://agents.moesegfault.dev").rstrip("/")
+agent_id: str = os.environ["MAGENTS_AGENT_ID"]
+client = OpenAI(base_url=f"{origin}/v1", api_key=os.environ["MAGENTS_API_KEY"], max_retries=0)
 response = client.responses.create(
     model=agent_id,
+    input="Explain the next useful step.",
     instructions="Keep this response concise.",
-    input="Explain the project's next useful step.",
 )
-print(response.id, response.status)
 if response.status != "completed":
-    raise RuntimeError(f"Response did not complete: {response.status}")
+    raise RuntimeError(f"Response ended as {response.status}; inspect {response.id}")
 print(response.output_text)
-
-followup = client.responses.create(
-    model=agent_id,
-    previous_response_id=response.id,
-    input="Turn that into a three-item checklist.",
-)
-if followup.status != "completed":
-    raise RuntimeError(f"Continuation ended as {followup.status}")
-print(followup.output_text)
+followup = client.responses.create(model=agent_id, previous_response_id=response.id, input="Continue.")
 ```
 
-Continue only the current response head. A historical response is a fixed run-local record, not a fork point or a request to reconstruct the current workspace. Send only new items, not the whole source history or previously returned assistant messages. Busy sessions cannot run a second inference loop. Use session steering for new user information while a run is active; use another session for independent work. An omitted continuation `model` resolves from the owned parent; an explicit model must match. An archived Responses chain is readmitted under current owner limits with its original pin/workspace, not forked or repinned. Chat still requires its explicit resume operation.
+Use staging's explicit origin/key/IDs when requested; never cross realms or add
+`/v1` twice. Preserve the acceptance response/session headers before consuming a
+stream; save returned IDs and intent in application storage, not only stdout.
+Pass only new items/results on continuation, not already-returned assistant
+history. A terminal handoff can contain client calls instead of final prose.
 
-The server-owned contract, resolved server tools/skills, and agent instructions form an immutable session pin. User customization stays behind it: top-level request `instructions` is response-scoped and survives compaction verbatim during that run, but omitted top-level instructions on a later response do **not** inherit the override. Typed system/developer input items are instead retained historical instructions: they persist across linear continuation and compaction without replaying them. Neither layer is reconstructed from a lossy summary or replaces the pin. Resend a desired top-level customization deliberately; prompt roles do not grant tool, workspace, billing, or cross-owner permissions.
+The fixed server/agent/tools/skills prefix stays pinned. Explicit top-level
+`instructions` remains verbatim through each compaction during that response,
+but is not implicitly inherited by a later response. Historical system/developer
+context and rich native items have their own retained semantics. Never rebuild
+protected instructions from a lossy summary or treat prompt roles as permissions.
 
-## Supported customization, not arbitrary passthrough
+## Branches and Conversations — expanded interface
 
-`input` is text or at most 128 typed message/function items. Text roles include user, assistant, system, and developer on a fresh chain; message parts include `input_text` and assistant `output_text`. Combined request instructions are bounded to 64 KiB; individual text content to 256 KiB; JSON requests to 1 MiB. Continuation does not accept replayed assistant history. Resolve file references through the account Space, not a public URL fetch.
+Historical conversation and workspace branching are required parts of the full
+contract, not exclusions. The eligible same-agent head can reuse a warm Session;
+historical/concurrent/different-agent continuations obtain independent Sessions
+from an immutable source boundary. Same-agent descendants preserve the original
+pin; another owned agent gets a new target pin. The source response, journal and
+workspace must not be rewound or replaced. Old data without a trustworthy sealed
+historical workspace can fail explicitly; do not substitute the latest files.
+A new branch may perform new paid work and needs its own saved intent.
 
-Supported generation controls include `max_output_tokens` within the pinned output budget, `temperature`, `top_p`, `tool_choice`, `parallel_tool_calls`, and `text.format`. Temperature is 0–2 for OpenAI-compatible routes and 0–1 for Anthropic; top-p is 0–1. Formats are `text`, `json_object`, or named `json_schema`; Anthropic rejects `json_object` and reasoning overrides. OpenAI-compatible routes support `reasoning.effort`; upstream model support still matters. Native schema forwarding is not permission to pretend a prompt hint enforces JSON schema.
+Conversations are model-independent item stores, distinct from an execution
+Session. Candidate HTTP interfaces are `/v1/conversations`, their per-ID/item
+operations, and Responses `conversation`; use the current SDK contract rather
+than inventing `client.spaces` or a model field on Conversation creation. Do not
+combine `conversation` and `previous_response_id` as interchangeable authorities.
+Append only genuinely new accepted input/output; changing visible Conversation
+items must not mutate older immutable Responses. Check the current item endpoint
+and cursor shape before issuing a mutation.
 
-Schemas permit bounded, acyclic local `#` references, not remote/file fetches, recursive cycles, or nested `$id` resources: 64 KiB/depth 32 per schema, 1 MiB/depth 64 per instance. Request-wide function/output schemas are bounded to 256 KiB, 4,096 expanded applications, and 32 patterns. Known formats are enforced; unknown formats and regex lookarounds/backreferences are rejected. Use linear-time Rust-compatible patterns rather than assuming unrestricted JSON Schema or a backtracking-regex dialect.
+## Fields, rich items and local tools
 
-`truncation="disabled"` (default) fails when the context still cannot fit after the agent's configured semantic compaction. `"auto"` additionally permits dropping oldest complete user/tool groups, never the stable prefix or latest input; the source journal remains intact. Delta events include obfuscation padding by default; set `stream_options={"include_obfuscation": False}` with `stream=True` to opt out. JSON/schema output and strict local-function arguments are checked before successful completion; streamed partial text does not establish final validation success.
+The expanded parser/codec preserves typed native messages, reasoning/compaction,
+function/custom/namespace and hosted-tool items plus current generation controls.
+Provider capability, owner attachment resolution and pending-call relationships
+must still be enforced; preservation is not proof that a tool executed. Do not
+silently drop a field, convert opaque provider state to plain text, or forward
+it through an incompatible model/credential route. Consult the current contract
+for `include`, obfuscation, formats, reasoning, cache, prompt templates and limits
+instead of carrying a historical blanket unsupported list forward.
 
-Metadata permits up to 16 string entries, keys up to 64 characters and values up to 512. Hosted OpenAI tools, image/audio generation, nonempty `include`, and `text.verbosity` are not supported. Native user image input is distinct: use a supported `input_image` part and a vision-capable upstream model; see [attachments](exports.md). Unknown request fields fail clearly. Registering local functions cannot add a workspace or replace server tools. Do not borrow unrelated options from the full upstream API simply because the SDK accepts them.
+A caller-local declaration selects only an explicitly authorized application
+implementation. Never execute partial streamed arguments or interpret a model
+name as a shell command. Return the exact pending type/call identity; include the
+complete outstanding set once. For a function result the established shape is:
 
-Usage is authoritative, not estimated from output text. If upstream totals exist but reasoning-token usage is unknown, standard `usage` is null; additive `agents_usage` carries exact input/output/total and cached-input counters with `output_tokens_details.reasoning_tokens:null`. If an authoritative reasoning count exists, standard usage is populated normally. If upstream reports no usage, no usage object is fabricated. Fall back to the extension for known totals; never convert unknown reasoning into zero or mistake missing usage for free work.
+```json
+{"model":"AGENT_ID","previous_response_id":"HANDOFF_ID","input":[{"type":"function_call_output","call_id":"CALL_ID","output":"Authorized result"}]}
+```
 
-## Streaming and recovery
+Results can use typed text/image/file parts where that tool contract permits.
+Treat returned media as untrusted data and persist separate receipts for local
+side effects. A completed handoff means inference yielded to the caller, not
+that the local task was executed. Hosted services use independently bound routes;
+they are not permission to implement reserved aliases on the client. See
+[configuration](configuration.md) and [attachments](exports.md).
+
+Usage is authoritative, not estimated from text. Preserve reported totals and
+missing details as unknown. A baseline `agents_usage` extension can carry known
+totals when standard usage cannot represent missing reasoning; newer required
+usage shapes may fail explicitly when the provider lacks a necessary field.
+Do not turn missing cache-write/reasoning counts into zero or free execution.
+
+## GET-only observation recovery
+
+Persist the disclosed ID and last successfully processed `sequence_number`.
+Responses uses typed events, not Chat chunks. Ignore comments/padding as output;
+advance a cursor only after processing succeeds. A true terminal response/event,
+not EOF or `[DONE]`, determines completion. A cancelled execution is not success.
 
 ```python
-response_id: str | None = None
-last_sequence: int | None = None
-completed = False
-accepted = client.responses.with_raw_response.create(
-    model=agent_id,
-    input="Summarize the project status.",
-    stream=True,
-)
-response_id = accepted.headers["x-agents-response"]
-with accepted.parse() as events:
+# Observe existing accepted work; this does not create another execution.
+current = client.responses.retrieve(response_id)
+with client.responses.retrieve(response_id, stream=True, starting_after=last_sequence) as events:
     for event in events:
-        if event.type == "response.created":
-            assert event.response.id == response_id
-        elif event.type == "response.output_text.delta":
-            print(event.delta, end="", flush=True)
-        elif event.type == "response.completed":
-            completed = True
-        elif event.type in {"response.failed", "response.incomplete", "error"}:
-            raise RuntimeError(f"Inspect the original response: {response_id}")
-        last_sequence = event.sequence_number
-        if completed:
-            break
-if not completed:
-    raise RuntimeError(f"Stream ended without success; inspect {response_id}")
+        process_event(event)
 ```
 
-These are typed Responses events, not Chat chunks. Preserve stable item/call IDs and `sequence_number`; do not execute a function from incomplete argument deltas. Ignore SSE comment heartbeats. EOF or HTTP failure is not a terminal success and does not cancel the durable run. Never synthesize a successful terminal event or `[DONE]`.
+Here `response_id`, `last_sequence` and the application's `process_event` come
+from saved state. With no processed event, omit `starting_after`, never use `-1`.
+Retain authentic prefix plus authentic replay suffix for strict text/ID/sequence/
+terminal checks; a GET snapshot cannot invent missing stream events. Bound
+observation reconnects, not the lifetime of healthy admitted work. Stop on caller
+cancellation, identity/schema mismatch, no-store/deleted 404, expired cursor 410,
+or semantic failure rather than retrying them as transport errors.
 
-Recover by retrieving the original response ID. Do not automatically replay create, user input, local outputs, or side-effecting commands. When a create observer fails, preserve `X-Agents-Response` and `X-Agents-Session` if available. Persist IDs as soon as disclosed; a background submission is preferable when the frontend may disconnect. Keep SDK `max_retries=0` even when using a durable request key: request admission deduplication does not make arbitrary local function execution exactly once.
+Never replay create, input, local outputs or provider/tool effects after observer
+failure. Set `max_retries=0`. Save a stable `Idempotency-Key` before a paid POST
+and preserve its exact request/session binding. Python uses `extra_headers`;
+Node must send explicit `headers: {"Idempotency-Key": key}`. In OpenAI Node 7.43.0
+the convenience option `idempotencyKey` was observed to send **no header**;
+verify actual transport rather than assuming its presence. A new key is new work,
+not recovery of an uncertain old intent. Deduplicated admission is not exactly-once
+execution of arbitrary local side effects.
 
-Create accepts an owner-scoped `Idempotency-Key` (1–256 visible ASCII characters), passed through SDK `extra_headers`. Preserve it alongside the exact request and session binding. Same key plus identical request returns the original response identity; a different body/binding conflicts. Do not toggle `stream` or `background` and reuse the key as a recovery mechanism. Observation uses `client.responses.retrieve(response_id)`; event recovery can use `client.responses.retrieve(response_id, stream=True, starting_after=last_sequence)` when a last sequence exists. This observes the same durable events, not a fresh execution.
+Background acceptance returns an ID before completion; retrieve the same ID.
+`store:false`, deletion, cancellation and private connection-cached parents have
+different retention contracts. Cancellation acknowledgement is not undo, and
+representation deletion does not erase a Session, workspace or financial ledger.
 
-Capture the acceptance header before consuming events so a disconnect before
-`response.created` still has a recovery ID. With no processed event, replay the
-same ID with `stream=True` and omit `starting_after`; never send `-1`. Advance a
-checkpoint only after processing succeeds. Resumed events must be strictly newer
-than it; gaps are valid durable allocation fences, while duplicate/backward
-sequences are errors. Stop at an authentic terminal rather than waiting for a
-clean TCP EOF after semantic completion.
+## WebSocket lanes and steering — candidate interface
 
-For complete-history verification, retain the authentic prefix and append only the
-authentic replay suffix: require one terminal, exact delta text and canonical GET
-equality. A snapshot cannot stand in for missing events. Bound GET reconnects and
-timeouts; propagate schema/identity failures, caller cancellation, deleted/no-store
-404, expired-cursor 410 and semantic failed/incomplete outcomes instead of retrying
-them. A local-tool side effect still needs its own call/result identity; a saved
-event cursor is not an exactly-once guarantee for external effects.
+Authenticated `GET /v1/responses` upgrades to WebSocket. The canonical harness,
+not a second socket agent loop, assigns identities and events. Use a current SDK
+that supports the actual lane/steering contract; keep old SDK tests for backward
+compatibility, not as the oracle for new fields. The public target has 32 named
+lanes, up to 16 active responses and same-lane FIFO. Account limits may be lower.
+`stream_id` routes a lane; `previous_response_id` selects lineage. Reusing a lane
+without a parent does not implicitly continue its old conversation.
 
-## Background execution
-
-```python
-import time
-
-pending = client.responses.create(
-    model=agent_id,
-    input="Inspect the project and produce a short report.",
-    background=True,
-)
-print(f"Persist response ID: {pending.id}", flush=True)
-for attempt in range(60):
-    pending = client.responses.retrieve(pending.id)
-    if pending.status not in {"queued", "in_progress"}:
-        break
-    time.sleep(1.0)
-else:
-    raise TimeoutError(f"Still running; retrieve {pending.id} later without replay")
-if pending.status != "completed":
-    raise RuntimeError(f"Response ended as {pending.status}")
-print(pending.output_text)
+```json
+{"type":"response.create","stream_id":"plan","model":"AGENT_ID","input":"Plan the next step."}
 ```
 
-Polling is observation, not model work. `background=True` requires stored retrieval state. Cancellation uses `client.responses.cancel(pending.id)` for a background response; inspect its eventual state rather than assuming acknowledgement reversed external side effects. Additive `agents_cancel_requested:true` records the request without falsely declaring terminal cancellation while work remains active. Deleting a response representation is separate from cancellation, the session, its journal, workspace, files, and retained financial records.
+This candidate frame is actual response JSON plus its socket type/lane, not a
+new SDK wrapper. Native/backend clients authenticate before upgrade; cookie
+upgrades require the exact configured application Origin because the GET enables
+later mutations. Never put a bearer key in a browser URL or frontend storage.
+Connections expire after sixty minutes. A private connection-cached parent,
+especially `store:false`, is not a portable capability on another socket or REST;
+missing state fails explicitly rather than replaying the original prompt.
 
-Canonical cancellation is retrieved as `status="cancelled"` with `error=None`. The stream terminates with standard `type:"error"`, `code:"response_cancelled"`, a safe message, and a durable sequence; the SDK can raise `APIError` while consuming it. Catch the observation error and retrieve the same ID, never replay execution. There is no invented `response.cancelled` event or `response.failed` event carrying a cancelled response.
+`response.create` omits HTTP `stream`/`background`; `generate:false` is warmup,
+not model work. `response.steer` supplies its previous response and user input,
+not a different lane. Accepted steering can finish a parent as `incomplete` with
+reason `steered` and create an authentic successor at a safe boundary. A local
+pending tool requires real matching input; `response.steer.pending` is not a
+fabricated result. Do not treat every incomplete response as harmless steering;
+follow the canonical IDs and acceptance/pending/failure events. Conversation-bound
+or automatic-compaction steering restrictions remain explicit capability rules.
+Socket closure drops observation/cache grants, not accepted intent or execution.
+HTTP per-ID GET recovery remains observation-only; never reconnect by recreating
+an accepted socket response.
 
-Default `store=True` is needed for recovery and subsequent `previous_response_id` chaining. Foreground `store=False` does not promise zero durable writes: the execution journal/recovery and financial records still exist, but the terminal response representation is unavailable to retrieve or continue. Deleted representations also cannot be continuation parents. Use stored responses for local function workflows and background execution.
+## Count and standalone compact — candidate interfaces
 
-## Local function handoff
+Use the accepted `/v1/responses/input_tokens` and `/v1/responses/compact` shapes
+from the current SDK/reference when those routes are activated. Counting must use
+the same resolved instructions, tools, native items and attachments as generation;
+bytes/4 or a different Chat projection is not exact counting. It must not start
+inference or a workspace. Native/BYOK count availability is an adapter fact.
 
-Server tools execute remotely; a request-defined local function executes only in the application after explicit dispatch and argument validation. Do not let a model-supplied name select arbitrary code. This example uses a bounded, read-only local operation and returns every outstanding call exactly once:
+Compact may incur a model charge. Save its operation identity, retain the returned
+complete next-input window and pass it back unchanged; do not extract only a
+summary string or manufacture provider reasoning. Protected instructions and
+explicit overrides retain their separate ownership. Missing required provider
+usage can remain an explicit capability gap, never fabricated zero detail.
 
-```python
-import json
-from openai.types.responses import ResponseInputParam, ToolParam
-
-tools: list[ToolParam] = [{
-    "type": "function",
-    "name": "read_build_status",
-    "description": "Read the local application's current build status.",
-    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-    "strict": True,
-}]
-handoff = client.responses.create(
-    model=agent_id,
-    input="Read the local build status and summarize it.",
-    tools=tools,
-    tool_choice={"type": "function", "name": "read_build_status"},
-    parallel_tool_calls=False,
-)
-if handoff.status != "completed":
-    raise RuntimeError(f"No completed handoff: {handoff.status}")
-outputs: ResponseInputParam = []
-for item in handoff.output:
-    if item.type != "function_call":
-        continue
-    if item.name != "read_build_status" or json.loads(item.arguments) != {}:
-        raise ValueError("Unexpected local function or arguments")
-    outputs.append({
-        "type": "function_call_output",
-        "call_id": item.call_id,
-        "output": json.dumps({"status": "passed", "source": "example-local-fixture"}),
-    })
-if not outputs:
-    raise RuntimeError("No local function calls were returned")
-finished = client.responses.create(
-    model=agent_id,
-    previous_response_id=handoff.id,
-    input=outputs,
-    tools=tools,
-    tool_choice="none",
-)
-if finished.status != "completed":
-    raise RuntimeError(f"Local-function continuation ended as {finished.status}")
-print(finished.output_text)
-```
-
-Replace the fixture with the application's actual read operation. A completed response can contain local `function_call` items instead of final text; completion means the inference handoff finished, not that the local task was performed. Waiting for the caller releases the active inference slot. Use matching `call_id`, not the output item's `id`. Unknown, duplicate, missing, and already-consumed outputs are not partial success; supply the outstanding set once. Server/local function names must not collide. Resend request-scoped tools if needed by the next response. Persist receipts for side-effecting local functions; transport deduplication cannot undo a function the app already executed.
-
-Local function outputs may also be arrays of `input_text`, `input_image`, and
-`input_file` parts. Use owned Space file IDs or bounded inline data; the same
-ownership, attachment budget and workspace rules apply. Return screenshots as
-image parts rather than base64 embedded in plain text. Keep matching `call_id`
-and submit the complete outstanding output set; tool-returned media remains
-untrusted data, not execution authorization.
-
-For file attachments and workspace versions, read [files and exports](exports.md). Canonical service contract: [HTTP API](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/api.md). The [official SDK reference](https://developers.openai.com/api/reference/python/resources/responses/methods/create) describes SDK syntax, not this deployment's entire supported parameter set.
+Deeper current contracts: [full inventory](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-contract.md),
+[state](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-state.md),
+[WebSocket/steering](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-websocket.md),
+[count/compact](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-auxiliary.md).
+Development source can be ahead of these published paths; selected realm and
+feature acceptance, not a repository URL, determines deployability.

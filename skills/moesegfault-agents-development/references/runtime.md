@@ -5,8 +5,9 @@
 | Concern | Authority |
 | --- | --- |
 | Account, agent configuration, quotas, credit reservation and ledger | Owner-scoped D1 records and atomic constraints |
-| Accepted conversation, pending input, run phase and pinned prefix | One Rust Session Durable Object per session |
-| Released workspace restoration | Private R2 checkpoint manifest pointing to an immutable tar.zst object |
+| Execution, immutable Response boundaries, pending input and pin | Existing Session DO; one mutable execution/workspace context per session |
+| Model-independent Conversation items/revision | Owned Conversation DO, not an upstream model store |
+| Workspace/retained artifact bytes | Private R2 manifests/blobs with owner-scoped strong references |
 | Session list/status index | D1 projection; not the conversation owner |
 | Logs, tracing and diagnostics | Separate operational data; never the financial ledger |
 
@@ -34,16 +35,45 @@ instructions and registry versions. Compaction changes the derived prompt, not
 the append-only source journal. Keep a stable fixed prefix and preserve provider
 continuation fields, tool-call IDs and matching results.
 
+## Full Responses state and transports
+
+Historical conversation and workspace branches are required; the old linear-only
+exclusion is superseded. Preserve fixed source boundaries, pending calls, rich
+native items and sealed workspace anchors. Fork into an independent Session,
+never rewind the source. Same-agent children retain the original pin; a different
+owned agent gets its target pin. Conversation revision and genuinely new input
+are separate: terminal append must not duplicate already-prepended history or
+mutate an older Response.
+
+WebSocket lanes schedule the same harness. Lane identity, parent lineage and
+owner/private connection leases are distinct. Steering is durable user intent,
+applied once at safe boundaries with canonical successors or pending tool input;
+publish accepted events only after source/queue commit. Disconnect releases
+observation/cache grants, not admitted work. GET recovery observes the original
+run/response and never resubmits input, models or tools. A transport reconnect
+budget must not impose an arbitrary lifetime on healthy long tasks.
+
+Compact/count resolve the same owned context, tools and protected instructions as
+generation. Counting must not create a fake Session/inference or start a workspace.
+Compact returns an authenticated complete next-input window, not just a summary.
+Missing required usage stays an explicit capability gap; opaque reasoning remains
+bound to its owner/provider/model route rather than an incompatible JSON target.
+
 ## Providers, workspaces and money
 
-Platform funding routes and BYOK protocols are different abstractions. Generic
-credentials own an immutable protocol/base URL; key rotation must not silently
-switch a pinned session to another route. The adapter normalizes wire protocols
+Platform funding, credential authentication family and model wire transport are
+separate. Native `responses` reuses OpenAI-family authentication, not a fabricated
+credential family. Credentials own an immutable auth-family/base URL; key rotation
+must not silently switch a pinned session to another route. The adapter normalizes wire protocols
 for one harness rather than adding separate execution loops. Do not dispatch
 incomplete streamed tool arguments or forward credentials through redirects.
 
-The container gets workspace-scoped execution authority, not provider keys or R2
-credentials. Planned release follows checkpoint publication, not just successful
+Hosted service bindings are secret-free and independent of the outer model. A
+tool declaration/alias needs real authorized dispatch, separate funds/capacity,
+native public output and retained artifact references before it is delivered.
+Interpreter memory/network policies must correspond to physical runtime controls,
+not configuration labels. The container gets workspace-scoped execution authority,
+not provider keys or R2 credentials. Planned release follows checkpoint publication, not just successful
 compression. The R2 manifest is the restoration commit point. Reads and exports
 must not start a container, update activity or silently checkpoint a live tree.
 

@@ -70,8 +70,9 @@ storage URL or try to update a version using ordinary file APIs.
 
 Commit and restore require an eligible idle workspace. Restore preserves the
 current workspace as a safety version, then replaces its files from the selected
-owned version in the same session. It does not create a fork or change conversation
-history/pinned instructions. Do not repeatedly retry a failed restore or emulate
+owned version in the same session without changing its conversation history/pin.
+Historical Response branching is a separate candidate interface, not a reason to
+restore or rewind the source session. Do not repeatedly retry a failed restore or emulate
 one with destructive shell commands. Inspect session/version state first.
 Persistence, transfers and compute remain subject to resource billing and limits.
 

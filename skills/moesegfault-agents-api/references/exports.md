@@ -2,6 +2,12 @@
 
 Use the same trusted-backend, owner-scoped platform bearer authentication as session reads. These are private transfers, not public artifact links. All paths below are relative to `https://agents.moesegfault.dev`, not an SDK base already containing `/v1`.
 
+The examples use the established Files/Space path. Expanded native media,
+remote-source freezing, hosted artifacts and retrieval indexes require their
+selected adapter/runtime acceptance; a parser or successful upload alone does
+not establish deployed model consumption. Do not carry old attachment limits or
+unsupported-type lists into every new native transport without checking it.
+
 ## SDK Files and response attachments
 
 Files live in the caller's single account Space, independent of any agent or session. The examples share `client`, `origin`, and `agent_id` from the [Responses setup](responses.md). Uploading storage does not itself ask a model to process the file.
@@ -45,11 +51,25 @@ Use an application-chosen destination; do not overwrite existing files or trust 
 
 The SDK multipart path is bounded to 16 MiB file bytes (plus bounded framing) and requires known Content-Length. Larger uploads use the raw path up to 64 MiB with `filename`/`purpose` query fields and `Content-Length`, `Content-Type`, and `X-Content-Sha256` headers. Space quota and resource admission apply independently; do not guess limits from upstream OpenAI. Display the singleton's actual usage/limit metadata.
 
-File storage accepts arbitrary bytes; model consumption is a separate capability. UTF-8/NUL-free text up to 256 KiB can be supplied as attachment content. Binary/larger `input_file` items need an enabled workspace and a safe materialization receipt at `uploads/{file_id}/content`, not a claim that a text-only model read a PDF or image natively. Remote `file_url` inputs are rejected, not fetched. A renamed/deleted Space entry cannot rewrite bytes already admitted into a response. File attachments are untrusted user data, not privileged instructions.
+File storage accepts arbitrary bytes; model consumption is separate. The
+established text/fallback path renders bounded UTF-8 or imports supported binary
+content into an enabled workspace with a safe materialization receipt, rather
+than pretending a text-only model read a PDF or image natively. Native adapters
+must retain their actual file/media semantics. Use owned IDs or the accepted
+inline path by default; remote URLs require an activated owner-safe resolver with
+network/redirect checks, not an arbitrary client fetch used to simulate server
+support. A renamed/deleted Space entry cannot rewrite already-admitted bytes.
+Attachments remain untrusted data, not privileged instructions.
 
-An inline file uses `{"type":"input_file","filename":"notes.txt","file_data":"data:text/plain;base64,aGVsbG8="}`; raw base64 is also accepted. Supply either `file_id` or `filename` plus `file_data`, never both. It publishes real Space storage under a response/item-specific receipt, with ordinary quota/metering and no duplicate completed upload under the same admission identity. Inline files share the 4 MiB decoded aggregate budget and tighter 1 MiB JSON body bound. Prefer Files uploads for reuse or larger content; an observer error is not permission to repeat storage/model work with a new identity.
+An established inline file uses `{"type":"input_file","filename":"notes.txt","file_data":"data:text/plain;base64,aGVsbG8="}`; raw base64 is also accepted. Supply either `file_id` or the matching filename/data form, never conflicting sources. Its bounded publication uses real quota/metering and an operation receipt, not another upload after an ambiguous reply. Prefer Files for reuse/large content; inspect selected request/decoded-content limits instead of inflating inline JSON or duplicating base64 across retained journals.
 
-Native vision input is explicit and different from `input_file`: use `{"type":"input_image","file_id":"<owned-image-id>","detail":"auto"}`, or an `image_url` containing a bounded base64 PNG/JPEG/GIF/WebP data URL. Remote image URLs are not fetched. `detail` is `auto`, `low`, or `high`; limits are eight images, 5 MiB decoded each, and a tighter 4 MiB aggregate inline-content budget. The 1 MiB JSON request limit still bounds inline base64 requests. Native image parts require an upstream model supporting vision; audio is unsupported. Uploading an image, or supplying it as a generic file, does not itself turn on native vision.
+Vision is explicit: use a supported `input_image` with an owned `file_id`, or a
+bounded supported raster data URL, and a genuinely vision-capable model/adapter.
+Use the selected contract's detail and resource limits. Uploading an image as a
+generic file does not enable vision, image generation, audio or another hosted
+service. Rich modalities and remote inputs are candidate capabilities until their
+resolver/provider journey is accepted, not a reason to advertise the whole full
+contract as unsupported.
 
 ## Account Space and immutable versions
 
@@ -71,7 +91,7 @@ File lists accept `limit` 1–100, `after`, `order` (`asc`/`desc`), and `purpose
 
 Versions are immutable: no rename, overwrite, or user deletion. Their public metadata includes `id`, `object:"workspace.version"`, `name`, source `session_id`, `created_at_ms`, generation, SHA-256, format version, archive/logical byte counts, and entry count—not private storage pointers. Use the authenticated content route and validate the snapshot headers as for session archives below.
 
-Workspace agents can use registered `workspace_commit`, `workspace_versions`, and `workspace_restore` tools. Commit preserves the current workspace as a named version; restore first preserves current work as a safety version, then installs the selected owned version. Failed preservation must prevent replacement. Restore creates a new linear workspace state, not a branch or a mutation/deletion of the source version. Space file changes are not automatic workspace synchronization. No operation should use Bash to bypass the durable preservation boundary.
+Workspace agents can use registered `workspace_commit`, `workspace_versions`, and `workspace_restore` tools. Commit preserves the current workspace as a named version; restore first preserves current work as a safety version, then installs the selected owned version. Failed preservation must prevent replacement. Restore updates the selected existing workspace without mutating/deleting its source version. Historical Response branching separately creates an independent workspace from a trusted retained boundary. Space file changes are not automatic workspace synchronization. No operation should use Bash to bypass the durable preservation boundary.
 
 The management mutations require a workspace-enabled, open, idle session; closed sessions need explicit resume. Persist the required `operation_id` (1–128 ASCII letters/digits/underscores/hyphens) before sending, and reuse it only to recover the same action. A new intended action needs a new ID. The Responses idempotency header is not a substitute. Commit returns a full version object; restore returns `{restored:<version>,safety_version_id}`; both include the management operation ID. Do not silently restore a workspace while implementing a read/download request.
 
