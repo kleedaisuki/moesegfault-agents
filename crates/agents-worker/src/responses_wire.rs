@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
 use crate::{
@@ -20,6 +20,9 @@ const MAX_INSTRUCTIONS_BYTES: usize = 64 * 1024;
 const MAX_TOTAL_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMAGES: usize = 8;
 
+#[path = "responses_controls.rs"]
+mod controls;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResponseRequest {
     #[serde(default)]
@@ -29,19 +32,23 @@ pub struct ResponseRequest {
     #[serde(default)]
     pub previous_response_id: Option<String>,
     #[serde(default)]
+    pub conversation: Option<Value>,
+    #[serde(default)]
     pub instructions: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_default")]
     pub tools: Vec<ResponseTool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_default")]
     pub stream: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_default")]
     pub background: bool,
-    #[serde(default = "yes")]
+    #[serde(default = "yes", deserialize_with = "nullable_true")]
     pub store: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_default")]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
     #[serde(default)]
     pub temperature: Option<f64>,
     #[serde(default)]
@@ -56,26 +63,140 @@ pub struct ResponseRequest {
     pub reasoning: Option<Value>,
     #[serde(default)]
     pub truncation: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_default")]
     pub include: Vec<String>,
     #[serde(default)]
     pub stream_options: Option<Value>,
+    #[serde(default)]
+    pub context_management: Option<Value>,
+    #[serde(default)]
+    pub prompt: Option<Value>,
+    #[serde(default)]
+    pub prompt_cache_key: Option<String>,
+    #[serde(default)]
+    pub prompt_cache_options: Option<Value>,
+    #[serde(default)]
+    pub prompt_cache_retention: Option<String>,
+    #[serde(default)]
+    pub top_logprobs: Option<u8>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    #[serde(default)]
+    pub safety_identifier: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub moderation: Option<Value>,
+    #[serde(default)]
+    pub access_programs: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub struct ResponseTool {
-    #[serde(rename = "type")]
     pub kind: String,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default = "empty_schema")]
     pub parameters: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+    pub options: BTreeMap<String, Value>,
+}
+
+impl std::fmt::Debug for ResponseTool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResponseTool")
+            .field("kind", &self.kind)
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'de> Deserialize<'de> for ResponseTool {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut fields = BTreeMap::<String, Value>::deserialize(deserializer)?;
+        let kind = fields
+            .remove("type")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| serde::de::Error::custom("tool type is required"))?;
+        let name = fields
+            .remove("name")
+            .map(serde_json::from_value::<String>)
+            .transpose()
+            .map_err(serde::de::Error::custom)?
+            .unwrap_or_default();
+        let description = fields
+            .remove("description")
+            .map(serde_json::from_value::<Option<String>>)
+            .transpose()
+            .map_err(serde::de::Error::custom)?
+            .flatten();
+        let parameters = if kind == "function" {
+            fields.remove("parameters").unwrap_or_else(empty_schema)
+        } else {
+            empty_schema()
+        };
+        let strict = if kind == "function" {
+            fields
+                .remove("strict")
+                .map(serde_json::from_value::<Option<bool>>)
+                .transpose()
+                .map_err(serde::de::Error::custom)?
+                .flatten()
+        } else {
+            None
+        };
+        Ok(Self {
+            kind,
+            name,
+            description,
+            parameters,
+            strict,
+            options: fields,
+        })
+    }
+}
+
+impl Serialize for ResponseTool {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_wire_value().serialize(serializer)
+    }
+}
+
+impl ResponseTool {
+    pub fn to_wire_value(&self) -> Value {
+        let mut fields = self.options.clone();
+        fields.insert("type".into(), json!(self.kind));
+        if matches!(self.kind.as_str(), "function" | "custom" | "namespace") {
+            fields.insert("name".into(), json!(self.name));
+        }
+        if let Some(description) = &self.description {
+            fields.insert("description".into(), json!(description));
+        }
+        if self.kind == "function" {
+            fields.insert("parameters".into(), self.parameters.clone());
+            if let Some(strict) = self.strict {
+                fields.insert("strict".into(), json!(strict));
+            }
+        }
+        serde_json::to_value(fields).expect("JSON tool fields")
+    }
+
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    pub fn public_value(&self) -> Value {
+        let mut value = self.to_wire_value();
+        if self.kind == "mcp"
+            && let Some(fields) = value.as_object_mut()
+        {
+            fields.remove("authorization");
+            fields.remove("headers");
+        }
+        value
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,6 +211,20 @@ pub struct NormalizedInput {
     pub history_instructions: Vec<Message>,
     pub input_items: Vec<Value>,
     pub tool_outputs: Vec<ToolOutput>,
+    pub native_items: Vec<Value>,
+    pub native_only: bool,
+}
+
+fn nullable_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+fn nullable_true<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Option::<bool>::deserialize(deserializer).map(|value| value.unwrap_or(true))
 }
 
 fn yes() -> bool {
@@ -174,11 +309,7 @@ impl ResponseRequest {
         {
             return Err("truncation must be auto or disabled".into());
         }
-        if !self.include.is_empty() {
-            return Err(
-                "The requested include fields are not supported by this agent endpoint".into(),
-            );
-        }
+        controls::validate(self)?;
         if self.background && !self.store {
             return Err("background requires store=true so the result can be recovered".into());
         }
@@ -210,40 +341,16 @@ impl ResponseRequest {
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if tool.kind != "function" {
-                return Err("Only client function tools are supported in tools; agent built-ins are configured on the server".into());
+                controls::builtin_tool(tool, schemas)?;
+            } else {
+                validate_function(tool, schemas, 64)?;
             }
-            if tool.name.is_empty()
-                || tool.name.len() > 64
-                || !tool
-                    .name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
-            {
-                return Err("Function names must contain 1 to 64 ASCII letters, digits, underscores or hyphens".into());
-            }
-            if !names.insert(&tool.name) {
-                return Err("Client function names must be unique".into());
+            if !tool.name.is_empty() && !names.insert((tool.kind.as_str(), tool.name.as_str())) {
+                return Err("Named tool definitions must be unique within their type".into());
             }
             if let Some(description) = &tool.description {
                 bounded_text(description, MAX_INSTRUCTIONS_BYTES, "function description")?;
             }
-            if !tool.parameters.is_object()
-                || tool.parameters.get("type").and_then(Value::as_str) != Some("object")
-                || tool
-                    .parameters
-                    .get("properties")
-                    .is_some_and(|value| !value.is_object())
-            {
-                return Err("Function parameters must be an object JSON Schema".into());
-            }
-            if serde_json::to_vec(&tool.parameters)
-                .map_err(|_| "Invalid function schema")?
-                .len()
-                > MAX_INSTRUCTIONS_BYTES
-            {
-                return Err("Function schema exceeds 64 KiB".into());
-            }
-            schemas.validate(&tool.parameters)?;
         }
         Ok(())
     }
@@ -256,8 +363,10 @@ impl ResponseRequest {
             return Ok(());
         };
         object_keys(text, &["format", "verbosity"], "text")?;
-        if text.get("verbosity").is_some() {
-            return Err("text.verbosity is not supported by the configured providers".into());
+        if text.get("verbosity").is_some_and(|value| {
+            !value.is_null() && !matches!(value.as_str(), Some("low" | "medium" | "high"))
+        }) {
+            return Err("text.verbosity must be low, medium or high".into());
         }
         let Some(format) = text.get("format") else {
             return Ok(());
@@ -313,13 +422,18 @@ impl ResponseRequest {
                 .and_then(|text| text.get("format"))
                 .cloned(),
             reasoning: self.reasoning.clone(),
+            ..GenerationOptions::default()
         }
     }
 
     pub fn tool_definitions(&self) -> Result<Vec<ToolDefinition>, String> {
         self.validate_tools(&mut crate::responses_schema::SchemaBudget::default())?;
+        if self.tools.iter().any(|tool| tool.kind != "function") {
+            return Err("Non-function tools require resolved native or hosted bindings".into());
+        }
         self.tools
             .iter()
+            .filter(|tool| tool.kind == "function")
             .map(|tool| {
                 serde_json::from_value(json!({
                     "type":"function",
@@ -333,6 +447,70 @@ impl ResponseRequest {
                 .map_err(|_| "Invalid client function definition".into())
             })
             .collect()
+    }
+
+    pub fn native_tool_items(&self) -> Result<Vec<Value>, String> {
+        self.validate_tools(&mut crate::responses_schema::SchemaBudget::default())?;
+        Ok(self.tools.iter().map(ResponseTool::to_wire_value).collect())
+    }
+
+    pub fn function_tools(&self) -> impl Iterator<Item = &ResponseTool> {
+        self.tools.iter().filter(|tool| tool.kind == "function")
+    }
+
+    pub fn native_input_items(&self) -> Result<Vec<Value>, String> {
+        self.normalize_structure()
+            .map(|normalized| normalized.native_items)
+    }
+
+    pub fn conversation_id(&self) -> Result<Option<&str>, String> {
+        controls::validate(self)?;
+        Ok(self.conversation.as_ref().and_then(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("id").and_then(Value::as_str))
+        }))
+    }
+
+    pub fn native_controls(&self) -> Value {
+        let mut controls = json!({
+            "max_output_tokens":self.max_output_tokens,"max_tool_calls":self.max_tool_calls,
+            "temperature":self.temperature,"top_p":self.top_p,"parallel_tool_calls":self.parallel_tool_calls,
+            "tool_choice":self.tool_choice,"text":self.text,"reasoning":self.reasoning,
+            "truncation":self.truncation,"include":self.include,"top_logprobs":self.top_logprobs,
+            "prompt_cache_key":self.prompt_cache_key,"prompt_cache_options":self.prompt_cache_options,
+            "prompt_cache_retention":self.prompt_cache_retention,"service_tier":self.service_tier,
+            "safety_identifier":self.safety_identifier,"user":self.user,"moderation":self.moderation,
+            "access_programs":self.access_programs,
+        });
+        controls
+            .as_object_mut()
+            .unwrap()
+            .retain(|_, value| !value.is_null());
+        controls
+    }
+
+    pub fn requires_native_provider(&self) -> bool {
+        !self.include.is_empty()
+            || self.top_logprobs.is_some()
+            || self.prompt.is_some()
+            || self.prompt_cache_key.is_some()
+            || self.prompt_cache_options.is_some()
+            || self.prompt_cache_retention.is_some()
+            || self.service_tier.is_some()
+            || self.safety_identifier.is_some()
+            || self.user.is_some()
+            || self.moderation.is_some()
+            || self.access_programs.is_some()
+            || self
+                .text
+                .as_ref()
+                .is_some_and(|value| value.get("verbosity").is_some())
+            || self.reasoning.as_ref().is_some_and(|value| {
+                value
+                    .as_object()
+                    .is_some_and(|fields| fields.keys().any(|name| name != "effort"))
+            })
     }
 
     pub fn normalize(&self) -> Result<NormalizedInput, String> {
@@ -356,6 +534,8 @@ impl ResponseRequest {
         // Public input history keeps owner-scoped references, not a second copy
         // of bytes already durably stored in Space.
         normalized.input_items = input_items(&self.input)?;
+        normalized.native_items = raw_input_items(&self.input)?;
+        normalized.native_only |= normalized.native_items.iter().any(native_features);
         Ok(normalized)
     }
 
@@ -367,7 +547,9 @@ impl ResponseRequest {
         let items = raw_input_items(input)?;
         for item in items {
             normalize_item(&item, &mut normalized)?;
+            normalized.native_only |= native_features(&item);
             normalized.input_items.push(canonical_input_item(&item)?);
+            normalized.native_items.push(item);
         }
         let instruction_bytes = normalized
             .instructions
@@ -405,6 +587,70 @@ fn raw_input_items(input: &Value) -> Result<Vec<Value>, String> {
     }
 }
 
+fn validate_function(
+    tool: &ResponseTool,
+    schemas: &mut crate::responses_schema::SchemaBudget,
+    name_limit: usize,
+) -> Result<(), String> {
+    if tool.name.is_empty()
+        || tool.name.len() > name_limit
+        || !tool
+            .name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+    {
+        return Err(format!(
+            "Function names must contain 1 to {name_limit} ASCII letters, digits, underscores or hyphens"
+        ));
+    }
+    if tool.options.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "allowed_callers" | "async" | "defer_loading" | "output_schema"
+        )
+    }) {
+        return Err("Unknown function tool field".into());
+    }
+    controls::callers(&tool.to_wire_value())?;
+    for key in ["async", "defer_loading"] {
+        if tool
+            .options
+            .get(key)
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(format!("{key} must be boolean"));
+        }
+    }
+    if !tool.parameters.is_null()
+        && (!tool.parameters.is_object()
+            || tool.parameters.get("type").and_then(Value::as_str) != Some("object")
+            || tool
+                .parameters
+                .get("properties")
+                .is_some_and(|value| !value.is_object()))
+    {
+        return Err("Function parameters must be an object JSON Schema".into());
+    }
+    if serde_json::to_vec(&tool.parameters)
+        .map_err(|_| "Invalid function schema")?
+        .len()
+        > MAX_INSTRUCTIONS_BYTES
+    {
+        return Err("Function schema exceeds 64 KiB".into());
+    }
+    if !tool.parameters.is_null() {
+        schemas.validate(&tool.parameters)?;
+    }
+    if let Some(output) = tool
+        .options
+        .get("output_schema")
+        .filter(|value| !value.is_null())
+    {
+        schemas.validate(output)?;
+    }
+    Ok(())
+}
+
 fn input_items(input: &Value) -> Result<Vec<Value>, String> {
     raw_input_items(input)?
         .iter()
@@ -422,7 +668,23 @@ fn placeholder_files(
         .and_then(Value::as_str)
         .is_some_and(|kind| matches!(kind, "input_file" | "input_image"))
     {
-        let (count, size) = crate::responses_attachments::validate_part(value)
+        validate_attachment_syntax(value)?;
+        if remote_attachment(value) {
+            *images += usize::from(value["type"] == "input_image");
+            if *images > MAX_IMAGES {
+                return Err("A response accepts at most 8 images".into());
+            }
+            *value = json!({"type":"input_text","text":""});
+            return Ok(());
+        }
+        let mut legacy = value.clone();
+        if let Some(fields) = legacy.as_object_mut() {
+            fields.remove("prompt_cache_breakpoint");
+        }
+        if legacy["detail"] == "original" {
+            legacy["detail"] = json!("high");
+        }
+        let (count, size) = crate::responses_attachments::validate_part(&legacy)
             .map_err(|_| "Invalid file or image attachment")?;
         *images += count;
         *bytes += size;
@@ -461,7 +723,17 @@ fn canonical_input_item(item: &Value) -> Result<Value, String> {
         .unwrap_or("message")
         .to_owned();
     item["type"] = json!(kind);
-    item["status"] = json!("completed");
+    if matches!(
+        kind.as_str(),
+        "message"
+            | "function_call"
+            | "function_call_output"
+            | "custom_tool_call"
+            | "custom_tool_call_output"
+    ) && item.get("status").is_none()
+    {
+        item["status"] = json!("completed");
+    }
     if kind == "message"
         && let Some(text) = item["content"].as_str()
     {
@@ -519,6 +791,301 @@ fn required_string<'a>(item: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("Input item requires string {key}"))
 }
 
+fn remote_attachment(part: &Value) -> bool {
+    part.get("file_url").is_some()
+        || part
+            .get("image_url")
+            .and_then(Value::as_str)
+            .is_some_and(|url| !url.starts_with("data:"))
+}
+
+fn public_url(value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value).map_err(|_| "Attachment URL is invalid")?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || !url
+            .host_str()
+            .is_some_and(crate::provider_keys::public_hostname)
+    {
+        return Err(
+            "Attachments require a public HTTPS URL without credentials or fragment".into(),
+        );
+    }
+    bounded_text(value, 8192, "attachment URL")
+}
+
+fn validate_attachment_syntax(part: &Value) -> Result<(), String> {
+    let image = part["type"] == "input_image";
+    let keys: &[&str] = if image {
+        &[
+            "type",
+            "detail",
+            "file_id",
+            "image_url",
+            "prompt_cache_breakpoint",
+        ]
+    } else {
+        &[
+            "type",
+            "detail",
+            "file_id",
+            "file_data",
+            "file_url",
+            "filename",
+            "prompt_cache_breakpoint",
+        ]
+    };
+    object_keys(part, keys, "attachment")?;
+    let sources = if image {
+        &["file_id", "image_url"][..]
+    } else {
+        &["file_id", "file_data", "file_url"][..]
+    };
+    if sources
+        .iter()
+        .filter(|key| part.get(**key).is_some_and(|value| !value.is_null()))
+        .count()
+        != 1
+    {
+        return Err("An attachment requires exactly one content source".into());
+    }
+    for key in sources {
+        if let Some(value) = part.get(*key).filter(|value| !value.is_null()) {
+            let value = value.as_str().ok_or("Attachment source must be text")?;
+            if *key == "file_id" {
+                identifier(value, "file ID")?;
+            }
+            if *key == "file_url" || (*key == "image_url" && !value.starts_with("data:")) {
+                public_url(value)?;
+            }
+        }
+    }
+    if let Some(detail) = part.get("detail").filter(|value| !value.is_null()) {
+        if !matches!(detail.as_str(), Some("auto" | "low" | "high" | "original")) {
+            return Err("Invalid attachment detail".into());
+        }
+    }
+    if let Some(filename) = part.get("filename") {
+        bounded_text(
+            filename.as_str().ok_or("filename must be text")?,
+            512,
+            "filename",
+        )?;
+    }
+    cache_breakpoint(part)
+}
+
+fn cache_breakpoint(part: &Value) -> Result<(), String> {
+    if let Some(value) = part.get("prompt_cache_breakpoint") {
+        object_keys(value, &["mode"], "prompt_cache_breakpoint")?;
+        if value["mode"] != "explicit" {
+            return Err("Only explicit content cache breakpoints are supported".into());
+        }
+    }
+    Ok(())
+}
+
+fn rich_content(content: &Value) -> bool {
+    content.as_array().is_some_and(|parts| {
+        parts.iter().any(|part| {
+            part.get("prompt_cache_breakpoint").is_some()
+                || remote_attachment(part)
+                || part["detail"] == "original"
+                || part["type"] == "refusal"
+        })
+    })
+}
+
+fn native_features(item: &Value) -> bool {
+    !matches!(
+        item.get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("message"),
+        "message" | "function_call" | "function_call_output"
+    ) || item.get("phase").is_some()
+        || rich_content(&item["content"])
+        || rich_content(&item["output"])
+        || item.get("namespace").is_some()
+        || item.get("caller").is_some()
+}
+
+fn validate_native_content(content: &Value, assistant: bool) -> Result<(), String> {
+    let parts = content
+        .as_array()
+        .filter(|parts| parts.len() <= MAX_INPUT_ITEMS)
+        .ok_or("Content must be a bounded parts array")?;
+    for part in parts {
+        match part.get("type").and_then(Value::as_str) {
+            Some("input_text") => {
+                object_keys(
+                    part,
+                    &["type", "text", "prompt_cache_breakpoint"],
+                    "input_text",
+                )?;
+                bounded_text(required_string(part, "text")?, MAX_TEXT_BYTES, "input text")?;
+                cache_breakpoint(part)?;
+            }
+            Some("output_text") if assistant => {
+                object_keys(
+                    part,
+                    &["type", "text", "annotations", "logprobs"],
+                    "output_text",
+                )?;
+                bounded_text(
+                    required_string(part, "text")?,
+                    MAX_TEXT_BYTES,
+                    "output text",
+                )?;
+            }
+            Some("refusal") if assistant => {
+                object_keys(part, &["type", "refusal"], "refusal")?;
+                bounded_text(required_string(part, "refusal")?, MAX_TEXT_BYTES, "refusal")?;
+            }
+            Some("input_image" | "input_file") => validate_attachment_syntax(part)?,
+            _ => return Err("Unknown message content part".into()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_native_item(item: &Value) -> Result<(), String> {
+    let kind = item
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or("Input item requires a type")?;
+    if !item.is_object() {
+        return Err("Input items must be objects".into());
+    }
+    if serde_json::to_vec(item)
+        .map_err(|_| "Invalid native input")?
+        .len()
+        > 4 * 1024 * 1024
+    {
+        return Err("Native item exceeds 4 MiB".into());
+    }
+    if let Some(id) = item.get("id").filter(|value| !value.is_null()) {
+        identifier(id.as_str().ok_or("Item ID must be text")?, "item ID")?;
+    }
+    match kind {
+        "item_reference" => {
+            object_keys(item, &["type", "id"], "item_reference")?;
+            identifier(required_string(item, "id")?, "item reference")?;
+        }
+        "reasoning" => {
+            object_keys(
+                item,
+                &[
+                    "type",
+                    "id",
+                    "summary",
+                    "content",
+                    "encrypted_content",
+                    "status",
+                ],
+                "reasoning item",
+            )?;
+            if !item.get("summary").is_some_and(Value::is_array) {
+                return Err("Reasoning item requires summary parts".into());
+            }
+        }
+        "compaction" => {
+            object_keys(
+                item,
+                &["type", "id", "encrypted_content"],
+                "compaction item",
+            )?;
+            bounded_text(
+                required_string(item, "encrypted_content")?,
+                4 * 1024 * 1024,
+                "compaction state",
+            )?;
+        }
+        "custom_tool_call" => {
+            object_keys(
+                item,
+                &[
+                    "type",
+                    "id",
+                    "call_id",
+                    "name",
+                    "input",
+                    "status",
+                    "namespace",
+                    "caller",
+                ],
+                "custom call",
+            )?;
+            identifier(required_string(item, "call_id")?, "call ID")?;
+            identifier(required_string(item, "name")?, "custom tool name")?;
+            bounded_text(
+                required_string(item, "input")?,
+                MAX_TEXT_BYTES,
+                "custom input",
+            )?;
+        }
+        "custom_tool_call_output" => {
+            object_keys(
+                item,
+                &["type", "id", "call_id", "output", "status"],
+                "custom output",
+            )?;
+            identifier(required_string(item, "call_id")?, "call ID")?;
+            if !item
+                .get("output")
+                .is_some_and(|value| value.is_string() || value.is_array())
+            {
+                return Err("Custom tool output must be text or content parts".into());
+            }
+        }
+        "mcp_approval_response" => {
+            object_keys(
+                item,
+                &["type", "id", "approval_request_id", "approve", "reason"],
+                "MCP approval",
+            )?;
+            identifier(
+                required_string(item, "approval_request_id")?,
+                "approval request ID",
+            )?;
+            if !item["approve"].is_boolean() {
+                return Err("MCP approval requires a boolean decision".into());
+            }
+        }
+        "computer_call_output"
+        | "local_shell_call_output"
+        | "shell_call_output"
+        | "apply_patch_call_output" => {
+            identifier(required_string(item, "call_id")?, "call ID")?;
+            if item.get("output").is_none() && item.get("status").is_none() {
+                return Err("Tool result requires output or status".into());
+            }
+        }
+        "file_search_call"
+        | "web_search_call"
+        | "computer_call"
+        | "image_generation_call"
+        | "code_interpreter_call"
+        | "local_shell_call"
+        | "shell_call"
+        | "apply_patch_call"
+        | "mcp_list_tools"
+        | "mcp_approval_request"
+        | "mcp_call"
+        | "tool_search_call"
+        | "tool_search_output"
+        | "compaction_trigger"
+        | "additional_tools"
+        | "configuration" => {
+            // These retain their full typed payload. Capability-specific execution
+            // and item-reference ownership are resolved before admitting model work.
+        }
+        _ => return Err("Unknown Responses input item type".into()),
+    }
+    Ok(())
+}
+
 fn normalize_item(item: &Value, normalized: &mut NormalizedInput) -> Result<(), String> {
     let kind = item
         .get("type")
@@ -529,7 +1096,16 @@ fn normalize_item(item: &Value, normalized: &mut NormalizedInput) -> Result<(), 
         "function_call" => {
             object_keys(
                 item,
-                &["type", "id", "call_id", "name", "arguments", "status"],
+                &[
+                    "type",
+                    "id",
+                    "call_id",
+                    "name",
+                    "arguments",
+                    "status",
+                    "namespace",
+                    "caller",
+                ],
                 "function_call",
             )?;
             let call_id = required_string(item, "call_id")?;
@@ -567,28 +1143,52 @@ fn normalize_item(item: &Value, normalized: &mut NormalizedInput) -> Result<(), 
         "function_call_output" => {
             object_keys(
                 item,
-                &["type", "id", "call_id", "output", "status"],
+                &["type", "id", "call_id", "output", "status", "caller"],
                 "function_call_output",
             )?;
             let call_id = required_string(item, "call_id")?;
             identifier(call_id, "call_id")?;
             let mut message = Message::tool_result(call_id, "");
-            message.content =
-                user_content(item.get("output").ok_or("Function output is required")?)?;
+            let output = item.get("output").ok_or("Function output is required")?;
+            if rich_content(output) {
+                validate_native_content(output, false)?;
+                normalized.native_only = true;
+                message.content = json!(
+                    output
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|part| part.get("text").and_then(Value::as_str))
+                        .collect::<String>()
+                );
+            } else {
+                message.content = user_content(output)?;
+            }
             normalized.messages.push(message);
             normalized.tool_outputs.push(ToolOutput {
                 call_id: call_id.into(),
             });
             Ok(())
         }
-        _ => Err("Unsupported input item type; use text messages or function call items".into()),
+        _ => {
+            validate_native_item(item)?;
+            normalized.native_only = true;
+            if kind.ends_with("_output")
+                && let Some(call_id) = item.get("call_id").and_then(Value::as_str)
+            {
+                normalized.tool_outputs.push(ToolOutput {
+                    call_id: call_id.into(),
+                });
+            }
+            Ok(())
+        }
     }
 }
 
 fn normalize_message(item: &Value, normalized: &mut NormalizedInput) -> Result<(), String> {
     object_keys(
         item,
-        &["type", "id", "role", "content", "status"],
+        &["type", "id", "role", "content", "status", "phase"],
         "message",
     )?;
     let role = required_string(item, "role")?;
@@ -596,6 +1196,35 @@ fn normalize_message(item: &Value, normalized: &mut NormalizedInput) -> Result<(
         return Err("Message role must be user, assistant, developer or system".into());
     }
     let raw_content = item.get("content").ok_or("Message content is required")?;
+    if let Some(phase) = item.get("phase").filter(|value| !value.is_null()) {
+        if role != "assistant" || !matches!(phase.as_str(), Some("commentary" | "final_answer")) {
+            return Err("Only assistant messages have commentary/final_answer phase".into());
+        }
+        normalized.native_only = true;
+    }
+    if rich_content(raw_content) {
+        validate_native_content(raw_content, role == "assistant")?;
+        normalized.native_only = true;
+        if let Some(text) = raw_content
+            .as_array()
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<String>()
+            })
+            .filter(|text| !text.is_empty())
+        {
+            if matches!(role, "system" | "developer") {
+                normalized
+                    .history_instructions
+                    .push(Message::text(role, text));
+            } else {
+                normalized.messages.push(Message::text(role, text));
+            }
+        }
+        return Ok(());
+    }
     if role == "user" {
         let mut message = Message::text(role, "");
         message.content = user_content(raw_content)?;
@@ -616,7 +1245,9 @@ fn normalize_message(item: &Value, normalized: &mut NormalizedInput) -> Result<(
 fn image_detail(detail: Option<&Value>) -> Result<&str, String> {
     match detail {
         None => Ok("auto"),
-        Some(Value::String(detail)) if matches!(detail.as_str(), "auto" | "low" | "high") => {
+        Some(Value::String(detail))
+            if matches!(detail.as_str(), "auto" | "low" | "high" | "original") =>
+        {
             Ok(detail)
         }
         _ => Err("Image detail must be auto, low or high".into()),
@@ -799,13 +1430,19 @@ pub fn response_value(
         "id":id,"object":"response","created_at":created_at,"completed_at":null,
         "status":status,"error":null,"incomplete_details":null,"output":output,
         "model":request.model,"previous_response_id":request.previous_response_id,
-        "instructions":request.instructions,"tools":request.tools,
+        "instructions":request.instructions,"tools":request.tools.iter().map(ResponseTool::public_value).collect::<Vec<_>>(),
         "tool_choice":request.tool_choice.as_ref().cloned().unwrap_or(json!("auto")),
         "parallel_tool_calls":request.parallel_tool_calls.unwrap_or(true),
         "max_output_tokens":request.max_output_tokens,"temperature":request.temperature,
         "top_p":request.top_p,"text":request.text.as_ref().cloned().unwrap_or(json!({"format":{"type":"text"}})),
         "reasoning":request.reasoning,"metadata":request.metadata,"background":request.background,
         "store":request.store,"truncation":request.truncation.as_deref().unwrap_or("disabled"),
+        "conversation":request.conversation.as_ref().map(|value| if value.is_string(){json!({"id":value})}else{value.clone()}),
+        "max_tool_calls":request.max_tool_calls,"top_logprobs":request.top_logprobs,
+        "prompt":request.prompt,"prompt_cache_key":request.prompt_cache_key,
+        "prompt_cache_options":request.prompt_cache_options,"prompt_cache_retention":request.prompt_cache_retention,
+        "context_management":request.context_management,"safety_identifier":request.safety_identifier,
+        "user":request.user,"moderation":request.moderation,
         "usage":null,
     });
     if let (Some(usage), Some(mut usage_value)) = (reported, usage_value) {
@@ -934,6 +1571,142 @@ mod tests {
     }
 
     #[test]
+    fn nullable_collections_and_lifecycle_flags_use_documented_defaults() {
+        let request: ResponseRequest = serde_json::from_value(json!({
+            "model":"agent_test","input":"hello","tools":null,"include":null,"metadata":null,
+            "stream":null,"background":null,"store":null,
+        }))
+        .unwrap();
+        request.validate().unwrap();
+        assert!(request.store);
+        assert!(!request.stream && !request.background);
+        assert!(
+            request.tools.is_empty() && request.include.is_empty() && request.metadata.is_empty()
+        );
+    }
+
+    #[test]
+    fn conversation_is_a_single_history_authority() {
+        let mut request = request(json!("hello"));
+        request.conversation = Some(json!("conv_owner"));
+        assert_eq!(request.conversation_id().unwrap(), Some("conv_owner"));
+        request.conversation = Some(json!({"id":"conv_owner"}));
+        assert_eq!(request.conversation_id().unwrap(), Some("conv_owner"));
+        request.previous_response_id = Some("resp_parent".into());
+        assert!(request.validate().is_err());
+        request.previous_response_id = None;
+        request.conversation = Some(json!({"id":"conv_owner","owner":"forged"}));
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn complete_controls_are_validated_without_forwarding_harness_state() {
+        let request: ResponseRequest = serde_json::from_value(json!({
+            "model":"agent_test","input":"hello","conversation":"conv_owner",
+            "max_tool_calls":4,"top_logprobs":20,"include":["reasoning.encrypted_content"],
+            "text":{"verbosity":"high"},"reasoning":{"effort":"max","summary":"detailed","context":"all_turns","mode":"pro"},
+            "context_management":[{"type":"compaction","compact_threshold":12000}],
+            "prompt":{"id":"pmpt_owner","version":"2","variables":{"客户":"hello"}},
+            "prompt_cache_key":"stable","prompt_cache_options":{"mode":"explicit","ttl":"30m","prewarm":false},
+            "prompt_cache_retention":"24h","service_tier":"priority","safety_identifier":"hashed-user",
+            "user":"legacy-user","moderation":{"model":"moderation-model","policy":{"input":{"mode":"block"}}},
+            "access_programs":{"cyber":"standard"},
+        })).unwrap();
+        request.validate().unwrap();
+        let controls = request.native_controls();
+        assert_eq!(controls["reasoning"]["summary"], "detailed");
+        assert_eq!(controls["max_tool_calls"], 4);
+        for key in [
+            "model",
+            "input",
+            "instructions",
+            "conversation",
+            "previous_response_id",
+            "context_management",
+            "prompt",
+            "store",
+            "stream",
+            "background",
+        ] {
+            assert!(controls.get(key).is_none(), "harness-owned {key}");
+        }
+        assert!(request.requires_native_provider());
+    }
+
+    #[test]
+    fn tool_variants_round_trip_without_fake_function_fields_or_secrets() {
+        for value in [
+            json!({"type":"code_interpreter","container":{"type":"auto","memory_limit":"1g"}}),
+            json!({"type":"image_generation","quality":"high","output_format":"png"}),
+            json!({"type":"tool_search","execution":"server","parameters":{"type":"object"}}),
+            json!({"type":"custom","name":"patch","format":{"type":"grammar","syntax":"lark","definition":"start: \"hello\""}}),
+            json!({"type":"namespace","name":"project","description":"Project tools","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}),
+        ] {
+            let tool: ResponseTool = serde_json::from_value(value.clone()).unwrap();
+            let mut request = request(json!("hello"));
+            request.tools.push(tool.clone());
+            request.validate().unwrap();
+            assert_eq!(tool.to_wire_value(), value);
+            if !matches!(tool.kind(), "namespace" | "custom") {
+                assert!(tool.to_wire_value().get("name").is_none());
+            }
+        }
+        let secret = "sensitive-MCP-credential";
+        let tool: ResponseTool = serde_json::from_value(json!({"type":"mcp","server_label":"owned","server_url":"https://mcp.example.com","authorization":secret,"headers":{"Authorization":secret}})).unwrap();
+        assert!(!format!("{tool:?}").contains(secret));
+        assert!(!tool.public_value().to_string().contains(secret));
+        assert_eq!(tool.to_wire_value()["authorization"], secret);
+    }
+
+    #[test]
+    fn raw_native_items_and_resolved_images_survive_structure_projection() {
+        let image = json!({"type":"input_image","image_url":"data:image/png;base64,AQID","detail":"original"});
+        let input = json!([
+            {"type":"reasoning","id":"rs_owned","summary":[],"encrypted_content":"opaque-provider-data"},
+            {"role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Planning","annotations":[]}]},
+            {"role":"user","content":[image]},
+            {"type":"item_reference","id":"msg_owned"},
+        ]);
+        let request = request(input.clone());
+        let normalized = request.normalize_structure().unwrap();
+        assert!(normalized.native_only);
+        assert_eq!(
+            request.native_input_items().unwrap(),
+            input.as_array().unwrap().clone()
+        );
+        assert_eq!(
+            normalized.native_items[2]["content"][0]["image_url"],
+            image["image_url"]
+        );
+        assert!(normalized.input_items[3].get("status").is_none());
+    }
+
+    #[test]
+    fn remote_attachment_syntax_is_public_https_and_not_a_fetch() {
+        let request = request(
+            json!([{"role":"user","content":[{"type":"input_file","file_url":"https://files.example.com/owned.pdf?signature=value"}]}]),
+        );
+        let normalized = request.normalize_structure().unwrap();
+        assert!(normalized.native_only);
+        assert_eq!(
+            normalized.native_items[0]["content"][0]["file_url"],
+            "https://files.example.com/owned.pdf?signature=value"
+        );
+        for url in [
+            "http://files.example.com/a",
+            "https://127.0.0.1/a",
+            "https://localhost/a",
+            "https://user:pass@files.example.com/a",
+            "file:///private",
+        ] {
+            assert!(
+                super::validate_attachment_syntax(&json!({"type":"input_file","file_url":url}))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn strings_and_typed_text_have_the_same_provider_input() {
         let string = request(json!("hello 世界")).normalize().unwrap();
         let typed =
@@ -978,9 +1751,9 @@ mod tests {
             assert_eq!(structural.messages[0].content, "");
         }
         for content in [
-            json!([{"type":"input_file","file_url":"https://example.invalid/file"}]),
+            json!([{"type":"input_file","file_url":"https://127.0.0.1/file"}]),
             json!([{"type":"input_file","file_id":"file_one","file_data":"ignored"}]),
-            json!([{"type":"input_image","file_id":"file_one","image_url":"https://example.invalid/a.png"}]),
+            json!([{"type":"input_image","file_id":"file_one","image_url":"https://127.0.0.1/a.png"}]),
             json!([{"type":"input_image","file_id":"file_one","detail":"impossible"}]),
         ] {
             assert!(
@@ -1015,7 +1788,7 @@ mod tests {
         );
         assert_eq!(parts[2], json!({"type":"text","text":"After"}));
         for url in [
-            "https://example.invalid/a.png",
+            "https://127.0.0.1/a.png",
             "file:///a.png",
             "data:image/svg+xml;base64,PHN2Zz4=",
             "data:image/png;base64,!!!!",
@@ -1085,6 +1858,7 @@ mod tests {
             description: None,
             parameters: json!({"type":"object","properties":{"name":{"type":"string","pattern":"^[a-z]+$"}}}),
             strict: None,
+            options: BTreeMap::new(),
         }).collect();
         assert!(request.validate().is_ok());
         request.text = Some(
@@ -1203,7 +1977,7 @@ mod tests {
             "File references must be resolved before inference"
         );
         for part in [
-            json!({"type":"input_image","image_url":"https://example.invalid/a.png"}),
+            json!({"type":"input_image","image_url":"https://127.0.0.1/a.png"}),
             json!({"type":"input_file","file_id":"../private"}),
             json!({"type":"input_image","file_id":"file_chart","detail":"invalid"}),
         ] {
@@ -1230,8 +2004,8 @@ mod tests {
     fn duplicate_outputs_and_unsupported_input_fail_before_execution() {
         for input in [
             json!([{"type":"function_call_output","call_id":"call_one","output":"a"},{"type":"function_call_output","call_id":"call_one","output":"b"}]),
-            json!([{"role":"user","content":[{"type":"input_image","image_url":"https://example.invalid/a.png"}]}]),
-            json!([{"type":"item_reference","id":"item_old"}]),
+            json!([{"role":"user","content":[{"type":"input_image","image_url":"https://127.0.0.1/a.png"}]}]),
+            json!([{"type":"made_up_item","id":"item_old"}]),
             json!([{"role":"tool","content":"fake"}]),
             json!([{"role":"user","content":"a","surprise":true}]),
         ] {
@@ -1263,7 +2037,7 @@ mod tests {
             json!({"stream_options":{"include_obfuscation":false}}),
             json!({"text":{"format":{"type":"made_up"}}}),
             json!({"text":{"format":{"type":"json_schema","name":"named","schema":true}}}),
-            json!({"include":["reasoning.encrypted_content"]}),
+            json!({"include":["made_up_projection"]}),
         ] {
             let mut value = json!({"model":"agent_test","input":"hello"});
             value

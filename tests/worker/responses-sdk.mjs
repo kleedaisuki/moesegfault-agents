@@ -139,11 +139,20 @@ export async function runResponsesSdkJourney({ apiKey, baseURL, agentId, fetch }
   assert.equal(inputItems.data[0].call_id, pending[0].call_id);
   assert.equal(inputItems.data[0].output, localResult);
 
-  await assert.rejects(client.responses.create({
+  const originals = [first, second, calls, final];
+  const { data: fork, response: forkRaw } = await client.responses.create({
     model: agentId,
     previous_response_id: first.id,
-    input: 'This stale parent must not fork the session.',
-  }), error => error instanceof OpenAI.APIError && error.status === 409);
-  assert.deepEqual(await client.responses.retrieve(first.id), first);
-  return { sessionId, responseIds: [first.id, second.id, calls.id, final.id], events };
+    input: 'Create an independent Node SDK historical child.',
+  }).withResponse();
+  assertCompletedResponse(fork, 'Node SDK historical branch.');
+  assert.equal(fork.previous_response_id, first.id);
+  const branchSessionId = forkRaw.headers.get('x-agents-session');
+  assert.ok(branchSessionId);
+  assert.notEqual(branchSessionId, sessionId, 'Historical SDK continuation needs its own execution session');
+  assert.ok(!originals.some(response => response.id === fork.id));
+  assert.deepEqual(await Promise.all(originals.map(response => client.responses.retrieve(response.id))), originals,
+    'Historical branching cannot alter any prior response in the original chain');
+  assert.deepEqual(await client.responses.retrieve(fork.id), fork);
+  return { sessionId, branchSessionId, responseIds: [...originals.map(response => response.id), fork.id], events };
 }

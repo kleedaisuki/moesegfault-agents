@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::CompactionPercent;
+use crate::{CompactionPercent, ToolServices};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,7 +19,23 @@ pub enum Provider {
 pub enum ProviderProtocol {
     #[default]
     Openai,
+    Responses,
     Anthropic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCredentialFamily {
+    Openai,
+    Anthropic,
+}
+
+impl ProviderProtocol {
+    pub fn credential_family(self) -> ProviderCredentialFamily {
+        match self {
+            Self::Openai | Self::Responses => ProviderCredentialFamily::Openai,
+            Self::Anthropic => ProviderCredentialFamily::Anthropic,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +50,8 @@ pub struct ModelConfig {
     pub max_output_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ProviderProtocol>,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +62,8 @@ struct ModelInput {
     context_window: Option<u32>,
     max_output_tokens: Option<u32>,
     credential_id: Option<String>,
+    #[serde(default)]
+    protocol: Option<ProviderProtocol>,
 }
 
 impl From<ModelInput> for ModelConfig {
@@ -62,6 +82,7 @@ impl From<ModelInput> for ModelConfig {
                 .max_output_tokens
                 .unwrap_or_else(default_output_tokens),
             credential_id: input.credential_id,
+            protocol: input.protocol,
         }
     }
 }
@@ -82,6 +103,7 @@ impl Default for ModelConfig {
             context_window: default_context_window(),
             max_output_tokens: default_output_tokens(),
             credential_id: None,
+            protocol: None,
         }
     }
 }
@@ -98,6 +120,8 @@ pub struct AgentConfig {
     pub skills: Vec<String>,
     pub compaction_percent: CompactionPercent,
     pub workspace: bool,
+    #[serde(default, skip_serializing_if = "ToolServices::is_empty")]
+    pub tool_services: ToolServices,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -117,6 +141,8 @@ pub struct CreateAgent {
     pub compaction_percent: CompactionPercent,
     #[serde(default)]
     pub workspace: bool,
+    #[serde(default, skip_serializing_if = "ToolServices::is_empty")]
+    pub tool_services: ToolServices,
 }
 
 fn default_tools() -> Vec<String> {
@@ -125,6 +151,7 @@ fn default_tools() -> Vec<String> {
 
 impl CreateAgent {
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.tool_services.validate()?;
         if self.name.trim().is_empty() || self.name.len() > 100 {
             return Err("name must contain 1 to 100 bytes");
         }
@@ -155,6 +182,7 @@ impl CreateAgent {
             skills: self.skills,
             compaction_percent: self.compaction_percent,
             workspace: self.workspace,
+            tool_services: self.tool_services,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
         }
@@ -297,6 +325,7 @@ mod tests {
     fn byok_protocols_describe_protocols_not_vendors() {
         for (name, protocol) in [
             ("openai", ProviderProtocol::Openai),
+            ("responses", ProviderProtocol::Responses),
             ("anthropic", ProviderProtocol::Anthropic),
         ] {
             assert_eq!(
@@ -305,5 +334,39 @@ mod tests {
             );
             assert_eq!(serde_json::to_value(protocol).unwrap(), name);
         }
+    }
+
+    #[test]
+    fn native_transport_is_explicit_and_uses_the_existing_credential_family() {
+        let old = ModelConfig::default();
+        assert!(old.protocol.is_none());
+        assert!(
+            serde_json::to_value(&old)
+                .unwrap()
+                .get("protocol")
+                .is_none()
+        );
+        let mut native = old.clone();
+        native.protocol = Some(ProviderProtocol::Responses);
+        assert_eq!(
+            serde_json::to_value(&native).unwrap()["protocol"],
+            "responses"
+        );
+        assert_eq!(
+            ProviderProtocol::Responses.credential_family(),
+            ProviderProtocol::Openai.credential_family()
+        );
+        assert_ne!(
+            ProviderProtocol::Responses.credential_family(),
+            ProviderProtocol::Anthropic.credential_family()
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelConfig>(serde_json::to_value(&native).unwrap()).unwrap(),
+            native
+        );
+        assert_eq!(
+            serde_json::from_value::<ModelConfig>(serde_json::to_value(&old).unwrap()).unwrap(),
+            old
+        );
     }
 }

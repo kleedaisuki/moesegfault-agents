@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import OpenAI from 'openai';
+import { createPinnedSession, verifyServingSource } from './paid-route-policy.mjs';
 import { assertCompletedResponse, assertStreamEvents } from '../worker/responses-sdk.mjs';
 
 const origin = process.env.MAGENTS_TEST_API_ORIGIN?.replace(/\/$/, '');
@@ -56,20 +57,27 @@ async function cleanup(agentId, sessionIds) {
 
 async function main() {
   const sessionIds = new Set();
+  const expectedBuild = process.env.MAGENTS_TEST_EXPECTED_BUILD;
+  assert.match(expectedBuild ?? '', /^[a-f0-9]{40}$/, 'An exact approved deployed source is required before paid execution');
+  const health = await request('GET', '/healthz');
+  assert.equal(health.build_id, expectedBuild, 'The served source changed before paid execution');
+  const routeProof = verifyServingSource(expectedBuild);
   const agent = await request('POST', '/v1/agents', {
     name: `node-sdk-${randomBytes(6).toString('hex')}`,
+    model: { provider: 'deepseek', model: 'deepseek-flash', max_output_tokens: 1024 },
     instructions: 'Use the time tool for current-time requests. Reply briefly and report its actual result.',
     tools: ['time'],
   }, [201]);
   try {
+    const pinned = await createPinnedSession(request, agent, sessionIds);
     const client = new OpenAI({ apiKey, baseURL: origin + '/v1', maxRetries: 0, timeout: 180000, defaultHeaders: headers });
     const { data: stream, response: raw } = await client.responses.create({
       model: agent.id,
       input: 'Call the time tool once and report the current UTC time briefly.',
       stream: true,
-    }).withResponse();
+    }, { headers: { 'X-Agents-Session': pinned.id } }).withResponse();
     const sessionId = raw.headers.get('x-agents-session');
-    assert.ok(sessionId);
+    assert.equal(sessionId, pinned.id, 'The paid request must bind the exact preflighted Session');
     sessionIds.add(sessionId);
     const events = [];
     for await (const event of stream) events.push(event);
@@ -88,7 +96,7 @@ async function main() {
     const replay = [];
     for await (const event of await client.responses.retrieve(stored.id, { stream: true, starting_after: cursor })) replay.push(event);
     assert.deepEqual(replay, events.filter(event => event.sequence_number > cursor));
-    console.log(JSON.stringify({ journey: 'deployed-node-sdk-responses', result: 'passed', semantic_events: events.length, replay_events: replay.length }));
+    console.log(JSON.stringify({ journey: 'deployed-node-sdk-responses', result: 'passed', semantic_events: events.length, replay_events: replay.length, route: routeProof }));
   } finally {
     await cleanup(agent.id, sessionIds);
   }

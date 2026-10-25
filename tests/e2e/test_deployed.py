@@ -16,16 +16,19 @@ from stream_usage import reported_stream_usage
 from response_checks import checked_response
 from inference_diagnostics import diagnostic_client
 from responses_observation import observe_response
+from paid_route_policy import direct_deepseek_model
 
 
 @pytest.fixture
-def managed_agent(deployed):
+def managed_agent(deployed: Http) -> Iterator[tuple[dict[str, Any], list[str]]]:
     agent = deployed.json("POST", "/v1/agents", {
         "name": "acceptance-" + uuid.uuid4().hex[:12],
+        "model": (direct_deepseek_model(deployed) if os.getenv("MAGENTS_TEST_INFERENCE") == "1"
+                  else {"provider": "deepseek", "model": "deepseek-flash"}),
         "instructions": "Use the time tool whenever the user asks for the current time. Do not guess.",
         "tools": ["time"], "compaction_percent": 73,
     }, expected=201)
-    sessions = []
+    sessions: list[str] = []
     try:
         yield agent, sessions
     finally:
@@ -74,14 +77,19 @@ def test_configuration_is_pinned_per_session(deployed, managed_agent):
     assert future["pinned"]["compaction_percent"] == 61
 
 
-def test_openai_sdk_time_tool_and_streamed_continuation(deployed, inference, managed_agent):
+def test_openai_sdk_time_tool_and_streamed_continuation(
+    deployed: Http, inference: OpenAI, managed_agent: tuple[dict[str, Any], list[str]],
+) -> None:
     agent, sessions = managed_agent
+    session = deployed.json("POST", f"/v1/agents/{agent['id']}/sessions", {}, expected=201)
+    sessions.append(session["id"])
     raw = inference.chat.completions.with_raw_response.create(
         model=agent["id"], messages=[{"role": "user", "content": "Call the time tool now and tell me its UTC time."}],
+        extra_headers={"X-Agents-Session": session["id"]},
     )
     session_id = raw.headers.get("x-agents-session")
     assert session_id, "session identity must be recoverable using the standard SDK raw response"
-    sessions.append(session_id)
+    assert session_id == session["id"]
     answer = raw.parse()
     assert answer.choices[0].message.content
     status = deployed.json("GET", "/v1/sessions/" + session_id)

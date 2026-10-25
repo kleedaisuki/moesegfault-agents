@@ -30,7 +30,7 @@ const RAW_LIMIT: u64 = 64 * 1024 * 1024;
 const TEXT_LIMIT: u64 = 256 * 1024;
 const UPLOAD_TIMEOUT_MS: u64 = 120_000;
 const RECOVERY_GRACE_MS: u64 = 30_000;
-const FILE_COLUMNS: &str = "id,account_id,filename,purpose,content_type,object_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms";
+const FILE_COLUMNS: &str = "id,account_id,filename,purpose,content_type,object_key,blob_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnedFile {
@@ -40,6 +40,8 @@ pub struct OwnedFile {
     pub purpose: String,
     pub content_type: String,
     pub object_key: String,
+    #[serde(default)]
+    pub blob_key: Option<String>,
     pub bytes: u64,
     pub sha256: String,
     pub status: String,
@@ -57,6 +59,10 @@ struct RecoveryFile {
 }
 
 impl OwnedFile {
+    pub(crate) fn content_key(&self) -> &str {
+        self.blob_key.as_deref().unwrap_or(&self.object_key)
+    }
+
     pub fn public(&self) -> Value {
         let status = match self.status.as_str() {
             "processed" => "processed",
@@ -156,7 +162,7 @@ async fn ensure_space(env: &Env, owner: &str) -> Result<Space> {
 }
 
 async fn usage(env: &Env, owner: &str) -> Result<Usage> {
-    Ok(env.d1("DB")?.prepare("SELECT (SELECT COALESCE(SUM(bytes),0) FROM space_files WHERE account_id=?1 AND status IN ('uploading','processed','deleting'))+(SELECT COALESCE(SUM(archive_bytes),0) FROM (SELECT object_key,MAX(archive_bytes) AS archive_bytes FROM workspace_versions WHERE account_id=?1 GROUP BY object_key))+(SELECT COALESCE(SUM(archive_bytes),0) FROM workspace_version_uploads u WHERE account_id=?1 AND status IN ('pending','abandoned') AND NOT EXISTS(SELECT 1 FROM workspace_versions v WHERE v.object_key=u.object_key AND v.account_id=u.account_id)) AS bytes,(SELECT COUNT(*) FROM space_files WHERE account_id=?1 AND status IN ('uploading','processed','deleting')) AS files,(SELECT COUNT(*) FROM workspace_versions WHERE account_id=?1) AS versions,(SELECT COALESCE(SUM(archive_bytes),0) FROM (SELECT object_key,MAX(archive_bytes) AS archive_bytes FROM workspace_versions WHERE account_id=?1 GROUP BY object_key)) AS version_bytes")
+    Ok(env.d1("DB")?.prepare("SELECT (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?1 GROUP BY object_key)) AS bytes,(SELECT COUNT(*) FROM space_files WHERE account_id=?1 AND status IN ('uploading','processed','deleting')) AS files,(SELECT COUNT(*) FROM workspace_versions WHERE account_id=?1) AS versions,(SELECT COALESCE(SUM(archive_bytes),0) FROM (SELECT object_key,MAX(archive_bytes) AS archive_bytes FROM workspace_versions WHERE account_id=?1 GROUP BY object_key)) AS version_bytes")
         .bind(&[text(owner)])?.first(None).await?.unwrap_or_default())
 }
 
@@ -559,7 +565,7 @@ async fn store_upload(env: &Env, owner: &str, upload: Upload) -> Result<Response
     let run = format!("space-upload:{id}");
     let now = util::now_ms();
     let db = env.d1("DB")?;
-    let inserted: Option<Value>=db.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,inline_key) SELECT ?1,?2,?3,?4,?5,?6,?7,CAST(?8 AS INTEGER),?9,'uploading',?10,CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),CAST(?11 AS INTEGER)+150000,?14 WHERE (SELECT COALESCE(SUM(bytes),0) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))+(SELECT COALESCE(SUM(archive_bytes),0) FROM (SELECT object_key,MAX(archive_bytes) AS archive_bytes FROM workspace_versions WHERE account_id=?2 GROUP BY object_key))+(SELECT COALESCE(SUM(archive_bytes),0) FROM workspace_version_uploads u WHERE account_id=?2 AND status IN ('pending','abandoned') AND NOT EXISTS(SELECT 1 FROM workspace_versions v WHERE v.object_key=u.object_key AND v.account_id=u.account_id))<=CAST(?12 AS INTEGER)-CAST(?8 AS INTEGER) AND (SELECT COUNT(*) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))<CAST(?13 AS INTEGER) AND (?14 IS NULL OR NOT EXISTS(SELECT 1 FROM space_files WHERE account_id=?2 AND inline_key=?14 AND status IN ('uploading','processed'))) ON CONFLICT DO NOTHING RETURNING id")
+    let inserted: Option<Value>=db.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,inline_key) SELECT ?1,?2,?3,?4,?5,?6,?7,CAST(?8 AS INTEGER),?9,'uploading',?10,CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),CAST(?11 AS INTEGER)+150000,?14 WHERE (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?2 GROUP BY object_key))<=CAST(?12 AS INTEGER)-CAST(?8 AS INTEGER) AND (SELECT COUNT(*) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))<CAST(?13 AS INTEGER) AND (?14 IS NULL OR NOT EXISTS(SELECT 1 FROM space_files WHERE account_id=?2 AND inline_key=?14 AND status IN ('uploading','processed'))) ON CONFLICT DO NOTHING RETURNING id")
         .bind(&[text(&id),text(owner),text(&space.id),text(&upload.filename),text(&upload.purpose),text(&upload.content_type),text(&key),text(&upload.bytes.to_string()),text(&upload.sha256),text(&run),text(&now.to_string()),text(&limit.bytes.to_string()),text(&limit.files.to_string()),upload.inline_key.as_deref().map(text).unwrap_or(JsValue::NULL)])?.first(None).await?;
     if inserted.is_none() {
         if let Some(key) = &upload.inline_key {
@@ -687,6 +693,64 @@ fn local_upload_error_code(status: u16, body: &[u8]) -> &'static str {
         (413, Some("file_too_large")) => "file_too_large",
         _ => "file_upload_failed",
     }
+}
+
+/// Publish a Files view of a checked immutable image without copying its bytes.
+/// The caller owns provider/run accounting; this operation performs only D1 I/O.
+pub(crate) async fn link_image_blob(
+    env: &Env,
+    owner: &str,
+    publication_key: &str,
+    filename: &str,
+    blob: &crate::workspace_blobs::OwnedBlobRef,
+) -> Result<OwnedFile> {
+    blob.validate(owner)?;
+    if publication_key.is_empty() || publication_key.len() > 512 || !valid_filename(filename) {
+        return Err(fail("invalid_file_request"));
+    }
+    if crate::workspace_blobs::find_image_key(env, owner, &blob.object_key)
+        .await?
+        .as_ref()
+        != Some(blob)
+    {
+        return Err(fail("workspace_blob_identity_conflict"));
+    }
+    let inline_key = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&("image-link", publication_key))?)
+    );
+    if let Some(file) = inline_file(env, owner, &inline_key).await? {
+        return finish_image_link(env, owner, file, blob).await;
+    }
+    let limits = owner_limits(env, owner).await?;
+    let space = ensure_space(env, owner).await?;
+    let id = format!("file-{}", uuid::Uuid::new_v4().simple());
+    let object_key = format!("space-links/{}/{id}", owner_key(owner));
+    let now = util::now_ms().to_string();
+    env.d1("DB")?.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,blob_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,inline_key,upload_outcome,upload_operations) SELECT ?1,?2,?3,?4,'user_data',?5,?6,?7,CAST(?8 AS INTEGER),?9,'processed',?10,CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),?12,'stored',0 WHERE EXISTS(SELECT 1 FROM workspace_blobs WHERE object_key=?7 AND account_id=?2 AND kind='image' AND status='ready' AND archive_bytes=CAST(?8 AS INTEGER) AND sha256=?9 AND content_type=?5) AND (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?2 GROUP BY object_key))<=CAST(?13 AS INTEGER) AND (SELECT COUNT(*) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))<CAST(?14 AS INTEGER) ON CONFLICT DO NOTHING")
+        .bind(&[text(&id),text(owner),text(&space.id),text(filename),text(&blob.content_type),text(&object_key),text(&blob.object_key),text(&blob.bytes.to_string()),text(&blob.sha256),text(&format!("image-link:{inline_key}")),text(&now),text(&inline_key),text(&limits.bytes.to_string()),text(&limits.files.to_string())])?.run().await?;
+    let file = inline_file(env, owner, &inline_key)
+        .await?
+        .ok_or_else(|| fail("space_limit_exceeded"))?;
+    finish_image_link(env, owner, file, blob).await
+}
+
+async fn finish_image_link(
+    env: &Env,
+    owner: &str,
+    file: OwnedFile,
+    blob: &crate::workspace_blobs::OwnedBlobRef,
+) -> Result<OwnedFile> {
+    if file.status != "processed"
+        || file.blob_key.as_deref() != Some(blob.object_key.as_str())
+        || file.sha256 != blob.sha256
+        || file.bytes != blob.bytes
+        || file.content_type != blob.content_type
+    {
+        return Err(fail("file_upload_conflict"));
+    }
+    crate::workspace_blobs::bind_image_file(env, owner, &file.id, blob).await?;
+    Ok(file)
 }
 
 async fn inline_file(env: &Env, owner: &str, key: &str) -> Result<Option<OwnedFile>> {
@@ -893,6 +957,8 @@ async fn delete_file(env: &Env, owner: &str, id: &str) -> Result<Response> {
                 .bind(&[text(id),text(owner)])?.run().await?;
         }
         finish_delete(env, &file).await?;
+    } else if file.blob_key.is_some() {
+        crate::workspace_blobs::release_image_file(env, owner, id).await?;
     }
     Response::from_json(&json!({"id":id,"object":"file","deleted":true}))
 }
@@ -903,10 +969,15 @@ async fn finish_delete(env: &Env, file: &OwnedFile) -> Result<()> {
     if permitted.is_none() {
         return Err(fail("file_in_use"));
     }
-    env.bucket("WORKSPACES")?.delete(&file.object_key).await?;
-    reconcile::remove_storage_object(env, &file.object_key, util::now_ms()).await?;
+    if file.blob_key.is_none() {
+        env.bucket("WORKSPACES")?.delete(&file.object_key).await?;
+        reconcile::remove_storage_object(env, &file.object_key, util::now_ms()).await?;
+    }
     env.d1("DB")?.prepare("UPDATE space_files SET status=CASE deletion_reason WHEN 'upload_abort' THEN 'failed' ELSE 'deleted' END,updated_at_ms=CAST(? AS INTEGER) WHERE id=? AND account_id=? AND status IN ('deleting','failed')")
         .bind(&[text(&util::now_ms().to_string()),text(&file.id),text(&file.account_id)])?.run().await?;
+    if file.blob_key.is_some() {
+        crate::workspace_blobs::release_image_file(env, &file.account_id, &file.id).await?;
+    }
     Ok(())
 }
 
@@ -931,7 +1002,7 @@ async fn file_object_range(
         .require_observation("file.download", Resource::R2Operation, "class_b")
         .await?;
     let bucket = env.bucket("WORKSPACES")?;
-    let get = bucket.get(&file.object_key);
+    let get = bucket.get(file.content_key());
     let get = match range {
         Some(range) => get.range(range),
         None => get,
@@ -1122,6 +1193,7 @@ mod tests {
             purpose: "user_data".into(),
             content_type: "image/png".into(),
             object_key: "private-object".into(),
+            blob_key: None,
             bytes: 123,
             sha256: "ab".repeat(32),
             status: "processed".into(),
@@ -1132,9 +1204,23 @@ mod tests {
         let public = file.public();
         assert_eq!(public["content_type"], "image/png");
         assert_eq!(public["filename"], "image-without-extension");
-        for private in ["account_id", "object_key", "reservation_id", "diagnostics"] {
+        for private in [
+            "account_id",
+            "object_key",
+            "blob_key",
+            "reservation_id",
+            "diagnostics",
+        ] {
             assert!(public.get(private).is_none(), "{private}");
         }
+        assert_eq!(file.content_key(), "private-object");
+        let mut legacy = serde_json::to_value(&file).unwrap();
+        legacy.as_object_mut().unwrap().remove("blob_key");
+        let mut restored: OwnedFile = serde_json::from_value(legacy).unwrap();
+        assert!(restored.blob_key.is_none());
+        restored.blob_key = Some("immutable-image".into());
+        assert_eq!(restored.content_key(), "immutable-image");
+        assert!(restored.public().get("blob_key").is_none());
     }
 
     #[test]

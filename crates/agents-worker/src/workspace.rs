@@ -27,6 +27,8 @@ use crate::{
     telemetry::{NativeSpan, TraceContext},
 };
 
+#[path = "workspace_archives.rs"]
+mod archives;
 #[path = "workspace_download.rs"]
 mod download;
 #[path = "workspace_files.rs"]
@@ -36,6 +38,7 @@ mod lease;
 #[path = "workspace_transport.rs"]
 mod transport;
 
+pub(crate) use crate::workspace_blobs::OwnedArchiveRef;
 use lease::ComputeLease;
 use transport::{Deadline, TimedResponse};
 
@@ -558,7 +561,20 @@ impl<'a> Workspace<'a> {
                 storage.delete(STARTUP_PENDING).await?;
             }
             self.resume_version_restore().await?;
+            self.reconcile_current_archive().await?;
             return Ok(());
+        }
+        if storage
+            .get::<bool>("workspace:seed-pending")
+            .await?
+            .unwrap_or(false)
+        {
+            let seed = storage
+                .get::<Manifest>("workspace:manifest")
+                .await?
+                .ok_or_else(|| Error::RustError("workspace_branch_seed_missing".into()))?;
+            self.publish_manifest(&seed).await?;
+            storage.delete("workspace:seed-pending").await?;
         }
         let bucket = self.env.bucket("WORKSPACES")?;
         let manifest_read = self.require_r2("class_b").await?;
@@ -577,11 +593,7 @@ impl<'a> Workspace<'a> {
                 .text()
                 .await?;
             let manifest: Manifest = serde_json::from_str(&text)?;
-            if manifest.format_version != 1
-                || !manifest
-                    .object_key
-                    .starts_with(&format!("{}/snapshots/", self.prefix))
-            {
+            if !self.valid_manifest_archive(&manifest).await? {
                 return Err(Error::RustError("Unsupported workspace manifest".into()));
             }
             let snapshot_read = self.require_r2("class_b").await?;
@@ -619,6 +631,8 @@ impl<'a> Workspace<'a> {
         storage.put("workspace:tools", 0_u64).await?;
         storage.delete(STARTUP_PENDING).await?;
         self.resume_version_restore().await?;
+        // Resolve a pending restore first: its promoted target must stay held.
+        self.reconcile_current_archive().await?;
         Ok(())
     }
 
@@ -885,33 +899,12 @@ impl<'a> Workspace<'a> {
             entries: manifest.stats.entries,
             created_at_ms: crate::util::now_ms(),
         };
-        if let Some(existing) = crate::workspace_versions::find_content(
-            self.env,
-            &self.owner,
-            &manifest.sha256,
-            manifest.stats.archive_bytes,
-        )
-        .await?
-        {
-            version.object_key = existing.object_key;
-            crate::workspace_versions::publish(self.env, &version).await?;
-            return Ok(());
+        let archive = self.owned_archive(manifest).await?;
+        version.object_key = archive.object_key.clone();
+        crate::workspace_versions::publish_shared(self.env, &version, &archive).await?;
+        if archive.object_key != manifest.object_key {
+            self.promote_manifest(manifest, &archive).await?;
         }
-        version.object_key = format!(
-            "space-versions/{}/{}/{}.tar.zst",
-            digest_key(&self.owner),
-            manifest.sha256,
-            uuid::Uuid::new_v4()
-        );
-        let upload = crate::workspace_versions::admit_upload(
-            self.env,
-            &crate::workspace_versions::UploadPayload {
-                version,
-                source_key: manifest.object_key.clone(),
-            },
-        )
-        .await?;
-        self.finish_version_upload(&upload).await?;
         Ok(())
     }
 
@@ -1010,49 +1003,23 @@ impl<'a> Workspace<'a> {
             .as_str()
             .ok_or_else(|| Error::RustError("workspace_restore_backup_missing".into()))?
             .to_owned();
-        let checksum = decode_sha256(&version.sha256)?;
-        let bucket = self.env.bucket("WORKSPACES")?;
-        let read = self.require_r2("class_b").await?;
-        let source = bucket.get(&version.object_key).execute().await?;
-        self.record_r2(&read, "class_b").await?;
-        let source =
-            source.ok_or_else(|| Error::RustError("workspace_version_unavailable".into()))?;
-        if source.size() != version.archive_bytes {
-            return Err(Error::RustError("workspace_version_size_mismatch".into()));
-        }
-        let ResponseBody::Stream(body) = source
-            .body()
-            .ok_or_else(|| Error::RustError("workspace_version_unavailable".into()))?
-            .response_body()?
-        else {
-            return Err(Error::RustError("workspace_version_not_streamable".into()));
-        };
-        let key = format!(
-            "{}/snapshots/{}/{}.tar.zst",
-            self.prefix,
-            version.sha256,
-            uuid::Uuid::new_v4()
-        );
-        crate::checkpoint_gc::record_upload_intent(self.env, &self.owner, &self.session, &key)
+        let archive = self
+            .owned_archive(&Manifest {
+                format_version: version.format_version,
+                object_key: version.object_key.clone(),
+                sha256: version.sha256.clone(),
+                generation: version.generation,
+                created_at_ms: version.created_at_ms,
+                stats: CheckpointStats {
+                    archive_bytes: version.archive_bytes,
+                    logical_bytes: version.logical_bytes,
+                    entries: version.entries,
+                    r2_write_operations: 0,
+                },
+            })
             .await?;
-        let write = self.require_r2("class_a").await?;
-        let copied = Deadline::new(crate::util::now_ms().saturating_add(120_000))?
-            .wait(bucket.put(&key, body).sha256(checksum).execute())
-            .await?
-            .ok_or_else(|| Error::RustError("workspace_version_copy_rejected".into()))?;
-        crate::reconcile::register_storage_object(
-            self.env,
-            &self.owner,
-            &self.session,
-            &key,
-            copied.size(),
-            crate::util::now_ms(),
-        )
-        .await?;
-        self.record_r2(&write, "class_a").await?;
-        if copied.size() != version.archive_bytes {
-            return Err(Error::RustError("workspace_version_size_mismatch".into()));
-        }
+        crate::workspace_blobs::bind_session(self.env, &self.owner, &self.session, &archive)
+            .await?;
         let previous = self
             .state
             .storage()
@@ -1073,7 +1040,7 @@ impl<'a> Workspace<'a> {
             .await?;
         let manifest = Manifest {
             format_version: version.format_version,
-            object_key: key,
+            object_key: archive.object_key,
             sha256: version.sha256.clone(),
             generation,
             created_at_ms: crate::util::now_ms(),
@@ -1081,7 +1048,7 @@ impl<'a> Workspace<'a> {
                 archive_bytes: version.archive_bytes,
                 logical_bytes: version.logical_bytes,
                 entries: version.entries,
-                r2_write_operations: 2,
+                r2_write_operations: 1,
             },
         };
         self.state
@@ -1126,12 +1093,7 @@ impl<'a> Workspace<'a> {
             self.state.storage().delete(VERSION_RESTORE).await?;
             return Ok(());
         }
-        if intent.manifest.format_version != 1
-            || !intent
-                .manifest
-                .object_key
-                .starts_with(&format!("{}/snapshots/", self.prefix))
-        {
+        if !self.valid_manifest_archive(&intent.manifest).await? {
             return Err(Error::RustError("invalid_workspace_restore_intent".into()));
         }
         let read = self.require_r2("class_b").await?;
@@ -1222,48 +1184,71 @@ impl<'a> Workspace<'a> {
         }
         let sha256 = required_header(headers, "X-Snapshot-Sha256")?;
         let checksum = decode_sha256(&sha256)?;
-        let stats = CheckpointStats {
+        let mut stats = CheckpointStats {
             archive_bytes: numeric_header(headers, "X-Snapshot-Archive-Bytes")?,
             logical_bytes: numeric_header(headers, "X-Snapshot-Logical-Bytes")?,
             entries: numeric_header(headers, "X-Snapshot-Entries")?,
-            r2_write_operations: 2,
+            r2_write_operations: 1,
         };
-        let key = format!(
-            "{}/snapshots/{sha256}/{}.tar.zst",
-            self.prefix,
-            uuid::Uuid::new_v4()
-        );
-        let bucket = self.env.bucket("WORKSPACES")?;
-        let (_, body, deadline) = response.into_parts();
-        let ResponseBody::Stream(stream) = body else {
-            return Err(Error::RustError(
-                "Workspace snapshot is not streamable".into(),
-            ));
-        };
-        // Native streams bypass WASM memory. R2 verifies the compressed digest
-        // before the manifest becomes visible, retaining the last good snapshot.
-        let archive_write = self.require_r2("class_a").await?;
-        crate::checkpoint_gc::record_upload_intent(self.env, &self.owner, &self.session, &key)
-            .await?;
-        let uploaded = deadline
-            .wait(bucket.put(&key, stream).sha256(checksum).execute())
-            .await?
-            .ok_or_else(|| Error::RustError("Workspace snapshot upload rejected".into()))?;
-        crate::reconcile::register_storage_object(
+        let key = if let Some(ready) = crate::workspace_blobs::find_content(
             self.env,
             &self.owner,
-            &self.session,
-            &key,
-            uploaded.size(),
-            worker::Date::now().as_millis(),
+            1,
+            &sha256,
+            stats.archive_bytes,
         )
-        .await?;
-        self.record_r2(&archive_write, "class_a").await?;
-        if uploaded.size() != stats.archive_bytes {
-            return Err(Error::RustError(
-                "Workspace snapshot upload size mismatch".into(),
-            ));
-        }
+        .await?
+        {
+            ready.object_key
+        } else {
+            let candidate = OwnedArchiveRef {
+                account_id: self.owner.clone(),
+                object_key: self.archive_key(&sha256, 1),
+                sha256: sha256.clone(),
+                format_version: 1,
+                generation: 0,
+                archive_bytes: stats.archive_bytes,
+                logical_bytes: stats.logical_bytes,
+                entries: stats.entries,
+            };
+            crate::workspace_blobs::begin(self.env, &candidate).await?;
+            let (_, body, deadline) = response.into_parts();
+            let ResponseBody::Stream(stream) = body else {
+                return Err(Error::RustError(
+                    "Workspace snapshot is not streamable".into(),
+                ));
+            };
+            // R2 checks the complete compressed digest before any strong ref.
+            let archive_write = self.require_r2("class_a").await?;
+            let uploaded = deadline
+                .wait(
+                    self.env
+                        .bucket("WORKSPACES")?
+                        .put(&candidate.object_key, stream)
+                        .sha256(checksum)
+                        .execute(),
+                )
+                .await?
+                .ok_or_else(|| Error::RustError("Workspace snapshot upload rejected".into()))?;
+            self.record_r2(&archive_write, "class_a").await?;
+            crate::reconcile::register_account_storage_object(
+                self.env,
+                &self.owner,
+                &candidate.object_key,
+                uploaded.size(),
+                uploaded.uploaded().as_millis(),
+            )
+            .await?;
+            if uploaded.size() != stats.archive_bytes {
+                return Err(Error::RustError(
+                    "Workspace snapshot upload size mismatch".into(),
+                ));
+            }
+            stats.r2_write_operations += 1;
+            crate::workspace_blobs::complete(self.env, &candidate)
+                .await?
+                .object_key
+        };
         let generation = self
             .state
             .storage()
@@ -1302,6 +1287,17 @@ impl<'a> Workspace<'a> {
     }
 
     async fn publish_manifest(&self, manifest: &Manifest) -> Result<()> {
+        let shared = if archives::shared_archive_key(&manifest.object_key) {
+            let archive = self.owned_archive(manifest).await?;
+            if archive.object_key != manifest.object_key {
+                return Err(Error::RustError("workspace_blob_identity_conflict".into()));
+            }
+            crate::workspace_blobs::bind_session(self.env, &self.owner, &self.session, &archive)
+                .await?;
+            true
+        } else {
+            false
+        };
         let bucket = self.env.bucket("WORKSPACES")?;
         let previous = self
             .state
@@ -1341,8 +1337,21 @@ impl<'a> Workspace<'a> {
             .storage()
             .put("workspace:manifest", manifest)
             .await?;
+        if shared {
+            crate::workspace_blobs::reconcile_session(
+                self.env,
+                &self.owner,
+                &self.session,
+                &manifest.object_key,
+            )
+            .await?;
+        }
         if let Some(previous) = previous.filter(|old| old.object_key != manifest.object_key) {
-            if crate::workspace_versions::referenced(self.env, &previous.object_key).await? {
+            // Owner blob collection atomically checks every session/history ref.
+            if archives::shared_archive_key(&previous.object_key)
+                || crate::workspace_blobs::referenced(self.env, &previous.object_key).await?
+                || crate::workspace_versions::referenced(self.env, &previous.object_key).await?
+            {
                 return Ok(());
             }
             // Publication is the commit point. Failed cleanup never invalidates

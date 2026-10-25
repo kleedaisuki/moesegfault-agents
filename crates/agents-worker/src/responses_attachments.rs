@@ -344,6 +344,7 @@ mod tests {
             purpose: "user_data".into(),
             content_type: "text/plain".into(),
             object_key: "private/key".into(),
+            blob_key: None,
             bytes: 3,
             sha256: "hash".into(),
             status: "processed".into(),

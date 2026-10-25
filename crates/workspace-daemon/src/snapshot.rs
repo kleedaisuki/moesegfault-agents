@@ -815,6 +815,12 @@ fn restored_mtime(seconds: u64) -> Result<SystemTime> {
         .checked_add(Duration::from_secs(seconds))
         .context("snapshot mtime is not representable")
 }
+
+#[cfg(test)]
+std::thread_local! {
+    static CHECKSUM_FILE_READ_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn hash_file(path: &Path) -> Result<String> {
     let mut reader = HashReader {
         inner: File::open(path)?,
@@ -822,6 +828,8 @@ fn hash_file(path: &Path) -> Result<String> {
         bytes: 0,
     };
     io::copy(&mut reader, &mut io::sink())?;
+    #[cfg(test)]
+    CHECKSUM_FILE_READ_BYTES.with(|bytes| bytes.set(bytes.get().saturating_add(reader.bytes)));
     Ok(hex::encode(reader.hash.finalize()))
 }
 struct HashReader<R> {
@@ -1155,7 +1163,13 @@ mod tests {
             let data = (0u8..=255).cycle().take(bytes).collect::<Vec<_>>();
             let file = store.current().unwrap().join("binary");
             fs::write(&file, &data).unwrap();
+            CHECKSUM_FILE_READ_BYTES.with(|read| read.set(0));
             let artifact = store.create().unwrap();
+            assert_eq!(
+                CHECKSUM_FILE_READ_BYTES.with(std::cell::Cell::get),
+                0,
+                "Creating an archive must not reopen it for a checksum pass"
+            );
             assert_eq!(artifact.metadata.sha256, hash_file(&artifact.path).unwrap());
             assert_eq!(artifact.metadata.entries, 1);
             assert_eq!(artifact.metadata.logical_bytes, bytes as u64);
@@ -1217,7 +1231,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         fs::write(store.current().unwrap().join("artifact"), &data).unwrap();
+        CHECKSUM_FILE_READ_BYTES.with(|read| read.set(0));
         let artifact = store.create().unwrap();
+        let production_reads = CHECKSUM_FILE_READ_BYTES.with(std::cell::Cell::get);
+        assert_eq!(production_reads, 0);
         let compressed = fs::read(&artifact.path).unwrap();
         let samples = 5;
         let mut baseline_ns = Vec::new();
@@ -1289,6 +1306,7 @@ mod tests {
             "samples":samples,
             "logical_bytes":artifact.metadata.logical_bytes,
             "archive_bytes":compressed.len(),
+            "production_create_checksum_read_bytes":production_reads,
             "baseline":{"post_write_read_bytes":baseline_reads,"elapsed_ns":baseline_ns},
             "streaming":{"post_write_read_bytes":streaming_reads,"elapsed_ns":streaming_ns},
             "manifest":{"entries":count,"serialized_bytes":encoded.len(),"baseline_parse_ns":parse_ns,"direct_count_ns":count_ns},

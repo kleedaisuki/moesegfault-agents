@@ -20,8 +20,14 @@ use crate::{
 
 #[path = "provider_anthropic.rs"]
 mod anthropic;
+#[path = "provider_config.rs"]
+mod config;
+#[path = "provider_responses.rs"]
+pub(crate) mod responses;
 #[path = "provider_tool_media.rs"]
 mod tool_media;
+
+pub use config::resolve_config;
 
 const MAX_COMPLETION_BYTES: usize = 16 * 1024 * 1024;
 
@@ -35,6 +41,8 @@ pub struct GenerationOptions {
     pub parallel_tool_calls: Option<bool>,
     pub text_format: Option<Value>,
     pub reasoning: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<responses::PreparedRequest>,
 }
 
 impl GenerationOptions {
@@ -47,6 +55,12 @@ impl GenerationOptions {
         config: &ProviderConfig,
         tools: &[ToolDefinition],
     ) -> Result<(), String> {
+        if config.protocol == ProviderProtocol::Responses {
+            if let Some(native) = &self.native {
+                return native.validate_model(config);
+            }
+            return self.validate(config.protocol, tools);
+        }
         if !is_deepseek(config) {
             return self.validate(config.protocol, tools);
         }
@@ -328,6 +342,8 @@ pub struct Completion {
     pub message: Message,
     pub finish_reason: String,
     pub usage: Usage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<responses::NativeTurn>,
 }
 
 fn endpoint(config: &ProviderConfig) -> worker::Result<String> {
@@ -343,6 +359,7 @@ fn endpoint(config: &ProviderConfig) -> worker::Result<String> {
         base_url.trim_end_matches('/'),
         match config.protocol {
             ProviderProtocol::Openai => "chat/completions",
+            ProviderProtocol::Responses => "responses",
             ProviderProtocol::Anthropic => "messages",
         }
     ))
@@ -370,6 +387,9 @@ pub async fn complete_with_options(
         .map_err(|_| protocol_failure())?;
     match config.protocol {
         ProviderProtocol::Openai => parse_completion(value),
+        ProviderProtocol::Responses => {
+            responses::parse(value).map(responses::NativeCompletion::into_completion)
+        }
         ProviderProtocol::Anthropic => anthropic::parse_completion(value),
     }
     .map_err(|_| protocol_failure())
@@ -410,6 +430,11 @@ async fn send(
         ProviderProtocol::Openai => {
             openai_body_with_options(config, messages, tools, stream, options)?
         }
+        ProviderProtocol::Responses => {
+            responses::PreparedRequest::from_messages(config, messages, tools, options)
+                .map_err(worker::Error::RustError)?
+                .payload(stream)
+        }
         ProviderProtocol::Anthropic => {
             anthropic::request_body_with_options(config, messages, tools, stream, options)
                 .map_err(|_| protocol_failure())?
@@ -418,7 +443,7 @@ async fn send(
     let headers = Headers::new();
     headers.set("Content-Type", "application/json")?;
     match config.protocol {
-        ProviderProtocol::Openai => {
+        ProviderProtocol::Openai | ProviderProtocol::Responses => {
             headers.set("Authorization", &format!("Bearer {}", config.api_key))?;
         }
         ProviderProtocol::Anthropic => {
@@ -735,12 +760,20 @@ where
 enum ProviderAccumulator {
     Openai(StreamAccumulator),
     Anthropic(anthropic::StreamAccumulator),
+    Responses {
+        parser: responses::Accumulator,
+        completion: Option<Completion>,
+    },
 }
 
 impl ProviderAccumulator {
     fn new(protocol: ProviderProtocol) -> Self {
         match protocol {
             ProviderProtocol::Openai => Self::Openai(StreamAccumulator::default()),
+            ProviderProtocol::Responses => Self::Responses {
+                parser: responses::Accumulator::default(),
+                completion: None,
+            },
             ProviderProtocol::Anthropic => Self::Anthropic(anthropic::StreamAccumulator::default()),
         }
     }
@@ -749,11 +782,24 @@ impl ProviderAccumulator {
         match self {
             Self::Openai(accumulator) => accumulator.push(value),
             Self::Anthropic(accumulator) => accumulator.push(value),
+            Self::Responses { parser, completion } => {
+                let text = (value["type"] == "response.output_text.delta")
+                    .then(|| value["delta"].as_str().map(str::to_owned))
+                    .flatten();
+                if let Some(terminal) = parser.push(&value)? {
+                    *completion = Some(terminal.into_completion());
+                }
+                Ok(text)
+            }
         }
     }
 
     fn is_done(&self) -> bool {
-        matches!(self, Self::Anthropic(accumulator) if accumulator.is_done())
+        match self {
+            Self::Anthropic(accumulator) => accumulator.is_done(),
+            Self::Responses { completion, .. } => completion.is_some(),
+            Self::Openai(_) => false,
+        }
     }
 
     fn finish(self) -> Result<Completion, String> {
@@ -763,11 +809,17 @@ impl ProviderAccumulator {
             }
             Self::Openai(_) => Err("provider completion has no finish reason".into()),
             Self::Anthropic(accumulator) => accumulator.finish(),
+            Self::Responses { completion, .. } => {
+                completion.ok_or_else(|| "native completion has no terminal response".into())
+            }
         }
     }
 }
 
 fn text_barrier(protocol: ProviderProtocol, event: &Value) -> bool {
+    if protocol == ProviderProtocol::Responses {
+        return event["type"] != "response.output_text.delta";
+    }
     if protocol == ProviderProtocol::Anthropic {
         return event["type"] != "content_block_delta" || event["delta"]["type"] != "text_delta";
     }
@@ -964,12 +1016,36 @@ pub fn parse_completion(value: Value) -> Result<Completion, String> {
         message,
         finish_reason: choice["finish_reason"].as_str().unwrap_or("stop").into(),
         usage,
+        native: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_response_transport_does_not_change_legacy_endpoints_or_storage_policy() {
+        let mut old = test_config(ProviderProtocol::Openai);
+        old.base_url = "https://provider.example/v1".into();
+        assert!(endpoint(&old).unwrap().ends_with("/chat/completions"));
+        let mut native = test_config(ProviderProtocol::Responses);
+        native.base_url = old.base_url.clone();
+        assert!(endpoint(&native).unwrap().ends_with("/responses"));
+        let prepared = responses::PreparedRequest::from_messages(
+            &native,
+            &[
+                Message::text("system", "Pinned"),
+                Message::text("user", "Hello"),
+            ],
+            &[],
+            &GenerationOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(prepared.payload(true)["store"], false);
+        assert!(prepared.payload(true).get("previous_response_id").is_none());
+        assert!(prepared.payload(true).get("conversation").is_none());
+    }
 
     #[test]
     fn buffered_text_uses_a_timer_even_when_the_provider_is_quiet() {

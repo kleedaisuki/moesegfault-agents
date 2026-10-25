@@ -80,11 +80,34 @@ text, identity, paths or credentials. Run it in the existing cached Actions job:
 cargo test --locked -p agents-worker --lib persistence_perf -- --nocapture
 ```
 
-New-source CPU measurements and compiled-Worker compatibility remain pending until
-the root's next coherent CI checkpoint. No cold local Rust build or paid-model
-probe was started for this work. Native timing excludes Worker Wasm, KV latency,
-network, model time and real allocator/RSS measurements. Do not report the removed
-copy lower bound as a measured end-to-end speedup.
+[CI 40186260916](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40186260916)
+completed successfully at exact source
+`1c2620161419b6ad7f6c1aeb55db689315202c59`, including all six normal jobs,
+260 Worker library tests and 47 actual-Worker checks. Both new persistence tests
+passed, including the 32-case Unicode equivalence property. Its `performance-v3`
+artifact contains the following **same-run Linux/x86-64 native debug** comparison:
+
+| Tool output / recent active rounds | Encoded state | Previous encoding p50 | New encoding p50 | Change |
+| --- | ---: | ---: | ---: | ---: |
+| 4 KiB / summary only | 2,285 B | 0.377265 ms | 0.150757 ms | -60.04% |
+| 32 KiB / summary only | 2,285 B | 0.653191 ms | 0.146651 ms | -77.55% |
+| 32 KiB / sixteen rounds | 531,303 B | 33.538239 ms | 32.895154 ms | -1.92% |
+
+The latter case explains the limit: encoding a large active prompt still dominates;
+removing a redundant historical clone does not eliminate serialization of the
+required prompt. There is no claim that every persistence call gets a 77% speedup.
+For the 32 KiB cases, the two removed clone paths together contain at least
+8,426,592 bytes of UTF-8 source values per save-plus-alarm sequence, excluding
+allocation/container overhead and other state. That is a source-level copy
+quantity, not observed peak RSS. Alarm calculation changed from a 0.496371 ms
+snapshot median in the summary-only case to a borrowed calculation below 0.001 ms;
+the tiny latter measurement is near timer overhead and is not a useful speedup SLO.
+
+No cold local Rust build or paid-model probe was started for this work. Native
+timing excludes Worker Wasm, KV latency, network, model time and real allocator/RSS
+measurements. Do not report the removed copy lower bound as a measured end-to-end
+speedup. The source encoding format, byte equality and cold/steering/terminal
+recovery contracts passed the complete compiled suite, not only this microprobe.
 
 Cloudflare's [SQLite storage API](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
 is strongly consistent, and its [pricing contract](https://developers.cloudflare.com/durable-objects/platform/pricing/)
@@ -94,3 +117,41 @@ is one fewer `put` invocation on unchanged publications; native invocation count
 and actual provider billing must not be conflated. Serde's
 [field attributes](https://serde.rs/field-attrs.html) define `skip` serialization;
 they do not change the derived Rust clone operation.
+
+## Native storage-call baseline
+
+A test-only Session subclass wrapped the real native SQLite storage binding and
+delegated all other behavior to the retained `40175322441` Wasm artifact, whose
+state persistence mechanism matches the pre-optimization baseline. Two ordinary
+non-background Responses turns made exactly two controlled provider dispatches
+and retained four source messages at input revision two. The source, revision and
+last-user-input clock were unchanged by reading the probe counters.
+
+| Native API operation | Before | Exact-source candidate |
+| --- | ---: | ---: |
+| State generation publications | 21 | 21 |
+| Journal counter puts | 21 | 4 |
+| Journal counter puts repeating its stored value | 17 | 0 |
+| Final source counter | 4 | 4 |
+
+The baseline report is `.cache/perf/runtime/storage-counter-baseline.json`; the
+temporary native seam and reproduction instructions are under
+`.temp/runtime-perf/`. It uses no real provider, staging principal or external
+network. It is not a persistence emulator or production fault endpoint.
+
+The candidate probe passed against the downloaded **exact** `1c262016` compiled
+Worker from CI, not the concurrently modified full-API working files. It required
+zero unchanged counter puts, at most four source counter publications, exactly two
+provider calls, four unchanged source messages and unchanged input revision/clock.
+Counter puts fell 21 to 4 (80.95% fewer native API invocations), while all 21
+canonical state publications remained. This is lower write amplification, not
+elision of acknowledged state or a claim of a measured 80.95% bill reduction.
+
+Receipts are `.cache/perf/runtime/storage-counter-baseline.json` and
+`storage-counter-after-1c2620.json`; comparison logs and downloaded CPU measurements
+are in that directory. Every label is exclusively created, preserving evidence.
+One subsequent old-artifact control timed out under local contention before its
+counter assertion; it is not counted as a successful negative control. The probe
+now gives its single accepted operations a 30-second observation budget without
+changing data/execution assertions or retrying an accepted creation. The successful
+candidate disposed Miniflare and cleaned up its synthetic principal normally.

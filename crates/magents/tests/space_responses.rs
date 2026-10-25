@@ -415,6 +415,57 @@ fn immutable_versions_download_verify_archive_receipt_without_extraction() {
 }
 
 #[test]
+fn responses_bind_an_existing_session_without_changing_the_request_body() {
+    let temp = directory();
+    let path = temp.path().join("request.json");
+    let request_body = json!({"model":"a_1","input":"hello"});
+    std::fs::write(&path, serde_json::to_vec(&request_body).unwrap()).unwrap();
+    for args in [
+        vec![
+            "responses",
+            "create",
+            path.to_str().unwrap(),
+            "--session",
+            "s_1",
+        ],
+        vec!["responses", "run", "a_1", "hello", "--session", "s_1"],
+    ] {
+        let (output, raw) = request(
+            &args,
+            br#"{"id":"resp_1","status":"completed","output":[]}"#,
+            "Content-Type: application/json\r\n",
+        );
+        success(&output);
+        assert!(
+            headers(&raw)
+                .to_ascii_lowercase()
+                .contains("x-agents-session: s_1")
+        );
+        let accepted: Value = serde_json::from_slice(body(&raw)).unwrap();
+        assert_eq!(accepted["model"], "a_1");
+        assert_eq!(accepted["input"], "hello");
+        assert!(accepted.get("session").is_none());
+    }
+}
+
+#[test]
+fn responses_reject_invalid_session_before_authentication_or_dispatch() {
+    let output = offline(&[
+        "responses",
+        "run",
+        "a_1",
+        "hello",
+        "--session",
+        "../invalid",
+    ]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Identifier must contain only letters, numbers, '_' or '-'")
+    );
+}
+
+#[test]
 fn responses_create_preserves_local_tool_contract_without_executing_it() {
     let temp = directory();
     let path = temp.path().join("request.json");
@@ -431,6 +482,11 @@ fn responses_create_preserves_local_tool_contract_without_executing_it() {
     );
     success(&output);
     assert!(headers(&raw).starts_with("POST /v1/responses HTTP/1.1"));
+    assert!(
+        !headers(&raw)
+            .to_ascii_lowercase()
+            .contains("x-agents-session:")
+    );
     assert!(
         headers(&raw)
             .to_ascii_lowercase()

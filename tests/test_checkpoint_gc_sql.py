@@ -128,12 +128,27 @@ class CheckpointGcTests(unittest.TestCase):
         self.assertIn("checkpoint_gc_due", plan)
         self.assertNotIn("TEMP B-TREE", plan)
 
-    def test_source_orders_write_ahead_and_actual_delete_before_clock(self):
-        workspace = (ROOT / "crates/agents-worker/src/workspace.rs").read_text(encoding="utf-8")
-        self.assertLess(workspace.index("checkpoint_gc::record_upload_intent"), workspace.index(".put(&key, stream)"))
-        collect = SOURCE[SOURCE.index("pub async fn collect("):]
+    def test_source_orders_write_ahead_and_actual_delete_before_clock(self) -> None:
+        workspace: str = (ROOT / "crates/agents-worker/src/workspace.rs").read_text(encoding="utf-8")
+        capture: str = workspace[workspace.index("async fn capture_checkpoint("):]
+        self.assertLess(capture.index("workspace_blobs::begin"), capture.index(".put(&candidate.object_key, stream)"))
+        self.assertLess(capture.index(".put(&candidate.object_key, stream)"), capture.index(".sha256(checksum)"))
+        self.assertLess(capture.index("Workspace snapshot upload rejected"), capture.index("reconcile::register_account_storage_object"))
+        self.assertLess(capture.index("reconcile::register_account_storage_object"), capture.index("workspace_blobs::complete"))
+        self.assertLess(capture.index("uploaded.size() != stats.archive_bytes"), capture.index("workspace_blobs::complete"))
+        collect: str = SOURCE[SOURCE.index("pub async fn collect("):]
         self.assertLess(collect.index("bucket.delete(key).await?"), collect.index("reconcile::remove_storage_object"))
         self.assertLess(collect.index("reconcile::remove_storage_object"), collect.index("DELETE FROM workspace_checkpoint_intents"))
+
+    def test_new_version_publication_reuses_owned_archive_without_copy(self) -> None:
+        workspace: str = (ROOT / "crates/agents-worker/src/workspace.rs").read_text(encoding="utf-8")
+        publication: str = workspace[workspace.index("async fn publish_version("):workspace.index("async fn finish_version_upload(")]
+        self.assertIn("self.owned_archive(manifest).await?", publication)
+        self.assertIn("version.object_key = archive.object_key.clone()", publication)
+        self.assertIn("workspace_versions::publish_shared", publication)
+        self.assertNotIn(".put(", publication)
+        self.assertNotIn("bucket.get(", publication)
+        self.assertNotIn("finish_version_upload(", publication)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from openai.types.responses import Response
 
 from conftest import Http, cleanup_deployed_agent, correlation_headers
 from response_checks import checked_response, checked_stream
+from paid_route_policy import direct_deepseek_model
 
 
 @pytest.fixture
@@ -31,16 +32,31 @@ def response_agent(
 ) -> Iterator[tuple[dict[str, Any], list[str]]]:
     agent = deployed.json("POST", "/v1/agents", {
         "name": "responses-acceptance-" + uuid.uuid4().hex[:12],
+        "model": direct_deepseek_model(deployed),
         "instructions": "Answer briefly. Use the time tool when asked for the current time. Never guess tool results.",
         "tools": ["time"], "workspace": False, "compaction_percent": 73,
     }, expected=201)
     sessions: list[str] = []
     try:
+        session = deployed.json("POST", f"/v1/agents/{agent['id']}/sessions", {}, expected=201)
+        sessions.append(session["id"])
+        pin = deployed.json("GET", "/v1/sessions/" + session["id"])["pinned"]
+        assert pin["model"]["provider"] == "deepseek", "paid acceptance must use direct DeepSeek"
+        assert pin["model"] == agent["model"]
+        assert not pin["model"].get("credential_id"), "platform acceptance must not use an unverified BYOK origin"
+        assert pin == session["pinned"]
+        agent["_acceptance_session"] = session["id"]
         yield agent, sessions
     finally:
         failures = cleanup_deployed_agent(deployed, agent["id"], sessions)
         if failures:
             pytest.fail("Response fixture cleanup incomplete: " + json.dumps(failures, sort_keys=True), pytrace=False)
+
+
+def initial_session_headers(agent: dict[str, Any], **headers: str) -> dict[str, str]:
+    session_id = agent.get("_acceptance_session")
+    assert isinstance(session_id, str) and session_id, "a verified pin-only session is required before paid execution"
+    return {"X-Agents-Session": session_id, **headers}
 
 
 def track_session(raw: Any, sessions: list[str]) -> str:
@@ -62,7 +78,7 @@ def wait_terminal(client: OpenAI, response_id: str, *, timeout: float = 240) -> 
         time.sleep(min(1, remaining))
 
 
-def test_responses_sdk_lifecycle_stream_recovery_and_no_forks(
+def test_responses_sdk_lifecycle_stream_recovery_and_historical_fork(
     deployed: Http,
     responses_sdk: OpenAI,
     response_agent: tuple[dict[str, Any], list[str]],
@@ -73,7 +89,7 @@ def test_responses_sdk_lifecycle_stream_recovery_and_no_forks(
     initial_input = "Call the time tool and briefly report the current UTC time."
     raw = responses_sdk.responses.with_raw_response.create(
         model=agent["id"], input=initial_input, instructions=custom,
-        metadata={"journey": request_id}, extra_headers={"Idempotency-Key": request_id},
+        metadata={"journey": request_id}, extra_headers=initial_session_headers(agent, **{"Idempotency-Key": request_id}),
     )
     session_id = track_session(raw, sessions)
     first = checked_response(raw.parse())
@@ -87,22 +103,23 @@ def test_responses_sdk_lifecycle_stream_recovery_and_no_forks(
 
     replay = checked_response(responses_sdk.responses.create(
         model=agent["id"], input=initial_input, instructions=custom,
-        metadata={"journey": request_id}, extra_headers={"Idempotency-Key": request_id},
+        metadata={"journey": request_id}, extra_headers=initial_session_headers(agent, **{"Idempotency-Key": request_id}),
     ))
     assert replay.model_dump() == first_snapshot
     assert deployed.json("GET", "/v1/sessions/" + session_id)["input_revision"] == revision
     with pytest.raises(APIStatusError) as conflict:
         responses_sdk.responses.create(model=agent["id"], input="Different request",
-                                       extra_headers={"Idempotency-Key": request_id})
+                                       extra_headers=initial_session_headers(agent, **{"Idempotency-Key": request_id}))
     assert conflict.value.status_code == 409
 
     input_items = responses_sdk.responses.input_items.list(first.id, limit=1, order="asc")
     assert input_items.data, "the response must retain its own input-item boundary"
     assert any(initial_input in str(item.model_dump()) for item in input_items)
 
+    second_input = "Acknowledge the previous result briefly. Branch exclusion marker: " + uuid.uuid4().hex
     with responses_sdk.responses.create(
         model=agent["id"], previous_response_id=first.id,
-        input="Acknowledge the previous result briefly.", stream=True,
+        input=second_input, stream=True,
     ) as stream:
         second, events = checked_stream(stream)
     assert second.id != first.id and second.previous_response_id == first.id
@@ -117,11 +134,36 @@ def test_responses_sdk_lifecycle_stream_recovery_and_no_forks(
     assert [event.model_dump() for event in suffix] == [
         event.model_dump() for event in events if event.sequence_number > cursor
     ], "recovery must replay the same events, not infer a new response"
-    revision = deployed.json("GET", "/v1/sessions/" + session_id)["input_revision"]
-    with pytest.raises(APIStatusError) as fork:
-        responses_sdk.responses.create(model=agent["id"], previous_response_id=first.id, input="Do not fork.")
-    assert fork.value.status_code == 409
-    assert deployed.json("GET", "/v1/sessions/" + session_id)["input_revision"] == revision
+    source_before = deployed.json("GET", "/v1/sessions/" + session_id)
+    fork_input = "Acknowledge only this independent branch. " + uuid.uuid4().hex
+    fork_key = "fork-" + uuid.uuid4().hex
+    fork_raw = responses_sdk.responses.with_raw_response.create(
+        model=agent["id"], previous_response_id=first.id, input=fork_input,
+        extra_headers={"Idempotency-Key": fork_key},
+    )
+    fork_session = track_session(fork_raw, sessions)
+    fork = checked_response(fork_raw.parse())
+    assert fork.status == "completed" and fork.output_text
+    assert fork.id not in (first.id, second.id) and fork.previous_response_id == first.id
+    assert fork.instructions is None
+    assert fork_session != session_id, "historical forks require independent mutable sessions"
+    branch = deployed.json("GET", "/v1/sessions/" + fork_session)
+    assert branch["pinned"] == state["pinned"]
+    assert branch["messages"][:len(state["messages"])] == state["messages"]
+    assert second_input not in json.dumps(branch["messages"]), "a historical branch must not inherit later source input"
+    assert fork_input in json.dumps(branch["messages"])
+    fork_snapshot = fork.model_dump()
+    repeated_fork = checked_response(responses_sdk.responses.create(
+        model=agent["id"], previous_response_id=first.id, input=fork_input,
+        extra_headers={"Idempotency-Key": fork_key},
+    ))
+    assert repeated_fork.model_dump() == fork_snapshot
+    assert deployed.json("GET", "/v1/sessions/" + fork_session)["input_revision"] == branch["input_revision"]
+    source_after = deployed.json("GET", "/v1/sessions/" + session_id)
+    for field in ("input_revision", "last_input_at_ms", "pinned", "messages"):
+        assert source_after[field] == source_before[field], "forking must not rewind or mutate the source"
+    assert checked_response(responses_sdk.responses.retrieve(first.id)).model_dump() == first_snapshot
+    assert checked_response(responses_sdk.responses.retrieve(second.id)).model_dump() == second.model_dump()
 
 
 def test_responses_local_function_roundtrip_rejects_unsolicited_results(
@@ -140,6 +182,7 @@ def test_responses_local_function_roundtrip_rejects_unsolicited_results(
     raw = responses_sdk.responses.with_raw_response.create(
         model=agent["id"], input=f"Call local_echo with value {argument}. Do not invent the function result.",
         tools=[tool], tool_choice={"type": "function", "name": "local_echo"}, parallel_tool_calls=False,
+        extra_headers=initial_session_headers(agent),
     )
     session_id = track_session(raw, sessions)
     handoff = checked_response(raw.parse())
@@ -186,6 +229,7 @@ def test_responses_background_and_owner_isolation(
     agent, sessions = response_agent
     raw = responses_sdk.responses.with_raw_response.create(
         model=agent["id"], input="Reply with a brief acknowledgement.", background=True,
+        extra_headers=initial_session_headers(agent),
     )
     track_session(raw, sessions)
     accepted = checked_response(raw.parse())
@@ -223,7 +267,7 @@ def test_responses_consumes_owned_uploaded_file(
                 {"type": "input_text", "text": "Read the attached file and report its exact verification marker."},
                 {"type": "input_file", "file_id": uploaded.id},
             ],
-        }])
+        }], extra_headers=initial_session_headers(agent))
         track_session(raw, sessions)
         response = checked_response(raw.parse())
         assert response.status == "completed" and marker in response.output_text

@@ -317,6 +317,7 @@ pub(super) fn parse_completion(value: Value) -> Result<Completion, String> {
         message,
         finish_reason: finish_reason.into(),
         usage,
+        native: None,
     })
 }
 

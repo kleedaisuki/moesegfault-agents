@@ -169,18 +169,29 @@ def test_full_responses_lifecycle_journey_uses_pinned_sdk_contract() -> None:
     accepted_body: dict[str, Any] | None = None
     revision = 0
     events: list[dict[str, Any]] = []
+    branch_body: dict[str, Any] | None = None
+    source_messages: list[dict[str, Any]] = [{"tool_calls": [{"function": {"name": "time"}}]}]
+    pin = {"model": {"provider": "deepseek", "model": "deepseek-flash"}}
 
     def respond(request: httpx.Request) -> httpx.Response:
-        nonlocal accepted_body, revision, events
+        nonlocal accepted_body, revision, events, branch_body
         requests.append(request)
         if request.method == "POST":
             body = json.loads(request.content)
+            if request.headers.get("Idempotency-Key", "").startswith("fork-"):
+                assert body["previous_response_id"] == "resp-fixture-1"
+                if branch_body is None:
+                    branch_body = body
+                    responses["resp-fork"] = {
+                        **response_fixture(response_id="resp-fork"),
+                        "previous_response_id": "resp-fixture-1",
+                    }
+                assert body == branch_body
+                return httpx.Response(200, headers={"x-agents-session": "session-fork"}, json=responses["resp-fork"])
             if request.headers.get("Idempotency-Key") and accepted_body is not None:
                 if body == accepted_body:
                     return httpx.Response(200, json=responses["resp-fixture-1"])
                 return httpx.Response(409, json={"error": {"code": "conflict", "message": "Key conflict"}})
-            if body.get("previous_response_id") and revision == 2:
-                return httpx.Response(409, json={"error": {"code": "conflict", "message": "Stale parent"}})
             revision += 1
             if revision == 1:
                 accepted_body = body
@@ -190,6 +201,7 @@ def test_full_responses_lifecycle_journey_uses_pinned_sdk_contract() -> None:
                 responses[value["id"]] = value
                 return httpx.Response(200, headers={"x-agents-session": "session-fixture"}, json=value)
             assert revision == 2 and body["stream"] is True
+            source_messages.append({"role": "user", "content": body["input"]})
             events = event_fixture()
             for event in events:
                 if "response" in event:
@@ -213,19 +225,28 @@ def test_full_responses_lifecycle_journey_uses_pinned_sdk_contract() -> None:
         return httpx.Response(200, json=responses[request.url.path.rsplit("/", 1)[-1]])
 
     def session_state(method: str, path: str) -> dict[str, Any]:
-        assert method == "GET" and path == "/v1/sessions/session-fixture"
-        return {"input_revision": revision, "messages": [{"tool_calls": [{"function": {"name": "time"}}]}]}
+        assert method == "GET"
+        if path == "/v1/sessions/session-fork":
+            assert branch_body is not None
+            return {"input_revision": 1, "pinned": pin, "messages": [
+                source_messages[0], {"role": "user", "content": branch_body["input"]},
+            ]}
+        assert path == "/v1/sessions/session-fixture"
+        return {"input_revision": revision, "last_input_at_ms": revision * 1000,
+                "pinned": pin, "messages": list(source_messages)}
 
     deployed = MagicMock(spec=Http)
     deployed.json.side_effect = session_state
     sessions: list[str] = []
     with OpenAI(api_key="fixture-only", base_url="https://fixture.invalid/v1", max_retries=0,
                 http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
-        response_journeys.test_responses_sdk_lifecycle_stream_recovery_and_no_forks(
-            deployed, client, ({"id": "agent-fixture"}, sessions),
+        response_journeys.test_responses_sdk_lifecycle_stream_recovery_and_historical_fork(
+            deployed, client, ({"id": "agent-fixture", "_acceptance_session": "session-fixture"}, sessions),
         )
-    assert sessions == ["session-fixture"] and revision == 2
-    assert len(requests) == 8
+    assert sessions == ["session-fixture", "session-fork"] and revision == 2
+    assert len(requests) == 11
+    initial = requests[0]
+    assert initial.headers["X-Agents-Session"] == "session-fixture"
 
 
 def test_full_background_delete_journey_uses_raw_sdk_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,7 +286,7 @@ def test_full_background_delete_journey_uses_raw_sdk_receipt(monkeypatch: pytest
     with OpenAI(api_key="fixture-only", base_url=deployed.origin + "/v1", max_retries=0,
                 http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
         response_journeys.test_responses_background_and_owner_isolation(
-            deployed, client, ({"id": "agent-fixture"}, sessions),
+            deployed, client, ({"id": "agent-fixture", "_acceptance_session": "session-fixture"}, sessions),
         )
     assert sessions == ["session-fixture"] and other.request.call_count == 5
     assert [request.method for request in requests] == ["POST", "GET", "GET", "DELETE", "GET"]

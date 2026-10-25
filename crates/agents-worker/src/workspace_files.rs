@@ -9,12 +9,21 @@ impl Workspace<'_> {
     /// so an attachment can never select another account or arbitrary R2 key.
     pub async fn materialize_file(&self, file: &OwnedFile) -> Result<Value> {
         validate_file(file, &self.owner)?;
+        if let Some(blob) = linked_image(file) {
+            if crate::workspace_blobs::find_image_key(self.env, &self.owner, &blob.object_key)
+                .await?
+                .as_ref()
+                != Some(&blob)
+            {
+                return Err(fail("file_not_ready"));
+            }
+        }
         self.restore_if_needed().await?;
         let observation = self.require_r2("class_b").await?;
         let object = self
             .env
             .bucket("WORKSPACES")?
-            .get(&file.object_key)
+            .get(file.content_key())
             .execute()
             .await?;
         self.record_r2(&observation, "class_b").await?;
@@ -72,12 +81,33 @@ fn validate_file(file: &OwnedFile, owner: &str) -> Result<()> {
             .id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        || file.object_key != format!("spaces/{}/files/{}", digest_key(owner), file.id)
         || super::decode_sha256(&file.sha256).is_err()
     {
         return Err(fail("file_not_found"));
     }
+    let expected = if let Some(blob) = linked_image(file) {
+        blob.validate(owner)?;
+        format!("space-links/{}/{}", digest_key(owner), file.id)
+    } else {
+        format!("spaces/{}/files/{}", digest_key(owner), file.id)
+    };
+    if file.object_key != expected {
+        return Err(fail("file_not_found"));
+    }
     Ok(())
+}
+
+fn linked_image(file: &OwnedFile) -> Option<crate::workspace_blobs::OwnedBlobRef> {
+    file.blob_key
+        .as_ref()
+        .map(|key| crate::workspace_blobs::OwnedBlobRef {
+            account_id: file.account_id.clone(),
+            object_key: key.clone(),
+            sha256: file.sha256.clone(),
+            bytes: file.bytes,
+            content_type: file.content_type.clone(),
+            kind: crate::workspace_blobs::BlobKind::ImageArtifact,
+        })
 }
 
 fn fail(code: &str) -> Error {
@@ -97,6 +127,7 @@ mod tests {
             purpose: "user_data".into(),
             content_type: "application/pdf".into(),
             object_key: format!("spaces/{}/files/file-abc", digest_key("owner")),
+            blob_key: None,
             bytes: 12,
             sha256: "ab".repeat(32),
             status: "processed".into(),

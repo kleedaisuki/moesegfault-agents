@@ -1,4 +1,4 @@
-use agents_core::{CreateAgent, ModelConfig};
+use agents_core::{CreateAgent, ModelConfig, ToolServices};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -21,6 +21,8 @@ pub struct AgentFile {
     compaction_percent: u8,
     #[serde(default)]
     workspace: bool,
+    #[serde(default, skip_serializing_if = "ToolServices::is_empty")]
+    tool_services: ToolServices,
     model: FileModel,
 }
 
@@ -33,6 +35,8 @@ struct FileModel {
     max_output_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     credential_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protocol: Option<agents_core::ProviderProtocol>,
 }
 
 fn default_tools() -> Vec<String> {
@@ -87,12 +91,14 @@ impl AgentFile {
             skills: agent.skills,
             compaction_percent: agent.compaction_percent.get(),
             workspace: agent.workspace,
+            tool_services: agent.tool_services,
             model: FileModel {
                 provider: agent.model.provider,
                 model: agent.model.model,
                 context_window: agent.model.context_window,
                 max_output_tokens: agent.model.max_output_tokens,
                 credential_id: agent.model.credential_id,
+                protocol: agent.model.protocol,
             },
         })
     }
@@ -120,11 +126,59 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn model_transport_roundtrips_without_changing_credential_authentication() {
+        let source = json!({"name":"native", "model":{"provider":"byok", "model":"owned-model",
+            "context_window":64000,"max_output_tokens":1024,"credential_id":"owned-key","protocol":"responses"}});
+        let file = AgentFile::from_api(source).unwrap();
+        let restored = AgentFile::parse(&file.toml().unwrap()).unwrap();
+        assert_eq!(
+            restored.api_body().unwrap()["model"]["protocol"],
+            "responses"
+        );
+        assert_eq!(
+            restored.api_body().unwrap()["model"]["credential_id"],
+            "owned-key"
+        );
+        assert!(
+            AgentFile::template().unwrap().api_body().unwrap()["model"]
+                .get("protocol")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn template_is_complete_and_valid() {
         let template = AgentFile::template().unwrap();
         assert_eq!(
             AgentFile::parse(&template.toml().unwrap()).unwrap(),
             template
+        );
+    }
+
+    #[test]
+    fn hosted_service_routes_roundtrip_without_credentials_or_outer_route_changes() {
+        let source = serde_json::json!({
+            "name":"Hosted tools","model":ModelConfig::default(),
+            "tool_services":{
+                "image_generation":{"provider":"openai_images","credential_id":"cred_image","model":"image/model"},
+                "web_search":{"credential_id":"cred_search","model":"search/model"},
+            },
+        });
+        let config = AgentFile::from_api(source).unwrap();
+        let encoded = config.toml().unwrap();
+        let decoded = AgentFile::parse(&encoded).unwrap();
+        assert_eq!(decoded, config);
+        assert_eq!(
+            decoded.api_body().unwrap()["tool_services"]["web_search"]["credential_id"],
+            "cred_search"
+        );
+        assert!(!encoded.contains("api_key"));
+        assert!(
+            !AgentFile::template()
+                .unwrap()
+                .toml()
+                .unwrap()
+                .contains("tool_services")
         );
     }
 

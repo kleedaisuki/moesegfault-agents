@@ -488,6 +488,7 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "chat", "completions"] if req.method() == Method::Post => {
             chat(req, env, owner).await
         }
+        ["v1", "conversations", ..] => crate::conversation_routes::handle(req, env, owner).await,
         ["v1", "responses", ..] => crate::response_routes::handle(req, env, owner).await,
         _ => util::json_error(404, "not_found", "Route not found"),
     }
@@ -572,6 +573,11 @@ pub(crate) async fn normalize_model(
         if !valid_byok_model(model) {
             return Ok(false);
         }
+        if model.protocol.is_some_and(|protocol| {
+            protocol.credential_family() != metadata.protocol.credential_family()
+        }) {
+            return Ok(false);
+        }
         // Legacy vendor credentials keep their established registered budgets.
         // New generic endpoints use the explicit (or conservative default) budget.
         let legacy_provider = match metadata.provider.as_str() {
@@ -591,6 +597,11 @@ pub(crate) async fn normalize_model(
         return Ok(true);
     }
     let registry = model_registry(env)?;
+    if model.protocol.is_some_and(|protocol| {
+        protocol.credential_family() != agents_core::ProviderCredentialFamily::Openai
+    }) {
+        return Ok(false);
+    }
     let Some(entry) = registry
         .iter()
         .find(|entry| registered_model(entry, model.provider, &model.model))
@@ -623,6 +634,25 @@ async fn pin(
     env: &RouteContext<'_>,
     agent: &AgentConfig,
 ) -> Result<std::result::Result<PinnedContext, &'static str>> {
+    if let Err(error) =
+        crate::tool_service_routes::validate_owned(env, &agent.owner_id, &agent.tool_services).await
+    {
+        return match error {
+            worker::Error::RustError(code)
+                if matches!(
+                    code.as_str(),
+                    "invalid_tool_services"
+                        | "invalid_image_asset_origin"
+                        | "provider_key_required"
+                        | "provider_key_not_found"
+                        | "tool_service_protocol_unsupported"
+                ) =>
+            {
+                Ok(Err("Tool service route or owned credential is invalid"))
+            }
+            error => Err(error),
+        };
+    }
     if agent.model.provider == Provider::Byok {
         let mut model = agent.model.clone();
         if !normalize_model(env, &agent.owner_id, &mut model).await? {
@@ -690,6 +720,7 @@ async fn agents(
                         | "skills"
                         | "compaction_percent"
                         | "workspace"
+                        | "tool_services"
                 )
             }) {
                 return Ok(bad_request("Unknown agent configuration field"));
@@ -826,19 +857,55 @@ async fn initialize_response_session(
     }
 }
 
+/// Admit a deterministic fork through the normal concurrency and allowance gate.
+pub(crate) async fn response_branch_session(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    pinned: Option<PinnedContext>,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+        return initialize_response_session(env, session).await;
+    }
+    match create_session_inner_at_pinned(env, owner, agent_id, session_id, pinned).await {
+        Ok(Ok(session)) => Ok(Ok(session)),
+        result => {
+            if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+                initialize_response_session(env, session).await
+            } else {
+                result
+            }
+        }
+    }
+}
+
 async fn create_session_inner_at(
     env: &RouteContext<'_>,
     owner: &str,
     agent_id: &str,
     session_id: &str,
 ) -> Result<std::result::Result<SessionRecord, Response>> {
+    create_session_inner_at_pinned(env, owner, agent_id, session_id, None).await
+}
+
+async fn create_session_inner_at_pinned(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    retained_pin: Option<PinnedContext>,
+) -> Result<std::result::Result<SessionRecord, Response>> {
     let store = Store::new(env);
     let Some(agent) = store.get_agent(owner, agent_id).await? else {
         return Ok(Err(util::json_error(404, "not_found", "Agent not found")?));
     };
-    let pinned = match pin(env, &agent).await? {
-        Ok(pinned) => pinned,
-        Err(message) => return Ok(Err(bad_request(message))),
+    let pinned = match retained_pin {
+        Some(pinned) => pinned,
+        None => match pin(env, &agent).await? {
+            Ok(pinned) => pinned,
+            Err(message) => return Ok(Err(bad_request(message))),
+        },
     };
     let now = util::now_ms();
     let session = SessionRecord {

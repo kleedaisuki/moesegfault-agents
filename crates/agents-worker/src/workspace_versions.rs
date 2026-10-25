@@ -120,8 +120,8 @@ pub(crate) async fn activate_upload(env: &Env, key: &str) -> Result<()> {
 pub(crate) async fn admit_upload(env: &Env, payload: &UploadPayload) -> Result<Upload> {
     let v = &payload.version;
     let limits = crate::space::owner_limits(env, &v.account_id).await?;
-    env.d1("DB")?.prepare("INSERT INTO workspace_version_uploads(object_key,account_id,session_id,operation_id,archive_bytes,version_json,created_at_ms,status) SELECT ?,?,?,?,CAST(? AS INTEGER),?,CAST(? AS INTEGER),'pending' WHERE (SELECT COALESCE(SUM(bytes),0) FROM space_files WHERE account_id=? AND status IN ('uploading','processed','deleting'))+(SELECT COALESCE(SUM(archive_bytes),0) FROM (SELECT object_key,MAX(archive_bytes) AS archive_bytes FROM workspace_versions WHERE account_id=? GROUP BY object_key))+(SELECT COALESCE(SUM(archive_bytes),0) FROM workspace_version_uploads u WHERE account_id=? AND status IN ('pending','abandoned') AND NOT EXISTS(SELECT 1 FROM workspace_versions v WHERE v.object_key=u.object_key))+CAST(? AS INTEGER)<=CAST(? AS INTEGER) AND (SELECT COUNT(*) FROM workspace_versions WHERE account_id=?)+(SELECT COUNT(*) FROM workspace_version_uploads u WHERE account_id=? AND status='pending' AND NOT EXISTS(SELECT 1 FROM workspace_versions v WHERE v.account_id=u.account_id AND v.session_id=u.session_id AND v.operation_id=u.operation_id))<CAST(? AS INTEGER) ON CONFLICT(account_id,session_id,operation_id) DO NOTHING")
-        .bind(&[text(&v.object_key),text(&v.account_id),text(&v.session_id),text(&v.operation_id),text(&v.archive_bytes.to_string()),text(&serde_json::to_string(payload)?),text(&v.created_at_ms.to_string()),text(&v.account_id),text(&v.account_id),text(&v.account_id),text(&v.archive_bytes.to_string()),text(&limits.bytes.to_string()),text(&v.account_id),text(&v.account_id),text(&limits.versions.to_string())])?.run().await?;
+    env.d1("DB")?.prepare("INSERT INTO workspace_version_uploads(object_key,account_id,session_id,operation_id,archive_bytes,version_json,created_at_ms,status) SELECT ?,?,?,?,CAST(? AS INTEGER),?,CAST(? AS INTEGER),'pending' WHERE (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=? GROUP BY object_key))+CAST(? AS INTEGER)<=CAST(? AS INTEGER) AND (SELECT COUNT(*) FROM workspace_versions WHERE account_id=?)+(SELECT COUNT(*) FROM workspace_version_uploads u WHERE account_id=? AND status='pending' AND NOT EXISTS(SELECT 1 FROM workspace_versions v WHERE v.account_id=u.account_id AND v.session_id=u.session_id AND v.operation_id=u.operation_id))<CAST(? AS INTEGER) ON CONFLICT(account_id,session_id,operation_id) DO NOTHING")
+        .bind(&[text(&v.object_key),text(&v.account_id),text(&v.session_id),text(&v.operation_id),text(&v.archive_bytes.to_string()),text(&serde_json::to_string(payload)?),text(&v.created_at_ms.to_string()),text(&v.account_id),text(&v.archive_bytes.to_string()),text(&limits.bytes.to_string()),text(&v.account_id),text(&v.account_id),text(&limits.versions.to_string())])?.run().await?;
     pending_upload(env, &v.account_id, &v.session_id, &v.operation_id)
         .await?
         .ok_or_else(|| fail("space_quota_exceeded"))
@@ -158,6 +158,52 @@ pub(crate) async fn publish(env: &Env, version: &Version) -> Result<Version> {
     .ok_or_else(|| fail("space_quota_exceeded"))?;
     env.d1("DB")?.prepare("UPDATE workspace_version_uploads SET status='published' WHERE object_key=? AND account_id=? AND session_id=? AND operation_id=? AND status='pending'")
         .bind(&[text(&result.object_key),text(&result.account_id),text(&result.session_id),text(&result.operation_id)])?.run().await?;
+    Ok(result)
+}
+
+/// The current session already holds this checked owner blob. Space's existing
+/// saved-version quota remains logical: sharing avoids a physical R2 copy, not
+/// charging the same retained object once for every reference.
+pub(crate) async fn publish_shared(
+    env: &Env,
+    version: &Version,
+    archive: &crate::workspace_blobs::OwnedArchiveRef,
+) -> Result<Version> {
+    archive.validate(&version.account_id)?;
+    if version.object_key != archive.object_key
+        || version.sha256 != archive.sha256
+        || version.format_version != archive.format_version
+        || version.archive_bytes != archive.archive_bytes
+        || version.name.len() > 100
+        || version.name.chars().any(char::is_control)
+        || version.operation_id.is_empty()
+    {
+        return Err(fail("invalid_workspace_version"));
+    }
+    crate::workspace_blobs::bind_session(env, &version.account_id, &version.session_id, archive)
+        .await?;
+    let limits = crate::space::owner_limits(env, &version.account_id).await?;
+    env.d1("DB")?.prepare("INSERT INTO workspace_versions(id,account_id,session_id,operation_id,name,object_key,sha256,format_version,generation,archive_bytes,logical_bytes,entries,created_at_ms) SELECT ?1,?2,?3,?4,?5,?6,?7,CAST(?8 AS INTEGER),CAST(?9 AS INTEGER),CAST(?10 AS INTEGER),CAST(?11 AS INTEGER),CAST(?12 AS INTEGER),CAST(?13 AS INTEGER) WHERE EXISTS(SELECT 1 FROM workspace_blobs WHERE object_key=?6 AND account_id=?2 AND status='ready') AND (SELECT COUNT(*) FROM workspace_versions WHERE account_id=?2)+(SELECT COUNT(*) FROM workspace_version_uploads u WHERE account_id=?2 AND status='pending' AND NOT EXISTS(SELECT 1 FROM workspace_versions v WHERE v.account_id=u.account_id AND v.session_id=u.session_id AND v.operation_id=u.operation_id))<CAST(?14 AS INTEGER) AND (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?2 GROUP BY object_key))<=CAST(?15 AS INTEGER) ON CONFLICT(account_id,session_id,operation_id) DO NOTHING")
+        .bind(&[text(&version.id),text(&version.account_id),text(&version.session_id),text(&version.operation_id),text(&version.name),text(&version.object_key),text(&version.sha256),text(&version.format_version.to_string()),text(&version.generation.to_string()),text(&version.archive_bytes.to_string()),text(&version.logical_bytes.to_string()),text(&version.entries.to_string()),text(&version.created_at_ms.to_string()),text(&limits.versions.to_string()),text(&limits.bytes.to_string())])?.run().await?;
+    let result = find_operation(
+        env,
+        &version.account_id,
+        &version.session_id,
+        &version.operation_id,
+    )
+    .await?
+    .ok_or_else(|| fail("space_quota_exceeded"))?;
+    if result.object_key != version.object_key || result.name != version.name {
+        return Err(fail("workspace_operation_conflict"));
+    }
+    crate::workspace_blobs::bind(
+        env,
+        &version.account_id,
+        crate::workspace_blobs::RefKind::Version,
+        &result.id,
+        archive,
+    )
+    .await?;
     Ok(result)
 }
 

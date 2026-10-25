@@ -19,6 +19,7 @@ import { createResponsesProviderFixture, runResponsesNodeSdkJourney, runResponse
 import { runResponsesPolicyJourney } from './responses-policy-journey.mjs';
 import { createCoalescingProviderFixture, runResponsesCoalescingJourney } from './responses-coalescing-journey.mjs';
 import { runSpaceJourney } from './space-journey.mjs';
+import { runWorkspaceBlobJourney } from './workspace-blob-journey.mjs';
 import { runJsonObserverJourney } from './json-observer-journey.mjs';
 import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
 
@@ -60,6 +61,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     modulesRoot: build,
     modules: [
       { type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
+        contents: await readFile(new URL('./workspace-blob-shim.mjs', import.meta.url), 'utf8') },
+      { type: 'ESModule', path: path.join(build, 'worker/chat-recovery-shim.mjs'),
         contents: await readFile(new URL('./chat-recovery-shim.mjs', import.meta.url), 'utf8') },
       { type: 'ESModule', path: path.join(build, 'index.js') },
       { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') },
@@ -72,6 +75,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     durableObjects: {
       SESSIONS: { className: 'Session', useSQLite: true },
       AUTH_SESSIONS: { className: 'AuthSession', useSQLite: true },
+      CONVERSATION_STATE: { className: 'ConversationState', useSQLite: true },
+      MODEL_OPERATIONS: { className: 'ModelOperation', useSQLite: true },
     },
     ratelimits: Object.fromEntries(['INGRESS', 'ACCOUNT', 'MUTATION'].map((name, i) => [
       `${name}_RATE_LIMITER`, { namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } },
@@ -509,13 +514,15 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     runJsonObserverJourney(responseContext()));
   await selected(t, 'Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>
     runSpaceJourney(responseContext()));
+  await selected(t, 'Workspace shared owner archive historical fork and immutable download retain one physical copy', { timeout: 24000 }, () =>
+    runWorkspaceBlobJourney(responseContext()));
   await selected(t, 'Responses actual Node SDK streams, recovers and returns local function results', { timeout: 16000 }, () =>
     runResponsesNodeSdkJourney(responseContext()));
   await selected(t, 'Responses mixed server/local tools reject partial results and resume an archived head', { timeout: 16000 }, () =>
     runResponsesLocalToolsJourney(responseContext()));
   await selected(t, 'Responses repeated compaction retains exact fixed and request-scoped instructions', { timeout: 16000 }, () =>
     runResponsesCompactionJourney(responseContext()));
-  await selected(t, 'Responses concurrent children admit one linear background execution', { timeout: 16000 }, () =>
+  await selected(t, 'Responses concurrent children admit independent background executions', { timeout: 16000 }, () =>
     runResponsesBackgroundRaceJourney(responseContext()));
   await selected(t, 'Responses no-store, upstream failure and output-budget terminals remain distinct', { timeout: 16000 }, () =>
     runResponsesStorageAndFailureJourney(responseContext()));

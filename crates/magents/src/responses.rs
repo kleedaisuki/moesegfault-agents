@@ -10,6 +10,9 @@ pub enum Responses {
     /// Create from Responses API JSON; use '-' for stdin. Local tools are never auto-executed.
     Create {
         file: PathBuf,
+        /// Use an existing session, including its immutable model and tool pin.
+        #[arg(long)]
+        session: Option<String>,
         /// Stream text and report response/session identities on stderr.
         #[arg(long)]
         stream: bool,
@@ -24,7 +27,10 @@ pub enum Responses {
     Run {
         agent: String,
         prompt: String,
-        /// Continue the latest response; older history cannot be forked.
+        /// Use an existing session, including its immutable model and tool pin.
+        #[arg(long)]
+        session: Option<String>,
+        /// Continue or fork a retained response.
         #[arg(long)]
         previous: Option<String>,
         /// Return a durable response immediately instead of waiting for its answer.
@@ -66,6 +72,7 @@ pub async fn run(api: &Api, command: Responses) -> Result<()> {
     match command {
         Responses::Create {
             file,
+            session,
             stream,
             events,
             idempotency_key,
@@ -77,12 +84,16 @@ pub async fn run(api: &Api, command: Responses) -> Result<()> {
             if stream {
                 body["stream"] = true.into();
             }
-            api.create_response(body, events, idempotency_key.as_deref())
+            let session = session
+                .map(|id| segment(&id).map(str::to_owned))
+                .transpose()?;
+            api.create_response(body, events, idempotency_key.as_deref(), session)
                 .await
         }
         Responses::Run {
             agent,
             prompt,
+            session,
             previous,
             background,
             stream,
@@ -94,7 +105,10 @@ pub async fn run(api: &Api, command: Responses) -> Result<()> {
             if let Some(previous) = previous {
                 body["previous_response_id"] = segment(&previous)?.into();
             }
-            api.create_response(body, events, idempotency_key.as_deref())
+            let session = session
+                .map(|id| segment(&id).map(str::to_owned))
+                .transpose()?;
+            api.create_response(body, events, idempotency_key.as_deref(), session)
                 .await
         }
         Responses::Show {

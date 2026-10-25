@@ -328,10 +328,11 @@ impl Api {
         body: Value,
         raw_events: bool,
         key: Option<&str>,
+        session: Option<String>,
     ) -> Result<()> {
         let stream = body.get("stream").and_then(Value::as_bool) == Some(true);
         let response = self
-            .request_with_key("POST", "/v1/responses", Some(body), None, key)
+            .request_with_key("POST", "/v1/responses", Some(body), session, key)
             .await?;
         if stream {
             response_stream(response, raw_events).await

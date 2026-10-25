@@ -21,7 +21,7 @@ pub(crate) fn validate(request: &ResponseRequest) -> Result<NormalizedInput, Inp
             code: "invalid_request_error",
             message,
         })?;
-    if request.previous_response_id.is_none() {
+    if request.previous_response_id.is_none() && request.conversation.is_none() {
         validate_imported_history(&input.messages).map_err(|code| InputError {
             code,
             message: "Imported function calls and outputs must be complete, ordered groups".into(),
@@ -36,11 +36,11 @@ pub(crate) fn validate(request: &ResponseRequest) -> Result<NormalizedInput, Inp
             message: "Continuation accepts only new input and matching function results".into(),
         });
     }
-    if request
-        .tools
-        .iter()
-        .any(|tool| tools::tool_kind(&tool.name).is_some())
-    {
+    if request.tools.iter().any(|tool| {
+        tool.name.starts_with("__agents_")
+            || (matches!(tool.kind.as_str(), "function" | "custom")
+                && tools::tool_kind(&tool.name).is_some())
+    }) {
         return Err(InputError {
             code: "tool_name_conflict",
             message: "Client tools cannot replace server tools".into(),

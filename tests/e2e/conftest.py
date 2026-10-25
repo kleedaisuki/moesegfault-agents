@@ -10,6 +10,8 @@ import urllib.request
 import uuid
 from typing import Any
 
+from paid_route_policy import assert_direct_deepseek_pin
+
 import pytest
 
 
@@ -69,11 +71,17 @@ class Http:
         with response:
             return response.status, response.headers, response.read()
 
-    def json(self, method, path, data=None, expected=200, **kwargs):
+    def json(self, method: str, path: str, data: Any = None, expected: int = 200,
+             **kwargs: Any) -> Any:
         status, _, body = self.request(method, path, data, **kwargs)
         # Do not expose response bodies: diagnostics can contain user content.
         assert status == expected, f"{method} {path}: expected {expected}, received {status}"
-        return json.loads(body) if body else None
+        value = json.loads(body) if body else None
+        if (os.getenv("MAGENTS_TEST_INFERENCE") == "1" and method == "POST"
+                and path.startswith("/v1/agents/") and path.endswith("/sessions")):
+            assert isinstance(value, dict)
+            assert_direct_deepseek_pin(self, value)
+        return value
 
 
 def cleanup_deployed_agent(api, agent_id, session_ids, timeout=480):

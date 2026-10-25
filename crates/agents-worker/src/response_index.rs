@@ -31,6 +31,29 @@ pub(crate) async fn by_key(
         .await
 }
 
+/// The initialized child becomes observable before any child execution starts.
+pub(crate) async fn move_to_child(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    expected_session: &str,
+    child_session: &str,
+) -> Result<Option<ResponseRoute>> {
+    env.d1("DB")?
+        .prepare(
+            "UPDATE response_routes SET session_id=? WHERE account_id=? AND id=? AND session_id=?",
+        )
+        .bind(&[
+            child_session.into(),
+            owner.into(),
+            id.into(),
+            expected_session.into(),
+        ])?
+        .run()
+        .await?;
+    get(env, owner, id).await
+}
+
 /// Reserve before dispatch: an ambiguous transport failure must not create a new run.
 /// The optional key's uniqueness also selects one session under racing SDK retries.
 pub(crate) async fn reserve(

@@ -1,0 +1,167 @@
+# Native web search service adapters
+
+This is the search provider boundary for the complete Responses workstream. It is
+not an acceptance receipt. The latest user policy authorizes an explicit platform
+DeepSeek default as well as BYOK. No other platform search-provider fallback is allowed.
+
+## Provider and execution boundary
+
+The first adapter targets an explicitly configured OpenAI-compatible **Responses
+search service**, with its own owner-scoped credential ID and model. It is
+independent of the main agent's model. A BYOK language-model credential is not
+implicitly a search credential. Platform DeepSeek is a separate explicit route.
+
+`search_byok::prepare` accepts a secret-free `SearchBinding`, native search-tool
+options, the harness-selected query and existing tool execution ID. The binding
+contains credential ID, model, maximum output tokens and maximum native tool calls.
+The credential is resolved through the existing account-scoped encrypted vault at
+execution preparation. Its immutable protocol must be in the OpenAI credential family (`openai` or
+`responses`); no environment-secret or
+platform-provider fallback exists. A missing binding returns `search_byok_required`
+before credential lookup or HTTP dispatch. Preparation returns opaque
+`PreparedSearch`, containing owned Rust secret/configuration data but no native
+request or serializable/debug representation. Admission must perform the same
+binding and capability check before starting paid agent work. The harness resolves
+preparation first, persists its dispatch fence, then consumes
+`PreparedSearch::dispatch` exactly once. Credential lookup/validation failures are
+therefore known pre-dispatch failures, not uncertain paid requests.
+
+One external `/responses` request declares one search tool, uses `tool_choice:
+"required"`, bounded `max_tool_calls`/`max_output_tokens`, `store:false`, and no
+automatic request retry. The native provider may perform search, open-page and
+find-in-page actions within that bounded operation. This is a provider tool-service
+call, not another local agent harness. The owning DO must persist dispatch intent
+before awaiting it, wrap the operation in the normal tool timeout and journal its
+known result before publication. A lost response is an uncertain external outcome,
+not permission to submit the prompt again. The deterministic idempotency header
+does not assert that every compatible provider honors it.
+
+The platform's resource accounting still applies. Search provider/model fees are
+paid directly by the BYOK owner; the adapter does not fabricate a platform model
+price or infer usage from text. `SearchExchange` retains exact native usage and
+raw usage data even when a terminal payload violates protocol. Missing counters
+remain unreported, including unknown reasoning tokens. Provider HTTP failures
+return a bounded code/status without error-body disclosure; network/truncated
+JSON uncertainty must retain the existing unresolved-operation provenance.
+
+## Wire and evidence contract
+
+The typed options preserve the current official variants:
+
+| Variant | Options |
+| --- | --- |
+| `web_search`, `web_search_2025_08_26` | `external_web_access`, `filters.allowed_domains`, `search_context_size`, `user_location` |
+| `web_search_preview`, `web_search_preview_2025_03_11` | `search_content_types`, `search_context_size`, `user_location` |
+
+Location fields are type/city/country/region/timezone; omitted values are not filled
+with invented coordinates. Modern filter/cache-only fields are not silently
+discarded for a preview provider. The provider receives the configured values and
+must reject capabilities it cannot implement.
+
+The result contains typed native `web_search_call` items and their actual action:
+`search`, `open_page`, or `find_in_page`. Native result objects, answer text,
+sources and URL citations are user data. They are never emitted into telemetry.
+Search/source URLs are parsed and checked before being exposed; the adapter never
+fetches them itself and never sends the credential to a result URL. The provider
+route reuses the vault's public HTTPS validation and refuses redirects.
+
+Citation offsets retain their native message ID and content-part index. They are
+not offsets into the outer agent's later answer, or even into a concatenation of
+multiple native text parts. The coordinator may use authoritative source URLs to
+anchor citations in text actually produced by the outer agent; it must not blindly
+copy these offsets onto different text. Raw provider answer/citations remain
+available for that decision.
+
+Completed native responses require real search calls, unique call IDs, valid
+actions and completed call states. Failed, incomplete, malformed, over-budget or
+filter-violating provider results do not become fabricated successful searches.
+The adapter bounds response bytes, answer bytes, query size, call count, source
+count and annotation ranges.
+
+## Integration and verification
+
+The adapter slice owns `crates/agents-worker/src/search_byok.rs` and
+`crates/agents-worker/src/search_deepseek.rs`.
+Shared tool schemas, binding management, canonical item/event publication,
+operation metering and provider-result fences are integrated by the hosted-tools
+coordinator. Module wiring and actual-Wasm provider fixtures remain required;
+formatting or native payload fixtures alone are not end-to-end acceptance.
+
+Pure contracts cover exact option forwarding, current/preview distinctions,
+search/open/find results, citation identity, known versus missing usage, terminal
+status validation, source filter enforcement and safe failure metadata. No real
+search query, model request, credential read, deployment or local Rust build was
+performed while implementing this slice.
+
+## Dedicated DeepSeek search and fetch (2026-10-25 policy update)
+
+`search_deepseek` targets the documented first-party JSON APIs, not a speculative
+`enable_search` flag, a proxy, or another paid model turn:
+
+- `POST https://api.deepseek.com/v1/tools/search`
+- `POST https://api.deepseek.com/v1/tools/fetch`
+
+The platform route resolves only `DEEPSEEK_API_KEY`. The separate dedicated BYOK
+route resolves an explicitly selected owner credential, requires the OpenAI
+credential family and the official DeepSeek host/base, and never falls back to
+the platform key. Both return the same opaque prepared-dispatch type. Parent
+admission must select the route before any main-model work. Official documentation
+establishes public API availability; this implementation has not verified the
+deployment account's entitlement with a live query. Such a probe needs the root
+coordinator's separate approval.
+
+One `DeepseekAction` is one fenced external operation. `Search` calls search once;
+`OpenPage` calls fetch once; `FindInPage` calls fetch once and performs bounded
+literal matching against its returned Markdown. There are no hidden follow-up
+page requests, model requests, automatic retries or local URL fetches. Actions
+need distinct execution IDs if a tool workflow performs more than one operation.
+Fetch URLs use the shared public-host policy and configured domain constraints;
+the credential is sent exclusively to DeepSeek, never the fetched target.
+
+Search queries are limited to 128 Unicode scalar values, including server-added
+`site:` clauses. `query_limit` exposes the remaining model-visible budget; queries
+are rejected rather than truncated. Context size maps to 5/10/20 results.
+Cache-only search, user geolocation and image results have no corresponding
+dedicated API capability and fail before secret resolution/dispatch, rather than
+being silently ignored. Source domains are additionally checked on results.
+Untrusted summaries and Markdown are user data, not telemetry or instructions.
+DeepSeek returns source URLs rather than answer-span citation offsets; this
+adapter emits no invented citation annotations. The coordinator can anchor these
+sources in the outer model's actual answer.
+
+`DeepseekSearchExchange.receipt` records the operation and exact successful
+nonempty request units independently of model-token usage. A nonempty HTTP-200
+result still counts if our publication policy rejects its contents. A malformed
+or lost response has no trustworthy receipt, preserving an unresolved outcome;
+it is not silently settled as zero or retried. Known HTTP failures and empty
+results produce zero successful units. The adapter does not invent token counts
+or use language-model token prices for this API.
+
+The official tariff snapshot is `$0.75 / 1,000` successful nonempty search or
+fetch requests, i.e. **750 microdollars per unit**. The documented free period
+ends at **2026-11-01 00:00 Beijing time**, or **2026-10-31T16:00:00Z**. The receipt
+includes `price_revision=deepseek-search-fetch-2026-10-25`; billing must use the
+original dispatch timestamp and tariff revision, not the later settlement clock.
+Platform actual provider cost is zero during that window; BYOK provider charges
+are always paid by the owner. Infrastructure remains separately metered. Search
+and fetch have separate account QPS budgets (100 and 25 respectively); admission
+and resource reservations belong to the owning coordinator.
+
+Five added pure fixtures cover the dedicated request contract/Unicode limits,
+nonempty-unit charging/deduplicated sources, rejected-publication receipts,
+fetch/find payloads and pre-dispatch safety/capability failures. Formatting and
+diff checks pass. Module wiring, compilation, actual-Wasm fixtures, configured
+tariff ledger integration and live account acceptance remain parent-owned; no
+live or paid operation was made in this slice.
+
+## Primary references
+
+- [OpenAI web search guide](https://developers.openai.com/api/docs/guides/tools-web-search)
+- [Create response reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
+- Repository contract cache: `.cache/full-responses-spec/create.md` (official
+  Markdown fetched by the contract-inventory owner on 2026-10-25).
+- [DeepSeek Search & Fetch guide](https://api-docs.deepseek.com/guides/search/)
+- [DeepSeek Search API](https://api-docs.deepseek.com/api/search/)
+- [DeepSeek Fetch API](https://api-docs.deepseek.com/api/fetch/)
+- Existing vault policy: [BYOK protocol adapters](byok-protocols.md).
+

@@ -38,6 +38,8 @@ pub(super) struct ResponseRun {
     pub(super) attachments: Vec<crate::space::OwnedFile>,
     #[serde(default)]
     pub(super) attachments_ready: usize,
+    #[serde(default)]
+    pub(super) branch_point: Option<super::branch::BranchPoint>,
 }
 
 impl ResponseRun {
@@ -310,6 +312,8 @@ impl SessionInner {
                     }
                 }
                 self.persist().await?;
+                let deletion = self.persistence.lock().await;
+                self.queue_response_archive_release(id).await?;
                 response.deleted = true;
                 response.request.input = Value::Null;
                 response.request.instructions = None;
@@ -323,6 +327,9 @@ impl SessionInner {
                 response.output.clear();
                 response.events.clear();
                 self.write_response(&response).await?;
+                drop(deletion);
+                self.reconcile_response_archives().await?;
+                self.arm_alarm().await?;
                 Response::from_json(&json!({"id":id,"object":"response.deleted","deleted":true}))
             }
             _ => util::json_error(405, "method_not_allowed", "Unsupported response operation"),
@@ -365,6 +372,13 @@ impl SessionInner {
         if let Some(existing) = self.read_response(&create.response_id).await? {
             return self.existing_response(existing, &request).await;
         }
+        if self.branch_dispatched(&create.response_id).await? {
+            return util::json_error(
+                409,
+                "response_branch_required",
+                "This response has an independent child session",
+            );
+        }
         let mut input = match crate::response_preflight::validate(&request) {
             Ok(input) => input,
             Err(error) => {
@@ -372,6 +386,20 @@ impl SessionInner {
             }
         };
         let data = self.snapshot()?;
+        if request.previous_response_id.is_some()
+            && (request.previous_response_id != data.response_head
+                || request.model != data.record.agent_id
+                || data.run.is_some()
+                || self.closing.get()
+                || data.archive_preparing
+                || data.archive_pending)
+        {
+            return util::json_error(
+                409,
+                "response_branch_required",
+                "Continue from an independent child session",
+            );
+        }
         if data.run.is_some()
             || self.closing.get()
             || data.archive_preparing
@@ -393,16 +421,22 @@ impl SessionInner {
         if request.previous_response_id != data.response_head {
             return util::json_error(
                 409,
-                "response_fork_not_supported",
-                "Continue the current response head; history forks are not supported",
+                "response_branch_required",
+                "Continue from an independent child session",
             );
         }
         if let Some(parent) = request.previous_response_id.as_deref() {
-            let Some(parent) = self.read_response(parent).await? else {
-                return util::json_error(404, "not_found", "Previous response not retained");
-            };
-            if parent.deleted || !parent.request.store {
-                return util::json_error(404, "not_found", "Previous response not retained");
+            let imported = data
+                .imported_parent
+                .as_ref()
+                .is_some_and(|seed| seed.response_id == parent);
+            if !imported {
+                let Some(parent) = self.read_response(parent).await? else {
+                    return util::json_error(404, "not_found", "Previous response not retained");
+                };
+                if parent.deleted || !parent.request.store {
+                    return util::json_error(404, "not_found", "Previous response not retained");
+                }
             }
         }
         if request.previous_response_id.is_some() {
@@ -420,7 +454,12 @@ impl SessionInner {
         let local = request.tool_definitions().map_err(Error::RustError)?;
         definitions.extend(local);
         let mut config = self.provider_config(&data.record).await?;
-        let options = request.generation_options();
+        let mut options = request.generation_options();
+        if let Err(error) =
+            Self::validate_native_generation(&config, &request, &definitions, &mut options)
+        {
+            return util::json_error(400, "unsupported_native_request", &error.to_string());
+        }
         if let Err(error) = options.validate_for_config(&config, &definitions) {
             return util::json_error(400, "unsupported_generation_option", &error.to_string());
         }
@@ -495,17 +534,41 @@ impl SessionInner {
         {
             return util::json_error(409, "session_busy", "Session changed while resolving input");
         }
+        let native_input = if config.protocol == agents_core::ProviderProtocol::Responses {
+            let items = execution_request
+                .native_input_items()
+                .map_err(Error::RustError)?;
+            if native::unresolved_input(&items) {
+                return util::json_error(
+                    400,
+                    "unresolved_native_item",
+                    "Referenced or opaque input must first resolve to this owner's provider context",
+                );
+            }
+            Some(items)
+        } else {
+            if input.native_only {
+                return util::json_error(
+                    400,
+                    "unsupported_native_input",
+                    "These items require a native Responses provider",
+                );
+            }
+            None
+        };
         let mut prefix = system_prefix(&data.record);
-        for instruction in data
-            .history_instructions
-            .iter()
-            .chain(input.history_instructions.iter())
-        {
-            prefix.push_str(&format!(
-                "\n\nHistorical {} instruction:\n{}",
-                instruction.role,
-                instruction.content.as_str().unwrap_or("")
-            ));
+        if config.protocol != agents_core::ProviderProtocol::Responses {
+            for instruction in data
+                .history_instructions
+                .iter()
+                .chain(input.history_instructions.iter())
+            {
+                prefix.push_str(&format!(
+                    "\n\nHistorical {} instruction:\n{}",
+                    instruction.role,
+                    instruction.content.as_str().unwrap_or("")
+                ));
+            }
         }
 
         if !input.instructions.is_empty() {
@@ -523,6 +586,13 @@ impl SessionInner {
         if let Some(existing) = self.read_response(&create.response_id).await? {
             drop(acceptance);
             return self.existing_response(existing, &request).await;
+        }
+        if self.branch_dispatched(&create.response_id).await? {
+            return util::json_error(
+                409,
+                "response_branch_required",
+                "This response has an independent child session",
+            );
         }
         let before_pins = self.snapshot()?;
         if before_pins.run.is_some()
@@ -642,6 +712,7 @@ impl SessionInner {
             deleted: false,
             attachments: resolved.attachments,
             attachments_ready: 0,
+            branch_point: None,
         };
         response.event("response.created", json!({"response":response.value()}))?;
         {
@@ -652,6 +723,14 @@ impl SessionInner {
             run.worker_attached = !request.background;
             run.traceparent = traceparent;
             run.response = Some(response.clone());
+            if let Some(items) = native_input {
+                run.native_input = Some(native::NativeInputBatch {
+                    items,
+                    message_begin: data.messages.len(),
+                    message_end: current.messages.len(),
+                    history_begin: data.history_instructions.len(),
+                });
+            }
         }
         {
             let mut accepted = self.snapshot()?;
@@ -758,7 +837,7 @@ impl SessionInner {
             .transpose()
     }
 
-    async fn write_response(&self, response: &ResponseRun) -> Result<()> {
+    pub(super) async fn write_response(&self, response: &ResponseRun) -> Result<()> {
         write_chunks(
             &self.state.storage(),
             &format!("{RESPONSE_PREFIX}{}", response.id),
@@ -1273,6 +1352,8 @@ impl SessionInner {
             let kind = format!("response.{}", response.status);
             response.event(&kind, json!({"response":value}))?;
         }
+        self.seal_branch_point(&mut response).await?;
+        response.branch_point.as_mut().unwrap().pending_calls = response.awaiting_calls.clone();
         self.write_response(&response).await?;
         Ok(Some(response))
     }
@@ -1357,7 +1438,7 @@ fn project_response_input(
     messages.extend(input);
 }
 
-fn validate_tool_outputs(
+pub(super) fn validate_tool_outputs(
     expected: &[provider::ToolCall],
     provided: &[wire::ToolOutput],
 ) -> std::result::Result<(), &'static str> {
@@ -1457,6 +1538,7 @@ mod tests {
             deleted: false,
             attachments: vec![],
             attachments_ready: 0,
+            branch_point: None,
         }
     }
 
@@ -1601,6 +1683,7 @@ mod tests {
             message: Message::text("assistant", ""),
             finish_reason: "tool_calls".into(),
             usage: Usage::default(),
+            native: None,
         };
         completion.message.tool_calls.push(call("call_1"));
         assert!(SessionInner::validate_response_output(&completion, &request, true).is_err());
@@ -1630,6 +1713,7 @@ mod tests {
             message: Message::text("assistant", "done"),
             finish_reason: "stop".into(),
             usage: Usage::default(),
+            native: None,
         };
         request.tool_choice = Some(json!("required"));
         assert!(SessionInner::validate_response_output(&completion, &request, true).is_err());

@@ -19,6 +19,7 @@ import pytest
 from conftest import Http, cleanup_deployed_agent, correlation_headers
 from response_checks import checked_response
 from stream_usage import reported_stream_usage
+from paid_route_policy import direct_deepseek_model
 
 
 @pytest.fixture
@@ -292,6 +293,7 @@ def space_workspace_agent(deployed: Http) -> Iterator[tuple[dict[str, Any], list
         pytest.skip("workspace versions require separate inference and workspace opt-ins")
     agent = deployed.json("POST", "/v1/agents", {
         "name": "space-version-" + uuid.uuid4().hex[:12],
+        "model": direct_deepseek_model(deployed),
         "instructions": "Use the exact tools requested. Run exact bash commands, and report actual tool results. "
                         "Never infer file contents from conversation history. Do not persist or restore unless requested.",
         "tools": ["time", "bash", "workspace_commit", "workspace_versions", "workspace_restore"],

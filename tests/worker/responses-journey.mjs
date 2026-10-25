@@ -195,13 +195,26 @@ export async function runResponsesNodeSdkJourney(context) {
       const result = input.messages.find(message => message.role === 'tool' && message.tool_call_id === 'node-local-call');
       assert.equal(result?.content, 'sdk-local-result');
     } },
+    { text: 'Node SDK historical branch.', check(input) {
+      const prompt = JSON.stringify(input.messages);
+      assert.ok(prompt.includes('Return the first Node SDK fixture answer.'));
+      assert.ok(prompt.includes('Node SDK first.'));
+      assert.ok(prompt.includes('Create an independent Node SDK historical child.'));
+      assert.ok(!prompt.includes('Return the streamed Node SDK fixture answer.'));
+      assert.ok(!prompt.includes('Node SDK streamed.'));
+      assert.ok(!prompt.includes('node-local-call'));
+      assert.ok(!prompt.includes('sdk-local-result'), 'The historical fork excludes later tool calls and outputs');
+      assert.ok(!prompt.includes('Keep this request-specific instruction distinct'), 'Top-level instructions do not carry across Responses');
+    } },
   ]);
   try {
     const sdk = await runResponsesSdkJourney({ apiKey: scenario.principal.apiKey, baseURL: 'https://agents.test/v1',
       agentId: scenario.agent.id, fetch: (input, init) => context.mf.dispatchFetch(input, init) });
     scenario.observations.events.push(...sdk.events);
     const snapshots = await Promise.all(sdk.responseIds.map(id => scenario.read(id)));
-    await bounded(context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sdk.sessionId}` }));
+    for (const sessionId of [sdk.sessionId, sdk.branchSessionId]) {
+      await bounded(context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sessionId}` }));
+    }
     assert.deepEqual(await Promise.all(sdk.responseIds.map(id => scenario.read(id))), snapshots,
       'Cold reconstruction must retain every immutable response, not only the session head');
     const replay = await context.mf.dispatchFetch(`https://agents.test/v1/responses/${sdk.responseIds[1]}?stream=true`, {
@@ -219,7 +232,18 @@ export async function runResponsesNodeSdkJourney(context) {
     assert.deepEqual(await scenario.read(sdk.responseIds.at(-1)), snapshots.at(-1));
     assert.deepEqual((await context.request('GET', `/v1/sessions/${sdk.sessionId}`, undefined, 200, scenario.principal.apiKey)).messages,
       beforeDelete.messages, 'Deleting one response representation cannot erase source history');
-    assert.equal(scenario.state.calls, 4, 'SDK reads, replay and stale-parent rejection cannot dispatch inference');
+    assert.equal(scenario.state.calls, 5, 'The one historical child adds one inference; SDK reads, replay and deletion add none');
+    const modelRows = await context.db.prepare(`
+      SELECT r.idempotency_key,r.state,CAST(l.quantity AS TEXT) AS quantity,l.unit,
+        CAST(l.amount_microusd AS TEXT) AS amount,l.price_version
+      FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id
+      WHERE r.account_id=? AND l.resource='model' ORDER BY r.idempotency_key
+    `).bind(scenario.principal.owner).all();
+    assert.deepEqual(modelRows.results, sdk.responseIds.map(id => ({
+      idempotency_key: `completion:${id}:round:0`, state: 'settled', quantity: '160', unit: 'tokens',
+      amount: '0', price_version: 'byok',
+    })).sort((left, right) => left.idempotency_key.localeCompare(right.idempotency_key)),
+    'Exactly five known BYOK provider rounds must be durably metered, including the independent branch');
   } catch (error) { scenario.recordFailure(error); throw error; }
   finally { await scenario.finish(); }
 }
@@ -363,31 +387,70 @@ export async function runResponsesCompactionJourney(context) {
 export async function runResponsesBackgroundRaceJourney(context) {
   let release;
   const pending = new Promise(resolve => { release = resolve; });
+  const seenChildren = new Set();
+  function checkChild(input) {
+    const prompt = JSON.stringify(input.messages);
+    const children = [0, 1].filter(index => prompt.includes(`Concurrent child ${index}`));
+    assert.equal(children.length, 1, 'Concurrent child context contains its own input, never its sibling');
+    assert.ok(!seenChildren.has(children[0]), 'Each child is dispatched once');
+    seenChildren.add(children[0]);
+  }
   const scenario = await fixture(context, 'background', [
-    { text: 'Initial linear head.' },
-    { text: 'The only admitted child.', wait: pending },
+    { text: 'Initial immutable head.' },
+    { text: 'First independent child.', wait: pending, check: checkChild },
+    { text: 'Second independent child.', wait: pending, check: checkChild },
   ]);
   try {
+    const now = Math.floor(Date.now() / 1000);
+    const subscription = [{ id: 'synthetic-background-go', product_id: 'agents', plan_id: 'agents-go', status: 'active',
+      current_period_start: now - 10, current_period_end: now + 3600, entitlements: ['agents.access', 'agents.tier.go'] }];
+    // Go's two-run admission is required: Free correctly permits only one.
+    await context.db.prepare("INSERT INTO subscription_snapshots(account_id,product_id,subscription_json,fetched_at,valid_until) VALUES(?,'agents',?,?,?)")
+      .bind(scenario.principal.owner, JSON.stringify(subscription), now, now + 300).run();
     const initial = await scenario.invoke({ input: 'Create a head.' });
     const children = await Promise.all([0, 1].map(index => context.mf.dispatchFetch('https://agents.test/v1/responses', {
-      method: 'POST', headers: { Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': 'application/json' },
+      method: 'POST', headers: { Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': 'application/json',
+        'Idempotency-Key': `background-independent-child-${index}` },
       body: JSON.stringify({ model: scenario.agent.id, previous_response_id: initial.value.id,
         input: `Concurrent child ${index}`, background: true }),
     })));
-    assert.deepEqual(children.map(response => response.status).sort(), [200, 409], 'Only one child may claim the same head');
-    const accepted = await children.find(response => response.status === 200).json();
-    await children.find(response => response.status === 409).arrayBuffer();
-    assert.ok(['queued', 'in_progress'].includes(accepted.status));
-    await waitUntil(() => scenario.state.calls === 2);
-    for (let index = 0; index < 3; index++) {
-      const polled = await scenario.read(accepted.id);
-      assert.equal(polled.id, accepted.id);
-      assert.ok(['queued', 'in_progress'].includes(polled.status));
+    assert.deepEqual(children.map(response => response.status), [200, 200], 'Both children of a retained parent are independently admissible');
+    assert.notEqual(children[0].headers.get('x-agents-session'), children[1].headers.get('x-agents-session'));
+    const accepted = await Promise.all(children.map(response => response.json()));
+    assert.notEqual(accepted[0].id, accepted[1].id);
+    for (const child of accepted) {
+      assert.ok(['queued', 'in_progress'].includes(child.status));
+      assert.equal(child.previous_response_id, initial.value.id);
     }
-    assert.equal(scenario.state.calls, 2, 'Polling cannot create inference');
+    await waitUntil(() => scenario.state.calls === 3);
+    if (scenario.state.failure) throw scenario.state.failure;
+    assert.equal(seenChildren.size, 2, 'Both model requests must be in flight before releasing either fixture result');
+    for (let index = 0; index < 3; index++) {
+      for (const child of accepted) {
+        const polled = await scenario.read(child.id);
+        assert.equal(polled.id, child.id);
+        assert.ok(['queued', 'in_progress'].includes(polled.status));
+      }
+    }
+    assert.equal(scenario.state.calls, 3, 'Polling two children cannot create inference');
     release();
-    await waitUntil(async () => (await scenario.read(accepted.id)).status === 'completed');
-    assert.deepEqual(await scenario.read(initial.value.id), initial.value);
+    await waitUntil(async () => (await Promise.all(accepted.map(child => scenario.read(child.id))))
+      .every(child => child.status === 'completed'));
+    assert.deepEqual(await scenario.read(initial.value.id), initial.value, 'Parallel children cannot mutate their immutable parent');
+    const replay = await scenario.invoke({ previous_response_id: initial.value.id,
+      input: 'Concurrent child 1', background: true }, 200, { 'Idempotency-Key': 'background-independent-child-1' });
+    assert.equal(replay.value.id, accepted[1].id);
+    assert.equal(replay.value.status, 'completed');
+    assert.equal(scenario.state.calls, 3, 'An idempotent child retry only observes its original execution');
+    const metered = await context.db.prepare(`
+      SELECT COUNT(*) AS count,SUM(CAST(l.quantity AS INTEGER)) AS tokens,
+        SUM(CAST(l.amount_microusd AS INTEGER)) AS amount,
+        COUNT(DISTINCT r.idempotency_key) AS distinct_rounds
+      FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id
+      WHERE r.account_id=? AND l.resource='model' AND r.state='settled'
+    `).bind(scenario.principal.owner).first();
+    assert.deepEqual(metered, { count: 3, tokens: 480, amount: 0, distinct_rounds: 3 },
+      'The parent and both children each settle one known BYOK inference, with no duplicate ledger receipt');
   } catch (error) { scenario.recordFailure(error); throw error; }
   finally { release(); await scenario.finish(); }
 }

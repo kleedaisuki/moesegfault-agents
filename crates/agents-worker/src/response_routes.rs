@@ -88,9 +88,6 @@ async fn create(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result
         return util::json_error(400, error.code, &error.message);
     }
     if let Some(parent) = &previous {
-        if parent.agent_id != input.model {
-            return invalid("The previous response belongs to a different agent");
-        }
         if session_header
             .as_ref()
             .is_some_and(|id| id != &parent.session_id)
@@ -199,6 +196,12 @@ async fn dispatch_create(
     }
     let headers = response.headers().clone();
     let body: Value = response.json().await?;
+    let code = body.pointer("/error/code").and_then(Value::as_str);
+    if code == Some("response_branch_required")
+        || (code == Some("session_busy") && request["previous_response_id"].is_string())
+    {
+        return dispatch_branch(env, owner, &route, &session, request).await;
+    }
     if body.pointer("/error/code").and_then(Value::as_str) != Some("response_session_closed") {
         retire_rejected_session(env, &session, &route, existing_session, 409).await;
         return with_identity(
@@ -234,6 +237,93 @@ async fn dispatch_create(
     )
     .await;
     with_identity(response, &route)
+}
+
+async fn dispatch_branch(
+    env: &RouteContext<'_>,
+    owner: &str,
+    route: &ResponseRoute,
+    source: &agents_core::SessionRecord,
+    request: Value,
+) -> Result<Response> {
+    let Some(parent) = request["previous_response_id"].as_str() else {
+        return invalid("A branch requires a previous response");
+    };
+    let mut exported = routes::forward(
+        env,
+        source,
+        Method::Post,
+        "/branches/export",
+        Some(json!({
+            "owner_id": owner, "parent_response_id": parent, "child_response_id": route.id, "request": request,
+        })),
+    )
+    .await?;
+    if exported.status_code() >= 300 {
+        let status = exported.status_code();
+        let body: Value = exported.json().await?;
+        if body.pointer("/error/code").and_then(Value::as_str) == Some("response_already_admitted")
+        {
+            // Canonical positive evidence of this exact run permits observation,
+            // not a retry after ambiguous transport failure.
+            let response = routes::forward(
+                env,
+                source,
+                Method::Post,
+                "/responses",
+                Some(json!({
+                    "response_id": route.id, "request": request,
+                })),
+            )
+            .await?;
+            return with_identity(response, route);
+        }
+        return with_identity(Response::from_json(&body)?.with_status(status), route);
+    }
+    let seed: crate::session::branch::BranchExport = exported.json().await?;
+    let child_id = crate::session::branch::child_session_id(owner, &route.id);
+    let retained_pin = (seed.agent_id == route.agent_id).then(|| seed.pinned.clone());
+    let child =
+        match routes::response_branch_session(env, owner, &route.agent_id, &child_id, retained_pin)
+            .await?
+        {
+            Ok(child) => child,
+            Err(response) => return with_identity(response, route),
+        };
+    let imported = routes::forward(
+        env,
+        &child,
+        Method::Post,
+        "/branches/import",
+        Some(serde_json::to_value(seed)?),
+    )
+    .await?;
+    if imported.status_code() >= 300 {
+        return with_identity(imported, route);
+    }
+    let Some(moved) =
+        response_index::move_to_child(env, owner, &route.id, &route.session_id, &child_id).await?
+    else {
+        return not_found();
+    };
+    if moved.session_id != child_id {
+        return util::json_error(
+            409,
+            "response_route_conflict",
+            "Response was bound to another execution session",
+        );
+    }
+    let response = routes::forward(
+        env,
+        &child,
+        Method::Post,
+        "/responses",
+        Some(json!({
+            "response_id": route.id, "request": request,
+        })),
+    )
+    .await?;
+    with_identity(response, &moved)
 }
 
 async fn retire_rejected_session(

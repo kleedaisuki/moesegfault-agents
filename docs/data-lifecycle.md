@@ -14,6 +14,12 @@ session projection or DO cached manifest can lag publication and is not sufficie
 proof that an archive is disposable. Session closure does not delete its current
 workspace or conversation.
 
+A newly imported historical branch has a deliberate pre-publication exception:
+its owner-validated seed and strong archive reference are durable in the child
+DO, and `workspace:seed-pending` remains set until first admitted workspace use
+publishes its R2 manifest. Import itself performs no unfunded R2 operation and
+does not start a container. The seed is not a disposable cache entry.
+
 ## Space data and immutable workspace versions
 
 An account has one Space independent of its agent sessions. Files are mutable
@@ -21,10 +27,12 @@ only through display-name changes or explicit deletion; their original bytes,
 digest and identity do not change. Published workspace versions are immutable
 user data, including when their source session is closed or its current
 checkpoint advances. The public user API cannot rename, replace or delete a
-saved version. These versions have independent archive keys outside the legacy
-session-checkpoint collector's namespace, so mixed-version sessions cannot
-accidentally reclaim them. Repeated versions may share one owned immutable
-archive; its physical bytes have one retained-storage clock.
+saved version. Legacy `space-versions/` archives remain untouched. New live
+checkpoints, saved versions and historical response boundaries share immutable
+owner blobs outside the legacy session-checkpoint collector's namespace; their
+physical bytes have one account-owned retained-storage clock. Strong references
+are acquired before pointer publication, and stale current references are
+released only after committed publication or successful restore recovery.
 
 File publication follows checksum-verified object storage, retained-byte
 registration and operation accounting. Pending uploads reserve capacity before
@@ -74,14 +82,55 @@ See [Space workflows and recovery](space.md) and
 [workspace version publication](workspace-versions.md) for the user contract and
 the durable commit points.
 
-## Write-ahead checkpoint discovery
+## Shared blob discovery and service migration floor
 
-Before each immutable archive PUT, `workspace::checkpoint` writes
-`workspace_checkpoint_intents` in D1. Failure to persist the intent prevents the
-PUT. This captures uploads that fail halfway, uploads whose billing registration
-fails, and checkpoints whose manifest never commits. Keys contain hashed owner
-and session components, a compressed-content digest, and a fresh UUID; an upload
-key is never reused. No per-file metadata operations or bucket scans are added.
+Migration 0016 adds the single `workspace_blobs`/`workspace_blob_refs` registry.
+Despite its historical table name, this is one typed owner-object engine for
+workspace archives and immutable generated images. The image kind has its own
+MIME/size/key constraints; it cannot bypass workspace format-1 validation.
+New candidate rows precede archive PUT, and readiness follows checksum/size
+verification and physical storage registration. An indexed due scan examines at
+most 64 rows per sweep; D1 atomically claims only expired objects with no strong
+references or published-version row. The claim rejects late reference insertion.
+HEAD repairs a missing storage clock, R2 deletion precedes clock closure, and
+only then is candidate metadata removed. Referenced user data is never aged out.
+
+Space capacity counts hidden archives, images, files and candidates once per
+owner/physical object key, including bytes still deleting. Its raw UNION view is
+filtered by owner before grouping; grouping the whole view first caused a global
+scan in the measured SQLite query plan. Provider capacity holds count against the
+same limit before a paid image call but do not create physical storage charges.
+Actual candidates atomically replace holds. Fork-transfer leases protect an
+exported archive until its child has a durable independent current reference.
+Only those intermediate holds/transfer leases have a 24-hour TTL.
+
+Generated image Files are metadata links. Explicit File deletion releases only
+the file's strong reference; response results retain independent immutable bytes.
+Active linked metadata also guards the pre-reference publication crash window.
+Deleted-file provenance is retained without an unconditional blob foreign key,
+so a metadata tombstone cannot pin physical bytes forever. Indexed bounded
+maintenance repairs stale file references by checking explicit tombstones.
+
+Published version references cannot be removed. A response reference is released
+only after its owning DO durably tombstones that public response; descendant
+sessions and other responses hold independent references. Failed cleanup remains
+retryable rather than reversing the tombstone or deleting needed bytes.
+
+Once a session publishes an owner-blob manifest, restoration requires a
+blob-aware service binary and migration 0016. An older binary cannot decode the
+trusted reference contract; rollback must preserve this service migration floor
+or use forward recovery. Protected namespaces prevent old collectors from
+deleting user data but do not make older restoration code compatible. SDK/CLI
+snapshot schemas and public archive format remain unchanged.
+
+## Legacy write-ahead checkpoint discovery
+
+Existing session-prefix uploads retain their `workspace_checkpoint_intents`
+discovery journal in D1. This captures uploads that failed halfway, uploads whose
+billing registration failed, and checkpoints whose manifest never committed.
+Keys contain hashed owner and session components, a compressed-content digest,
+and a fresh UUID; an upload key is never reused. New owner blobs use the shared
+registry above rather than creating a parallel legacy intent.
 
 The regular Workers scheduled event selects at most 64 due records using the
 `(next_check_ms, object_key)` index and a durable keyset cursor. It requests
