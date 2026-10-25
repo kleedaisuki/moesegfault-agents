@@ -245,7 +245,7 @@ export async function runResponsesCoalescingJourney(context) {
     assert.deepEqual(wireOutput(stored.output), terminal.output, 'Real SDK replay must preserve every output item and text boundary');
     assert.equal(stored.id, terminal.id);
     assert.equal(canonical.output_text, exactText, 'Canonical retrieval must match every disclosed UTF-8 byte');
-    return { ...observation, terminal, stored };
+    return { ...observation, terminal, stored, sessionId: raw.headers.get('x-agents-session') };
   }
   try {
     const quiet = await responseTurn('Deliver three quiet-gap fragments.', { stream_options: { include_obfuscation: false } });
@@ -290,16 +290,34 @@ export async function runResponsesCoalescingJourney(context) {
     assert.equal(textEvents(terminalTail).map(value => value.event.delta).join(''), 'TERMINAL_FIRSTTERMINAL_TAIL');
     const terminalRecord = scenario.state.records.at(-1);
     const terminalAddedMs = terminalTail.received.at(-1) - terminalRecord.completedAt;
-    receipt.terminal = { added_ms: terminalAddedMs, exact_tail_preserved: true };
-    assert.ok(terminalAddedMs >= 0 && terminalAddedMs < 250, 'A terminal boundary must drain pending text without waiting for a batching timer');
+    const tailReceived = textEvents(terminalTail).find(value => value.event.delta.includes('TERMINAL_TAIL'));
+    assert.ok(tailReceived);
+    const tailAddedMs = tailReceived.at - terminalRecord.completedAt;
+    receipt.terminal = { publication_added_ms: terminalAddedMs, tail_added_ms: tailAddedMs, exact_tail_preserved: true };
+    await persistReceipt(context, receipt);
+    // The terminal object also waits for durable finalization; measure batching
+    // against the text tail, not unrelated storage publication latency. A tail
+    // may already have timer-flushed just before provider completion.
+    assert.ok(tailAddedMs >= -50 && tailAddedMs < 250, 'A terminal boundary must drain pending text without waiting for a batching timer');
 
     const tool = await responseTurn('Use the clock and finish after flushing each text item.');
     assert.equal(tool.stored.output_text, 'TOOL_FIRSTTOOL_TAILTOOL_FINAL');
-    const functionIndex = tool.events.findIndex(event => event.type === 'response.function_call_arguments.delta');
     const tailIndex = tool.events.findIndex(event => event.type === 'response.output_text.delta' && event.delta.includes('TOOL_TAIL'));
-    assert.ok(tailIndex >= 0 && functionIndex > tailIndex, 'Buffered text must precede the function-call boundary');
+    const firstDone = tool.events.findIndex(event => event.type === 'response.output_text.done' && event.text === 'TOOL_FIRSTTOOL_TAIL');
     const finalIndex = tool.events.findIndex(event => event.type === 'response.output_text.delta' && event.delta.includes('TOOL_FINAL'));
-    assert.ok(finalIndex > functionIndex && finalIndex < tool.events.length - 1, 'Final-item text must be flushed before the terminal event');
+    assert.ok(tailIndex >= 0 && firstDone > tailIndex && finalIndex > firstDone,
+      'Buffered text must finish its first item before post-tool text starts');
+    assert.ok(finalIndex < tool.events.length - 1, 'Final-item text must be flushed before the terminal event');
+    assert.ok(!tool.events.some(event => event.type.startsWith('response.function_call_arguments.')
+      || (event.type === 'response.output_item.added' && event.item.type === 'function_call')),
+    'Built-in server tools must never leak as caller-local function handoffs');
+    const source = await context.request('GET', `/v1/sessions/${tool.sessionId}`, undefined, 200, scenario.principal.apiKey);
+    const clockCall = source.messages.flatMap(message => message.tool_calls ?? [])
+      .find(call => call.id === 'coalescing-clock' && call.function.name === 'time');
+    assert.ok(clockCall, 'The source journal must retain the actual built-in clock invocation');
+    const clockResult = source.messages.find(message => message.role === 'tool' && message.tool_call_id === clockCall.id);
+    assert.ok(clockResult && Number.isSafeInteger(JSON.parse(clockResult.content).unix_ms),
+      'The source journal must retain the actual clock result before final model text');
 
     const accepted = await scenario.invoke({ previous_response_id: head, input: 'Run until cancellation.', background: true });
     head = accepted.value.id;

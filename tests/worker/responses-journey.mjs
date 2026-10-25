@@ -250,7 +250,7 @@ export async function runResponsesLocalToolsJourney(context) {
       assert.ok(projected.content.some(part => part.type === 'text' && part.text.includes('local-one')));
       assert.ok(projected.content.some(part => part.type === 'image_url' && part.image_url.url === imageUrl));
     } },
-  ]);
+  ], { context_window: 32768 });
   const tools = ['read_local_a', 'read_local_b'].map(name => ({ type: 'function', name,
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false }, strict: true }));
   try {

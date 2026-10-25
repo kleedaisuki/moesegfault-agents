@@ -7,7 +7,8 @@ from typing import Any
 import httpx
 import pytest
 from openai import APIStatusError, OpenAI
-from pydantic import ValidationError
+from openai.types.responses import Response, ResponseStreamEvent
+from pydantic import TypeAdapter, ValidationError
 
 from response_checks import checked_response, checked_stream
 
@@ -193,6 +194,31 @@ def test_internal_codes_cannot_replace_standard_response_literals(failure: str) 
         value["error"] = {"code": "provider_outcome_unknown", "message": "Internal diagnostic code."}
     else:
         value["incomplete_details"] = {"reason": "response_event_limit"}
+    with pytest.raises(ValidationError):
+        checked_response(value)
+
+
+@pytest.mark.parametrize("mode", ["response", "stream"])
+def test_structured_output_schema_alias_survives_sdk_revalidation(mode: str) -> None:
+    text = {"format": {"type": "json_schema", "name": "policy_result", "strict": True,
+                       "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}}}
+    value = response_fixture()
+    value["text"] = text
+    if mode == "response":
+        response = checked_response(Response.model_validate(value))
+    else:
+        raw_events = event_fixture()
+        for event in raw_events:
+            if "response" in event:
+                event["response"]["text"] = text
+        adapter: TypeAdapter[ResponseStreamEvent] = TypeAdapter(ResponseStreamEvent)
+        response, _ = checked_stream(adapter.validate_python(event) for event in raw_events)
+    assert response.model_dump(by_alias=True)["text"]["format"]["schema"] == text["format"]["schema"]
+
+
+def test_structured_output_schema_is_still_required_on_the_original_wire() -> None:
+    value = response_fixture()
+    value["text"] = {"format": {"type": "json_schema", "name": "missing_schema", "strict": True}}
     with pytest.raises(ValidationError):
         checked_response(value)
 

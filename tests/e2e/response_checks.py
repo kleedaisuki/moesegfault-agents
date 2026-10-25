@@ -11,7 +11,8 @@ _event_schema: TypeAdapter[ResponseStreamEvent] = TypeAdapter(ResponseStreamEven
 
 
 def checked_response(value: Response | dict[str, Any]) -> Response:
-    raw = value.model_dump() if isinstance(value, Response) else value
+    # SDK fields such as schema_ use Python names unless wire aliases are kept.
+    raw = value.model_dump(by_alias=True) if isinstance(value, Response) else value
     response = Response.model_validate(raw)
     assert response.id and response.object == "response"
     assert response.created_at > 0
@@ -49,7 +50,7 @@ def checked_stream(
     expected_status: str = "completed",
     require_created: bool = True,
 ) -> tuple[Response, list[ResponseStreamEvent]]:
-    observed = [_event_schema.validate_python(event.model_dump()) for event in events]
+    observed = [_event_schema.validate_python(event.model_dump(by_alias=True)) for event in events]
     assert observed, "response stream ended without lifecycle events"
     sequences = [event.sequence_number for event in observed]
     assert all(number >= 0 for number in sequences)

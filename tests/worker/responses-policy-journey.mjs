@@ -36,9 +36,9 @@ async function assertSettledModelRounds(context, scenario, response, rounds) {
     SELECT r.idempotency_key,r.state,CAST(l.quantity AS TEXT) AS quantity,l.unit,
       CAST(l.amount_microusd AS TEXT) AS amount,l.price_version
     FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id
-    WHERE r.account_id=?1 AND r.idempotency_key LIKE ?2 AND l.resource='model'
+    WHERE r.account_id=?1 AND substr(r.idempotency_key,1,length(?2))=?2 AND l.resource='model'
     ORDER BY r.idempotency_key
-  `).bind(scenario.principal.owner, `completion:${response.id}:round:%`).all();
+  `).bind(scenario.principal.owner, `completion:${response.id}:round:`).all();
   assert.deepEqual(rows.results, Array.from({ length: rounds }, (_, index) => ({
     idempotency_key: `completion:${response.id}:round:${index}`,
     state: 'settled', quantity: '160', unit: 'tokens', amount: '0', price_version: 'byok',
