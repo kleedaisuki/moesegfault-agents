@@ -1059,7 +1059,7 @@ impl SessionInner {
                 r.pending_completion = None;
                 r.round += 1;
             }
-            self.response_completion(completion)?;
+            self.response_completion(completion).await?;
             let policy_terminal = self
                 .data
                 .borrow()
@@ -1306,26 +1306,50 @@ impl SessionInner {
             .borrow()
             .as_ref()
             .and_then(|observer| observer.stream_sender(&run.id));
-        let completion = bounded_provider(provider::complete_stream_with_options(
-            &config,
-            &messages,
-            &definitions,
-            &options,
-            |delta| {
+        let structured = run.response.as_ref().is_some_and(|response| {
+            response
+                .request
+                .text
+                .as_ref()
+                .and_then(|text| text.get("format"))
+                .and_then(|format| format.get("type"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind != "text")
+        });
+        let mut publish = |delta: &str| {
+            if !structured {
                 let _ = self.response_delta(delta);
-                if let Some(tx) = &sender {
-                    send_chunk(
-                        tx,
-                        &run.id,
-                        &record.agent_id,
-                        json!({"content":delta}),
-                        None,
-                        None,
-                    );
-                }
-            },
-        ))
-        .await?;
+            }
+            if let Some(tx) = &sender {
+                send_chunk(
+                    tx,
+                    &run.id,
+                    &record.agent_id,
+                    json!({"content":delta}),
+                    None,
+                    None,
+                );
+            }
+        };
+        let completion = if run.response.is_some() && !structured {
+            bounded_provider(provider::complete_stream_with_options_and_buffer(
+                &config,
+                &messages,
+                &definitions,
+                &options,
+                &mut publish,
+            ))
+            .await?
+        } else {
+            bounded_provider(provider::complete_stream_with_options(
+                &config,
+                &messages,
+                &definitions,
+                &options,
+                &mut publish,
+            ))
+            .await?
+        };
         {
             let mut current = self.data.borrow_mut();
             let run = current.as_mut().unwrap().run.as_mut().unwrap();
@@ -2135,6 +2159,7 @@ fn safe_error_code(error: &Error) -> String {
         "invalid_function_arguments",
         "invalid_structured_output",
         "provider_parallel_tool_policy_violation",
+        "provider_tool_choice_policy_violation",
         "response_output_limit",
         "response_event_limit",
         "execution_round_limit",
@@ -2198,9 +2223,12 @@ fn correctable_tool_error(error: &Error) -> Option<Value> {
         | "workspace_operation_conflict"
         | "invalid_workspace_version"
         | "invalid_workspace_restore"
-        | "workspace commit arguments must match the registered schema"
-        | "workspace versions arguments must match the registered schema"
-        | "workspace restore arguments must match the registered schema" => (
+        | "workspace_commit arguments must match the registered schema"
+        | "workspace_versions arguments must match the registered schema"
+        | "workspace_restore arguments must match the registered schema"
+        | "name must contain 1 to 100 bytes"
+        | "limit must be between 1 and 100 and after must be a saved version ID"
+        | "version_id must be a saved version ID" => (
             "invalid_tool_arguments",
             "Check the workspace version and operation arguments, then retry with corrected input.",
         ),

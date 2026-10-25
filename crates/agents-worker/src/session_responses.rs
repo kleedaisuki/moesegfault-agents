@@ -878,7 +878,7 @@ impl SessionInner {
         self.response_event("response.output_text.delta", json!({"item_id":item_id,"output_index":index,"content_index":0,"delta":delta,"logprobs":[]}))
     }
 
-    pub(super) fn response_completion(&self, completion: &Completion) -> Result<()> {
+    pub(super) async fn response_completion(&self, completion: &Completion) -> Result<()> {
         let data = self.snapshot()?;
         let Some(run) = data.run else { return Ok(()) };
         let Some(response) = run.response else {
@@ -894,13 +894,22 @@ impl SessionInner {
         if projected_bytes > MAX_RESPONSE_OUTPUT_BYTES {
             return Err(Error::RustError("response_output_limit".into()));
         }
-        Self::validate_response_output(completion, &response.request)?;
+        Self::validate_response_output(completion, &response.request, run.round == 1)?;
 
         let index = response.output.len();
         let item_id = format!("msg_{}_{}", run.id, run.round.saturating_sub(1));
-        if !text.is_empty()
-            || completion.message.tool_calls.is_empty()
-            || response.stream_item.is_some()
+        let structured = response
+            .request
+            .text
+            .as_ref()
+            .and_then(|text| text.get("format"))
+            .and_then(|format| format.get("type"))
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind != "text");
+        if (!structured || completion.message.tool_calls.is_empty())
+            && (!text.is_empty()
+                || completion.message.tool_calls.is_empty()
+                || response.stream_item.is_some())
         {
             if response.stream_item.is_none() {
                 self.response_delta(text)?;
@@ -968,6 +977,7 @@ impl SessionInner {
             .as_mut()
             .unwrap()
             .stream_item = None;
+        let mut published_calls = 0usize;
         for call in &completion.message.tool_calls {
             if !response
                 .request
@@ -1017,6 +1027,12 @@ impl SessionInner {
                 .unwrap()
                 .output
                 .push(item);
+            published_calls += 1;
+            if published_calls.is_multiple_of(2) {
+                // A ready provider stream or a parallel handoff can otherwise
+                // fill the observer queue before even a fast JS reader is polled.
+                worker::Delay::from(std::time::Duration::ZERO).await;
+            }
         }
         if completion.finish_reason == "content_filter" {
             self.data
@@ -1067,6 +1083,48 @@ impl SessionInner {
     }
 
     fn validate_response_output(completion: &Completion, request: &ResponseRequest) -> Result<()> {
+        let calls = &completion.message.tool_calls;
+        let refusal = completion
+            .message
+            .extra
+            .get("refusal")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty());
+        if request
+            .tool_choice
+            .as_ref()
+            .is_some_and(|choice| choice == "none")
+            && !calls.is_empty()
+        {
+            return Err(Error::RustError(
+                "provider_tool_choice_policy_violation".into(),
+            ));
+        }
+        if first_round
+            && !refusal
+            && !matches!(
+                completion.finish_reason.as_str(),
+                "length" | "content_filter"
+            )
+        {
+            if let Some(choice) = request.tool_choice.as_ref() {
+                let violation = if choice == "required" {
+                    calls.is_empty()
+                } else if choice["type"] == "function" {
+                    calls.is_empty()
+                        || calls.iter().any(|call| {
+                            choice["name"].as_str() != Some(call.function.name.as_str())
+                        })
+                } else {
+                    false
+                };
+                if violation {
+                    return Err(Error::RustError(
+                        "provider_tool_choice_policy_violation".into(),
+                    ));
+                }
+            }
+        }
         if request.parallel_tool_calls == Some(false) && completion.message.tool_calls.len() > 1 {
             return Err(Error::RustError(
                 "provider_parallel_tool_policy_violation".into(),
@@ -1545,22 +1603,54 @@ mod tests {
             usage: Usage::default(),
         };
         completion.message.tool_calls.push(call("call_1"));
-        assert!(SessionInner::validate_response_output(&completion, &request).is_err());
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_err());
         completion.message.tool_calls[0].function.arguments = r#"{"path":"file.txt"}"#.into();
-        assert!(SessionInner::validate_response_output(&completion, &request).is_ok());
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_ok());
         completion.message.tool_calls.clear();
         completion.finish_reason = "stop".into();
         request.text = Some(json!({"format":{"type":"json_object"}}));
         completion.message.content = json!("[]");
-        assert!(SessionInner::validate_response_output(&completion, &request).is_err());
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_err());
         completion.message.content = json!("{\"ok\":true}");
-        assert!(SessionInner::validate_response_output(&completion, &request).is_ok());
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_ok());
         completion.message.content = json!("");
         completion
             .message
             .extra
             .insert("refusal".into(), json!("Cannot comply"));
-        assert!(SessionInner::validate_response_output(&completion, &request).is_ok());
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_ok());
+    }
+
+    #[test]
+    fn returned_tool_calls_cannot_override_the_callers_selection_policy() {
+        let mut request = response().request;
+        let mut completion = Completion {
+            id: "p".into(),
+            model: "m".into(),
+            message: Message::text("assistant", "done"),
+            finish_reason: "stop".into(),
+            usage: Usage::default(),
+        };
+        request.tool_choice = Some(json!("required"));
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_err());
+        assert!(SessionInner::validate_response_output(&completion, &request, false).is_ok());
+        completion.message.tool_calls.push(call("c"));
+        request.tool_choice = Some(json!("none"));
+        for first in [true, false] {
+            assert!(SessionInner::validate_response_output(&completion, &request, first).is_err());
+        }
+        request.tool_choice = Some(json!({"type":"function","name":"other"}));
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_err());
+        assert!(SessionInner::validate_response_output(&completion, &request, false).is_ok());
+        request.tool_choice = Some(json!({"type":"function","name":"local"}));
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_ok());
+        completion.message.tool_calls.clear();
+        request.tool_choice = Some(json!("required"));
+        completion
+            .message
+            .extra
+            .insert("refusal".into(), json!("Cannot comply"));
+        assert!(SessionInner::validate_response_output(&completion, &request, true).is_ok());
     }
 
     #[test]

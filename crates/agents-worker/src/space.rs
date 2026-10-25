@@ -14,6 +14,8 @@ use worker::{Env, Error, Method, Request, Response, Result};
 
 use crate::{reconcile, resources::ResourceMeter, store::Store, util};
 
+#[path = "space_download.rs"]
+mod download;
 #[path = "space_pin_reconcile.rs"]
 mod pin_reconcile;
 #[path = "space_pins.rs"]
@@ -178,7 +180,7 @@ pub async fn handle(mut req: Request, env: &Env, owner: &str, path: &str) -> Res
     let parts: Vec<_> = tail.trim_start_matches('/').split('/').collect();
     let id = parts[0];
     if parts.len() == 2 && parts[1] == "content" && req.method() == Method::Get {
-        return content(&req, env, owner, id).await;
+        return download::content(&req, env, owner, id).await;
     }
     if parts.len() != 1 {
         return util::json_error(404, "not_found", "Resource not found");
@@ -909,6 +911,15 @@ async fn finish_delete(env: &Env, file: &OwnedFile) -> Result<()> {
 }
 
 pub async fn file_object(env: &Env, owner: &str, file: &OwnedFile) -> Result<worker::Object> {
+    file_object_range(env, owner, file, None).await
+}
+
+async fn file_object_range(
+    env: &Env,
+    owner: &str,
+    file: &OwnedFile,
+    range: Option<worker::Range>,
+) -> Result<worker::Object> {
     if file.account_id != owner || file.status != "processed" {
         return Err(fail("file_not_found"));
     }
@@ -919,11 +930,13 @@ pub async fn file_object(env: &Env, owner: &str, file: &OwnedFile) -> Result<wor
     meter
         .require_observation("file.download", Resource::R2Operation, "class_b")
         .await?;
-    let object = env
-        .bucket("WORKSPACES")?
-        .get(&file.object_key)
-        .execute()
-        .await?;
+    let bucket = env.bucket("WORKSPACES")?;
+    let get = bucket.get(&file.object_key);
+    let get = match range {
+        Some(range) => get.range(range),
+        None => get,
+    };
+    let object = get.execute().await?;
     meter
         .record_observation("file.download", Resource::R2Operation, "class_b", 1)
         .await?;
@@ -931,23 +944,6 @@ pub async fn file_object(env: &Env, owner: &str, file: &OwnedFile) -> Result<wor
     object
         .filter(|object| object.size() == file.bytes)
         .ok_or_else(|| fail("file_not_ready"))
-}
-
-async fn content(_req: &Request, env: &Env, owner: &str, id: &str) -> Result<Response> {
-    let Some(file) = get_owned_file(env, owner, id).await? else {
-        return not_found();
-    };
-    let object = file_object(env, owner, &file).await?;
-    let body = object.body().ok_or_else(|| fail("file_not_ready"))?;
-    let mut response = Response::from_body(body.response_body()?)?;
-    let headers = response.headers_mut();
-    headers.set("Content-Type", &file.content_type)?;
-    headers.set("Content-Length", &file.bytes.to_string())?;
-    headers.set("Content-Disposition", &content_disposition(&file.filename))?;
-    headers.set("X-Content-Type-Options", "nosniff")?;
-    headers.set("X-Content-Sha256", &file.sha256)?;
-    headers.set("ETag", &format!("\"{}\"", file.sha256))?;
-    Ok(response)
 }
 
 pub async fn read_text(env: &Env, owner: &str, id: &str) -> Result<Option<String>> {

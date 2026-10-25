@@ -82,7 +82,7 @@ pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         )?;
         response.headers_mut().set(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, X-CSRF-Token, X-Agents-Session, Idempotency-Key, X-Content-Sha256, If-None-Match, Range, traceparent",
+            "Authorization, Content-Type, X-CSRF-Token, X-Agents-Session, Idempotency-Key, X-Content-Sha256, If-None-Match, If-Range, Range, traceparent",
         )?;
         response.headers_mut().set(
             "Access-Control-Expose-Headers",

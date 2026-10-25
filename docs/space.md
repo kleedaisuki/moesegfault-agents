@@ -203,5 +203,41 @@ failure contract.
   a known rejected operation is distinct from a disconnected observer or crash.
 
 Downloads hand the native R2 response body to the client without per-chunk WASM
-copying. Bandwidth optimization is applied after this baseline's end-to-end
-validation, not used to substitute for byte fidelity, ownership or recovery.
+copying. After the baseline passed actual-Worker CI, the content endpoint adds
+bounded conditional and partial reads without changing ordinary SDK downloads.
+
+## Conditional and partial downloads
+
+`GET /v1/files/{id}/content` and its Space alias use the quoted immutable SHA-256
+as their strong `ETag`. Renaming a file does not change this identity. The caller
+must still be authenticated and own a `processed` file before any precondition
+is evaluated: a guessed ID, failed upload or deleted file never receives `304`.
+Responses remain private and `no-store`; this is explicit client revalidation,
+not a shared CDN cache or permission to reuse authenticated data across owners.
+
+| Request | Result | R2 GET operations |
+| --- | --- | ---: |
+| Ordinary GET | `200`, full original bytes | 1 |
+| Matching `If-None-Match` (strong, weak, list or `*`) | `304`, no body | 0 |
+| Satisfiable single byte range | `206`, selected original bytes | 1 |
+| Invalid/unsatisfiable single byte range | `416`, small JSON error and `Content-Range: bytes */<size>` | 0 |
+| Mismatching/weak/date `If-Range` | `200`, full original bytes | 1 |
+| Unknown range unit or multiple ranges | `200`, full original bytes | 1 |
+
+Supported forms are `bytes=10-19`, `bytes=10-` and `bytes=-10`. Range units are
+case-insensitive. End positions and suffix lengths clamp to the file boundary;
+an offset beyond the last byte, reversed bounds, a zero-length suffix, decimal
+overflow and any single range against an empty file return `416`. Multiple ranges
+are intentionally ignored instead of creating a multipart representation.
+`If-None-Match` is evaluated first. `If-Range` permits a range only when it equals
+the exact strong ETag; unsupported dates and weak validators fall back to a full
+response so a client cannot assemble bytes from different versions.
+
+Partial responses include `Accept-Ranges: bytes`, the selected `Content-Range`
+and selected `Content-Length`. R2 receives the normalized offset/length and streams
+only that range directly to the client. **`X-Content-Sha256` always describes the
+whole original file, not the selected range**; verify it after assembling the
+complete file. Each actual R2 GET still records one Class B operation, with no
+synthetic egress charge. A `304` or rejected range performs no storage GET and
+opens no download reservation. The relevant HTTP semantics are defined in
+[RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-range).

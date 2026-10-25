@@ -3,16 +3,17 @@
 //! - <https://openrouter.ai/docs/guides/best-practices/reasoning-tokens>
 //! Reasoning continuation fields belong to persisted messages, not telemetry.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, future::Future, time::Duration};
 
 use agents_core::ProviderProtocol;
 use eventsource_stream::Eventsource;
-use futures::StreamExt;
+use futures::{Stream, StreamExt, future::Either};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use worker::{Fetch, Headers, Method, Request, RequestInit, RequestRedirect};
 
 use crate::{
+    responses_buffer::DeltaBuffer,
     telemetry::{NativeSpan, TraceContext},
     tools::ToolDefinition,
 };
@@ -531,7 +532,29 @@ pub async fn complete_stream_with_options<F: FnMut(&str)>(
     messages: &[Message],
     tools: &[ToolDefinition],
     options: &GenerationOptions,
-    mut on_delta: F,
+    on_delta: F,
+) -> worker::Result<Completion> {
+    complete_stream_policy(config, messages, tools, options, on_delta, false).await
+}
+
+/// Responses text framing only; legacy Chat Completions keeps immediate deltas.
+pub async fn complete_stream_with_options_and_buffer<F: FnMut(&str)>(
+    config: &ProviderConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    options: &GenerationOptions,
+    on_delta: F,
+) -> worker::Result<Completion> {
+    complete_stream_policy(config, messages, tools, options, on_delta, true).await
+}
+
+async fn complete_stream_policy<F: FnMut(&str)>(
+    config: &ProviderConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    options: &GenerationOptions,
+    on_delta: F,
+    buffered: bool,
 ) -> worker::Result<Completion> {
     let trace = config.trace_context();
     let _span = NativeSpan::start("provider.request", trace.as_ref());
@@ -549,37 +572,219 @@ pub async fn complete_stream_with_options<F: FnMut(&str)>(
             Ok(chunk)
         })
         .eventsource();
-    if config.protocol == ProviderProtocol::Anthropic {
-        let mut accumulator = anthropic::StreamAccumulator::default();
-        while let Some(event) = events.next().await {
-            let event = event.map_err(|_| protocol_failure())?;
-            let value: Value = serde_json::from_str(&event.data).map_err(|_| protocol_failure())?;
-            if let Some(text) = accumulator.push(value).map_err(|_| protocol_failure())? {
-                on_delta(&text);
+    let mut delivery = TextDelivery::new(on_delta, buffered);
+    let outcome = async {
+        let mut accumulator = ProviderAccumulator::new(config.protocol);
+        let mut done = false;
+        loop {
+            let event = match next_stream_item(
+                &mut events,
+                delivery.deadline_ms(),
+                crate::util::now_ms,
+                worker::Delay::from,
+            )
+            .await
+            {
+                StreamPoll::Deadline => {
+                    delivery.flush();
+                    delivery.cooperate().await;
+                    continue;
+                }
+                StreamPoll::Item(None) => break,
+                StreamPoll::Item(Some(event)) => event.map_err(|_| protocol_failure())?,
+            };
+            if event.data.trim() == "[DONE]" {
+                if config.protocol == ProviderProtocol::Anthropic {
+                    return Err(protocol_failure());
+                }
+                done = true;
+                break;
             }
+            let value: Value = serde_json::from_str(&event.data).map_err(|_| protocol_failure())?;
+            let barrier = text_barrier(config.protocol, &value);
+            if barrier {
+                delivery.flush();
+            }
+            if let Some(text) = accumulator.push(value).map_err(|_| protocol_failure())? {
+                delivery.push(&text);
+            }
+            if barrier {
+                delivery.finish();
+            }
+            delivery.cooperate().await;
             if accumulator.is_done() {
+                done = true;
                 break;
             }
         }
-        return accumulator.finish().map_err(|_| protocol_failure());
-    }
-    let mut accumulator = StreamAccumulator::default();
-    let mut done = false;
-    while let Some(event) = events.next().await {
-        let event = event.map_err(|_| protocol_failure())?;
-        if event.data.trim() == "[DONE]" {
-            done = true;
-            break;
+        if !done {
+            return Err(protocol_failure());
         }
-        let value: Value = serde_json::from_str(&event.data).map_err(|_| protocol_failure())?;
-        if let Some(text) = accumulator.push(value).map_err(|_| protocol_failure())? {
-            on_delta(&text);
+        accumulator.finish().map_err(|_| protocol_failure())
+    }
+    .await;
+    // Errors and EOF must not strand text already accepted from the provider.
+    delivery.finish();
+    delivery.cooperate().await;
+    outcome
+}
+
+struct TextDelivery<F> {
+    on_delta: F,
+    buffer: Option<DeltaBuffer>,
+    emitted: bool,
+}
+
+impl<F: FnMut(&str)> TextDelivery<F> {
+    fn new(on_delta: F, buffered: bool) -> Self {
+        Self {
+            on_delta,
+            buffer: buffered.then(DeltaBuffer::default),
+            emitted: false,
         }
     }
-    if !done || accumulator.finish_reason.is_none() {
-        return Err(protocol_failure());
+
+    fn deadline_ms(&self) -> Option<u64> {
+        self.buffer.as_ref().and_then(DeltaBuffer::deadline_ms)
     }
-    parse_completion(accumulator.finish()).map_err(|_| protocol_failure())
+
+    fn push(&mut self, text: &str) {
+        let now = self.buffer.as_ref().map_or(0, |_| crate::util::now_ms());
+        self.push_at(text, now);
+    }
+
+    fn push_at(&mut self, text: &str, now_ms: u64) {
+        match &mut self.buffer {
+            Some(buffer) => {
+                if let Some(text) = buffer.push(text, now_ms) {
+                    (self.on_delta)(&text);
+                    self.emitted = true;
+                }
+            }
+            None => (self.on_delta)(text),
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(text) = self.buffer.as_mut().and_then(DeltaBuffer::flush) {
+            (self.on_delta)(&text);
+            self.emitted = true;
+        }
+    }
+
+    fn finish(&mut self) {
+        if let Some(text) = self.buffer.as_mut().and_then(DeltaBuffer::finish) {
+            (self.on_delta)(&text);
+            self.emitted = true;
+        }
+    }
+
+    fn take_emitted(&mut self) -> bool {
+        std::mem::take(&mut self.emitted)
+    }
+
+    async fn cooperate(&mut self) {
+        if self.take_emitted() {
+            // A ready upstream .next() does not yield to the JS stream reader.
+            // Only buffered Responses emissions need this bounded handoff.
+            worker::Delay::from(Duration::ZERO).await;
+        }
+    }
+}
+
+enum StreamPoll<T> {
+    Item(Option<T>),
+    Deadline,
+}
+
+async fn next_stream_item<S, N, F, T>(
+    source: &mut S,
+    deadline_ms: Option<u64>,
+    mut now_ms: N,
+    mut timer: F,
+) -> StreamPoll<S::Item>
+where
+    S: Stream + Unpin,
+    N: FnMut() -> u64,
+    F: FnMut(Duration) -> T,
+    T: Future<Output = ()>,
+{
+    let Some(deadline) = deadline_ms else {
+        return StreamPoll::Item(source.next().await);
+    };
+    let now = now_ms();
+    if now >= deadline {
+        return StreamPoll::Deadline;
+    }
+    // The absolute deadline and timer-first polling prevent a busy stream from
+    // indefinitely postponing a flush; a quiet stream is woken by Workers Delay.
+    match futures::future::select(
+        Box::pin(timer(Duration::from_millis(deadline - now))),
+        source.next(),
+    )
+    .await
+    {
+        Either::Left(_) => StreamPoll::Deadline,
+        Either::Right((item, _)) => StreamPoll::Item(item),
+    }
+}
+
+enum ProviderAccumulator {
+    Openai(StreamAccumulator),
+    Anthropic(anthropic::StreamAccumulator),
+}
+
+impl ProviderAccumulator {
+    fn new(protocol: ProviderProtocol) -> Self {
+        match protocol {
+            ProviderProtocol::Openai => Self::Openai(StreamAccumulator::default()),
+            ProviderProtocol::Anthropic => Self::Anthropic(anthropic::StreamAccumulator::default()),
+        }
+    }
+
+    fn push(&mut self, value: Value) -> Result<Option<String>, String> {
+        match self {
+            Self::Openai(accumulator) => accumulator.push(value),
+            Self::Anthropic(accumulator) => accumulator.push(value),
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        matches!(self, Self::Anthropic(accumulator) if accumulator.is_done())
+    }
+
+    fn finish(self) -> Result<Completion, String> {
+        match self {
+            Self::Openai(accumulator) if accumulator.finish_reason.is_some() => {
+                parse_completion(accumulator.finish())
+            }
+            Self::Openai(_) => Err("provider completion has no finish reason".into()),
+            Self::Anthropic(accumulator) => accumulator.finish(),
+        }
+    }
+}
+
+fn text_barrier(protocol: ProviderProtocol, event: &Value) -> bool {
+    if protocol == ProviderProtocol::Anthropic {
+        return event["type"] != "content_block_delta" || event["delta"]["type"] != "text_delta";
+    }
+    if event.get("error").is_some() {
+        return true;
+    }
+    let Some(choice) = event["choices"]
+        .as_array()
+        .and_then(|choices| choices.first())
+    else {
+        return false;
+    };
+    choice
+        .get("finish_reason")
+        .is_some_and(|value| !value.is_null())
+        || choice["delta"].as_object().is_some_and(|delta| {
+            delta
+                .keys()
+                .any(|key| !matches!(key.as_str(), "content" | "role"))
+        })
 }
 
 #[derive(Default)]
@@ -762,6 +967,189 @@ pub fn parse_completion(value: Value) -> Result<Completion, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffered_text_uses_a_timer_even_when_the_provider_is_quiet() {
+        use std::{cell::RefCell, rc::Rc};
+        futures::executor::block_on(async {
+            let observed = Rc::new(RefCell::new(vec![]));
+            let output = observed.clone();
+            let mut delivery = TextDelivery::new(
+                move |delta: &str| output.borrow_mut().push(delta.to_owned()),
+                true,
+            );
+            delivery.push_at("first", 0);
+            delivery.push_at(" quiet tail", 1);
+            assert_eq!(*observed.borrow(), vec!["first"]);
+            assert_eq!(delivery.deadline_ms(), Some(51));
+            let (_sender, mut source) = futures::channel::mpsc::unbounded::<()>();
+            let poll = next_stream_item(
+                &mut source,
+                delivery.deadline_ms(),
+                || 1,
+                |duration| {
+                    assert_eq!(duration, Duration::from_millis(50));
+                    futures::future::ready(())
+                },
+            )
+            .await;
+            assert!(matches!(poll, StreamPoll::Deadline));
+            delivery.flush();
+            assert_eq!(*observed.borrow(), vec!["first", " quiet tail"]);
+            assert_eq!(delivery.deadline_ms(), None);
+        });
+    }
+
+    #[test]
+    fn absolute_deadline_cannot_be_starved_by_an_already_ready_provider() {
+        futures::executor::block_on(async {
+            let mut source = futures::stream::iter([1, 2]);
+            let poll = next_stream_item(
+                &mut source,
+                Some(51),
+                || 51,
+                |_| -> futures::future::Ready<()> {
+                    panic!("an expired absolute deadline needs no new timer")
+                },
+            )
+            .await;
+            assert!(matches!(poll, StreamPoll::Deadline));
+            assert_eq!(source.next().await, Some(1));
+            let poll =
+                next_stream_item(&mut source, Some(60), || 59, |_| futures::future::ready(()))
+                    .await;
+            assert!(matches!(poll, StreamPoll::Deadline));
+            assert_eq!(source.next().await, Some(2));
+        });
+    }
+
+    #[test]
+    fn immediate_policy_never_arms_a_timer_or_combines_provider_fragments() {
+        use std::{cell::RefCell, rc::Rc};
+        futures::executor::block_on(async {
+            let observed = Rc::new(RefCell::new(vec![]));
+            let output = observed.clone();
+            let mut delivery = TextDelivery::new(
+                move |delta: &str| output.borrow_mut().push(delta.to_owned()),
+                false,
+            );
+            delivery.push_at("first", 0);
+            delivery.push_at("second", 1);
+            assert_eq!(*observed.borrow(), vec!["first", "second"]);
+            assert_eq!(delivery.deadline_ms(), None);
+            let mut source = futures::stream::iter(["event"]);
+            let poll = next_stream_item(
+                &mut source,
+                delivery.deadline_ms(),
+                || panic!("immediate policy needs no clock"),
+                |_| -> futures::future::Ready<()> { panic!("immediate policy needs no timer") },
+            )
+            .await;
+            assert!(matches!(poll, StreamPoll::Item(Some("event"))));
+        });
+    }
+
+    #[test]
+    fn cooperative_handoffs_are_only_requested_after_responses_emissions() {
+        let mut buffered = TextDelivery::new(|_: &str| {}, true);
+        assert!(!buffered.take_emitted());
+        buffered.push_at("first", 0);
+        assert!(buffered.take_emitted());
+        assert!(!buffered.take_emitted());
+        buffered.push_at("pending", 1);
+        assert!(!buffered.take_emitted());
+        buffered.flush();
+        assert!(buffered.take_emitted());
+        buffered.push_at("tail", 2);
+        assert!(!buffered.take_emitted());
+        buffered.finish();
+        assert!(buffered.take_emitted());
+        buffered.finish();
+        assert!(!buffered.take_emitted());
+
+        let mut immediate = TextDelivery::new(|_: &str| {}, false);
+        immediate.push_at("first", 0);
+        immediate.push_at("second", 1);
+        immediate.flush();
+        immediate.finish();
+        assert!(!immediate.take_emitted());
+    }
+
+    #[test]
+    fn eof_and_transport_errors_do_not_drop_buffered_text() {
+        use std::{cell::RefCell, rc::Rc};
+        for failed in [false, true] {
+            futures::executor::block_on(async {
+                let observed = Rc::new(RefCell::new(vec![]));
+                let output = observed.clone();
+                let mut delivery = TextDelivery::new(
+                    move |delta: &str| output.borrow_mut().push(delta.to_owned()),
+                    true,
+                );
+                delivery.push_at("first", 0);
+                delivery.push_at("tail", 1);
+                let mut source = futures::stream::iter(if failed {
+                    vec![Err::<(), _>("network")]
+                } else {
+                    vec![]
+                });
+                let poll = next_stream_item(
+                    &mut source,
+                    delivery.deadline_ms(),
+                    || 2,
+                    |_| futures::future::pending::<()>(),
+                )
+                .await;
+                if failed {
+                    assert!(matches!(poll, StreamPoll::Item(Some(Err("network")))));
+                } else {
+                    assert!(matches!(poll, StreamPoll::Item(None)));
+                }
+                delivery.finish();
+                delivery.finish();
+                assert_eq!(*observed.borrow(), vec!["first", "tail"]);
+            });
+        }
+    }
+
+    #[test]
+    fn tool_reasoning_and_terminal_events_are_text_barriers_not_coalesced_json() {
+        assert!(!text_barrier(
+            ProviderProtocol::Openai,
+            &json!({"choices":[{"delta":{"role":"assistant","content":"text"},"finish_reason":null}]})
+        ));
+        for delta in [
+            json!({"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}),
+            json!({"reasoning_details":[{"signature":"opaque"}]}),
+            json!({"refusal":"no"}),
+        ] {
+            assert!(text_barrier(
+                ProviderProtocol::Openai,
+                &json!({"choices":[{"delta":delta}]})
+            ));
+        }
+        assert!(text_barrier(
+            ProviderProtocol::Openai,
+            &json!({"choices":[{"delta":{},"finish_reason":"stop"}]})
+        ));
+        assert!(text_barrier(
+            ProviderProtocol::Openai,
+            &json!({"error":{"code":"failed"}})
+        ));
+        assert!(!text_barrier(
+            ProviderProtocol::Anthropic,
+            &json!({"type":"content_block_delta","delta":{"type":"text_delta","text":"text"}})
+        ));
+        for event in [
+            json!({"type":"content_block_stop"}),
+            json!({"type":"message_stop"}),
+            json!({"type":"error"}),
+            json!({"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{"}}),
+            json!({"type":"content_block_delta","delta":{"type":"signature_delta","signature":"opaque"}}),
+        ] {
+            assert!(text_barrier(ProviderProtocol::Anthropic, &event));
+        }
+    }
 
     #[test]
     fn openai_multimodal_content_is_native_not_text_encoded() {

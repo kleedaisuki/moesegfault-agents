@@ -121,6 +121,12 @@ followed by a fresh check of the canonical status, archive phase, revision and
 head. Domain append/start checks happen before any instruction or pending-call
 mutation. Rejected stale requests cannot silently extend or consume a session.
 
+Pure request validation is shared by edge and DO admission. When a newly allocated
+chain is definitely rejected with a client error, the private empty-retirement
+operation proves that no response, journal, workspace, accepted revision or file
+pin exists before releasing that empty live-session slot. Transport failures and
+server errors do not authorize retirement of possibly accepted work.
+
 Instructions have three distinct lifetimes. The server/agent pin is immutable for
 the session. System/developer messages supplied as input are persistent historical
 instructions. Top-level `instructions` apply to that response only, as in the
@@ -150,6 +156,15 @@ range before emitting its terminal event, so range exhaustion cannot strand a ru
 An unknown in-flight provider outcome becomes an explicit failure with a later
 sequence, not an automatic inference replay or a fabricated successful answer.
 
+Responses plaintext uses a transient provider-side text coalescer: the first
+fragment is immediate, later fragments flush at 1 KiB or a real 50 ms timer even
+while the upstream is quiet. Non-text/tool/refusal/finish/error boundaries flush
+pending text. Emitted batches cooperatively yield to the JS reader; a ready
+upstream stream must not fill the bounded observer queue before a fast consumer
+gets scheduled. Parallel local handoff items likewise yield in bounded groups.
+Chat Completions retains its existing immediate-fragment delivery. These are
+transport changes, not additional model requests, journal messages or token usage.
+
 Replay retains at most 65,536 events and 16 MiB, evicting an amortized prefix.
 An expired replay cursor returns 410 and directs the owner to retrieve the complete
 immutable response. Public response output is bounded to 4 MiB before new output
@@ -174,3 +189,34 @@ policy runs, `auto` may drop whole older interaction groups from the active view
 if necessary; `disabled` rejects a view that still exceeds its working budget.
 Neither mode drops the pinned instruction prefix, splits a tool group, deletes
 source history, or changes financial token counts.
+
+Requested tool selection is checked against actual model output before dispatch:
+`none` applies throughout, and `required`/named selection applies to the initial
+model round before the internal harness resumes automatic selection. A genuine
+refusal or incomplete generation is not falsely converted into a missing-tool
+failure. A provider policy violation retains known usage but never executes the
+unrequested tool. For structured output, intermediate tool-round rationale stays
+in the private source journal; public text is emitted only after the completed
+round is classified and its final JSON/schema validated. Otherwise concatenating
+intermediate prose with a valid final JSON object would break SDK `output_text`.
+
+### Attachment liveness
+
+Binary source files are pinned in the owner's Space before durable acceptance.
+The persistence mutex spans the atomic D1 pin acquisition, final admission check
+and canonical DO write. The same mutex protects orphan reconciliation, so a
+pending D1 acknowledgement cannot be mistaken for proof of non-admission. File
+deletion atomically refuses a pinned source; materialization streams the exact
+owner/key/hash/length identity into a safe workspace path only after run admission.
+
+Pins are released after the canonical response becomes terminal, not on an
+observer disconnect, cancel acknowledgement or materialization acknowledgement.
+An unpin error does not withhold the answer or rerun work. A bounded, keyset-driven
+Space maintenance pass calls the owning DO even when that session is closed. The
+DO retains active references and releases only a terminal receipt or a proven
+non-admitted orphan; failed reads remain pinned and do not block other responses'
+reconciliation. There is no time-based expiry of a live reference.
+
+Pin/routing metadata is bounded control-plane overhead included in platform
+pricing, not a separate fictitious zero-usage measurement. Actual file transfer
+and retained-storage accounting continue through the existing resource ledger.

@@ -11,6 +11,7 @@ mod response_index;
 mod response_preflight;
 mod response_routes;
 mod responses_attachments;
+mod responses_buffer;
 mod responses_schema;
 mod responses_wire;
 mod routes;
