@@ -294,6 +294,32 @@ tools. Waiting for local output releases active inference capacity; the session
 retains the outstanding calls durably. Keep application-side receipts for local
 side effects: an HTTP retry policy is not exactly-once local execution.
 
+Function outputs can also be arrays of `input_text`, `input_image`, and
+`input_file` parts, not only strings. Image/file references use the same owned
+Space IDs, inline limits, workspace requirements and immutable attachment
+protection as ordinary inputs. The original typed items remain retrievable;
+provider-specific image placement does not rewrite the source journal.
+
+```python
+from pathlib import Path
+
+# After validating and authorizing a local screenshot function call:
+screenshot = client.files.create(file=Path("screenshot.png"), purpose="user_data")
+continued = client.responses.create(
+    model=agent_id,
+    previous_response_id=handoff.id,
+    input=[{
+        "type": "function_call_output",
+        "call_id": call.call_id,
+        "output": [{"type": "input_image", "file_id": screenshot.id}],
+    }],
+)
+```
+
+Supply every outstanding call's output together. Images are untrusted tool data,
+not new instructions or permission to execute another local operation. Native
+image understanding depends on the configured upstream model's capabilities.
+
 ### Background, streaming, and ambiguous failure
 
 ```python

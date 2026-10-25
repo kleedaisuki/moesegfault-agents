@@ -8,14 +8,16 @@ from collections.abc import Iterator
 import hashlib
 import json
 import os
+import shlex
 import time
 import uuid
 from typing import Any
 
-from openai import NotFoundError, OpenAI
+from openai import APIStatusError, NotFoundError, OpenAI
 import pytest
 
 from conftest import Http, cleanup_deployed_agent, correlation_headers
+from response_checks import checked_response
 from stream_usage import reported_stream_usage
 
 
@@ -78,10 +80,59 @@ def test_sdk_files_binary_roundtrip_rename_and_delete(
     with space_client.files.with_streaming_response.content(uploaded.id) as response:
         assert int(response.headers["content-length"]) == len(payload)
         assert response.headers["x-content-sha256"] == digest
+        etag = response.headers["etag"]
+        assert etag == '"' + digest + '"'
+        assert response.headers["accept-ranges"] == "bytes"
         for chunk in response.iter_bytes(chunk_size=8192):
             copied.extend(chunk)
     assert bytes(copied) == payload
     assert hashlib.sha256(copied).hexdigest() == digest
+
+    for range_header, expected, expected_range in (
+        ("bytes=123-4218", payload[123:4219], f"bytes 123-4218/{len(payload)}"),
+        (f"bytes={len(payload) - 23}-", payload[-23:], f"bytes {len(payload) - 23}-{len(payload) - 1}/{len(payload)}"),
+        ("bytes=-31", payload[-31:], f"bytes {len(payload) - 31}-{len(payload) - 1}/{len(payload)}"),
+    ):
+        partial = space_client.files.with_raw_response.content(
+            uploaded.id, extra_headers={"Range": range_header, "If-Range": etag},
+        )
+        assert partial.status_code == 206
+        assert partial.headers["content-range"] == expected_range
+        assert int(partial.headers["content-length"]) == len(expected)
+        assert partial.headers["x-content-sha256"] == digest, "the digest describes the entire immutable file, not this range"
+        assert partial.parse().content == expected
+
+    for validator in (etag, "W/" + etag, "*"):
+        code, unchanged_headers, body = deployed.request(
+            "GET", f"/v1/files/{uploaded.id}/content", headers={"If-None-Match": validator, "Range": "bytes=0-16"},
+        )
+        assert code == 304 and body == b"", "a matching private validator must avoid retransferring any file bytes"
+        assert unchanged_headers["ETag"] == etag
+    with pytest.raises(APIStatusError) as not_modified:
+        space_client.files.content(uploaded.id, extra_headers={"If-None-Match": etag})
+    assert not_modified.value.status_code == 304
+    assert not_modified.value.response.content == b"", "the SDK exposes 304 as a status exception, not transparent cache reuse"
+    for invalid_range in (f"bytes={len(payload)}-", "bytes=20-10", "bytes=-0"):
+        code, rejected_headers, _ = deployed.request(
+            "GET", f"/v1/files/{uploaded.id}/content", headers={"Range": invalid_range},
+        )
+        assert code == 416
+        assert rejected_headers["Content-Range"] == f"bytes */{len(payload)}"
+    with pytest.raises(APIStatusError) as unsatisfiable:
+        space_client.files.content(uploaded.id, extra_headers={"Range": f"bytes={len(payload)}-"})
+    assert unsatisfiable.value.status_code == 416
+    assert unsatisfiable.value.response.headers["content-range"] == f"bytes */{len(payload)}"
+    for ignored_range in ("bytes=0-1,3-4", "items=0-1"):
+        ignored = space_client.files.with_raw_response.content(uploaded.id, extra_headers={"Range": ignored_range})
+        assert ignored.status_code == 200
+        assert ignored.parse().content == payload, "unsupported range forms must fall back to the complete representation"
+    for nonmatching in ('"not-the-current-file"', "W/" + etag, "Wed, 21 Oct 2015 07:28:00 GMT"):
+        fallback = space_client.files.with_raw_response.content(
+            uploaded.id, extra_headers={"Range": "bytes=0-16", "If-Range": nonmatching},
+        )
+        assert fallback.status_code == 200
+        assert int(fallback.headers["content-length"]) == len(payload)
+        assert fallback.parse().content == payload
 
     renamed = "renamed-" + uuid.uuid4().hex + ".bin"
     changed = deployed.json("PATCH", "/v1/space/files/" + uploaded.id, {"filename": renamed})
@@ -90,6 +141,8 @@ def test_sdk_files_binary_roundtrip_rename_and_delete(
     assert changed["bytes"] == len(payload)
     assert changed["sha256"] == digest
     assert space_client.files.retrieve(uploaded.id).filename == renamed
+    unchanged = deployed.request("GET", f"/v1/files/{uploaded.id}/content", headers={"If-None-Match": etag})
+    assert unchanged[0] == 304 and unchanged[2] == b"", "renaming metadata cannot change immutable content identity"
     assert space_client.files.content(uploaded.id).content == payload
 
     alias = deployed.json("GET", "/v1/space/files?limit=100")
@@ -151,6 +204,8 @@ def test_sdk_zero_byte_file_and_unicode_filename(
     assert uploaded.model_dump()["sha256"] == hashlib.sha256(b"").hexdigest()
     assert space_client.files.retrieve(uploaded.id).filename == filename
     assert space_client.files.content(uploaded.id).content == b""
+    code, headers, _ = deployed.request("GET", f"/v1/files/{uploaded.id}/content", headers={"Range": "bytes=0-0"})
+    assert code == 416 and headers["Content-Range"] == "bytes */0"
 
 
 def test_raw_checksum_rejection_releases_upload_quota_and_reservation(deployed: Http) -> None:
@@ -196,6 +251,8 @@ def test_space_is_singleton_renameable_and_uploads_are_owner_isolated(
     space_uploads.append(uploaded.id)
     assert deployed.request("GET", "/v1/space", authenticated=False)[0] == 401
     assert deployed.request("GET", "/v1/files", authenticated=False)[0] == 401
+    etag = '"' + uploaded.model_dump()["sha256"] + '"'
+    assert deployed.request("GET", f"/v1/files/{uploaded.id}/content", headers={"If-None-Match": etag}, authenticated=False)[0] == 401
     for suffix in ("", "/content"):
         assert deployed.request("GET", "/v1/files/" + uploaded.id + suffix, authenticated=False)[0] == 401
 
@@ -207,6 +264,7 @@ def test_space_is_singleton_renameable_and_uploads_are_owner_isolated(
     assert other_space["id"] != original["id"], "the second credential must belong to a different account"
     assert other.request("GET", "/v1/files/" + uploaded.id)[0] == 404
     assert other.request("GET", "/v1/files/" + uploaded.id + "/content")[0] == 404
+    assert other.request("GET", f"/v1/files/{uploaded.id}/content", headers={"If-None-Match": etag})[0] == 404
     assert other.request("PATCH", "/v1/space/files/" + uploaded.id, {"filename": "hijacked.txt"})[0] == 404
     assert other.request("DELETE", "/v1/files/" + uploaded.id)[0] == 404
     assert uploaded.id not in {item["id"] for item in other.json("GET", "/v1/files?limit=100")["data"]}
@@ -274,6 +332,7 @@ def version_pages(deployed: Http) -> list[dict[str, Any]]:
 def test_workspace_tools_publish_readonly_versions_and_restore_actual_files(
     deployed: Http,
     space_client: OpenAI,
+    space_uploads: list[str],
     space_workspace_agent: tuple[dict[str, Any], list[str]],
 ) -> None:
     agent, sessions = space_workspace_agent
@@ -282,6 +341,21 @@ def test_workspace_tools_publish_readonly_versions_and_restore_actual_files(
     marker = uuid.uuid4().hex
     changed_marker = uuid.uuid4().hex
     version_name = "acceptance-" + uuid.uuid4().hex[:12]
+    binary = binary_corpus()
+    binary_sha = hashlib.sha256(binary).hexdigest()
+    uploaded = space_client.files.create(
+        file=("workspace-import-" + uuid.uuid4().hex + ".bin", binary, "application/octet-stream"),
+        purpose="user_data",
+    )
+    space_uploads.append(uploaded.id)
+    assert b"\x00" in binary and b"\xff" in binary
+    upload_path = shlex.quote(f"uploads/{uploaded.id}/content")
+    initial_command = (
+        f"set -e; sleep 3; sha256sum {upload_path}; "
+        f"test \"$(sha256sum {upload_path} | cut -d ' ' -f 1)\" = {binary_sha}; "
+        f"mkdir -p acceptance; printf {marker} > acceptance/version.txt"
+    )
+    read_command = f"set -e; cat acceptance/version.txt; printf '\\n'; sha256sum {upload_path}"
 
     def turn(content: str, session_id: str = session["id"]) -> None:
         with space_client.chat.completions.create(
@@ -290,11 +364,53 @@ def test_workspace_tools_publish_readonly_versions_and_restore_actual_files(
         ) as chunks:
             reported_stream_usage(chunks)
 
-    turn(f"Run bash exactly `mkdir -p acceptance; printf {marker} > acceptance/version.txt`. "
-         f"Then call workspace_commit with name {version_name}. "
-         "After persistence succeeds, call workspace_versions and finish.")
+    raw = space_client.responses.with_raw_response.create(
+        model=agent["id"], background=True,
+        extra_headers={"X-Agents-Session": session["id"]},
+        input=[{"role": "user", "content": [
+            {"type": "input_file", "file_id": uploaded.id},
+            {"type": "input_text", "text":
+             f"Run bash exactly `{initial_command}`. The attachment must be read from its actual workspace path. "
+             f"Then call workspace_commit with name {version_name}. "
+             "After persistence succeeds, call workspace_versions and finish."},
+        ]}],
+    )
+    assert raw.headers["x-agents-session"] == session["id"]
+    response = checked_response(raw.parse())
+    assert response.status in {"queued", "in_progress"}, "the background receipt must precede this deliberately delayed tool run"
+    code, _, body = deployed.request("DELETE", "/v1/files/" + uploaded.id)
+    assert code == 409 and json.loads(body)["error"]["code"] == "file_in_use", \
+        "accepted attachment bytes must stay retained while workspace import or execution is active"
+    deadline = time.monotonic() + 300
+    while response.status in {"queued", "in_progress"}:
+        assert time.monotonic() < deadline, "accepted workspace response did not finish; never replay its input"
+        time.sleep(1)
+        response = checked_response(space_client.responses.retrieve(response.id))
+    assert response.status == "completed" and response.output_text
+
+    # Terminal publication can win the race with the final D1 unpin. Only the
+    # idempotent file deletion is retried; accepted model/tool work is not.
+    delete_deadline = time.monotonic() + 30
+    while True:
+        code, _, body = deployed.request("DELETE", "/v1/files/" + uploaded.id)
+        if code == 200:
+            assert json.loads(body)["deleted"] is True
+            break
+        assert code == 409 and json.loads(body)["error"]["code"] == "file_in_use"
+        assert time.monotonic() < delete_deadline, "terminal attachment retention was not released"
+        time.sleep(0.25)
+    with pytest.raises(NotFoundError):
+        space_client.files.retrieve(uploaded.id)
+
     first = deployed.json("GET", "/v1/sessions/" + session["id"])
-    assert named_tool_outputs(first, "bash"), "the persisted content must originate from actual workspace execution"
+    initial_bash = named_tool_outputs(first, "bash")
+    assert any(binary_sha in str(output) and f"uploads/{uploaded.id}/content" in str(output) for output in initial_bash), \
+        "the actual container must hash the exact imported binary, not receive text-only attachment injection"
+    assert any(
+        json.loads(call["function"]["arguments"]).get("command") == initial_command
+        for message in first["messages"] for call in message.get("tool_calls", [])
+        if call["function"]["name"] == "bash"
+    ), "the byte-integrity check must execute as the requested Bash command"
     assert named_tool_outputs(first, "workspace_commit"), "a management-only checkpoint does not establish tool support"
     assert named_tool_outputs(first, "workspace_versions"), "the agent must be able to discover user-space versions"
     matches = [item for item in version_pages(deployed) if item["session_id"] == session["id"] and item["name"] == version_name]
@@ -302,7 +418,7 @@ def test_workspace_tools_publish_readonly_versions_and_restore_actual_files(
     version = matches[0]
     assert version["object"] == "workspace.version"
     assert "object_key" not in version and "operation_id" not in version
-    assert version["archive_bytes"] > 0 and version["logical_bytes"] >= len(marker)
+    assert version["archive_bytes"] > 0 and version["logical_bytes"] >= len(marker) + len(binary)
     assert version["format_version"] == 1 and version["generation"] >= 1
     path = "/v1/space/workspace-versions/" + version["id"]
     assert deployed.json("GET", path) == version
@@ -318,7 +434,7 @@ def test_workspace_tools_publish_readonly_versions_and_restore_actual_files(
     turn(f"Run bash exactly `printf {changed_marker} > acceptance/version.txt`. Do not persist or restore.")
     before_restore = deployed.json("GET", "/v1/sessions/" + session["id"])
     turn(f"Call workspace_restore with version_id {version['id']}. "
-         "Then run bash exactly `cat acceptance/version.txt` and finish.")
+         f"Then run bash exactly `{read_command}` and finish.")
     restored = deployed.json("GET", "/v1/sessions/" + session["id"])
     restore_outputs = named_tool_outputs(restored, "workspace_restore", len(before_restore["messages"]))
     assert restore_outputs, "restoration must use the built-in tool, not a model-authored bash reconstruction"
@@ -331,14 +447,16 @@ def test_workspace_tools_publish_readonly_versions_and_restore_actual_files(
     assert safety["sha256"] != version["sha256"], "dirty pre-restore bytes must be preserved as a separate version"
     readbacks = named_tool_outputs(restored, "bash", len(before_restore["messages"]))
     assert any(marker in str(output) and changed_marker not in str(output) for output in readbacks)
+    assert any(binary_sha in str(output) and f"uploads/{uploaded.id}/content" in str(output) for output in readbacks), \
+        "restoring immutable storage must recover the binary even after its original Space file was deleted"
     assert deployed.json("GET", path) == version, "restoration must not rewrite its immutable source version"
     assert deployed.request("GET", path + "/content")[2] == archive
 
     target = deployed.json("POST", f"/v1/agents/{agent['id']}/sessions", {}, expected=201)
     sessions.append(target["id"])
     turn(f"Call workspace_versions. Then call workspace_restore with version_id {safety_id}. "
-         "Then run bash exactly `cat acceptance/version.txt`. "
-         f"After reading it, call workspace_restore with version_id {version['id']} and run the same cat command again. "
+         f"Then run bash exactly `{read_command}`. "
+         f"After reading it, call workspace_restore with version_id {version['id']} and run the same Bash command again. "
          "Do not write any files; finish after both reads.", target["id"])
     across_sessions = deployed.json("GET", "/v1/sessions/" + target["id"])
     assert named_tool_outputs(across_sessions, "workspace_versions")
@@ -346,6 +464,8 @@ def test_workspace_tools_publish_readonly_versions_and_restore_actual_files(
     assert any(marker in str(output) for output in named_tool_outputs(across_sessions, "bash"))
     assert any(changed_marker in str(output) for output in named_tool_outputs(across_sessions, "bash")), \
         "the safety version must actually retain the overwritten dirty file, not only metadata"
+    assert sum(binary_sha in str(output) for output in named_tool_outputs(across_sessions, "bash")) >= 2, \
+        "both independent archive restores must retain the exact imported binary bytes"
 
     token = os.getenv("MAGENTS_TEST_OTHER_API_KEY")
     if token:

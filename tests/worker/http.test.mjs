@@ -15,7 +15,9 @@ import { createObserverProviderFixture, runProjectionFaultJourney } from './obse
 import { createResponsesProviderFixture, runResponsesNodeSdkJourney, runResponsesLocalToolsJourney,
   runResponsesCompactionJourney, runResponsesBackgroundRaceJourney, runResponsesStorageAndFailureJourney,
   runResponsesCancellationJourney, runResponsesIdempotencyRaceJourney, runSessionViewsJourney,
-  runResponsesInputAndOptionsJourney, runResponsesUnknownUsageJourney } from './responses-journey.mjs';
+  runResponsesInputAndOptionsJourney, runResponsesUnknownUsageJourney, runSeededAttachmentPinJourney } from './responses-journey.mjs';
+import { runResponsesPolicyJourney } from './responses-policy-journey.mjs';
+import { createCoalescingProviderFixture, runResponsesCoalescingJourney } from './responses-coalescing-journey.mjs';
 import { runSpaceJourney } from './space-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -36,6 +38,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const compactionProviders = createCompactionProviderFixture();
   const observerProvider = createObserverProviderFixture();
   const responsesProvider = createResponsesProviderFixture();
+  const coalescingProviders = createCoalescingProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -86,6 +89,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
+      const coalescingResponse = await coalescingProviders.handle(request);
+      if (coalescingResponse !== undefined) return coalescingResponse;
       const responsesResponse = await responsesProvider.handle(request);
       if (responsesResponse !== undefined) return responsesResponse;
       const observerResponse = await observerProvider.handle(request);
@@ -490,7 +495,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   }
   await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
-  const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, diagnostic: value => t.diagnostic(value) });
+  const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
   await selected(t, 'Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>
     runSpaceJourney(responseContext()));
   await selected(t, 'Responses actual Node SDK streams, recovers and returns local function results', { timeout: 16000 }, () =>
@@ -513,6 +518,12 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     runResponsesInputAndOptionsJourney(responseContext()));
   await selected(t, 'Responses unknown reasoning preserves exact known usage without inventing a breakdown', { timeout: 16000 }, () =>
     runResponsesUnknownUsageJourney(responseContext()));
+  await selected(t, 'Responses caller function selection and final structured output remain enforced across tools', { timeout: 24000 }, () =>
+    runResponsesPolicyJourney(responseContext()));
+  await selected(t, 'seeded D1 attachment pins survive observer cancellation until canonical DO completion', { timeout: 16000 }, () =>
+    runSeededAttachmentPinJourney(responseContext()));
+  await selected(t, 'Responses text coalescing bounds quiet latency and reduces actual SSE frames without changing Chat', { timeout: 24000 }, () =>
+    runResponsesCoalescingJourney(responseContext()));
   await selected(t, 'native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
     const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'forward-recovery-owner' });
     const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);

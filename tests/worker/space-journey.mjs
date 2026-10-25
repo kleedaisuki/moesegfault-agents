@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createBrowserPrincipal } from './browser-principal.mjs';
 
 const origin = 'https://agents.test';
@@ -11,6 +12,7 @@ async function dispatch(mf, apiKey, method, endpoint, { body, headers = {}, expe
     headers: { Authorization: `Bearer ${apiKey}`, 'CF-Connecting-IP': '192.0.2.31', ...headers },
     ...(body === undefined ? {} : { body }),
   });
+  if (response.status !== expected) await response.arrayBuffer();
   assert.equal(response.status, expected, `${method} ${endpoint}: unexpected HTTP status`);
   return response;
 }
@@ -51,6 +53,117 @@ async function filePages(request, key, order = 'desc', purpose = '') {
   assert.fail('Space file cursor did not terminate');
 }
 
+async function classBReads(db, owner) {
+  const row = await db.prepare("SELECT CAST(COALESCE(SUM(l.quantity),0) AS TEXT) AS operations,COUNT(*) AS entries FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='r2_operation' AND l.unit='class_b'").bind(owner).first();
+  return { operations: BigInt(row.operations), entries: row.entries };
+}
+
+async function readWithAccounting({ mf, db, owner, file, headers = {}, expected, bytes, contentRange, operations }) {
+  const before = await classBReads(db, owner.owner);
+  const response = await dispatch(mf, owner.apiKey, 'GET', `/v1/files/${file.id}/content`, { headers, expected });
+  const body = Buffer.from(await response.arrayBuffer());
+  const after = await classBReads(db, owner.owner);
+  assert.equal(after.operations - before.operations, BigInt(operations), `${expected} must meter only the actual R2 read`);
+  assert.equal(after.entries - before.entries, operations, 'A conditional or rejected request must not append a fabricated R2 read event');
+  assert.equal(response.headers.get('etag'), `"${file.sha256}"`);
+  assert.equal(response.headers.get('x-content-sha256'), file.sha256, 'The digest names the complete immutable object, never the byte slice');
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(response.headers.get('content-range'), contentRange ?? null);
+  if (expected === 416) {
+    assert.ok(body.length > 0 && body.length < 256, 'An invalid range returns a bounded standard API diagnostic, not file bytes');
+    assert.equal(JSON.parse(body.toString()).error.code, 'invalid_range');
+  } else {
+    assert.deepEqual(body, bytes);
+  }
+  if (expected === 200 || expected === 206) {
+    assert.equal(response.headers.get('content-length'), String(body.length));
+  }
+  if (expected === 206) {
+    assert.equal(response.headers.get('accept-ranges'), 'bytes');
+  }
+  return body.length;
+}
+
+async function bandwidthJourney({ mf, db, owner, foreign, main, empty, payload }) {
+  const etag = `"${main.sha256}"`;
+  const context = { mf, db, owner, file: main };
+  const fullBytes = await readWithAccounting({ ...context, expected: 200, bytes: payload, operations: 1 });
+  const partialBytes = await readWithAccounting({ ...context, headers: { Range: 'bytes=13-1020' },
+    expected: 206, bytes: payload.subarray(13, 1021), contentRange: `bytes 13-1020/${payload.length}`, operations: 1 });
+  const notModifiedBytes = await readWithAccounting({ ...context, headers: { 'If-None-Match': etag },
+    expected: 304, bytes: Buffer.alloc(0), operations: 0 });
+
+  for (const value of [`W/${etag}`, '*', `"not-the-file", W/${etag}`]) {
+    await readWithAccounting({ ...context, headers: { 'If-None-Match': value },
+      expected: 304, bytes: Buffer.alloc(0), operations: 0 });
+  }
+  await readWithAccounting({ ...context, headers: { 'If-None-Match': etag, Range: 'bytes=invalid-range' },
+    expected: 304, bytes: Buffer.alloc(0), operations: 0 });
+  await readWithAccounting({ ...context, headers: { 'If-None-Match': '"different-file"' },
+    expected: 200, bytes: payload, operations: 1 });
+
+  const valid = [
+    ['bytes=327600-', 327600, payload.length - 1],
+    ['bytes=-17', payload.length - 17, payload.length - 1],
+    [`bytes=0-${payload.length + 900}`, 0, payload.length - 1],
+    [`bytes=${payload.length - 1}-${payload.length + 500}`, payload.length - 1, payload.length - 1],
+    [`bytes=-${payload.length + 100}`, 0, payload.length - 1],
+  ];
+  for (const [range, start, end] of valid) {
+    await readWithAccounting({ ...context, headers: { Range: range }, expected: 206,
+      bytes: payload.subarray(start, end + 1), contentRange: `bytes ${start}-${end}/${payload.length}`, operations: 1 });
+  }
+  await readWithAccounting({ ...context, headers: { Range: 'bytes=3-7', 'If-Range': etag },
+    expected: 206, bytes: payload.subarray(3, 8), contentRange: `bytes 3-7/${payload.length}`, operations: 1 });
+  await readWithAccounting({ ...context, headers: { Range: 'bytes=3-7', 'If-None-Match': '"different-file"' },
+    expected: 206, bytes: payload.subarray(3, 8), contentRange: `bytes 3-7/${payload.length}`, operations: 1 });
+
+  for (const value of ['"different-file"', `W/${etag}`, 'Wed, 21 Oct 2015 07:28:00 GMT', '*']) {
+    await readWithAccounting({ ...context, headers: { Range: 'bytes=3-7', 'If-Range': value },
+      expected: 200, bytes: payload, operations: 1 });
+  }
+  await readWithAccounting({ ...context, headers: { Range: 'bytes=invalid-range', 'If-Range': '"different-file"' },
+    expected: 200, bytes: payload, operations: 1 });
+  for (const range of ['bytes=0-1,5-6', 'items=0-1']) {
+    await readWithAccounting({ ...context, headers: { Range: range }, expected: 200, bytes: payload, operations: 1 });
+  }
+
+  const invalid = [
+    `bytes=${payload.length}-`, `bytes=${payload.length}-${payload.length + 1}`,
+    'bytes=8-3', 'bytes=-0', 'bytes=-', 'bytes=',
+    'bytes=18446744073709551616-', 'bytes=0-18446744073709551616',
+    'bytes=abc-def',
+  ];
+  let errorBytes = 0;
+  for (const range of invalid) {
+    errorBytes += await readWithAccounting({ ...context, headers: { Range: range }, expected: 416,
+      contentRange: `bytes */${payload.length}`, operations: 0 });
+  }
+  await readWithAccounting({ ...context, headers: { Range: 'bytes=8-3', 'If-Range': etag },
+    expected: 416, contentRange: `bytes */${payload.length}`, operations: 0 });
+  await readWithAccounting({ ...context, file: empty, headers: { Range: 'bytes=0-0' },
+    expected: 416, contentRange: 'bytes */0', operations: 0 });
+
+  const foreignBefore = await classBReads(db, foreign.owner);
+  const denied = await dispatch(mf, foreign.apiKey, 'GET', `/v1/files/${main.id}/content`, {
+    headers: { 'If-None-Match': etag, Range: 'bytes=0-1' }, expected: 404,
+  });
+  await denied.text();
+  assert.deepEqual(await classBReads(db, foreign.owner), foreignBefore, 'Conditional headers must not bypass ownership or cause a foreign read');
+
+  const receipt = {
+    fixture: 'actual compiled Rust Worker with synthetic R2 content and observed accounting',
+    full_bytes: fullBytes, full_r2_reads: 1,
+    selected_range_bytes: partialBytes, selected_range_r2_reads: 1,
+    not_modified_bytes: notModifiedBytes, not_modified_r2_reads: 0,
+    invalid_range_cases: invalid.length, invalid_range_body_bytes: errorBytes, invalid_range_r2_reads: 0,
+  };
+  const directory = new URL('../../.cache/perf/v3/', import.meta.url);
+  await mkdir(directory, { recursive: true });
+  await writeFile(new URL('files-actual.json', directory), JSON.stringify(receipt, null, 2) + '\n');
+  console.log('Space content wire measurements: ' + JSON.stringify(receipt));
+}
+
 export async function runSpaceJourney({ mf, db, encryptionKey, request }) {
   const owner = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'space-worker-owner' });
   const foreign = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'space-worker-foreign' });
@@ -72,6 +185,7 @@ export async function runSpaceJourney({ mf, db, encryptionKey, request }) {
   assert.equal(main.bytes, payload.length);
   assert.equal(main.filename, 'evidence-雪.bin');
   assert.equal(main.purpose, 'user_data');
+  assert.equal(main.content_type, 'application/octet-stream');
   assert.equal(main.status, 'processed');
   assert.equal(main.sha256, digest(payload));
   assert.equal(main.object_key, undefined);
@@ -94,8 +208,11 @@ export async function runSpaceJourney({ mf, db, encryptionKey, request }) {
   assert.equal(rename.filename, 'renamed.bin');
   assert.equal(rename.sha256, main.sha256);
   assert.equal(rename.bytes, main.bytes);
+  assert.equal(rename.content_type, main.content_type);
   assert.equal((await db.prepare('SELECT object_key FROM space_files WHERE id=?').bind(main.id).first()).object_key, stored.object_key, 'Metadata rename must not rewrite content');
-  assert.equal((await request('GET', `/v1/files/${main.id}`, undefined, 200, owner.apiKey)).filename, 'renamed.bin');
+  const metadata = await request('GET', `/v1/files/${main.id}`, undefined, 200, owner.apiKey);
+  assert.equal(metadata.filename, 'renamed.bin');
+  assert.equal(metadata.content_type, main.content_type);
 
   const generated = [main];
   for (const [bytes, purpose] of [[Buffer.from('first\n'), 'user_data'], [Buffer.from('second\0\n'), 'assistants'], [Buffer.alloc(0), 'user_data']]) {
@@ -104,7 +221,9 @@ export async function runSpaceJourney({ mf, db, encryptionKey, request }) {
   assert.equal(new Set(generated.map(file => file.id)).size, generated.length, 'A display filename is not object identity');
   assert.equal(generated.at(-1).bytes, 0);
   assert.equal(generated.at(-1).sha256, digest(Buffer.alloc(0)));
+  await bandwidthJourney({ mf, db, owner, foreign, main, empty: generated.at(-1), payload });
   const descending = await filePages(request, owner.apiKey);
+  assert.ok(descending.every(file => file.content_type === 'application/octet-stream'));
   const ascending = await filePages(request, owner.apiKey, 'asc');
   assert.deepEqual(ascending.map(file => file.id), descending.map(file => file.id).reverse(), 'Order and cursor predicates must agree, including timestamp ties');
   assert.deepEqual(new Set(descending.map(file => file.id)), new Set(generated.map(file => file.id)));
@@ -136,6 +255,10 @@ export async function runSpaceJourney({ mf, db, encryptionKey, request }) {
   assert.equal(afterRejected.usage.files, beforeRejected.usage.files);
   assert.equal(await db.prepare("SELECT COUNT(*) AS count FROM space_files WHERE account_id=? AND status='uploading'").bind(owner.owner).first('count'), 0, 'Rejected bytes cannot strand quota in an upload intent');
   assert.equal(await db.prepare("SELECT COUNT(*) AS count FROM usage_reservations WHERE account_id=? AND state='reserved'").bind(owner.owner).first('count'), 0, 'Rejected bytes cannot strand a new financial hold');
+  const failedFiles = (await request('GET', '/v1/files?limit=100', undefined, 200, owner.apiKey)).data.filter(file => file.filename === 'bad-digest.bin');
+  assert.equal(failedFiles.length, 1, 'Known failed uploads retain discoverable owner diagnostics until deleted');
+  assert.equal(failedFiles[0].status, 'error');
+  await request('DELETE', `/v1/files/${failedFiles[0].id}`, undefined, 200, owner.apiKey);
 
   for (const file of generated) {
     const deleted = await request('DELETE', `/v1/files/${file.id}`, undefined, 200, owner.apiKey);

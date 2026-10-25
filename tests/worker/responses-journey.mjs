@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import OpenAI from 'openai';
 import { createBrowserPrincipal } from './browser-principal.mjs';
@@ -62,7 +63,7 @@ export function createResponsesProviderFixture() {
         }
         assert.equal(input.stream, true);
         const delta = action.calls
-          ? { role: 'assistant', tool_calls: action.calls.map((call, index) => ({ index, id: call.id,
+          ? { role: 'assistant', ...(action.text === undefined ? {} : { content: action.text }), tool_calls: action.calls.map((call, index) => ({ index, id: call.id,
             type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) } })) }
           : { role: 'assistant', content: action.text ?? '' };
         return new Response(frame({ id: `provider-${state.calls}`, model: state.model,
@@ -182,6 +183,8 @@ async function fixture({ mf, db, encryptionKey, request, providers, diagnostic }
   return { state, principal, agent, invoke, read, finish, observations, checkSchema, recordFailure, expectUncertain };
 }
 
+export { fixture as createResponseJourneyFixture };
+
 export async function runResponsesNodeSdkJourney(context) {
   const scenario = await fixture(context, 'node-sdk', [
     { text: 'Node SDK first.' },
@@ -222,6 +225,9 @@ export async function runResponsesNodeSdkJourney(context) {
 }
 
 export async function runResponsesLocalToolsJourney(context) {
+  const imageUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRZkAAAAASUVORK5CYII=';
+  const fileMarker = 'LOCAL_FUNCTION_SPACE_FILE_MARKER_7d6a';
+  let uploaded;
   const calls = [
     { id: 'server-time', name: 'time' },
     { id: 'local-one', name: 'read_local_a', arguments: { path: 'one.txt' } },
@@ -231,13 +237,34 @@ export async function runResponsesLocalToolsJourney(context) {
     { calls },
     { text: 'Both local outputs were consumed exactly once.', check(input) {
       assert.equal(input.messages.filter(message => message.role === 'tool' && message.tool_call_id === 'server-time').length, 1);
-      assert.equal(input.messages.find(message => message.tool_call_id === 'local-one')?.content, 'first local value');
-      assert.equal(input.messages.find(message => message.tool_call_id === 'local-two')?.content, 'second local value');
+      const first = input.messages.findIndex(message => message.tool_call_id === 'local-one');
+      const second = input.messages.findIndex(message => message.tool_call_id === 'local-two');
+      assert.ok(first >= 0);
+      assert.equal(second, first + 1, 'Multimodal projection must not split consecutive tool results');
+      assert.ok(input.messages[first].content.includes('first local value'));
+      assert.ok(input.messages[first].content.includes(fileMarker), 'The actual owned Space file must reach the provider');
+      assert.equal(input.messages[second].content, 'second local value');
+      const projected = input.messages.slice(second + 1).find(message => message.role === 'user'
+        && Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
+      assert.ok(projected, 'OpenAI image context belongs after all contiguous tool results');
+      assert.ok(projected.content.some(part => part.type === 'text' && part.text.includes('local-one')));
+      assert.ok(projected.content.some(part => part.type === 'image_url' && part.image_url.url === imageUrl));
     } },
   ]);
   const tools = ['read_local_a', 'read_local_b'].map(name => ({ type: 'function', name,
     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false }, strict: true }));
   try {
+    const form = new FormData();
+    form.set('purpose', 'user_data');
+    form.set('file', new Blob([fileMarker], { type: 'text/plain' }), 'local-result.txt');
+    const native = new Request('https://agents.test/v1/files', { method: 'POST', body: form });
+    const body = Buffer.from(await native.arrayBuffer());
+    const upload = await context.mf.dispatchFetch(native.url, { method: 'POST', body, headers: {
+      Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': native.headers.get('content-type'),
+      'Content-Length': String(body.length),
+    } });
+    assert.equal(upload.status, 200);
+    uploaded = await upload.json();
     const { value: handoff, headers } = await scenario.invoke({ input: 'Use the server clock and both caller-local functions.', tools });
     const sessionId = headers.get('x-agents-session');
     assert.ok(sessionId);
@@ -251,23 +278,47 @@ export async function runResponsesLocalToolsJourney(context) {
     await bounded(context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sessionId}` }));
     assert.deepEqual(await scenario.read(handoff.id), handoff, 'Pending caller-local tool state must survive a cold DO');
     const output = (id, value) => ({ type: 'function_call_output', call_id: id, output: value });
-    const valid = [output('local-one', 'first local value'), output('local-two', 'second local value')];
-    for (const invalid of [valid.slice(0, 1), [valid[0], valid[0]], [valid[0], output('unknown-call', 'intrusion')]]) {
+    const valid = [output('local-one', [
+      { type: 'input_text', text: 'first local value' },
+      { type: 'input_image', image_url: imageUrl, detail: 'auto' },
+      { type: 'input_file', file_id: uploaded.id },
+    ]), output('local-two', 'second local value')];
+    for (const invalid of [valid.slice(0, 1), [valid[0], valid[0]], [valid[0], output('unknown-call', 'intrusion')],
+      [output('local-one', [{ type: 'output_text', text: 'Not an accepted input content part' }]), valid[1]]]) {
       await scenario.invoke({ previous_response_id: handoff.id, input: invalid, tools }, 400);
       const unchanged = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
       assert.deepEqual(unchanged.messages, before.messages);
       assert.equal(unchanged.input_revision, before.input_revision);
       assert.equal(scenario.state.calls, 1);
     }
+    await scenario.invoke({ previous_response_id: handoff.id,
+      input: [output('local-one', [{ type: 'input_file', file_id: 'file_missing_local_result' }]), valid[1]], tools }, 404);
+    const afterMissing = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    assert.deepEqual(afterMissing.messages, before.messages, 'Unowned/missing output files reject before journal mutation');
+    assert.equal(afterMissing.input_revision, before.input_revision);
+    assert.equal(scenario.state.calls, 1);
     await context.request('DELETE', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
     assert.equal((await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey)).status, 'closed');
     const { value: resumed } = await scenario.invoke({ previous_response_id: handoff.id, input: valid, tools });
     assert.equal(resumed.status, 'completed');
     assert.equal(resumed.previous_response_id, handoff.id);
+    const client = new OpenAI({ apiKey: scenario.principal.apiKey, baseURL: 'https://agents.test/v1',
+      maxRetries: 0, timeout: 8000, fetch: (input, init) => context.mf.dispatchFetch(input, init) });
+    const inputItems = await client.responses.inputItems.list(resumed.id, { order: 'asc' });
+    assert.deepEqual(inputItems.data.map(({ id, status, ...item }) => item), valid,
+      'Provider-only image adaptation must not rewrite the original typed input_items');
     assert.equal(scenario.state.calls, 2);
     assert.deepEqual(await scenario.read(handoff.id), handoff);
   } catch (error) { scenario.recordFailure(error); throw error; }
-  finally { await scenario.finish(); }
+  finally {
+    const errors = [];
+    try {
+      if (uploaded) await context.request('DELETE', `/v1/files/${uploaded.id}`, undefined, 200, scenario.principal.apiKey);
+    } catch (error) { errors.push(error); }
+    try { await scenario.finish(); } catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Mixed local output primary and cleanup failures retained');
+  }
 }
 
 export async function runResponsesCompactionJourney(context) {
@@ -605,4 +656,74 @@ export async function runResponsesUnknownUsageJourney(context) {
     assert.equal(scenario.state.calls, 1);
   } catch (error) { scenario.recordFailure(error); throw error; }
   finally { await scenario.finish(); }
+}
+
+export async function runSeededAttachmentPinJourney(context) {
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const scenario = await fixture(context, 'seeded-file-pin', [{ text: 'Known result after a seeded-pin cancellation.', wait: waiting }]);
+  let file;
+  try {
+    const payload = Buffer.from([0, 255, 10, 13, 1, 254]);
+    const uploaded = await context.mf.dispatchFetch('https://agents.test/v1/files?filename=pin-proof.bin&purpose=user_data', {
+      method: 'POST', headers: { Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': 'application/octet-stream',
+        'Content-Length': String(payload.length), 'X-Content-Sha256': createHash('sha256').update(payload).digest('hex') }, body: payload,
+    });
+    assert.equal(uploaded.status, 200);
+    file = await uploaded.json();
+    const accepted = await scenario.invoke({ input: 'Wait at a controlled provider boundary.', background: true });
+    const sessionId = accepted.headers.get('x-agents-session');
+    await waitUntil(() => scenario.state.calls === 1);
+    const stored = await context.db.prepare('SELECT object_key,sha256,bytes FROM space_files WHERE id=? AND account_id=?')
+      .bind(file.id, scenario.principal.owner).first();
+    // This deliberately seeded D1 reference tests the real deletion interlock
+    // and canonical DO release, not automatic binary import/admission. The
+    // deployed Container journey supplies that separate end-to-end proof.
+    await context.db.prepare('INSERT INTO file_attachment_pins(response_id,file_id,account_id,session_id,object_key,sha256,bytes,created_at_ms) VALUES(?,?,?,?,?,?,?,?)')
+      .bind(accepted.value.id, file.id, scenario.principal.owner, sessionId, stored.object_key, stored.sha256, stored.bytes, Date.now()).run();
+    const count = () => context.db.prepare('SELECT COUNT(*) AS count FROM file_attachment_pins WHERE response_id=? AND file_id=?')
+      .bind(accepted.value.id, file.id).first('count');
+    const namespace = await context.mf.getDurableObjectNamespace('SESSIONS');
+    const stub = namespace.get(namespace.idFromName(`${scenario.principal.owner}:${sessionId}`));
+    async function reconcile() {
+      const result = await bounded(stub.fetch('https://fixture/file-pins/reconcile', { method: 'POST' }));
+      assert.equal(result.status, 200);
+      return result.json();
+    }
+    assert.equal(await count(), 1);
+    assert.equal((await reconcile()).retained, 1, 'Canonical recovery must retain a reference owned by an active run');
+    const blocked = await context.request('DELETE', `/v1/files/${file.id}`, undefined, 409, scenario.principal.apiKey);
+    assert.equal(blocked.error.code, 'file_in_use');
+    const observer = await context.mf.dispatchFetch(`https://agents.test/v1/responses/${accepted.value.id}?stream=true`, {
+      headers: { Authorization: `Bearer ${scenario.principal.apiKey}` },
+    });
+    assert.equal(observer.status, 200);
+    await bounded(observer.body.cancel());
+    assert.equal(await count(), 1, 'Observer disconnect cannot release an active source reference');
+    const cancelled = await context.request('POST', `/v1/responses/${accepted.value.id}/cancel`, {}, 200, scenario.principal.apiKey);
+    scenario.observations.responses.push(cancelled);
+    assert.equal((await context.request('DELETE', `/v1/files/${file.id}`, undefined, 409, scenario.principal.apiKey)).error.code, 'file_in_use');
+    assert.equal(await count(), 1, 'Cancellation acknowledgement is not canonical terminal completion');
+    assert.equal((await reconcile()).retained, 1);
+    release();
+    await waitUntil(async () => (await scenario.read(accepted.value.id)).status === 'cancelled');
+    assert.equal((await reconcile()).released, 1, 'Only canonical terminal proof authorizes release of a seeded reference');
+    await waitUntil(async () => await count() === 0);
+    const deleted = await context.request('DELETE', `/v1/files/${file.id}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(deleted.deleted, true);
+    file = undefined;
+    assert.equal(scenario.state.calls, 1);
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally {
+    release();
+    const errors = [];
+    try { await scenario.finish(); }
+    catch (error) { errors.push(error); }
+    if (file) {
+      try { await context.request('DELETE', `/v1/files/${file.id}`, undefined, 200, scenario.principal.apiKey); }
+      catch (error) { errors.push(error); }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Seeded attachment pin primary and cleanup failures retained');
+  }
 }

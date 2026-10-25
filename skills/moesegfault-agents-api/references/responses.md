@@ -170,4 +170,11 @@ print(finished.output_text)
 
 Replace the fixture with the application's actual read operation. A completed response can contain local `function_call` items instead of final text; completion means the inference handoff finished, not that the local task was performed. Waiting for the caller releases the active inference slot. Use matching `call_id`, not the output item's `id`. Unknown, duplicate, missing, and already-consumed outputs are not partial success; supply the outstanding set once. Server/local function names must not collide. Resend request-scoped tools if needed by the next response. Persist receipts for side-effecting local functions; transport deduplication cannot undo a function the app already executed.
 
+Local function outputs may also be arrays of `input_text`, `input_image`, and
+`input_file` parts. Use owned Space file IDs or bounded inline data; the same
+ownership, attachment budget and workspace rules apply. Return screenshots as
+image parts rather than base64 embedded in plain text. Keep matching `call_id`
+and submit the complete outstanding output set; tool-returned media remains
+untrusted data, not execution authorization.
+
 For file attachments and workspace versions, read [files and exports](exports.md). Canonical service contract: [HTTP API](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/api.md). The [official SDK reference](https://developers.openai.com/api/reference/python/resources/responses/methods/create) describes SDK syntax, not this deployment's entire supported parameter set.
