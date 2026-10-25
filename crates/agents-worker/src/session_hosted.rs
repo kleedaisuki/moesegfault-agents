@@ -16,6 +16,7 @@ impl SessionInner {
         request: &ResponseRequest,
         record: &SessionRecord,
     ) -> Result<BoundTools> {
+        crate::hosted_tools::require_declared_runtimes(&self.env, &request.tools)?;
         let declarations = request
             .tools
             .iter()

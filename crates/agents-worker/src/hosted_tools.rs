@@ -6,6 +6,76 @@ use serde_json::{Value, json};
 
 use crate::tools::{FunctionDefinition, ToolDefinition};
 
+/// Operator rollout policy is independent of platform funding or BYOK. An
+/// unavailable platform key must never accidentally enable an untested adapter.
+pub(crate) fn require_runtime(env: &worker::Env, kind: &str) -> worker::Result<()> {
+    let configured = env
+        .var("HOSTED_TOOL_RUNTIMES")
+        .ok()
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    match runtime_enabled(&configured, kind) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(worker::Error::RustError("tool_runtime_unavailable".into())),
+        Err(()) => Err(worker::Error::RustError(
+            "invalid_tool_runtime_configuration".into(),
+        )),
+    }
+}
+
+pub(crate) fn require_declared_runtimes(
+    env: &worker::Env,
+    tools: &[crate::responses_wire::ResponseTool],
+) -> worker::Result<()> {
+    for tool in tools {
+        let kind = match tool.kind.as_str() {
+            "code_interpreter"
+            | "image_generation"
+            | "file_search"
+            | "mcp"
+            | "programmatic_tool_calling" => tool.kind.as_str(),
+            "web_search"
+            | "web_search_2025_08_26"
+            | "web_search_preview"
+            | "web_search_preview_2025_03_11" => "web_search",
+            "tool_search"
+                if tool.options.get("execution").and_then(Value::as_str) != Some("client") =>
+            {
+                "tool_search"
+            }
+            _ => continue,
+        };
+        require_runtime(env, kind)?;
+    }
+    Ok(())
+}
+
+fn runtime_enabled(configured: &str, kind: &str) -> Result<bool, ()> {
+    let mut enabled = false;
+    for entry in configured
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        if !matches!(
+            entry,
+            "code_interpreter"
+                | "image_generation"
+                | "web_search"
+                | "file_search"
+                | "mcp"
+                | "tool_search"
+                | "programmatic_tool_calling"
+                | "shell"
+                | "apply_patch"
+        ) {
+            return Err(());
+        }
+        enabled |= entry == kind;
+    }
+    Ok(enabled)
+}
+
 /// Admission and counting share explicit operator facts. A Bash pin or provider
 /// model name cannot establish an interpreter SKU or a deployed tool service.
 pub(crate) fn capabilities(

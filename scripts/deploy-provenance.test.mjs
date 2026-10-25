@@ -171,3 +171,52 @@ test('research-only CI success cannot be promoted as an app component assembly',
   value.expectedPlan = structuredClone(value.plan);
   assert.throws(() => verifyDeploymentEvidence(value), /research_only_verification_is_not_promotable/);
 });
+
+function coreCompatibleFixture() {
+  const value = fixture();
+  const oldSource = 'b1edf97746d3902373dbb05e224799f03d9a3a10', oldRun = '40191955285';
+  const old = structuredClone(value.metadata['41']);
+  Object.assign(old.run, { id: Number(oldRun), head_sha: oldSource });
+  for (const job of old.jobs.jobs) Object.assign(job, { run_id: Number(oldRun), head_sha: oldSource });
+  for (const artifact of old.artifacts.artifacts) Object.assign(artifact.workflow_run, { id: Number(oldRun), head_sha: oldSource });
+  value.metadata[oldRun] = old;
+  value.catalog.push({ source_sha: oldSource, run_id: oldRun, components: ['container'], status: 'verified' });
+  const originalHash = value.hash;
+  value.hash = (sha, component) => sha === source && component === 'container' ? '9'.repeat(64) : originalHash(sha, component);
+  Object.assign(value.plan.components.container, { fingerprint: '9'.repeat(64), action: 'build', validation_scope: 'diagnostic_startup_only', deferred_checks: [{ id: 'new-interpreter' }], artifact: { name: 'container-image', source_sha: source, run_id: '42' } });
+  value.plan.diagnostic_only_components = ['container'];
+  value.plan.required_jobs.push('container');
+  value.expectedPlan = structuredClone(value.plan);
+  value.metadata['42'].run.conclusion = 'failure';
+  value.metadata['42'].jobs.jobs.find(job => job.name === 'container').conclusion = 'failure';
+  value.coreContainer = true;
+  return value;
+}
+
+test('core-compatible staging sends the actual verified old daemon instead of a failed disabled runtime', () => {
+  const proof = verifyDeploymentEvidence(coreCompatibleFixture());
+  assert.equal(proof.artifacts.container.source_sha, 'b1edf97746d3902373dbb05e224799f03d9a3a10');
+  assert.equal(proof.artifacts.container.run_id, '40191955285');
+  assert.equal(proof.artifacts.container.status, 'core_compatible_disabled_runtime');
+  assert.equal(proof.artifacts.container.fingerprint, digest);
+  assert.equal(proof.component_fingerprints.container, digest);
+  assert.equal(proof.runtime_scope, 'core-compatible/disabled-runtime');
+  assert.equal(proof.source_ci_conclusion, 'failure');
+  assert.deepEqual(proof.excluded_candidate_components, ['container']);
+});
+
+test('core-compatible staging cannot waive core failures or promote an unverified daemon', () => {
+  for (const change of [
+    value => { value.metadata['42'].jobs.jobs.find(job => job.name === 'worker').conclusion = 'failure'; },
+    value => { value.metadata['40191955285'].jobs.jobs.find(job => job.name === 'container').conclusion = 'failure'; },
+    value => { value.metadata['40191955285'].artifacts.artifacts.find(artifact => artifact.name === 'container-image').expired = true; },
+    value => { value.plan.diagnostic_only_components.push('worker'); },
+    value => { value.plan.verification_scope = 'operator-usage'; },
+  ]) {
+    const value = coreCompatibleFixture(); change(value);
+    value.expectedPlan = structuredClone(value.plan);
+    assert.throws(() => verifyDeploymentEvidence(value));
+  }
+  const ordinary = coreCompatibleFixture(); ordinary.coreContainer = false;
+  assert.throws(() => verifyDeploymentEvidence(ordinary), /not_promotable/);
+});

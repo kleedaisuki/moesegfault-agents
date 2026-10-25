@@ -221,7 +221,9 @@ pub(crate) async fn compact(
             &init,
         )?)
         .await?;
-    let mut response = observer_transport::resolve(response).await?;
+    let response = observer_transport::resolve(response).await?;
+    let headers = response.headers().clone();
+    let mut response = response.with_headers(headers);
     response.headers_mut().set("Idempotency-Key", &key)?;
     response
         .headers_mut()

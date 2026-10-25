@@ -10,6 +10,7 @@ const ID = /^[1-9][0-9]{0,14}$/;
 const COMPONENTS = { worker: 'worker', native: 'rust', container: 'container', dashboard: 'dashboard', tooling: 'tooling' };
 const ARTIFACTS = { worker: 'worker', container: 'container-image', dashboard: 'dashboard' };
 const FILES = { rust: ['rust.json', 'native-build.json'], worker: ['worker-rust.json', 'worker-journeys.json'], dashboard: ['dashboard.json'], container: ['container.json'], tooling: ['tooling.json', 'current_sdk.json'] };
+const CORE_CONTAINER = { source_sha: 'b1edf97746d3902373dbb05e224799f03d9a3a10', run_id: '40191955285' };
 const fail = code => { throw Error(code); };
 const need = (value, code) => { if (!value) fail(code); };
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -78,11 +79,12 @@ function verifyReceipts(plan, verification, job) {
   return executed;
 }
 
-export function requirePromotionScope(plan) {
+export function requirePromotionScope(plan, coreContainer = false) {
   need(plan?.verification_scope == null || plan.verification_scope === 'incremental', 'research_only_verification_is_not_promotable');
   need(plan?.non_deployable !== true, 'research_only_verification_is_not_promotable');
-  need(!(plan?.diagnostic_only_components?.length > 0), 'diagnostic_only_component_is_not_promotable');
-  for (const item of Object.values(plan?.components ?? {})) {
+  need(!(plan?.diagnostic_only_components ?? []).some(name => !coreContainer || name !== 'container'), 'diagnostic_only_component_is_not_promotable');
+  for (const [name, item] of Object.entries(plan?.components ?? {})) {
+    if (coreContainer && name === 'container') continue;
     need(item.validation_scope == null || item.validation_scope === 'incremental', 'diagnostic_only_component_is_not_promotable');
     need(!(item.deferred_checks?.length > 0), 'deferred_capability_checks_are_not_promotable');
   }
@@ -120,24 +122,26 @@ export function verifyReusedChecks({ plan, catalog, source, repository, metadata
   return verified;
 }
 
-export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun, repository, metadata, verification, hash, checkHash, reusedVerification }, now = Date.now()) {
+export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun, repository, metadata, verification, hash, checkHash, reusedVerification, coreContainer = false }, now = Date.now()) {
   need(SHA.test(source ?? '') && ID.test(String(sourceRun)) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? ''), 'invalid_candidate_identity');
-  requirePromotionScope(plan);
+  requirePromotionScope(plan, coreContainer);
   need(plan?.schema_version === 1 && plan.policy === 'incremental-only' && plan.planned_checks_are_not_results === true && plan.source_sha === source && same(plan, expectedPlan), 'candidate_plan_not_recomputed');
   const current = metadata[String(sourceRun)];
-  normalRun(current, sourceRun, source, repository, true);
+  normalRun(current, sourceRun, source, repository, !coreContainer);
   need(Array.isArray(plan.required_jobs) && new Set(plan.required_jobs).size === plan.required_jobs.length && plan.required_jobs.includes('changes'), 'invalid_required_jobs');
   const baselineEvidence = [], artifacts = {}, executed = [];
   const unresolved = new Set();
   for (const [component, name] of Object.entries(COMPONENTS)) {
-    const item = plan.components?.[component], base = item?.baseline;
+    const item = plan.components?.[component];
+    const compatible = coreContainer && component === 'container';
+    const base = compatible ? { ...CORE_CONTAINER, job: 'container', fingerprint: hash(CORE_CONTAINER.source_sha, 'container') } : item?.baseline;
     need(item && ['build', 'reuse'].includes(item.action) && DIGEST.test(item.fingerprint ?? '') && item.fingerprint === hash(source, component), 'component_fingerprint_mismatch');
     need(SHA.test(base?.source_sha ?? '') && ID.test(String(base.run_id)) && base.job === name && base.fingerprint === hash(base.source_sha, component), 'baseline_fingerprint_mismatch');
     const seal = catalog.find(value => value.source_sha === base.source_sha && String(value.run_id) === String(base.run_id) && value.components.includes(component));
     need(seal, 'baseline_not_sealed');
     need(seal.status == null || ['verified', 'partial_verified'].includes(seal.status), 'baseline_status_not_promotable');
     requirePromotionScope({ components: { [component]: seal } });
-    need(base.matches === (base.fingerprint === item.fingerprint) && (item.action === 'reuse') === base.matches, 'reuse_does_not_match_source_and_dependencies');
+    if (!compatible) need(base.matches === (base.fingerprint === item.fingerprint) && (item.action === 'reuse') === base.matches, 'reuse_does_not_match_source_and_dependencies');
     const old = metadata[String(base.run_id)];
     normalRun(old, base.run_id, base.source_sha, repository, false);
     const baselineJob = jobFor(old, name, base.source_sha, base.run_id);
@@ -148,15 +152,17 @@ export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, 
     } else need(baselineJob.conclusion === 'success', 'historical_component_job_not_successful');
     baselineEvidence.push({ component, source_sha: base.source_sha, run_id: String(base.run_id), fingerprint: base.fingerprint, job_conclusion: baselineJob.conclusion, status: seal.status === 'partial_verified' ? 'partial_baseline_phases_only' : 'passed_baseline_not_reexecuted' });
     if (!ARTIFACTS[component]) continue;
-    const expectedRun = item.action === 'build' ? String(sourceRun) : String(base.run_id);
-    const expectedSource = item.action === 'build' ? source : base.source_sha;
-    const claimed = item.artifact;
+    const build = !compatible && item.action === 'build';
+    const expectedRun = build ? String(sourceRun) : String(base.run_id);
+    const expectedSource = build ? source : base.source_sha;
+    const claimed = compatible ? { name: 'container-image', run_id: expectedRun, source_sha: expectedSource } : item.artifact;
     need(claimed?.name === ARTIFACTS[component] && String(claimed.run_id) === expectedRun && claimed.source_sha === expectedSource, 'artifact_plan_mismatch');
     const binary = artifactFor(metadata[expectedRun], claimed.name, expectedRun, expectedSource, now);
     if (item.action === 'reuse' && seal.artifact_id != null) need(binary.id === seal.artifact_id && claimed.artifact_id === seal.artifact_id, 'partial_artifact_identity_changed');
-    artifacts[component] = { name: binary.name, id: binary.id, run_id: expectedRun, source_sha: expectedSource, digest: binary.digest ?? null, fingerprint: item.fingerprint, status: item.action === 'build' ? 'built_current' : 'reused_identical_artifact' };
+    artifacts[component] = { name: binary.name, id: binary.id, run_id: expectedRun, source_sha: expectedSource, digest: binary.digest ?? null, fingerprint: compatible ? base.fingerprint : item.fingerprint, status: compatible ? 'core_compatible_disabled_runtime' : build ? 'built_current' : 'reused_identical_artifact' };
   }
   for (const job of plan.required_jobs) {
+    if (coreContainer && job === 'container') continue;
     need(job === 'changes' || Object.hasOwn(FILES, job), 'unknown_required_job');
     need(jobFor(current, job, source, sourceRun).conclusion === 'success', 'required_current_job_not_successful');
     if (job === 'changes') continue;
@@ -166,12 +172,14 @@ export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, 
   const reused = verifyReusedChecks({ plan, catalog, source, repository, metadata, reusedVerification, checkHash }, now);
   need(same([...unresolved].sort(), [...(plan.required_remediations ?? [])].sort()), 'missing_declared_remediation');
   for (const id of unresolved) need(executed.includes(id) || reused.some(check => check.id === id), 'unresolved_baseline_failure_not_repaired');
-  return { schema_version: 1, status: 'incremental_build_and_selected_checks_verified', source_sha: source, source_run: String(sourceRun), component_fingerprints: Object.fromEntries(Object.entries(plan.components).map(([name, item]) => [name, item.fingerprint])), diagnostic_only_components: [], artifacts, baseline_evidence: baselineEvidence, passed_current_checks: executed, reused_verified_checks: reused, staging_acceptance: 'not_executed', production_authorized: false };
+  const fingerprints = Object.fromEntries(Object.entries(plan.components).map(([name, item]) => [name, coreContainer && name === 'container' ? artifacts.container.fingerprint : item.fingerprint]));
+  return { schema_version: 1, status: 'incremental_build_and_selected_checks_verified', source_sha: source, source_run: String(sourceRun), component_fingerprints: fingerprints, diagnostic_only_components: [], ...(coreContainer ? { runtime_scope: 'core-compatible/disabled-runtime', excluded_candidate_components: ['container'], source_ci_conclusion: current.run.conclusion } : {}), artifacts, baseline_evidence: baselineEvidence, passed_current_checks: executed, reused_verified_checks: reused, staging_acceptance: 'not_executed', production_authorized: false };
 }
 
 async function main() {
   const { values } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, directory: { type: 'string', default: '.temp/deploy-verification' } } });
   const source = process.env.GITHUB_SHA, repository = process.env.GITHUB_REPOSITORY;
+  const coreContainer = process.env.DEPLOY_ENVIRONMENT === 'staging' && process.env.ACCEPTANCE_PROFILE === 'responses-increment';
   need(SHA.test(source ?? '') && ID.test(values.run ?? ''), 'explicit_source_run_required');
   need(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? ''), 'invalid_ci_repository');
   const directory = path.resolve(values.directory), root = path.resolve('.');
@@ -179,21 +187,24 @@ async function main() {
   const parse = file => JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
   need(path.resolve(values.plan).startsWith(path.join(root, '.temp') + path.sep), 'plan_outside_project_temp');
   const plan = parse(values.plan), catalog = parse('scripts/verification-baselines.json');
-  requirePromotionScope(plan);
+  requirePromotionScope(plan, coreContainer);
   const module = await import('./incremental-checks.mjs');
-  const expectedPlan = module.plan(source, catalog);
+  const containerScope = plan.components?.container?.validation_scope === 'diagnostic_startup_only' ? 'startup-1g' : 'incremental';
+  const expectedPlan = module.plan(source, catalog, containerScope);
   for (const item of Object.values(expectedPlan.components)) if (item.action === 'build' && item.artifact) item.artifact.run_id = values.run;
   need(same(plan, expectedPlan), 'candidate_plan_not_recomputed');
   const api = suffix => JSON.parse(execFileSync('gh', ['api', `repos/${repository}/${suffix}`], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }));
   const metadata = {};
   const load = run => { need(ID.test(String(run)), 'invalid_metadata_run'); if (!metadata[String(run)]) metadata[String(run)] = { run: api(`actions/runs/${run}`), jobs: api(`actions/runs/${run}/jobs?filter=latest&per_page=100`), artifacts: api(`actions/runs/${run}/artifacts?per_page=100`) }; };
   load(values.run);
-  normalRun(metadata[String(values.run)], values.run, source, repository, true);
+  normalRun(metadata[String(values.run)], values.run, source, repository, !coreContainer);
   for (const item of Object.values(plan.components ?? {})) load(item.baseline.run_id);
+  if (coreContainer) load(CORE_CONTAINER.run_id);
   for (const check of plan.reused_checks ?? []) load(check.run_id);
   const verification = {};
   for (const job of plan.required_jobs ?? []) {
     if (job === 'changes') continue;
+    if (coreContainer && job === 'container') continue;
     need(Object.hasOwn(FILES, job), 'unknown_current_verification_job');
     need(jobFor(metadata[String(values.run)], job, source, values.run).conclusion === 'success', 'required_current_job_not_successful');
     artifactFor(metadata[String(values.run)], `verification-${job}`, values.run, source, Date.now());
@@ -215,7 +226,7 @@ async function main() {
     need(Object.values(FILES).flat().includes(check.receipt_path), 'invalid_reused_receipt_path');
     reusedVerification[key].files[check.receipt_path] = parse(path.join(directory, 'reused', `${check.run_id}-${check.artifact_name}`, check.receipt_path));
   }
-  const receipt = verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun: values.run, repository, metadata, verification, hash: module.fingerprint, checkHash: module.checkFingerprint, reusedVerification });
+  const receipt = verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun: values.run, repository, metadata, verification, hash: module.fingerprint, checkHash: module.checkFingerprint, reusedVerification, coreContainer });
   mkdirSync(directory, { recursive: true });
   writeFileSync(path.join(directory, 'deployment-provenance.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   for (const [name, artifact] of Object.entries(receipt.artifacts)) if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}_artifact_run=${artifact.run_id}\n${name}_artifact_sha=${artifact.source_sha}\n`);

@@ -115,6 +115,14 @@ impl DurableObject for ModelOperation {
         let inner = &self.inner;
         let _guard = inner.initialization.lock().await;
         let mut receipt = inner.state.storage().get::<Receipt>(RECEIPT).await?;
+        // Existing receipts remain observable even when a new-call capability changes.
+        if receipt.is_none() && prepared.model.provider == agents_core::Provider::DeepSeek {
+            return Ok(Response::from_json(&json!({"error":{
+                "type":"invalid_request_error","code":"provider_unsupported_usage_detail",
+                "param":"usage.input_tokens_details.cache_write_tokens",
+                "message":"Direct DeepSeek does not report the cache-write usage required by strict compaction; no model was called"
+            }}))?.with_status(422));
+        }
         if let Some(existing) = &receipt {
             if existing.owner != prepared.owner
                 || existing.operation != prepared.operation

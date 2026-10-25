@@ -1,6 +1,7 @@
 """Generate synthetic offline fixtures from the pinned official Python renderer."""
 from __future__ import annotations
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -58,8 +59,12 @@ def main() -> None:
         ids.extend(ordinary.encode(text, add_special_tokens=False).ids)
         ids.extend(tokenizer.encode(prompt[start + len(text):], add_special_tokens=False).ids)
         public_messages: list[dict[str, Any]] = [{'role': 'system', 'content': 'You are an agent running in moeSegFault Agents. Tools and skills below are pinned for this session.\nCounter fixture fixed instructions.'}]
+        public_body: dict[str, Any] = copy.deepcopy(body)
         if tools:
-            public_messages[0]['tools'] = messages[0].pop('tools')
+            public_messages[0]['tools'] = copy.deepcopy(messages[0].pop('tools'))
+            # `time` is reserved by the platform harness, not a public client tool.
+            public_messages[0]['tools'][0]['function']['name'] = 'local_time_fixture'
+            public_body['tools'][0]['name'] = 'local_time_fixture'
         public_messages.extend(messages)
         public_prompt: str
         public_prompt, _ = module.encode_case({'messages': public_messages, 'thinking_mode': 'thinking' if thinking else 'chat', 'reasoning_effort': 'high'}, 'chat')
@@ -68,6 +73,8 @@ def main() -> None:
         public_ids.extend(ordinary.encode(text, add_special_tokens=False).ids)
         public_ids.extend(tokenizer.encode(public_prompt[public_start + len(text):], add_special_tokens=False).ids)
         fixtures.append({'name': name, 'body': body, 'input_tokens': len(ids), 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(), 'public_input_tokens': len(public_ids)})
+        if tools:
+            fixtures[-1]['public_body'] = public_body
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({'reference': 'DeepSeek-V4.1-Flash-1017/encoding/encoding.py', 'reference_sha256': hashlib.sha256(args.encoding.read_bytes()).hexdigest(), 'api_calls': 0, 'fixtures': fixtures}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({item['name']: item['input_tokens'] for item in fixtures}))

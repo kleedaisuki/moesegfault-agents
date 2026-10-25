@@ -92,7 +92,34 @@
       },
       "input_tokens": 253,
       "prompt_sha256": "9630a374d9490caf20ee877db485f9f709ac1bb7c86486302e13a14558c10435",
-      "public_input_tokens": 282
+      "public_input_tokens": 286,
+      "public_body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "system",
+            "content": "You are helpful."
+          },
+          {
+            "role": "user",
+            "content": "What time is it?"
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        },
+        "tools": [
+          {
+            "type": "function",
+            "name": "local_time_fixture",
+            "description": "Current UTC time",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            }
+          }
+        ]
+      }
     },
     {
       "name": "user-control-spelling",

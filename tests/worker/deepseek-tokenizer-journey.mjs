@@ -9,6 +9,8 @@ const instructions = 'Counter fixture fixed instructions.';
 // any attempted DeepSeek inference, tokenizer download, or media fetch.
 export async function runDeepSeekTokenizerJourney({ mf, db, encryptionKey, request, diagnostic }) {
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'deepseek-exact-counter-owner' });
+  // Exercise the real account entitlement sync before reserving count resources.
+  await principal.browser('GET', '/v1/account');
   const credential = await principal.browser('POST', '/v1/provider-keys', {
     protocol: 'openai', base_url: 'https://api.deepseek.com',
     api_key: 'synthetic-count-only-never-leaves-worker',
@@ -43,7 +45,7 @@ export async function runDeepSeekTokenizerJourney({ mf, db, encryptionKey, reque
   }
   try {
     for (const fixture of corpus.fixtures) {
-      await count(fixture.body, `flash-${fixture.name}`, fixture.public_input_tokens);
+      await count(fixture.public_body ?? fixture.body, `flash-${fixture.name}`, fixture.public_input_tokens);
     }
     await count(corpus.fixtures[0].body, 'flash-warm-repeat', corpus.fixtures[0].public_input_tokens);
     await request('PATCH', `/v1/agents/${agent.id}`, { model: model('deepseek-v4-pro') }, 200, principal.apiKey);

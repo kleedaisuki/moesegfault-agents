@@ -48,6 +48,7 @@ jobs:
       worker_build: ${{ steps.paths.outputs.worker_build }}
       worker_artifact_run: ${{ steps.paths.outputs.worker_artifact_run }}
       worker_artifact_sha: ${{ steps.paths.outputs.worker_artifact_sha }}
+      worker_artifact_id: ${{ steps.paths.outputs.worker_artifact_id }}
       container_build: ${{ steps.paths.outputs.container_build }}
       container_artifact_run: ${{ steps.paths.outputs.container_artifact_run }}
       container_artifact_sha: ${{ steps.paths.outputs.container_artifact_sha }}
@@ -186,6 +187,7 @@ jobs:
         id: worker_bundle
         if: needs.changes.outputs.worker_build == 'true'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        id: worker_artifact
         if: always() && needs.changes.outputs.worker_build == 'true' && steps.worker_bundle.outcome == 'success'
         with:
           name: worker
@@ -212,6 +214,9 @@ jobs:
         if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         env:
           MAGENTS_SCHEMA_PYTHON: .cache/e2e-venv/bin/python
+          MAGENTS_WORKER_SOURCE_SHA: ${{ needs.changes.outputs.worker_artifact_sha }}
+          MAGENTS_WORKER_SOURCE_RUN: ${{ needs.changes.outputs.worker_artifact_run }}
+          MAGENTS_WORKER_ARTIFACT_ID: ${{ steps.worker_artifact.outputs.artifact-id || needs.changes.outputs.worker_artifact_id }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:

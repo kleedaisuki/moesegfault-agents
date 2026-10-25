@@ -207,6 +207,13 @@ test('a built exact Worker can run actual journeys despite independent unit asse
   assert.match(worker,/name: worker\n/);
 });
 
+test('Worker case receipts identify the actual built or reused artifact rather than infer candidate HEAD', () => {
+  const workflow=readFileSync('.github/workflows/ci.yml','utf8');
+  assert.match(workflow,/MAGENTS_WORKER_SOURCE_SHA: \$\{\{ needs\.changes\.outputs\.worker_artifact_sha \}\}/);
+  assert.match(workflow,/MAGENTS_WORKER_SOURCE_RUN: \$\{\{ needs\.changes\.outputs\.worker_artifact_run \}\}/);
+  assert.match(workflow,/MAGENTS_WORKER_ARTIFACT_ID: \$\{\{ steps\.worker_artifact\.outputs\.artifact-id \|\| needs\.changes\.outputs\.worker_artifact_id \}\}/);
+});
+
 test('operator usage scope never implies platform acceptance', () => {
   const fail = { source_sha: baseline, run_id: '12345', components: ['worker'], unresolved_checks: [{ id: 'must-not-run-app' }] };
   const actual = operatorUsagePlan(source, [fail], () => 'a'.repeat(64), () => 'b'.repeat(64));

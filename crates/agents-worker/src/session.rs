@@ -71,6 +71,8 @@ struct RunState {
     round: u64,
     admitted: bool,
     total: Usage,
+    #[serde(default)]
+    usage_samples: u64,
     pending_completion: Option<Completion>,
     started_at_ms: u64,
     #[serde(default)]
@@ -970,6 +972,7 @@ impl SessionInner {
             round: 0,
             admitted: false,
             total: Usage::default(),
+            usage_samples: 0,
             pending_completion: None,
             started_at_ms: util::now_ms(),
             worker_attached: false,
@@ -1153,6 +1156,12 @@ impl SessionInner {
                 current.compact_count += 1;
                 let r = current.run.as_mut().unwrap();
                 r.pending_compaction = None;
+                let prior_usage = r.usage_samples > 0
+                    || r.round > 0
+                    || r.total.reported
+                    || r.total.total_tokens > 0
+                    || r.total.prompt_tokens > 0
+                    || r.total.completion_tokens > 0;
                 r.total.prompt_tokens += summary.usage.prompt_tokens;
                 r.total.completion_tokens += summary.usage.completion_tokens;
                 r.total.total_tokens += summary.usage.total_tokens;
@@ -1162,6 +1171,12 @@ impl SessionInner {
                     summary.usage.reasoning_tokens,
                     r.total.reported,
                 );
+                r.total.cache_write_tokens = aggregate_reasoning(
+                    r.total.cache_write_tokens,
+                    summary.usage.cache_write_tokens,
+                    prior_usage,
+                );
+                r.usage_samples = r.usage_samples.saturating_add(1);
                 r.total.reported |= summary.usage.reported;
             }
             self.replace_native_after_compaction(&run).await?;
@@ -1193,6 +1208,12 @@ impl SessionInner {
                 current.journal.push(completion.message.clone());
                 current.measured_messages = current.messages.len();
                 let r = current.run.as_mut().unwrap();
+                let prior_usage = r.usage_samples > 0
+                    || r.round > 0
+                    || r.total.reported
+                    || r.total.total_tokens > 0
+                    || r.total.prompt_tokens > 0
+                    || r.total.completion_tokens > 0;
                 r.total.prompt_tokens += completion.usage.prompt_tokens;
                 r.total.completion_tokens += completion.usage.completion_tokens;
                 r.total.total_tokens += completion.usage.total_tokens;
@@ -1202,6 +1223,12 @@ impl SessionInner {
                     completion.usage.reasoning_tokens,
                     r.total.reported,
                 );
+                r.total.cache_write_tokens = aggregate_reasoning(
+                    r.total.cache_write_tokens,
+                    completion.usage.cache_write_tokens,
+                    prior_usage,
+                );
+                r.usage_samples = r.usage_samples.saturating_add(1);
                 r.total.reported |= completion.usage.reported;
                 r.pending_completion = None;
                 r.round += 1;
@@ -3012,6 +3039,7 @@ mod tests {
             round: 1,
             admitted: true,
             total: Usage::default(),
+            usage_samples: 0,
             pending_completion: None,
             started_at_ms: 1,
             worker_attached: true,

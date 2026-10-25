@@ -173,8 +173,8 @@ def kernel_main() -> None:
     import zmq
 
     class IPCOnlyKernelApp(IPKernelApp):
-        def init_iopub(self) -> None:
-            self.iopub_socket = self.context.socket(zmq.PUB)
+        def init_iopub(self, context: Any) -> None:
+            self.iopub_socket = context.socket(zmq.PUB)
             self.iopub_socket.linger = 1000
             self.iopub_port = self._bind_socket(self.iopub_socket, self.iopub_port)
             self.configure_tornado_logger()

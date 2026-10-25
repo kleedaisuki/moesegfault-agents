@@ -530,6 +530,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       replaceRegistry: async value => {
         mfOptions.workers[0].config.env.PROMPT_REGISTRY_JSON.value = value;
         await mf.setOptions(mfOptions);
+        db = await mf.getD1Database('DB');
       } }));
   await selected(t, 'Chat internal observation loss recovers original durable text and terminal without replay', { timeout: 40000 }, () =>
     runChatRecoveryJourney({ ...responseContext(), chatRecoveryControl }));

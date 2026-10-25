@@ -37,12 +37,18 @@ export function assertResponseUsage(response) {
   assert.equal(usage.total_tokens, usage.input_tokens + usage.output_tokens);
   assert.ok(usage.input_tokens_details.cached_tokens <= usage.input_tokens);
   const reasoning = usage.output_tokens_details?.reasoning_tokens;
+  const cacheWrite = usage.input_tokens_details?.cache_write_tokens;
+  for (const [value, maximum] of [[reasoning, usage.output_tokens], [cacheWrite, usage.input_tokens]]) {
+    assert.ok(value === null || (Number.isSafeInteger(value) && value >= 0 && value <= maximum),
+      'Every known usage breakdown remains a bounded integer; unknown breakdowns are explicit null');
+  }
   if (response.usage === null) {
-    assert.equal(reasoning, null, 'An unknown reasoning breakdown must remain explicitly unknown, not an invented zero');
+    assert.ok(reasoning === null || cacheWrite === null,
+      'Partial usage must identify a genuinely unknown breakdown without erasing known counts');
     assert.ok(response.agents_usage);
   } else {
     assert.ok(Number.isSafeInteger(reasoning), 'Standard Responses usage requires a concrete reasoning token count');
-    assert.ok(reasoning >= 0 && reasoning <= usage.output_tokens);
+    assert.ok(Number.isSafeInteger(cacheWrite), 'Standard Responses usage requires a concrete cache-write token count');
   }
 }
 

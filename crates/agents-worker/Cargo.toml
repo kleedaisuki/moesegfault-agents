@@ -21,6 +21,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Request", "RequestInit", "WorkerGlobalScope", "Crypto", "SubtleCrypto", "CryptoKey", "EcKeyImportParams", "EcdsaParams"] }
 uuid = { version = "1", features = ["v4", "js"] }
 sha2.workspace = true
+hmac = "0.12"
 base64 = "0.22"
 percent-encoding = "2"
 console_error_panic_hook = "0.1"

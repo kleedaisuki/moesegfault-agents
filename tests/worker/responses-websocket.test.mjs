@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import OpenAI from 'openai';
@@ -80,13 +80,14 @@ test('compiled Rust Worker: authenticated Responses WebSocket journeys', { timeo
     return JSON.parse(text);
   }
   const context = { mf, db, encryptionKey, request, providers, diagnostic: message => t.diagnostic(message) };
-  await runSocketJourneys(context, t);
-  await t.test('current official Node SDK uses the real compiled Worker network upgrade', () => runOfficialSdk(context));
-  await t.test('accepted steering survives disconnect without source or financial replay', () => runAcceptedSteeringDisconnect(context));
-  await t.test('steering crosses a safe server-tool boundary into an automatic successor', () => runSteeringSuccessor(context));
-  await t.test('steering waits for explicit client results without repeating accepted input', () => runSteeringPendingInput(context));
-  await t.test('sixteen parallel actors, queued seventeenth lane and same-lane FIFO', () => runLaneConcurrency(context));
-  await t.test('account concurrency stays enforced and disconnect does not cancel work', () => runPlanConcurrency(context));
+  const cases = await selectedCases(t);
+  await runSocketJourneys(context, cases);
+  await cases.test('current official Node SDK uses the real compiled Worker network upgrade', () => runOfficialSdk(context));
+  await cases.test('accepted steering survives disconnect without source or financial replay', () => runAcceptedSteeringDisconnect(context));
+  await cases.test('steering crosses a safe server-tool boundary into an automatic successor', () => runSteeringSuccessor(context));
+  await cases.test('steering waits for explicit client results without repeating accepted input', () => runSteeringPendingInput(context));
+  await cases.test('sixteen parallel actors, queued seventeenth lane and same-lane FIFO', () => runLaneConcurrency(context));
+  await cases.test('account concurrency stays enforced and disconnect does not cancel work', () => runPlanConcurrency(context));
 });
 
 
@@ -128,7 +129,7 @@ async function connect(mf, headers) {
       if (predicate(event)) return observed;
     }
   }
-  return { socket, next, until, send: value => socket.send(JSON.stringify(value)) };
+  return { socket, next, until, close: () => { if (socket.readyState === 1) socket.close(1000); }, send: value => socket.send(JSON.stringify(value)) };
 }
 
 async function runSocketJourneys(context, t) {
@@ -214,14 +215,27 @@ async function runPlanConcurrency(context) {
   const wait = new Promise(resolve => { release = resolve; });
   const scenario = await createResponseJourneyFixture(context, 'ws-plan', [{ text: 'Survives socket close', wait }], { validate_response_schema: false });
   const client = await connect(context.mf, { Authorization: `Bearer ${scenario.principal.apiKey}` });
+  let primary;
   try {
     client.send({ type: 'response.create', stream_id: 'running', model: scenario.agent.id, input: 'Long task' });
     const started = await client.until(event => event.type === 'response.created');
     const id = started.at(-1).response.id;
+    // Created is an identity publication, not proof of account run admission.
+    const admittedBy = Date.now() + 8000;
+    while (scenario.state.calls !== 1) {
+      assert.ok(Date.now() < admittedBy, 'First run must be admitted before exercising the competing plan gate');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     client.send({ type: 'response.create', stream_id: 'other', model: scenario.agent.id, input: 'Plan cap' });
-    const rejected = await client.until(event => event.stream_id === 'other' && event.type === 'error');
-    assert.equal(rejected.at(-1).status, 429, 'Free plan admission applies below the sixteen-lane protocol capacity');
-    client.socket.close(1000);
+    const rejected = await client.until(event => event.stream_id === 'other' && ['error', 'response.failed'].includes(event.type));
+    const denial = rejected.at(-1);
+    if (denial.type === 'error') assert.equal(denial.status, 429);
+    else {
+      assert.equal(denial.response.status, 'failed');
+      assert.equal(denial.response.error.code, 'server_error');
+      assert.equal(denial.response.agents_error_code, 'run_limit_exceeded', 'The sanitized canonical failure retains its precise application diagnostic');
+    }
+    client.close();
     release();
     const deadline = Date.now() + 8000;
     while (true) {
@@ -231,7 +245,8 @@ async function runPlanConcurrency(context) {
       await new Promise(resolve => setTimeout(resolve, 20));
     }
     assert.equal(scenario.state.calls, 1, 'Rejected lane and disconnect must not dispatch or replay inference');
-  } finally { release(); client.socket.close(1000); await scenario.finish(); }
+  } catch (error) { primary = error; }
+  finally { release(); await finishDisconnectedScenario(client, scenario, primary); }
 }
 
 
@@ -370,6 +385,7 @@ async function runAcceptedSteeringDisconnect(context) {
     } },
   ], { validate_response_schema: false });
   const client = await connect(context.mf, { Authorization: `Bearer ${scenario.principal.apiKey}` });
+  let primary;
   try {
     client.send({ type: 'response.create', model: scenario.agent.id, input: 'Call time before continuing' });
     const start = await client.until(event => event.type === 'response.created');
@@ -377,7 +393,7 @@ async function runAcceptedSteeringDisconnect(context) {
     client.send({ type: 'response.steer', previous_response_id: parent, input: marker });
     const ack = await client.until(event => event.type === 'response.steer.accepted' || event.type === 'error');
     assert.equal(ack.at(-1).type, 'response.steer.accepted', JSON.stringify(ack));
-    client.socket.close(1000);
+    client.close();
     release();
     const deadline = Date.now() + 8000;
     let child;
@@ -401,7 +417,8 @@ async function runAcceptedSteeringDisconnect(context) {
       .bind(scenario.principal.owner).first();
     assert.equal(ledger.count, 2, 'Each actual model request settles once even after disconnect');
     assert.equal(scenario.state.calls, 2);
-  } finally { release(); client.socket.close(1000); await scenario.finish(); }
+  } catch (error) { primary = error; }
+  finally { release(); await finishDisconnectedScenario(client, scenario, primary); }
 }
 
 
@@ -452,4 +469,67 @@ async function runOfficialSdk(context) {
     assert.ok(events.every(event => event.stream_id === 'sdk'));
     assert.equal(scenario.state.calls, 2);
   } finally { socket.close(); await scenario.finish(); }
+}
+
+
+async function finishDisconnectedScenario(client, scenario, primary) {
+  const errors = primary ? [primary] : [];
+  try { client.close(); } catch (error) { errors.push(error); }
+  try { await scenario.finish(); } catch (error) { errors.push(error); }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Primary and disconnect cleanup failures retained');
+}
+
+
+const caseIds = new Map([
+  ['cookie Origin is mandatory and native keys need no browser Origin', 'ws-origin'],
+  ['warmup, store=false connection cache and same-lane FIFO use one harness', 'ws-warmup-cache'],
+  ['named lane lifetime cap and API-key revocation are enforced before execution', 'ws-lane-revocation'],
+  ['current official Node SDK uses the real compiled Worker network upgrade', 'ws-sdk'],
+  ['accepted steering survives disconnect without source or financial replay', 'ws-steer-disconnect'],
+  ['steering crosses a safe server-tool boundary into an automatic successor', 'ws-steer-successor'],
+  ['steering waits for explicit client results without repeating accepted input', 'ws-steer-pending'],
+  ['sixteen parallel actors, queued seventeenth lane and same-lane FIFO', 'ws-lane-concurrency'],
+  ['account concurrency stays enforced and disconnect does not cancel work', 'ws-plan-disconnect'],
+]);
+
+async function selectedCases(parent) {
+  const requested = process.env.MAGENTS_WS_CASE;
+  const selected = requested === undefined ? [...caseIds.values()] : requested.split(',').filter(Boolean).map(value => caseIds.get(value) ?? value);
+  assert.ok(selected.length, 'WS selector must match at least one case');
+  for (const id of selected) assert.ok([...caseIds.values()].includes(id), `Unknown WS case ID: ${id}`);
+  const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+  let provenance;
+  try { provenance = JSON.parse(await readFile(path.join(build, 'provenance.json'), 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const receipt = {
+    schema_version: 1,
+    artifact_source_sha: provenance?.source_sha ?? process.env.MAGENTS_WORKER_SOURCE_SHA ?? null,
+    source_run: provenance?.source_run ?? process.env.MAGENTS_WORKER_SOURCE_RUN ?? null,
+    artifact_id: provenance?.artifact_id ?? null,
+    fixture_head_sha: spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim(),
+    fixture_sha256: sha(await readFile(fileURLToPath(import.meta.url))),
+    wasm_sha256: sha(await readFile(path.join(build, 'index_bg.wasm'))),
+    selected_case_ids: selected,
+    cases: Object.fromEntries([...caseIds.values()].map(id => [id, { executed: false, status: 'not_executed' }])),
+  };
+  const directory = path.join(root, '.cache/verification');
+  await mkdir(directory, { recursive: true });
+  const save = () => writeFile(path.join(directory, 'ws-cases.json'), JSON.stringify(receipt, null, 2) + '\n');
+  await save();
+  return { test: async (name, run) => {
+    const id = caseIds.get(name);
+    assert.ok(id, `Missing stable WS case ID: ${name}`);
+    return parent.test(`${id}: ${name}`, { skip: !selected.includes(id) }, async context => {
+      receipt.cases[id] = { executed: true, status: 'running' };
+      await save();
+      try {
+        await run(context);
+        receipt.cases[id].status = 'passed';
+      } catch (error) {
+        receipt.cases[id].status = 'failed';
+        throw error;
+      } finally { await save(); }
+    });
+  } };
 }

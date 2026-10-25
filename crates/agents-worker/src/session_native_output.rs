@@ -589,7 +589,7 @@ mod tests {
     fn request() -> crate::responses_wire::ResponseRequest {
         serde_json::from_value(json!({"model":"agent","input":"hello","tools":[
             {"type":"custom","name":"plain"},
-            {"type":"namespace","name":"db","tools":[{"type":"custom","name":"sql"},{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"],"additionalProperties":false},"strict":true}]}
+            {"type":"namespace","name":"db","description":"Database operations","tools":[{"type":"custom","name":"sql"},{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"],"additionalProperties":false},"strict":true}]}
         ]})).unwrap()
     }
 

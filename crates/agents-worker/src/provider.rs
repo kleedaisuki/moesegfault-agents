@@ -330,6 +330,8 @@ pub struct Usage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_request_id: Option<String>,
     /// Missing upstream usage is not the same as a free inference.
     pub reported: bool,
@@ -1048,6 +1050,8 @@ pub fn parse_completion(value: Value) -> Result<Completion, String> {
             .unwrap_or(0),
         reasoning_tokens: usage_value
             .and_then(|u| u["completion_tokens_details"]["reasoning_tokens"].as_u64()),
+        cache_write_tokens: usage_value
+            .and_then(|u| u["prompt_tokens_details"]["cache_write_tokens"].as_u64()),
         reported: usage_value
             .is_some_and(|u| u["prompt_tokens"].is_u64() && u["completion_tokens"].is_u64()),
         cost: usage_value

@@ -893,6 +893,8 @@ fn normalize_usage(id: &str, value: Option<&Value>) -> Result<Usage, String> {
         total_tokens: declared.or(total).unwrap_or(0),
         cached_tokens: cached.unwrap_or(0),
         reasoning_tokens: reasoning,
+        cache_write_tokens: value
+            .and_then(|value| value["input_tokens_details"]["cache_write_tokens"].as_u64()),
         provider_request_id: Some(id.into()),
         // The compatibility Usage scalar cannot represent an unknown cache
         // breakdown. Keep it unreported until native billing/projection uses

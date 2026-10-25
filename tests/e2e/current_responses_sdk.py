@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sys
 from typing import Any
+import uuid
 
 import httpx2
 from httpx2 import Client
@@ -34,6 +37,30 @@ TextKey = tuple[str, int, int]
 def require(value: object, code: str) -> None:
     if not value:
         raise ValueError(code)
+
+
+def correlation_headers() -> dict[str, str]:
+    seed: str = os.environ.get("MAGENTS_TEST_TRACE_SEED", "")
+    if not seed:
+        return {}
+    trace_id: str = hashlib.sha256(seed.encode()).hexdigest()[:32]
+    if trace_id == "0" * 32:
+        trace_id = "1" + trace_id[1:]
+    return {"traceparent": f"00-{trace_id}-{uuid.uuid4().hex[:16]}-00"}
+
+
+def create_management_conversation(client: OpenAI, recovery: dict[str, Any], save: Callable[[str], None]) -> Conversation:
+    require(client.max_retries == 0, "management_create_automatic_retry_forbidden")
+    require("conversation_create" not in recovery, "existing_conversation_intent_requires_reconciliation")
+    metadata: dict[str, str] = {"purpose": "current-sdk-no-inference"}
+    body: bytes = json.dumps({"metadata": metadata}, sort_keys=True, separators=(",", ":")).encode()
+    key: str = "current-sdk-conversation-" + uuid.uuid4().hex
+    recovery["conversation_create"] = {"idempotency_key": key, "body_sha256": hashlib.sha256(body).hexdigest()}
+    save("conversation_create_submitting_do_not_replay_if_ambiguous")
+    conversation: Conversation = client.conversations.create(metadata=metadata, extra_headers={"Idempotency-Key": key})
+    recovery["conversation"] = conversation.id
+    save("conversation_created")
+    return conversation
 
 
 def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -150,28 +177,41 @@ def validate_events(events: list[dict[str, Any]], websocket: bool) -> tuple[list
     return completed, len(lanes)
 
 
-def validate_wire(bundle: dict[str, Any]) -> dict[str, Any]:
-    """Validate original wire objects, never filling defaults or synthesizing events."""
+def validate_response_wire(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Validate an original HTTP response and its native event stream alone."""
     require(isinstance(bundle, dict), "wire_bundle_must_be_object")
     response: Response = Response.model_validate(bundle["response"], strict=True)
     require(response.status == "completed", "response_not_completed")
     events: list[dict[str, Any]] = bundle["events"]
     http_responses, _ = validate_events(events, websocket=False)
     require(len(http_responses) == 1 and http_responses[0] == bundle["response"], "terminal_snapshot_differs")
+    return {"sdk": openai.__version__, "scope": "strict_current_sdk_response_wire", "response_events": len(events),
+            "output_items": len(response.output), "passed": True, "live_execution_proven": False}
+
+
+def validate_api_wire(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Validate the core API increment independently of compact availability."""
+    response_summary: dict[str, Any] = validate_response_wire(bundle)
     websocket_events: list[dict[str, Any]] = bundle["websocket_events"]
     websocket_responses, websocket_lanes = validate_events(websocket_events, websocket=True)
-    compact: CompactedResponse = CompactedResponse.model_validate(bundle["compact"], strict=True)
-    require(any(item.type == "compaction" for item in compact.output), "missing_compaction_item")
     counted: InputTokenCountResponse = InputTokenCountResponse.model_validate(bundle["count"], strict=True)
     require(counted.input_tokens >= 0, "negative_input_count")
     conversation: Conversation = Conversation.model_validate(bundle["conversation"], strict=True)
     items: ConversationItemList = ConversationItemList.model_validate(bundle["conversation_items"], strict=True)
     require(items.data, "missing_conversation_items")
-    return {"sdk": openai.__version__, "scope": "strict_current_sdk_wire", "response_events": len(events),
+    return {"sdk": openai.__version__, "scope": "strict_current_sdk_api_wire", "response_events": response_summary["response_events"],
             "websocket_events": len(websocket_events), "conversation_items": len(items.data),
             "websocket_lanes": websocket_lanes, "websocket_responses": len(websocket_responses),
-            "conversation_object": conversation.object, "compact_object": compact.object,
+            "conversation_object": conversation.object,
             "count_object": counted.object, "passed": True, "live_execution_proven": False}
+
+
+def validate_wire(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Validate all seven original surfaces without filling or synthesizing data."""
+    result: dict[str, Any] = validate_api_wire(bundle)
+    compact: CompactedResponse = CompactedResponse.model_validate(bundle["compact"], strict=True)
+    require(any(item.type == "compaction" for item in compact.output), "missing_compaction_item")
+    return {**result, "scope": "strict_current_sdk_wire", "compact_object": compact.object}
 
 
 class HttpApi:
@@ -211,7 +251,8 @@ def inspect_staging(source: str, session_id: str, response_id: str, agent_id: st
     key: str = os.environ.get("MAGENTS_TEST_API_KEY", "")
     require(key, "existing_staging_key_required")
     require(all(re.fullmatch(r"[A-Za-z0-9_-]+", value) for value in (session_id, response_id, agent_id)), "invalid_owned_handle")
-    with Client(base_url=STAGING, timeout=60) as http:
+    trace_headers: dict[str, str] = correlation_headers()
+    with Client(base_url=STAGING, timeout=60, headers=trace_headers) as http:
         health: httpx2.Response = http.get("/healthz")
         health.raise_for_status()
         require(health.json().get("build_id") == source, "serving_source_mismatch")
@@ -222,7 +263,7 @@ def inspect_staging(source: str, session_id: str, response_id: str, agent_id: st
         assert_direct_deepseek_pin(HttpApi(http, key), session)
         pin: dict[str, Any] = session["pinned"]["model"]
     with OpenAI(api_key=key, base_url=STAGING + "/v1", max_retries=0, timeout=60,
-                _strict_response_validation=True) as client:
+                _strict_response_validation=True, default_headers=trace_headers) as client:
         raw: Any = client.responses.with_raw_response.retrieve(response_id)
         response: Response = raw.parse()
         require(response.status == "completed" and response.model == agent_id, "owned_completed_response_required")
@@ -234,10 +275,7 @@ def inspect_staging(source: str, session_id: str, response_id: str, agent_id: st
         require(events[-1].response.model_dump(mode="json", by_alias=True) == response.model_dump(mode="json", by_alias=True), "canonical_replay_snapshot_differs")
         count: InputTokenCountResponse = client.responses.input_tokens.count(model=agent_id, previous_response_id=response_id, input="Count only; do not generate.")
         require(count.input_tokens > 0, "invalid_count_result")
-        save("conversation_create_submitting_do_not_replay_if_ambiguous")
-        conversation: Conversation = client.conversations.create(metadata={"purpose": "current-sdk-no-inference"})
-        recovery["conversation"] = conversation.id
-        save("conversation_created")
+        conversation: Conversation = create_management_conversation(client, recovery, save)
         try:
             created: ConversationItemList = client.conversations.items.create(conversation.id, items=[{"type": "message", "role": "user", "content": "Current SDK non-generative conversation item."}])
             require(len(created.data) == 1, "conversation_create_count")
@@ -267,6 +305,10 @@ def main() -> None:
     commands: Any = parser.add_subparsers(dest="mode", required=True)
     wire: argparse.ArgumentParser = commands.add_parser("wire")
     wire.add_argument("--input", type=Path, required=True)
+    api_wire: argparse.ArgumentParser = commands.add_parser("api-wire")
+    api_wire.add_argument("--input", type=Path, required=True)
+    response_wire: argparse.ArgumentParser = commands.add_parser("response-wire")
+    response_wire.add_argument("--input", type=Path, required=True)
     stage: argparse.ArgumentParser = commands.add_parser("staging-inspect")
     stage.add_argument("--receipt", type=Path, required=True)
     for flag in ("source", "session", "response", "agent"):
@@ -274,6 +316,10 @@ def main() -> None:
     args: argparse.Namespace = parser.parse_args()
     if args.mode == "wire":
         result: dict[str, Any] = validate_wire(read_wire(args.input))
+    elif args.mode == "api-wire":
+        result = validate_api_wire(read_wire(args.input))
+    elif args.mode == "response-wire":
+        result = validate_response_wire(read_wire(args.input))
     else:
         result = inspect_staging(args.source, args.session, args.response, args.agent, args.receipt)
     print(json.dumps(result, sort_keys=True))

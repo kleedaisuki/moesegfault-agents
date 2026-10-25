@@ -25,6 +25,15 @@ export function renderDeploymentConfig(input, env) {
   delete config.build;
   const target = config.env[environment];
   target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha };
+  if (environment === 'staging' && env.ACCEPTANCE_PROFILE === 'responses-increment') {
+    target.vars.HOSTED_TOOL_RUNTIMES = '';
+    target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
+    target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
+      version: 1, platform_images: false, platform_search: false, file_search: false,
+      container_memory: null, available_container_profiles: [],
+      code_network_disabled: false, code_network_allowlist: false,
+    });
+  }
   for (const db of target.d1_databases) db.migrations_dir = resolve(db.migrations_dir);
   for (const container of target.containers) {
     container.image = `registry.cloudflare.com/${account}/magents-workspace:${containerSource}`;

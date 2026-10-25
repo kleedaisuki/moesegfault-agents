@@ -64,7 +64,15 @@ fn validate_items(items: &[Value]) -> Result<()> {
         return Err(fault("native_context_item_limit"));
     }
     for item in items {
-        if !item.is_object() || item.get("type").and_then(Value::as_str).is_none() {
+        let easy_message = item.get("type").is_none()
+            && matches!(
+                item["role"].as_str(),
+                Some("system" | "developer" | "user" | "assistant")
+            )
+            && (item["content"].is_string() || item["content"].is_array());
+        if !item.is_object()
+            || (item.get("type").and_then(Value::as_str).is_none() && !easy_message)
+        {
             return Err(fault("invalid_native_context_item"));
         }
         if serde_json::to_vec(item)?.len() > MAX_ITEM_BYTES {
@@ -756,6 +764,9 @@ mod tests {
         );
         assert!(validate_items(&[json!("not an item")]).is_err());
         assert!(validate_items(&[json!({"text":"missing type"})]).is_err());
+        assert!(validate_items(&[json!({"role":"user","content":"SDK easy input"})]).is_ok());
+        assert!(validate_items(&[json!({"role":"tool","content":"unpaired"})]).is_err());
+        assert!(validate_items(&[json!({"role":"user","content":42})]).is_err());
         assert!(portable_projection(&[
             json!({"type":"reasoning"}),
             json!({"type":"message"})

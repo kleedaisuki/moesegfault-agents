@@ -6,7 +6,7 @@ export function createAuxiliaryProviderFixture() {
   const state = { calls: [], counts: [], missingDetail: false };
   return { state, async handle(request) {
     const url = new URL(request.url);
-    if (url.hostname !== 'auxiliary-provider.test') return undefined;
+    if (url.hostname !== 'auxiliary-provider.example.com') return undefined;
     assert.equal(request.headers.get('authorization'), 'Bearer synthetic-auxiliary-owned-key');
     const input = await request.json();
     assert.equal(input.model, 'fixture-native-model');
@@ -31,8 +31,9 @@ export function createAuxiliaryProviderFixture() {
 
 export async function runAuxiliaryJourney({ mf, db, encryptionKey, request, provider }) {
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'auxiliary-api-owner' });
+  await principal.browser('GET', '/v1/account');
   const credential = await principal.browser('POST', '/v1/provider-keys', {
-    protocol: 'openai', base_url: 'https://auxiliary-provider.test/v1', api_key: 'synthetic-auxiliary-owned-key' }, 201);
+    protocol: 'openai', base_url: 'https://auxiliary-provider.example.com/v1', api_key: 'synthetic-auxiliary-owned-key' }, 201);
   const agent = await request('POST', '/v1/agents', { name: 'Auxiliary native agent',
     model: { provider: 'byok', credential_id: credential.id, protocol: 'responses', model: 'fixture-native-model',
       context_window: 8192, max_output_tokens: 64 }, instructions: 'Pinned policy 雪.', tools: ['time'], workspace: false }, 201, principal.apiKey);
@@ -55,30 +56,30 @@ export async function runAuxiliaryJourney({ mf, db, encryptionKey, request, prov
   await sdk.responses.inputTokens.count({ previous_response_id: made.data.id, input: 'Continue.' });
   assert.ok(!JSON.stringify(provider.state.counts.at(-1).input).includes('One-response scope.'), 'Previous instructions do not leak into count continuation');
   const compactBody = { previous_response_id: made.data.id, input: 'Preserve the goal.', instructions: 'Compact in concise bullets.' };
-  const window = await sdk.responses.compact(compactBody, { idempotencyKey: 'auxiliary-compact-key' });
+  const window = await sdk.responses.compact(compactBody, { headers: { 'Idempotency-Key': 'auxiliary-compact-key' } });
   assert.equal(window.object, 'response.compaction');
   assert.equal(window.usage.input_tokens_details.cache_write_tokens, 0);
   assert.match(window.output.at(-1).encrypted_content, /^mcmp1\./);
   assert.ok(window.output.slice(0, -1).every(item => item.role === 'user'));
-  assert.deepEqual(await sdk.responses.compact(compactBody, { idempotencyKey: 'auxiliary-compact-key' }), window);
+  assert.deepEqual(await sdk.responses.compact(compactBody, { headers: { 'Idempotency-Key': 'auxiliary-compact-key' } }), window);
   assert.equal(provider.state.calls.length, 2, 'Same-key compact does not repeat inference');
-  const independentlyCompacted = await sdk.responses.compact(compactBody, { idempotencyKey: 'auxiliary-second-operation' });
+  const independentlyCompacted = await sdk.responses.compact(compactBody, { headers: { 'Idempotency-Key': 'auxiliary-second-operation' } });
   assert.notEqual(independentlyCompacted.output.at(-1).id, window.output.at(-1).id,
     'Different compact operations cannot publish different ciphertexts under the same item ID');
   const conversation = await sdk.conversations.create({ items: [window.output.at(-1)] });
   await sdk.conversations.items.create(conversation.id, { items: [independentlyCompacted.output.at(-1)] });
   assert.equal((await sdk.conversations.items.list(conversation.id)).data.length, 2,
     'Distinct operation items coexist under immutable Conversation identities');
-  await assert.rejects(sdk.responses.compact({ ...compactBody, input: 'Changed' }, { idempotencyKey: 'auxiliary-compact-key' }), error => error.status === 409);
+  await assert.rejects(sdk.responses.compact({ ...compactBody, input: 'Changed' }, { headers: { 'Idempotency-Key': 'auxiliary-compact-key' } }), error => error.status === 409);
   await sdk.responses.inputTokens.count({ model: agent.id, input: [...window.output, { role: 'user', content: 'Continue.' }] });
   const restored = JSON.stringify(provider.state.counts.at(-1).input);
   assert.ok(restored.includes('One-response scope.'), 'Compaction retains protected ongoing instructions');
   assert.ok(!restored.includes('Compact in concise bullets.'), 'Compact guidance never becomes ongoing instructions');
   const resumedBody = { model: agent.id, input: [...window.output, { role: 'user', content: 'Continue.' }] };
-  const resumed = await sdk.responses.create(resumedBody, { idempotencyKey: 'auxiliary-resume-key' });
+  const resumed = await sdk.responses.create(resumedBody, { headers: { 'Idempotency-Key': 'auxiliary-resume-key' } });
   assert.equal(resumed.instructions, null, 'Private effective instructions do not rewrite the public request');
   assert.ok(JSON.stringify(provider.state.calls.at(-1).input).includes('One-response scope.'));
-  assert.equal((await sdk.responses.create(resumedBody, { idempotencyKey: 'auxiliary-resume-key' })).id, resumed.id);
+  assert.equal((await sdk.responses.create(resumedBody, { headers: { 'Idempotency-Key': 'auxiliary-resume-key' } })).id, resumed.id);
   assert.equal(provider.state.calls.length, 4, 'Raw-key replay remains exact after sealed instruction expansion');
   await sdk.responses.inputTokens.count({ previous_response_id: resumed.id, input: 'Next response.' });
   assert.ok(!JSON.stringify(provider.state.counts.at(-1).input).includes('One-response scope.'),
@@ -97,7 +98,7 @@ export async function runAuxiliaryJourney({ mf, db, encryptionKey, request, prov
     'Only explicit generation creates Sessions; auxiliary calls do not');
   provider.state.missingDetail = true;
   await assert.rejects(sdk.responses.compact({ model: agent.id, input: 'Known usage missing required detail.' },
-    { idempotencyKey: 'auxiliary-missing-detail' }), error => error.status === 503 && error.code === 'provider_unsupported_usage_detail');
+    { headers: { 'Idempotency-Key': 'auxiliary-missing-detail' } }), error => error.status === 503 && error.code === 'provider_unsupported_usage_detail');
   provider.state.missingDetail = false;
   assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='model'")
     .bind(principal.owner).first('n'), 6, 'Known usage settles despite unsupported wire details');

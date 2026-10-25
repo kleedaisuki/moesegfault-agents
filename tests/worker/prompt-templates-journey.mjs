@@ -98,10 +98,11 @@ export async function runPromptTemplatesJourney({ mf, db, encryptionKey, request
   } finally {
     await replaceRegistry(promptRegistry);
   }
-  const route = await db.prepare('SELECT session_id FROM response_routes WHERE id=? AND account_id=?')
+  const currentDb = await mf.getD1Database('DB');
+  const route = await currentDb.prepare('SELECT session_id FROM response_routes WHERE id=? AND account_id=?')
     .bind(first.id, principal.owner).first();
   assert.ok(route?.session_id);
-  const pinned = await db.prepare('SELECT config_snapshot_json FROM sessions WHERE id=?')
+  const pinned = await currentDb.prepare('SELECT config_snapshot_json FROM sessions WHERE id=?')
     .bind(route.session_id).first();
   assert.ok(pinned);
   assert.equal(JSON.parse(pinned.config_snapshot_json).pinned.instructions, agentBody.instructions);

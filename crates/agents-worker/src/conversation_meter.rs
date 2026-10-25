@@ -288,7 +288,9 @@ impl ConversationOperation {
         } else {
             self.finish(env, owner).await
         };
-        let mut response = result?;
+        let response = result?;
+        let headers = response.headers().clone();
+        let mut response = response.with_headers(headers);
         response
             .headers_mut()
             .set("X-Agents-Operation", self.id())?;

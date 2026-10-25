@@ -94,3 +94,7 @@ test('operator-only critical proof and one global immutable intent precede the o
   assert.ok(operatorJob.includes('artifacts?name=v030-direct-deepseek-usage-probe-intent'));
   assert.ok(operatorJob.includes('if: always()'));
 });
+
+test('usable core deployment does not pay for compact with an unavailable provider usage field', () => {
+  assert.ok(deploymentJob.includes('--scope core --omit-compact --allow-model-calls --max-paid-submissions 7'));
+});

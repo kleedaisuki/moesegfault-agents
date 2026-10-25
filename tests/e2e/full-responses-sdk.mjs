@@ -11,8 +11,170 @@ import { ResponsesWS } from 'openai/resources/responses/ws';
 export const CORE_GROUPS = ['conversations', 'http_historical_forks', 'store_false_tombstone', 'count_compact', 'websocket_lanes'];
 export const EXTERNAL_GROUPS = ['hosted_interpreter', 'hosted_image_seedream5', 'hosted_web_search', 'hosted_space_search', 'async_local_tools', 'steering', 'workspace_physical_branches', 'urls_ssrf', 'browser_native', 'accounting_closure', 'performance', 'websocket_fifo_limits', 'rich_native_items', 'cross_agent_pin'];
 const terminalTypes = new Set(['response.completed', 'response.incomplete', 'response.failed']);
+export const RUNNER_CONTRACT = 'full-responses-core-prepaid-count-trace-management-v1';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+export function nativeAcceptanceModel(approvedModel) {
+  return { ...approvedModel, protocol: 'responses' };
+}
+
+export function assertExecutionWorkspace(root, source, environment) {
+  const canonical = fs.realpathSync(root);
+  if (environment.GITHUB_ACTIONS === 'true') {
+    assert.equal(environment.GITHUB_REPOSITORY, 'kleedaisuki/moesegfault-agents', 'untrusted_actions_repository');
+    assert.equal(environment.GITHUB_SHA, source, 'actions_source_mismatch');
+    assert.ok(environment.GITHUB_WORKSPACE, 'actions_workspace_missing');
+    assert.equal(fs.realpathSync(environment.GITHUB_WORKSPACE), canonical, 'actions_cwd_workspace_mismatch');
+    return { mode: 'trusted_actions_workspace', source };
+  }
+  assert.equal(canonical.replaceAll('\\', '/').toLowerCase(), 'd:/code/moesegfault-agents/.cache/v2-release-worktree', 'explicit_release_worktree_required');
+  return { mode: 'owned_local_release_worktree', source };
+}
+
+export function traceHeaders(seed) {
+  if (!seed) return {};
+  assert.match(seed, /^[1-9][0-9]*:[1-9][0-9]*$/, 'invalid_ci_trace_seed');
+  return { traceparent: `00-${createHash('sha256').update(seed).digest('hex').slice(0, 32)}-${randomUUID().replaceAll('-', '').slice(0, 16)}-00` };
+}
+
+export function tracedFetch(fetcher, seed) {
+  return (url, init = {}) => fetcher(url, { ...init, headers: new Headers({ ...Object.fromEntries(new Headers(init.headers)), ...traceHeaders(seed) }) });
+}
+
+export async function createManagedConversation(client, body, { begin, remember, complete }) {
+  const key = begin('conversation-create', { bodySha256: digest(body) });
+  const conversation = await client.conversations.create(body, { maxRetries: 0, headers: { 'Idempotency-Key': key } });
+  remember('conversations', conversation.id);
+  complete(key, conversation.id);
+  return conversation;
+}
+
+export async function countRootWithoutAdmission(client, request, sessionId, body) {
+  const before = await request('GET', `/v1/sessions/${sessionId}`);
+  assert.equal(before.status, 'idle', 'prepaid_count_session_not_idle');
+  assert.ok(Array.isArray(before.messages) && before.pinned, 'prepaid_count_canonical_source_missing');
+  assert.ok(Number.isSafeInteger(before.input_revision) && Number.isSafeInteger(before.last_input_at_ms), 'prepaid_count_user_clock_missing');
+  assert.equal(before.run_id ?? null, null, 'prepaid_count_session_already_running');
+  const conversationPath = typeof body.conversation === 'string' ? `/v1/conversations/${body.conversation}/items?limit=100&order=asc` : null;
+  const conversationBefore = conversationPath ? await request('GET', conversationPath) : null;
+  if (conversationBefore) assert.equal(conversationBefore.has_more, false, 'prepaid_count_seed_snapshot_truncated');
+  const count = await client.responses.inputTokens.count(body, { headers: { 'X-Agents-Session': sessionId } });
+  assert.equal(count.object, 'response.input_tokens');
+  assert.ok(Number.isSafeInteger(count.input_tokens) && count.input_tokens > 0, 'genuine_prepaid_count_required');
+  const after = await request('GET', `/v1/sessions/${sessionId}`);
+  assert.deepEqual(after.pinned, before.pinned, 'count_changed_initial_pin');
+  assert.deepEqual(after.messages, before.messages, 'count_changed_initial_source');
+  assert.equal(after.input_revision, before.input_revision, 'count_changed_user_clock_revision');
+  assert.equal(after.last_input_at_ms, before.last_input_at_ms, 'count_changed_user_clock_time');
+  assert.equal(after.run_id ?? null, before.run_id ?? null, 'count_admitted_a_run');
+  if (conversationPath) assert.deepEqual(await request('GET', conversationPath), conversationBefore, 'count_changed_conversation_seed');
+  return { count, evidence: { status: 'passed', inputTokens: count.input_tokens, pinSha256: digest(before.pinned), sourceSha256: digest(before.messages), userClockUnchanged: true, noRunAdmitted: true } };
+}
+
+export function compareRootCount(count, response) {
+  const usageSource = response.usage?.input_tokens != null ? 'usage' : 'agents_usage';
+  const input = response[usageSource]?.input_tokens;
+  if (!Number.isSafeInteger(input) || input < 0) return { status: 'not_compared_provider_standard_usage_unavailable' };
+  assert.equal(input, count.input_tokens, 'same_rendered_root_count_differs_from_provider_usage');
+  return { status: 'equal_provider_reported_input_tokens', inputTokens: input, usageSource };
+}
+
+const COMPONENTS = ['worker', 'native', 'container', 'dashboard', 'tooling'];
+
+function assertComponentFingerprints(fingerprints) {
+  assert.ok(fingerprints && COMPONENTS.every(name => /^[a-f0-9]{64}$/.test(fingerprints[name] ?? '')), 'all_five_component_fingerprints_required');
+  assert.equal(Object.keys(fingerprints).length, COMPONENTS.length, 'unknown_component_fingerprint');
+}
+
+function readProjectTempJson(file, root) {
+  const target = fs.realpathSync(path.resolve(root, file));
+  const owned = fs.realpathSync(path.join(root, '.temp'));
+  assert.ok(target.startsWith(owned + path.sep), 'sealed_artifact_outside_project_temp');
+  const bytes = fs.readFileSync(target);
+  assert.ok(bytes.length <= 1024 * 1024, 'sealed_artifact_size_exceeded');
+  return { target, value: JSON.parse(bytes.toString('utf8')), sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
+export function requireLiveDeploymentProvenance(environment, source, root) {
+  assert.ok(typeof environment.MAGENTS_TEST_DEPLOYMENT_PROVENANCE === 'string' && environment.MAGENTS_TEST_DEPLOYMENT_PROVENANCE.length > 0, 'live_deployment_provenance_required_before_network');
+  return readDeploymentProvenance(environment.MAGENTS_TEST_DEPLOYMENT_PROVENANCE, source, root);
+}
+
+export function readDeploymentProvenance(file, source, root) {
+  const loaded = readProjectTempJson(file, root), receipt = loaded.value;
+  assert.equal(receipt.schema_version, 1, 'deployment_provenance_schema_changed');
+  assert.equal(receipt.status, 'incremental_build_and_selected_checks_verified', 'deployment_provenance_not_validated');
+  assert.equal(receipt.source_sha, source, 'deployment_provenance_source_mismatch');
+  assert.deepEqual(receipt.diagnostic_only_components, [], 'diagnostic_scope_cannot_seal_core');
+  assert.equal(receipt.staging_acceptance, 'not_executed', 'deployment_build_provenance_scope_changed');
+  assert.equal(receipt.production_authorized, false, 'deployment_provenance_cannot_authorize_production');
+  assertComponentFingerprints(receipt.component_fingerprints);
+  assert.match(String(receipt.source_run ?? ''), /^[1-9][0-9]*$/, 'deployment_source_run_missing');
+  assert.ok(Array.isArray(receipt.passed_current_checks) && receipt.baseline_evidence && typeof receipt.baseline_evidence === 'object', 'deployment_selected_check_provenance_missing');
+  for (const name of ['worker', 'dashboard', 'container']) {
+    const artifact = receipt.artifacts?.[name];
+    assert.ok(artifact && Number.isSafeInteger(artifact.id) && artifact.id > 0, 'deployment_artifact_provenance_missing');
+    assert.match(String(artifact.run_id ?? ''), /^[1-9][0-9]*$/, 'deployment_artifact_run_missing');
+    assert.match(artifact.source_sha ?? '', /^[a-f0-9]{40}$/, 'deployment_artifact_source_missing');
+    assert.equal(artifact.fingerprint, receipt.component_fingerprints[name], 'deployment_artifact_component_mismatch');
+    assert.ok(['built_current', 'reused_identical_artifact'].includes(artifact.status) || name === 'container' && artifact.status === 'core_compatible_disabled_runtime' && receipt.runtime_scope === 'core-compatible/disabled-runtime', 'deployment_artifact_scope_not_accepted');
+  }
+  const componentSources = Object.fromEntries(['worker', 'dashboard', 'container'].map(name => [name, receipt.artifacts[name].source_sha]));
+  return { source, assemblySource: source, workerSource: componentSources.worker, component_sources: componentSources, receipt: path.relative(root, loaded.target), receiptSha256: loaded.sha256, component_fingerprints: receipt.component_fingerprints };
+}
+
+export function verifyWorkerIdentity(provenance, root, verifyServingSource) {
+  assert.equal(provenance.workerSource, provenance.component_sources.worker, 'worker_source_map_mismatch');
+  return verifyServingSource(provenance.workerSource, root);
+}
+
+export function assertServingWorkerHealth(health, provenance) {
+  assert.equal(health.status, 'ok', 'serving_worker_unhealthy');
+  assert.equal(health.build_id, provenance.workerSource, 'serving_worker_source_changed');
+}
+
+export function currentPythonWorkerArguments(root, provenance, handles, receipt) {
+  return [path.join(root, 'tests/e2e/current_responses_sdk.py'), 'staging-inspect', '--source', provenance.workerSource, '--session', handles.session, '--response', handles.response, '--agent', handles.agent, '--receipt', receipt];
+}
+
+export function currentPythonWorkerEnvironment(environment, provenance) {
+  return { ...environment, MAGENTS_TEST_EXPECTED_BUILD: provenance.workerSource, MAGENTS_TEST_DEPLOYMENT_ASSEMBLY_SHA: provenance.assemblySource };
+}
+
+export function aggregateEvidence(config, root) {
+  const owned = fs.realpathSync(path.join(root, '.temp/v0.3-full-acceptance'));
+  const loaded = readProjectTempJson(config['core-receipt'], root), core = loaded.value;
+  assert.ok(loaded.target.startsWith(owned + path.sep), 'core_receipt_outside_owned_acceptance_directory');
+  assert.match(core.source ?? '', /^[a-f0-9]{40}$/, 'sealed_core_source_invalid');
+  assert.equal(core.runnerContract, RUNNER_CONTRACT, 'sealed_core_contract_version_mismatch');
+  assert.ok(['core_passed_full_acceptance_not_claimed', 'core_passed_full_gate_not_ready', 'core_and_external_evidence_passed_final_release_judgment_required'].includes(core.status), 'sealed_core_not_passed');
+  assert.equal(core.pending, null, 'sealed_core_has_unresolved_work');
+  assert.ok(Array.isArray(core.managementIntents) && core.managementIntents.every(intent => intent.status === 'completed'), 'sealed_core_management_unresolved');
+  assert.ok(core.dependencies?.nodeSdk && core.dependencies?.currentPythonSdk, 'sealed_core_dependency_baseline_missing');
+  assert.deepEqual(core.cleanup?.failures, [], 'sealed_core_cleanup_incomplete');
+  for (const group of [...CORE_GROUPS, 'prepaid_count', 'current_python_wire', 'current_python_sdk']) assert.ok(core.checks?.[group], `sealed_core_group_missing:${group}`);
+  const external = readProjectTempJson(config['external-evidence'], root).value;
+  const sameSource = core.source === config.source;
+  if (!sameSource) assert.ok(external.core_baseline && external.current_deployment, 'sealed_core_source_mismatch_requires_explicit_baseline_and_current_provenance');
+  if (external.core_baseline) {
+    const seal = external.core_baseline;
+    const sealedCore = readProjectTempJson(seal.receipt, root);
+    assert.equal(sealedCore.target, loaded.target, 'core_baseline_receipt_identity_mismatch');
+    assert.equal(seal.receiptSha256, loaded.sha256, 'core_baseline_receipt_hash_mismatch');
+    assert.equal(seal.source, core.source, 'core_baseline_source_mismatch');
+    assertComponentFingerprints(core.component_fingerprints);
+    assert.deepEqual(seal.component_fingerprints, core.component_fingerprints, 'core_baseline_fingerprints_mismatch');
+  }
+  let current = null;
+  if (external.current_deployment) {
+    assert.equal(external.current_deployment.source, config.source, 'current_deployment_source_mismatch');
+    current = readDeploymentProvenance(external.current_deployment.receipt, config.source, root);
+    assert.equal(external.current_deployment.receiptSha256, current.receiptSha256, 'current_deployment_receipt_hash_mismatch');
+  }
+  assertExternalEvidence(external, config.source);
+  const verified = verifyExternalArtifacts(external, root);
+  return { source: config.source, assemblySource: config.source, runnerSource: config.source, workerSource: current?.workerSource ?? (sameSource ? core.workerSource ?? null : null), component_sources: current?.component_sources ?? (sameSource ? core.component_sources ?? null : null), baselineSource: core.source, baselineWorkerSource: core.workerSource ?? null, baselineComponentSources: core.component_sources ?? null, currentWorkerSource: current?.workerSource ?? null, currentComponentSources: current?.component_sources ?? null, runnerContract: RUNNER_CONTRACT, status: sameSource ? 'sealed_core_and_external_evidence_verified_final_release_judgment_required' : 'baseline_not_reexecuted_final_judgment_required', coreReceipt: path.relative(root, loaded.target), coreReceiptSha256: loaded.sha256, groups: verified.groups, newModelRuns: 0, networkRequests: 0, servingSourceRechecked: false, dependencyBaseline: { status: 'sealed_core_not_retested', ...core.dependencies }, baselineComponentFingerprints: core.component_fingerprints ?? null, currentComponentFingerprints: current?.component_fingerprints ?? null, changedComponents: current && core.component_fingerprints ? COMPONENTS.filter(name => current.component_fingerprints[name] !== core.component_fingerprints[name]) : [], currentDeployment: current };
+}
 export function assertBudget(planned, allowed) {
   assert.ok(Number.isSafeInteger(allowed) && allowed >= planned && allowed <= 32, 'explicit_bounded_paid_submission_budget_required');
 }
@@ -73,8 +235,8 @@ export function assertCanonicalEvents(events, expectedLane) {
   return terminals[0].response;
 }
 
-export async function exerciseConversations(client, otherClient, remember) {
-  const conversation = await client.conversations.create({ metadata: { acceptance: 'full-responses' }, items: [{ role: 'user', content: 'Remember the original branch boundary.' }] });
+export async function exerciseConversations(client, otherClient, remember, createConversation = body => client.conversations.create(body)) {
+  const conversation = await createConversation({ metadata: { acceptance: 'full-responses' }, items: [{ role: 'user', content: 'Remember the original branch boundary.' }] });
   remember('conversations', conversation.id);
   assert.equal(conversation.object, 'conversation');
   const updated = await client.conversations.update(conversation.id, { metadata: { acceptance: 'full-responses', revised: 'yes' } });
@@ -101,8 +263,8 @@ export async function exerciseConversations(client, otherClient, remember) {
   return { metadata: true, cursorItems: listed.length, itemCrud: true, ownerIsolated: true, deletionRetainsItems: true };
 }
 
-export async function exerciseWebSocket(client, parentId, beforeDispatch, remember, makeSocket = value => new ResponsesWS(value, { reconnect: null, maxPayload: 4 * 1024 * 1024 }), observeWire = () => {}) {
-  const socket = makeSocket(client);
+export async function exerciseWebSocket(client, parentId, beforeDispatch, remember, makeSocket, observeWire = () => {}, traceSeed) {
+  const socket = (makeSocket ?? (value => new ResponsesWS(value, { reconnect: null, maxPayload: 4 * 1024 * 1024, headers: traceHeaders(traceSeed) })))(client);
   const events = new Map([['fork-left', []], ['fork-right', []]]);
   const terminal = new Set();
   const wireEvents = [];
@@ -163,12 +325,18 @@ export async function exerciseNoStoreParentRejection(client, body, { beforeDispa
   throw Error('store_false_parent_unexpectedly_admitted_no_replay');
 }
 
-function configuration(argv, environment) {
-  const { values } = parseArgs({ args: argv, options: { source: { type: 'string' }, output: { type: 'string' }, 'max-paid-submissions': { type: 'string' }, 'allow-model-calls': { type: 'boolean', default: false }, scope: { type: 'string', default: 'full' }, 'external-evidence': { type: 'string' }, 'current-python': { type: 'string' } } });
+export function configuration(argv, environment) {
+  const { values } = parseArgs({ args: argv, options: { source: { type: 'string' }, output: { type: 'string' }, 'max-paid-submissions': { type: 'string' }, 'allow-model-calls': { type: 'boolean', default: false }, scope: { type: 'string', default: 'full' }, 'external-evidence': { type: 'string' }, 'current-python': { type: 'string' }, 'aggregate-only': { type: 'boolean', default: false }, 'core-receipt': { type: 'string' }, 'omit-compact': { type: 'boolean', default: false } } });
   assert.match(values.source ?? '', /^[a-f0-9]{40}$/, 'exact_source_required_before_network');
   assert.ok(['core', 'full'].includes(values.scope), 'unknown_acceptance_scope');
+  assert.ok(!values['omit-compact'] || values.scope === 'core', 'compact_omission_cannot_claim_full_acceptance');
+  if (values['aggregate-only']) {
+    assert.ok(values['core-receipt'] && values['external-evidence'] && values.output, 'aggregation_requires_sealed_core_external_and_output');
+    assert.equal(values['allow-model-calls'], false, 'evidence_only_mode_must_not_authorize_generation');
+    return values;
+  }
   assert.equal(values['allow-model-calls'], true, 'explicit_paid_execution_gate_required');
-  assertBudget(9, Number(values['max-paid-submissions']));
+  assertBudget(values['omit-compact'] ? 7 : 9, Number(values['max-paid-submissions']));
   const origin = environment.MAGENTS_TEST_API_ORIGIN;
   assert.equal(origin, 'https://agents-staging.moesegfault.dev', 'staging_only_exact_origin_required');
   assert.ok(environment.MAGENTS_TEST_API_KEY && environment.MAGENTS_TEST_OTHER_API_KEY, 'both_existing_owned_staging_keys_required');
@@ -181,34 +349,42 @@ function configuration(argv, environment) {
 export async function main(argv = process.argv.slice(2), environment = process.env) {
   const config = configuration(argv, environment);
   const root = path.resolve('.');
-  assert.ok(root.replaceAll('\\', '/').endsWith('/.cache/v2-release-worktree'), 'explicit_release_worktree_required');
+  assertExecutionWorkspace(root, config.source, environment);
   const output = path.resolve(config.output);
   assert.ok(output.startsWith(path.join(root, '.temp') + path.sep), 'receipt_must_stay_in_project_temp');
   assert.equal(fs.existsSync(output), false, 'existing_receipt_requires_reconciliation_not_new_execution');
+  if (config['aggregate-only']) {
+    const result = aggregateEvidence(config, root);
+    fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output, JSON.stringify(result, null, 2), { flag: 'wx' });
+    process.stdout.write(JSON.stringify(result) + '\n'); return;
+  }
+  const deploymentProvenance = requireLiveDeploymentProvenance(environment, config.source, root);
   const policy = await import('./paid-route-policy.mjs');
-  await policy.verifyServingSource(config.source, root);
+  await verifyWorkerIdentity(deploymentProvenance, root, policy.verifyServingSource);
+  const transport = tracedFetch(fetch, environment.MAGENTS_TEST_TRACE_SEED);
   const headers = { Authorization: `Bearer ${environment.MAGENTS_TEST_API_KEY}` };
   const request = async (method, route, body, expected = [200]) => {
-    const response = await fetch(config.origin + route, { method, headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(30000) });
+    const response = await transport(config.origin + route, { method, headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(30000) });
     assert.ok(expected.includes(response.status), `platform_request_status:${method}:${response.status}`);
     const bytes = await response.text();
     return bytes ? JSON.parse(bytes) : null;
   };
   const health = await request('GET', '/healthz');
-  assert.equal(health.build_id, config.source, 'serving_source_changed');
-  const receipt = { source: config.source, scope: config.scope, status: 'running', run: randomUUID(), submissions: 0, resources: { agents: [], sessions: [], responses: [], conversations: [] }, checks: {}, dispatches: [], pending: null };
+  assertServingWorkerHealth(health, deploymentProvenance);
+  const receipt = { source: config.source, assemblySource: config.source, runnerSource: config.source, workerSource: deploymentProvenance.workerSource, component_sources: deploymentProvenance.component_sources, runnerContract: RUNNER_CONTRACT, component_fingerprints: deploymentProvenance?.component_fingerprints ?? null, deployment_provenance: deploymentProvenance, dependencies: { nodeSdk: JSON.parse(fs.readFileSync(new URL('../../node_modules/openai/package.json', import.meta.url), 'utf8')).version, currentPythonSdk: null }, scope: config.scope, status: 'running', run: randomUUID(), submissions: 0, resources: { agents: [], sessions: [], responses: [], conversations: [] }, checks: {}, dispatches: [], managementIntents: [], pending: null };
   const persist = () => { fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output + '.partial', JSON.stringify(receipt, null, 2)); fs.renameSync(output + '.partial', output); };
   const remember = (kind, id) => { assert.ok(id); if (!receipt.resources[kind].includes(id)) receipt.resources[kind].push(id); persist(); };
+  const management = { begin: (purpose, details) => { const intent = { purpose, ...details, idempotencyKey: `full-management-${receipt.run}-${receipt.managementIntents.length + 1}`, status: 'submitting_do_not_replay_if_ambiguous' }; receipt.managementIntents.push(intent); persist(); return intent.idempotencyKey; }, remember, complete: (key, id) => { const intent = receipt.managementIntents.find(value => value.idempotencyKey === key); intent.status = 'completed'; intent.resourceId = id; persist(); } };
   const beforeDispatch = (purpose, details = {}) => { assert.ok(receipt.submissions < config.limit, 'paid_submission_budget_exhausted'); receipt.submissions++; receipt.pending = { purpose, ...details, transport: purpose.startsWith('websocket:') ? 'websocket' : 'http', idempotencyKey: purpose.startsWith('websocket:') ? null : `full-${receipt.run}-${receipt.submissions}` }; receipt.dispatches.push({ submission: receipt.submissions, ...receipt.pending }); persist(); return receipt.pending.idempotencyKey; };
   persist();
-  const client = new OpenAI({ apiKey: environment.MAGENTS_TEST_API_KEY, baseURL: config.origin + '/v1', maxRetries: 0, timeout: 300000 });
-  const other = new OpenAI({ apiKey: environment.MAGENTS_TEST_OTHER_API_KEY, baseURL: config.origin + '/v1', maxRetries: 0, timeout: 30000 });
+  const client = new OpenAI({ apiKey: environment.MAGENTS_TEST_API_KEY, baseURL: config.origin + '/v1', maxRetries: 0, timeout: 300000, fetch: transport });
+  const other = new OpenAI({ apiKey: environment.MAGENTS_TEST_OTHER_API_KEY, baseURL: config.origin + '/v1', maxRetries: 0, timeout: 30000, fetch: transport });
   let agent;
   try {
-    receipt.checks.conversations = await exerciseConversations(client, other, remember); persist();
+    receipt.checks.conversations = await exerciseConversations(client, other, remember, body => createManagedConversation(client, body, management)); persist();
     const approvedModel = policy.assertAvailableDirectDeepSeek(await request('GET', '/v1/models'), config.model);
     assert.ok(approvedModel.max_output_tokens >= 512, 'priced_model_output_budget_too_small');
-    agent = await request('POST', '/v1/agents', { name: `full-sdk-${receipt.run}`, model: { ...approvedModel, protocol: 'responses', max_output_tokens: 512 }, instructions: 'Respond briefly. Preserve the original user context on branches.', tools: [], skills: [], workspace: false, compaction_percent: 80 }, [201]);
+    agent = await request('POST', '/v1/agents', { name: `full-sdk-${receipt.run}`, model: nativeAcceptanceModel(approvedModel), instructions: 'Respond briefly. Preserve the original user context on branches.', tools: [], skills: [], workspace: false, compaction_percent: 80 }, [201]);
     remember('agents', agent.id); policy.assertDirectDeepSeekModel(agent.model, config.model);
     const ownedSessions = { add: id => remember('sessions', id) };
     const initial = await policy.createPinnedSession(request, agent, ownedSessions, config.model);
@@ -236,9 +412,15 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       receipt.pending = null; persist();
       return { response, events, session };
     };
-    const activeConversation = await client.conversations.create({ metadata: { acceptance: receipt.run }, items: [{ role: 'user', content: 'The seeded conversation context is SEED.' }] });
+    const activeConversation = await createManagedConversation(client,{ metadata: { acceptance: receipt.run }, items: [{ role: 'user', content: 'The seeded conversation context is SEED.' }] }, management);
     remember('conversations', activeConversation.id);
-    const first = await create({ conversation: activeConversation.id, input: 'The original branch marker is ORIGIN. Reply ready.', instructions: 'Keep the original marker available for later branch questions.' }, initialId, 'http-root');
+    const rootBody = { model: agent.id, conversation: activeConversation.id, input: 'The original branch marker is ORIGIN. Reply ready.', instructions: 'Keep the original marker available for later branch questions.', reasoning: { effort: 'none' } };
+    receipt.checks.prepaid_count = { status: 'count_only_submitting', bodySha256: digest(rootBody) }; persist();
+    const prepaid = await countRootWithoutAdmission(client, request, initialId, rootBody);
+    const count = prepaid.count;
+    receipt.checks.prepaid_count = prepaid.evidence; persist();
+    const first = await create(rootBody, initialId, 'http-root');
+    receipt.checks.prepaid_count.parity = compareRootCount(count, first.response); persist();
     const conversationItems = [];
     for await (const item of client.conversations.items.list(activeConversation.id, { limit: 1, order: 'asc' })) conversationItems.push(item);
     assert.equal(new Set(conversationItems.map(item => item.id)).size, conversationItems.length, 'conversation_response_appended_duplicates');
@@ -263,18 +445,21 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     const replay = [];
     for await (const event of await client.responses.retrieve(first.response.id, { stream: true, starting_after: cursor })) replay.push(event);
     assert.deepEqual(replay, first.events.filter(value => value.sequence_number > cursor), 'canonical_get_replay_changed');
-    const count = await client.responses.inputTokens.count({ model: agent.id, previous_response_id: first.response.id, input: 'Count this exact continuation.', instructions: 'Use the original branch marker.' });
-    assert.equal(count.object, 'response.input_tokens'); assert.ok(Number.isSafeInteger(count.input_tokens) && count.input_tokens > 0);
-    const key = beforeDispatch('standalone-compact');
-    const compact = await client.responses.compact({ model: agent.id, previous_response_id: first.response.id, instructions: 'Keep the original branch marker exactly.' }, { headers: { 'Idempotency-Key': key } });
-    assert.equal(compact.object, 'response.compaction'); assert.ok(compact.output.some(value => value.type === 'compaction' && value.encrypted_content));
-    assert.ok(compact.usage && compact.usage.total_tokens > 0, 'genuine_compact_usage_required');
-    receipt.pending = null; receipt.checks.count_compact = { inputTokens: count.input_tokens, compactId: compact.id, compactObject: compact.object, outputItems: compact.output.length, outputSha256: digest(compact.output) }; persist();
-    const compactContinuation = await policy.createPinnedSession(request, agent, ownedSessions, config.model);
-    const compactSession = typeof compactContinuation === 'string' ? compactContinuation : compactContinuation.id; remember('sessions', compactSession);
-    const reused = await create({ input: [...compact.output, { role: 'user', content: 'Report the original marker briefly.' }], previous_response_id: null }, compactSession, 'standalone-window-reuse');
-    assert.equal(reused.response.previous_response_id ?? null, null, 'standalone_compact_must_start_fresh_chain');
-    assert.ok(reused.response.output.filter(item => item.type === 'message').flatMap(item => item.content).filter(part => part.type === 'output_text').some(part => part.text.includes('ORIGIN')), 'standalone_compact_lost_original_marker');
+    let compact;
+    if (!config['omit-compact']) {
+      const key = beforeDispatch('standalone-compact');
+      compact = await client.responses.compact({ model: agent.id, previous_response_id: first.response.id, instructions: 'Keep the original branch marker exactly.' }, { headers: { 'Idempotency-Key': key } });
+      assert.equal(compact.object, 'response.compaction'); assert.ok(compact.output.some(value => value.type === 'compaction' && value.encrypted_content));
+      assert.ok(compact.usage && compact.usage.total_tokens > 0, 'genuine_compact_usage_required');
+      receipt.pending = null; receipt.checks.count_compact = { inputTokens: count.input_tokens, compactId: compact.id, compactObject: compact.object, outputItems: compact.output.length, outputSha256: digest(compact.output) }; persist();
+      const compactContinuation = await policy.createPinnedSession(request, agent, ownedSessions, config.model);
+      const compactSession = typeof compactContinuation === 'string' ? compactContinuation : compactContinuation.id; remember('sessions', compactSession);
+      const reused = await create({ input: [...compact.output, { role: 'user', content: 'Report the original marker briefly.' }], previous_response_id: null }, compactSession, 'standalone-window-reuse');
+      assert.equal(reused.response.previous_response_id ?? null, null, 'standalone_compact_must_start_fresh_chain');
+      assert.ok(reused.response.output.filter(item => item.type === 'message').flatMap(item => item.content).filter(part => part.type === 'output_text').some(part => part.text.includes('ORIGIN')), 'standalone_compact_lost_original_marker');
+    } else {
+      receipt.notSelected = { compact: 'provider_cache_write_metric_unavailable' }; persist();
+    }
     const noStoreSession = await policy.createPinnedSession(request, agent, ownedSessions, config.model);
     const noStoreId = typeof noStoreSession === 'string' ? noStoreSession : noStoreSession.id; remember('sessions', noStoreId);
     const noStore = await create({ input: 'Reply ready.', store: false }, noStoreId, 'store-false');
@@ -287,23 +472,24 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     receipt.checks.store_false_tombstone = { noStoreUnavailable: true, childDeletedParentIntact: true }; persist();
     policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${first.session}`), agent.id, config.model);
     let websocketWire;
-    receipt.checks.websocket_lanes = await exerciseWebSocket(client, first.response.id, beforeDispatch, remember, undefined, events => { websocketWire = events; });
+    receipt.checks.websocket_lanes = await exerciseWebSocket(client, first.response.id, beforeDispatch, remember, undefined, events => { websocketWire = events; }, environment.MAGENTS_TEST_TRACE_SEED);
     const all = await request('GET', `/v1/agents/${agent.id}/sessions`);
     for (const session of all.data) { remember('sessions', session.id); policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${session.id}`), agent.id, config.model); }
     const python = path.resolve(config['current-python']);
     assert.ok(python.startsWith(path.join(root, '.cache') + path.sep), 'current_sdk_interpreter_must_be_project_managed');
     const wire = JSON.stringify({ response: first.response, events: first.events, websocket_events: websocketWire, compact, count, conversation: activeConversation, conversation_items: conversationWire });
     assert.ok(Buffer.byteLength(wire, 'utf8') <= 16 * 1024 * 1024, 'actual_wire_bundle_size_exceeded');
-    const typedWire = JSON.parse(execFileSync(python, [path.join(root, 'tests/e2e/current_responses_sdk.py'), 'wire', '--input', '-'], { cwd: root, input: wire, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 30000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }));
+    const typedWire = JSON.parse(execFileSync(python, [path.join(root, 'tests/e2e/current_responses_sdk.py'), config['omit-compact'] ? 'api-wire' : 'wire', '--input', '-'], { cwd: root, input: wire, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 30000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }));
     assert.equal(typedWire.passed, true, 'actual_wire_current_sdk_validation_failed');
+    receipt.dependencies.currentPythonSdk = typedWire.sdk;
     receipt.checks.current_python_wire = { sdk: typedWire.sdk, actualPayloads: true, newModelRuns: 0, responseEvents: typedWire.response_events, websocketEvents: typedWire.websocket_events }; persist();
     const currentReceipt = output.replace(/\.json$/, '') + '-current-python.json';
-    const current = JSON.parse(execFileSync(python, [path.join(root, 'tests/e2e/current_responses_sdk.py'), 'staging-inspect', '--source', config.source, '--session', first.session, '--response', first.response.id, '--agent', agent.id, '--receipt', currentReceipt], { cwd: root, env: { ...environment, MAGENTS_TEST_EXPECTED_BUILD: config.source }, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }));
+    const current = JSON.parse(execFileSync(python, currentPythonWorkerArguments(root, deploymentProvenance, { session: first.session, response: first.response.id, agent: agent.id }, currentReceipt), { cwd: root, env: currentPythonWorkerEnvironment(environment, deploymentProvenance), encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }));
     assert.equal(current.passed, true, 'current_python_sdk_gate_failed');
     assert.equal(current.new_model_runs, 0, 'current_python_sdk_must_reuse_canonical_trajectory');
-    receipt.checks.current_python_sdk = { sdk: current.sdk, receipt: currentReceipt, newModelRuns: 0 };
+    receipt.checks.current_python_sdk = { sdk: current.sdk, workerSource: deploymentProvenance.workerSource, runnerSource: config.source, receipt: currentReceipt, newModelRuns: 0 };
     receipt.pending = null;
-    receipt.status = 'core_passed_full_acceptance_not_claimed'; persist();
+    receipt.status = config['omit-compact'] ? 'api_increment_passed_compact_not_selected' : 'core_passed_full_acceptance_not_claimed'; persist();
     if (config.scope === 'full') {
       receipt.status = 'core_passed_full_gate_not_ready'; persist();
       assert.ok(config['external-evidence'], 'full_acceptance_requires_external_evidence');

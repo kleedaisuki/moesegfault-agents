@@ -369,6 +369,7 @@ fn parse_usage(value: &Value, id: &str) -> Result<Usage, String> {
         total_tokens: total,
         cached_tokens: cached,
         reasoning_tokens: None,
+        cache_write_tokens: value["cache_creation_input_tokens"].as_u64(),
         provider_request_id: Some(id.into()),
         reported: value["input_tokens"].is_u64() && value["output_tokens"].is_u64(),
         cost: None,

@@ -48,11 +48,12 @@ def test_framework_extension_never_initializes_the_optional_tcp_fork_pipe(
         def launch_instance(cls, *, argv: list[str]) -> None:
             assert argv == ["-f", "connection.json"]
             app: Any = cls()
-            app.context = SimpleNamespace(socket=lambda kind: socket)
+            context: Any = SimpleNamespace(socket=lambda kind: socket)
             app.iopub_port = 3
             app._bind_socket = lambda output, port: port
             app.configure_tornado_logger = lambda: calls.append("logger")
-            app.init_iopub()
+            # Match IPKernelApp6.17.init_sockets: the framework passes context.
+            app.init_iopub(context)
             assert app.iopub_socket is background and socket.linger == 1000
 
     monkeypatch.setitem(sys.modules,"ipykernel.kernelapp",SimpleNamespace(IPKernelApp=App))

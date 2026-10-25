@@ -77,3 +77,17 @@ test('remote migration target uses distinct exact database IDs rather than stagi
   delete pair.env.staging.d1_databases[0].database_id;
   assert.throws(() => requireDistinctEnvironmentDatabases(pair), /exact environment database identity/);
 });
+
+test('core staging leaves unaccepted hosted tools disabled without changing other environments', () => {
+  const base = { CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, ACCEPTANCE_PROFILE: 'responses-increment' };
+  const source = input();
+  source.env.staging.containers.push({ class_name: 'Session4G', instance_type: 'standard-1', image: 'unaccepted' });
+  const core = renderDeploymentConfig(source, { ...base, DEPLOY_ENVIRONMENT: 'staging' });
+  const capabilities = JSON.parse(core.env.staging.vars.HOSTED_TOOL_CAPABILITIES_JSON);
+  assert.equal(core.env.staging.vars.HOSTED_TOOL_RUNTIMES, '');
+  assert.equal(core.env.staging.containers.some(container => container.class_name === 'Session4G'), false);
+  assert.deepEqual(capabilities, { version: 1, platform_images: false, platform_search: false, file_search: false, container_memory: null, available_container_profiles: [], code_network_disabled: false, code_network_allowlist: false });
+  assert.equal(source.env.staging.vars.HOSTED_TOOL_CAPABILITIES_JSON, undefined);
+  assert.equal(renderDeploymentConfig(source, { ...base, DEPLOY_ENVIRONMENT: 'production' }).env.production.vars.HOSTED_TOOL_CAPABILITIES_JSON, undefined);
+  assert.equal(renderDeploymentConfig(source, { ...base, DEPLOY_ENVIRONMENT: 'staging', ACCEPTANCE_PROFILE: 'none' }).env.staging.vars.HOSTED_TOOL_CAPABILITIES_JSON, undefined);
+});

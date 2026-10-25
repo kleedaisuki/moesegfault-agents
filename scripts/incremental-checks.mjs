@@ -378,7 +378,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       if (process.env.GITHUB_OUTPUT) {
         appendFileSync(process.env.GITHUB_OUTPUT, line);
         appendFileSync(process.env.GITHUB_OUTPUT, `${component}_build=${details.action === 'build'}\n`);
-        if (details.artifact) appendFileSync(process.env.GITHUB_OUTPUT, `${component}_artifact_run=${details.artifact.run_id}\n${component}_artifact_sha=${details.artifact.source_sha}\n`);
+        if (details.artifact) appendFileSync(process.env.GITHUB_OUTPUT, `${component}_artifact_run=${details.artifact.run_id}\n${component}_artifact_sha=${details.artifact.source_sha}\n${component}_artifact_id=${details.artifact.artifact_id ?? ''}\n`);
       }
     }
   } else if (mode === 'check-native') {

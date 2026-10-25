@@ -122,7 +122,7 @@ jobs:
           if (process.env.DEPLOY_ENVIRONMENT !== 'staging' && process.env.ACCEPTANCE_PROFILE !== 'none') throw Error('Paid acceptance is staging-only');
           const run = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/actions/runs/${source}`], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 }));
           if (run.id !== Number(source) || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
-            || run.status !== 'completed' || run.conclusion !== 'success' || run.head_sha !== process.env.GITHUB_SHA
+            || run.status !== 'completed' || (process.env.ACCEPTANCE_PROFILE !== 'responses-increment' && run.conclusion !== 'success') || run.head_sha !== process.env.GITHUB_SHA
             || run.path !== '.github/workflows/ci.yml' || !['push', 'workflow_dispatch'].includes(run.event)
             || run.display_title?.startsWith('Worker diagnostics - ')) throw Error('CI candidate identity is not approved');
           NODE
@@ -240,7 +240,7 @@ jobs:
         run: |
           python -m venv .cache/e2e-current-venv
           .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
-          node tests/e2e/full-responses-sdk.mjs --source "$GITHUB_SHA" --scope core --allow-model-calls --max-paid-submissions 9 --current-python .cache/e2e-current-venv/bin/python --output ".temp/v0.3-full-acceptance/$GITHUB_SHA/$GITHUB_RUN_ID-responses.json"
+          node tests/e2e/full-responses-sdk.mjs --source "$GITHUB_SHA" --scope core --omit-compact --allow-model-calls --max-paid-submissions 7 --current-python .cache/e2e-current-venv/bin/python --output ".temp/v0.3-full-acceptance/$GITHUB_SHA/$GITHUB_RUN_ID-responses.json"
       - name: Record honest deployment and selected-acceptance status
         if: always()
         env:

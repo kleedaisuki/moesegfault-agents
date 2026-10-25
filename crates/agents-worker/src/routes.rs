@@ -142,6 +142,11 @@ pub(crate) fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
         );
     }
     match text {
+        "tool_runtime_unavailable" => (
+            400,
+            "unsupported_tool",
+            "The requested hosted tool is not enabled on this deployment",
+        ),
         "invalid_provider_model" => (
             400,
             "invalid_provider_model",

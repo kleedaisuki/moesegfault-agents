@@ -2,6 +2,10 @@ use super::*;
 use crate::responses_wire::{self as wire, ResponseRequest};
 use std::collections::BTreeMap;
 
+#[path = "response_obfuscation.rs"]
+mod obfuscation;
+use obfuscation::{Obfuscation, Seed};
+
 const RESPONSE_PREFIX: &str = "response:";
 const MAX_RESPONSE_EVENTS: usize = 65_536;
 const MAX_RESPONSE_EVENT_BYTES: usize = 16 * 1024 * 1024;
@@ -19,6 +23,8 @@ pub(super) struct ResponseRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) effective_instructions: Option<String>,
     pub(super) created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) obfuscation_seed: Option<Seed>,
     pub(super) input_items: Vec<Value>,
     pub(super) output: Vec<Value>,
     pub(super) events: Vec<Value>,
@@ -152,6 +158,7 @@ pub(super) struct ResponseObserver {
     after: Option<u64>,
     follow_steering: bool,
     projection: wire::ResponseProjection,
+    obfuscation: Obfuscation,
 }
 
 #[derive(Deserialize)]
@@ -373,7 +380,12 @@ impl SessionInner {
                 response.input_items.clear();
                 response.output.clear();
                 response.events.clear();
+                response.obfuscation_seed = None;
                 self.write_response(&response).await?;
+                self.state
+                    .storage()
+                    .delete(&format!("response-obfuscation:{id}"))
+                    .await?;
                 drop(deletion);
                 self.reconcile_response_archives().await?;
                 self.arm_alarm().await?;
@@ -996,6 +1008,7 @@ impl SessionInner {
             resolved_prompt,
             effective_instructions,
             created_at: util::now_ms() / 1000,
+            obfuscation_seed: Some(Seed::generate()),
             input_items: original_items,
             output: vec![],
             events: vec![],
@@ -1083,6 +1096,7 @@ impl SessionInner {
         let response = fresh.as_ref().unwrap_or(response);
         let projection =
             projection.unwrap_or_else(|| wire::ResponseProjection::for_request(&response.request));
+        let obfuscation = self.response_obfuscation(response).await?;
         if stream {
             if let Some(first) = response
                 .events
@@ -1111,7 +1125,7 @@ impl SessionInner {
                 .filter(|event| {
                     after.is_none_or(|n| event["sequence_number"].as_u64().is_some_and(|s| s > n))
                 })
-                .map(|event| Ok(projected_response_frame(event, &projection)))
+                .map(|event| Ok(projected_response_frame(event, &projection, &obfuscation)))
                 .collect::<Vec<_>>();
             if !terminal_status(&response.status) {
                 self.response_observers.borrow_mut().push(ResponseObserver {
@@ -1120,6 +1134,7 @@ impl SessionInner {
                     after,
                     follow_steering,
                     projection,
+                    obfuscation,
                 });
             }
             use futures::StreamExt;
@@ -1147,8 +1162,30 @@ impl SessionInner {
             after: None,
             follow_steering: false,
             projection,
+            obfuscation,
         });
         Ok(output)
+    }
+
+    async fn response_obfuscation(&self, response: &ResponseRun) -> Result<Obfuscation> {
+        let seed = if let Some(seed) = &response.obfuscation_seed {
+            seed.clone()
+        } else {
+            // Old responses lack admission entropy. Serialize lazy initialization
+            // without changing their request, generation state or activity clock.
+            let _guard = self.persistence.lock().await;
+            let key = format!("response-obfuscation:{}", response.id);
+            let storage = self.state.storage();
+            match storage.get::<Seed>(&key).await? {
+                Some(seed) => seed,
+                None => {
+                    let seed = Seed::generate();
+                    storage.put(&key, &seed).await?;
+                    seed
+                }
+            }
+        };
+        Ok(Obfuscation::new(seed, &response.id))
     }
 
     pub(super) async fn read_response(&self, id: &str) -> Result<Option<ResponseRun>> {
@@ -1227,7 +1264,7 @@ impl SessionInner {
             }
             match &mut observer.transport {
                 ResponseTransport::Stream(sender) => {
-                    send_response_event(sender, event, &observer.projection)
+                    send_response_event(sender, event, &observer.projection, &observer.obfuscation)
                 }
                 ResponseTransport::Json(_) => true,
             }
@@ -1748,7 +1785,14 @@ impl SessionInner {
                                     .is_some_and(|sequence| sequence > after)
                             })
                         })
-                        .all(|event| send_response_event(sender, event, &observer.projection));
+                        .all(|event| {
+                            send_response_event(
+                                sender,
+                                event,
+                                &observer.projection,
+                                &observer.obfuscation,
+                            )
+                        });
                     if sent && observer.follow_steering && follow {
                         remaining.push(observer);
                     }
@@ -1778,20 +1822,23 @@ impl SessionInner {
             let ResponseTransport::Stream(sender) = &mut observer.transport else {
                 return false;
             };
-            if !events
-                .iter()
-                .all(|event| send_response_event(sender, event, &observer.projection))
-            {
+            if !events.iter().all(|event| {
+                send_response_event(sender, event, &observer.projection, &observer.obfuscation)
+            }) {
                 return false;
             }
             let Some(successor) = successor else {
                 return false;
             };
-            if !successor
-                .events
-                .iter()
-                .all(|event| send_response_event(sender, event, &observer.projection))
-            {
+            let Some(seed) = &successor.obfuscation_seed else {
+                // A legacy successor has no synchronous seed context. Closing
+                // permits canonical retrieval; never emit a conflicting prefix.
+                return false;
+            };
+            observer.obfuscation = Obfuscation::new(seed.clone(), &successor.id);
+            if !successor.events.iter().all(|event| {
+                send_response_event(sender, event, &observer.projection, &observer.obfuscation)
+            }) {
                 return false;
             }
             observer.id = successor.id.clone();
@@ -1801,21 +1848,14 @@ impl SessionInner {
     }
 }
 
-fn projected_response_frame(event: &Value, projection: &wire::ResponseProjection) -> Vec<u8> {
+fn projected_response_frame(
+    event: &Value,
+    projection: &wire::ResponseProjection,
+    obfuscation: &Obfuscation,
+) -> Vec<u8> {
     let mut event = event.clone();
     wire::project_output_event(&mut event, &projection.include);
-    if let Some(object) = event.as_object_mut() {
-        object.remove("obfuscation");
-    }
-    if projection.include_obfuscation
-        && event["type"]
-            .as_str()
-            .is_some_and(|kind| kind.ends_with(".delta"))
-    {
-        let random = uuid::Uuid::new_v4();
-        let padding = random.simple().to_string();
-        event["obfuscation"] = json!(&padding[..16 + usize::from(random.as_bytes()[0] % 17)]);
-    }
+    obfuscation.project(&mut event, projection.include_obfuscation);
     wire::event_frame(&event)
 }
 
@@ -1823,9 +1863,10 @@ fn send_response_event(
     sender: &mut mpsc::Sender<Result<Vec<u8>>>,
     event: &Value,
     projection: &wire::ResponseProjection,
+    obfuscation: &Obfuscation,
 ) -> bool {
     sender
-        .try_send(Ok(projected_response_frame(event, projection)))
+        .try_send(Ok(projected_response_frame(event, projection, obfuscation)))
         .is_ok()
 }
 
@@ -1960,6 +2001,7 @@ mod tests {
             resolved_prompt: None,
             effective_instructions: None,
             created_at: 10,
+            obfuscation_seed: Some(Seed::generate()),
             input_items: vec![],
             output: vec![],
             events: vec![],
@@ -1985,6 +2027,83 @@ mod tests {
             branch_point: None,
             execution: crate::response_execution::ExecutionContext::default(),
         }
+    }
+
+    fn test_obfuscation() -> Obfuscation {
+        Obfuscation::new(Seed::generate(), "resp_test")
+    }
+
+    #[test]
+    fn persisted_entropy_keeps_same_sequence_frames_identical_without_public_seed() {
+        let response = response();
+        let serialized = serde_json::to_value(&response).unwrap();
+        let restored: ResponseRun = serde_json::from_value(serialized.clone()).unwrap();
+        let first = Obfuscation::new(response.obfuscation_seed.clone().unwrap(), &response.id);
+        let replay = Obfuscation::new(restored.obfuscation_seed.clone().unwrap(), &restored.id);
+        let projection = wire::ResponseProjection {
+            include: vec![],
+            include_obfuscation: true,
+        };
+        let event = json!({"type":"response.output_text.delta","sequence_number":4,"delta":"hello","logprobs":[]});
+        let prefix = projected_response_frame(&event, &projection, &first);
+        assert_eq!(
+            prefix,
+            projected_response_frame(&event, &projection, &replay)
+        );
+        assert_ne!(
+            prefix,
+            projected_response_frame(&event, &projection, &test_obfuscation())
+        );
+        assert!(response.value().get("obfuscation_seed").is_none());
+        assert!(
+            !response
+                .value()
+                .to_string()
+                .contains(&serialized["obfuscation_seed"].to_string())
+        );
+        let mut legacy = serialized;
+        legacy.as_object_mut().unwrap().remove("obfuscation_seed");
+        let legacy: ResponseRun = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.obfuscation_seed.is_none());
+    }
+
+    #[test]
+    fn output_turn_is_preflighted_before_any_item_or_event_is_published() {
+        let mut run = response();
+        let first = json!({"id":format!("fc_{}_0",run.id),"type":"function_call","call_id":"one","name":"local","arguments":"{}"});
+        let second = json!({"id":format!("msg_{}_1",run.id),"type":"message","content":"x".repeat(MAX_RESPONSE_OUTPUT_BYTES)});
+        assert!(run.prepare_output_batch(vec![first, second]).is_err());
+        assert!(run.output.is_empty());
+        assert!(run.events.is_empty());
+    }
+
+    #[test]
+    fn output_replacement_replay_and_clear_keep_one_exact_capacity_charge() {
+        let mut run = response();
+        let id = format!("hosted_{}", "f".repeat(64));
+        let initial =
+            json!({"id":id,"type":"code_interpreter_call","status":"in_progress","outputs":[]});
+        let change = run.prepare_output(None, initial).unwrap();
+        run.apply_output(change).unwrap();
+        let done = json!({"id":id,"type":"code_interpreter_call","status":"completed","outputs":[{"type":"logs","logs":"雪"}]});
+        let change = run.prepare_output(Some(0), done.clone()).unwrap();
+        run.apply_output(change).unwrap();
+        let bytes = serde_json::to_vec(&run.output).unwrap().len();
+        let change = run.prepare_output(Some(0), done).unwrap();
+        run.apply_output(change).unwrap();
+        assert_eq!(run.output.len(), 1);
+        assert_eq!(serde_json::to_vec(&run.output).unwrap().len(), bytes);
+        assert!(
+            serde_json::to_value(&run)
+                .unwrap()
+                .get("output_budget")
+                .is_none()
+        );
+        run.output.clear();
+        let item = json!({"id":format!("msg_{}_0",run.id),"type":"message","content":[]});
+        let change = run.prepare_output(None, item).unwrap();
+        run.apply_output(change).unwrap();
+        assert_eq!(run.output.len(), 1);
     }
 
     fn call(id: &str) -> provider::ToolCall {
@@ -2021,8 +2140,18 @@ mod tests {
             include: vec!["code_interpreter_call.outputs".into()],
             include_obfuscation: false,
         };
-        let plain = String::from_utf8(projected_response_frame(&event, &plain)).unwrap();
-        let expanded = String::from_utf8(projected_response_frame(&event, &expanded)).unwrap();
+        let plain = String::from_utf8(projected_response_frame(
+            &event,
+            &plain,
+            &test_obfuscation(),
+        ))
+        .unwrap();
+        let expanded = String::from_utf8(projected_response_frame(
+            &event,
+            &expanded,
+            &test_obfuscation(),
+        ))
+        .unwrap();
         assert!(!plain.contains("private-result"));
         assert!(expanded.contains("private-result"));
         assert_eq!(run.events[0], event);
@@ -2035,7 +2164,7 @@ mod tests {
 
     #[test]
     fn observer_obfuscation_does_not_change_replay_identity_or_other_observers() {
-        let event = json!({"type":"response.output_text.delta","sequence_number":7,"delta":"hello","logprobs":[{"token":"hello"}],"obfuscation":"old-padding"});
+        let event = json!({"type":"response.output_text.delta","sequence_number":7,"delta":"hello","logprobs":[{"token":"hello"}],"obfuscation":"legacy-random-padding"});
         let plain = wire::ResponseProjection {
             include: vec![],
             include_obfuscation: false,
@@ -2054,18 +2183,22 @@ mod tests {
             )
             .unwrap()
         };
-        let projected = decode(projected_response_frame(&event, &plain));
+        let projected = decode(projected_response_frame(
+            &event,
+            &plain,
+            &test_obfuscation(),
+        ));
         assert!(projected.get("obfuscation").is_none());
         assert_eq!(projected["logprobs"], json!([]));
         assert_eq!(projected["sequence_number"], 7);
-        let projected = decode(projected_response_frame(&event, &rich));
+        let projected = decode(projected_response_frame(&event, &rich, &test_obfuscation()));
         assert!(
             projected["obfuscation"]
                 .as_str()
                 .is_some_and(|padding| (16..=32).contains(&padding.len()))
         );
         assert_eq!(projected["logprobs"], event["logprobs"]);
-        assert_eq!(event["obfuscation"], "old-padding");
+        assert_eq!(event["obfuscation"], "legacy-random-padding");
     }
 
     #[test]

@@ -273,7 +273,8 @@ export async function runNativeRichStreaming(context) {
     assert.equal(events.filter(event => event.type === 'response.reasoning_summary_text.delta').map(event => event.delta).join(''), summary);
     assert.ok(events.findIndex(event => event.type === 'response.reasoning_summary_text.delta')
       < events.findIndex(event => event.type === 'response.output_text.delta'));
-    assert.deepEqual(await scenario.read(id), completed);
+    assert.deepEqual(await scenario.request('GET', `/v1/responses/${id}?include%5B%5D=message.output_text.logprobs`,
+      undefined, 200, scenario.principal.apiKey), completed);
     assert.equal(scenario.state.calls, 1);
     const reported = completed.usage ?? completed.agents_usage;
     assert.equal(reported.input_tokens, usage.input_tokens);
@@ -286,7 +287,8 @@ export async function runNativeRichStreaming(context) {
     assert.equal(continuation.value.status, 'completed');
     assert.ok(!JSON.stringify(continuation.value).includes(secret));
     assert.ok(!JSON.stringify(continuation.value).includes(ciphertext));
-    assert.deepEqual(await scenario.read(id), completed);
+    assert.deepEqual(await scenario.request('GET', `/v1/responses/${id}?include%5B%5D=message.output_text.logprobs`,
+      undefined, 200, scenario.principal.apiKey), completed);
     assert.equal(scenario.state.calls, 2);
     await assertKnownModelReceipts(scenario, [id, continuation.value.id]);
     return { provider_calls: scenario.state.calls, first_delta_before_terminal: true, unicode_chunking: true,

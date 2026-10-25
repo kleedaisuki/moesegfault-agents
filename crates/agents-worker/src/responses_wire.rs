@@ -1530,9 +1530,9 @@ pub fn response_value_with_include(
     let reported = usage.filter(|usage| usage.reported);
     let usage_value = reported.map(|usage| json!({
         "input_tokens":usage.prompt_tokens,
-        "input_tokens_details":{"cached_tokens":usage.cached_tokens},
+        "input_tokens_details":{"cached_tokens":usage.cached_tokens,"cache_write_tokens":usage.cache_write_tokens},
         "output_tokens":usage.completion_tokens,
-        "output_tokens_details":usage.reasoning_tokens.map(|tokens| json!({"reasoning_tokens":tokens})),
+        "output_tokens_details":{"reasoning_tokens":usage.reasoning_tokens},
         "total_tokens":usage.total_tokens,
     }));
     let mut value = json!({
@@ -1559,15 +1559,13 @@ pub fn response_value_with_include(
             project_output_item(item, include);
         }
     }
-    if let (Some(usage), Some(mut usage_value)) = (reported, usage_value) {
-        if usage.reasoning_tokens.is_some() {
+    if let (Some(usage), Some(usage_value)) = (reported, usage_value) {
+        if usage.reasoning_tokens.is_some() && usage.cache_write_tokens.is_some() {
             value["usage"] = usage_value;
         } else {
-            // The standard SDK requires an integer reasoning breakdown. A
-            // provider which reports totals alone cannot establish zero: keep
-            // the standard object valid and preserve exact known counters in
-            // the explicit extension rather than fabricating that breakdown.
-            usage_value["output_tokens_details"] = json!({"reasoning_tokens":null});
+            // Current SDKs require integer reasoning and cache-write counts.
+            // Unknown is not zero; preserve every known counter in the explicit
+            // extension rather than creating a partially valid standard object.
             value["agents_usage"] = usage_value;
         }
     }
@@ -2492,7 +2490,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_requires_an_authoritative_reasoning_breakdown_for_the_standard_shape() {
+    fn usage_requires_authoritative_reasoning_and_cache_write_for_the_standard_shape() {
         let mut usage = Usage {
             prompt_tokens: 12,
             completion_tokens: 4,
@@ -2514,15 +2512,36 @@ mod tests {
         assert!(value["agents_usage"]["output_tokens_details"]["reasoning_tokens"].is_null());
         usage.reasoning_tokens = Some(2);
         let value = response_value(&request, "resp_one", 1, "completed", &[], Some(&usage));
+        assert!(value["usage"].is_null());
+        assert_eq!(
+            value["agents_usage"]["output_tokens_details"]["reasoning_tokens"],
+            2
+        );
+        assert!(value["agents_usage"]["input_tokens_details"]["cache_write_tokens"].is_null());
+        usage.cache_write_tokens = Some(3);
+        usage.reasoning_tokens = None;
+        let value = response_value(&request, "resp_one", 1, "completed", &[], Some(&usage));
+        assert!(value["usage"].is_null());
+        assert_eq!(
+            value["agents_usage"]["input_tokens_details"]["cache_write_tokens"],
+            3
+        );
+        usage.reasoning_tokens = Some(2);
+        let value = response_value(&request, "resp_one", 1, "completed", &[], Some(&usage));
         assert_eq!(
             value["usage"]["output_tokens_details"]["reasoning_tokens"],
             2
         );
         assert!(value.get("agents_usage").is_none());
         usage.reasoning_tokens = Some(0);
+        usage.cache_write_tokens = Some(0);
         let value = response_value(&request, "resp_one", 1, "completed", &[], Some(&usage));
         assert_eq!(
             value["usage"]["output_tokens_details"]["reasoning_tokens"],
+            0
+        );
+        assert_eq!(
+            value["usage"]["input_tokens_details"]["cache_write_tokens"],
             0
         );
         usage.reported = false;
