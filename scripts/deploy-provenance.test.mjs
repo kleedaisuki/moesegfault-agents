@@ -164,3 +164,10 @@ test('sealed check status must explicitly attest an original pass, not only a po
   value.catalog.at(-1).verified_checks[0].status = 'failed_current';
   assert.throws(() => verifyDeploymentEvidence(value), /not_sealed/);
 });
+
+test('research-only CI success cannot be promoted as an app component assembly', () => {
+  const value = fixture();
+  Object.assign(value.plan, { verification_scope: 'operator-usage', non_deployable: true, app_validation: 'not_executed' });
+  value.expectedPlan = structuredClone(value.plan);
+  assert.throws(() => verifyDeploymentEvidence(value), /research_only_verification_is_not_promotable/);
+});

@@ -242,7 +242,35 @@ export function containerSelection(checks, scope) {
   };
 }
 
-export function plan(source, baselines, containerScope = 'incremental') {
+export function operatorUsagePlan(source, baselines, hashComponent = fingerprint, hashCheck = checkFingerprint) {
+  if (!SHA.test(source)) throw Error('Invalid source SHA');
+  const components = Object.fromEntries(Object.keys(COMPONENTS).map(component => [component, {
+    fingerprint: hashComponent(source, component), action: component === 'tooling' ? 'verify' : 'not_executed',
+    validation_scope: component === 'tooling' ? 'operator_usage_only' : 'not_executed', artifact: null,
+  }]));
+  const ownScope = command('node:operator-usage-scope', ['node', '--test', '--test-name-pattern',
+    '^operator usage scope never implies platform acceptance$', 'scripts/incremental-checks.test.mjs'],
+    'New finite operator scope and non-deployment boundary');
+  ownScope.expected_test = 'operator usage scope never implies platform acceptance';
+  const selected = reuseChecks(source, [
+    command('pytest:tests/e2e/test_deepseek_usage_probe.py', python('-m', 'pytest', 'tests/e2e/test_deepseek_usage_probe.py', '-ra'), 'Operator helper only; no paid request'),
+    command('node:scripts/deploy-workflow.test.mjs', ['node', '--test', 'scripts/deploy-workflow.test.mjs'], 'Operator workflow security boundary'),
+    command('node:scripts/operator-usage-provenance.test.mjs', ['node', '--test', 'scripts/operator-usage-provenance.test.mjs'], 'Operator provenance verifier'),
+    ownScope,
+  ], baselines, hashCheck);
+  return {
+    schema_version: 1, source_sha: source, policy: 'incremental-only', verification_scope: 'operator-usage',
+    app_validation: 'not_executed', non_deployable: true, diagnostic_only_components: ['worker', 'native', 'container', 'dashboard'],
+    planned_checks_are_not_results: true, required_jobs: ['changes', 'tooling'], required_remediations: [],
+    reused_checks: selected.reused_checks.map(check => ({ ...check, job: 'tooling' })),
+    receipt_paths: { tooling: ['tooling.json'] }, changed_files: [], native_packages: [], components,
+    checks: { rust: [], worker: [], dashboard: [], container: [], tooling: selected.checks, current_sdk: [] },
+  };
+}
+
+export function plan(source, baselines, containerScope = 'incremental', verificationScope = 'incremental') {
+  if (verificationScope === 'operator-usage') return operatorUsagePlan(source, baselines);
+  if (verificationScope !== 'incremental') throw Error('Invalid finite verification scope');
   if (!SHA.test(source)) throw Error('Invalid source SHA');
   const components = {};
   const checks = { rust: [], worker: [], dashboard: [], container: [], tooling: [], current_sdk: [] };
@@ -338,7 +366,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [mode, job] = process.argv.slice(2);
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
-    const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental');
+    const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);

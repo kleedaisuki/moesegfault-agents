@@ -147,3 +147,19 @@ test('operator legacy missing fingerprint uses recomputed original plan but wron
   row.input_fingerprint = '0'.repeat(64);
   assert.throws(() => verifyOperatorUsageEvidence(evidence), /fingerprint/);
 });
+
+test('operator usage finite plan requires the new scope proof and remains nondeployable', () => {
+  const evidence = fixture();
+  Object.assign(evidence.plan, { verification_scope: 'operator-usage', app_validation: 'not_executed', non_deployable: true });
+  const scope = { id: 'node:operator-usage-scope', argv: ['node', '--test', '--test-reporter=tap', '--test-name-pattern', '^operator usage scope never implies platform acceptance$', 'scripts/incremental-checks.test.mjs'], env: {}, expected_test: 'operator usage scope never implies platform acceptance', input_fingerprint: '4'.repeat(64) };
+  evidence.plan.checks.tooling.push(scope);
+  evidence.verification.files['tooling.json'].results.push({ ...scope, status: 'passed_current', executed_tests: 1 });
+  evidence.expectedPlan = structuredClone(evidence.plan);
+  evidence.checkHash = (sha, item) => item.id === scope.id ? scope.input_fingerprint : fingerprints[item.id];
+  const proof = verifyOperatorUsageEvidence(evidence);
+  assert.equal(proof.checks.length, 4);
+  assert.equal(proof.platform_acceptance, 'not_established');
+  evidence.plan.checks.tooling.pop();
+  evidence.expectedPlan = structuredClone(evidence.plan);
+  assert.throws(() => verifyOperatorUsageEvidence(evidence), /required_check_missing/);
+});

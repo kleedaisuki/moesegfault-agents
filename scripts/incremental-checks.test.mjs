@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, mkdirSync, mkdtempSync } from 'node:fs';
-import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks, rustTestArguments } from './incremental-checks.mjs';
+import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks, rustTestArguments, operatorUsagePlan } from './incremental-checks.mjs';
 mkdirSync('.temp', { recursive: true });
 const directory = mkdtempSync('.temp/incremental-checks-test-');
 const source = 'a'.repeat(40), baseline = 'b'.repeat(40);
@@ -205,4 +205,22 @@ test('a built exact Worker can run actual journeys despite independent unit asse
   assert.ok(worker.indexOf('node scripts/bundle-worker.mjs')<worker.indexOf('Compile changed Worker tests'));
   assert.match(worker,/worker-journeys\n\s+if: \$\{\{ !cancelled\(\) && \(steps\.worker_bundle\.outcome == 'success' \|\| steps\.worker_reuse\.outcome == 'success'\)/);
   assert.match(worker,/name: worker\n/);
+});
+
+test('operator usage scope never implies platform acceptance', () => {
+  const fail = { source_sha: baseline, run_id: '12345', components: ['worker'], unresolved_checks: [{ id: 'must-not-run-app' }] };
+  const actual = operatorUsagePlan(source, [fail], () => 'a'.repeat(64), () => 'b'.repeat(64));
+  assert.equal(actual.verification_scope, 'operator-usage');
+  assert.equal(actual.app_validation, 'not_executed');
+  assert.equal(actual.non_deployable, true);
+  assert.deepEqual(actual.required_jobs, ['changes', 'tooling']);
+  assert.equal(actual.checks.tooling.length, 4);
+  assert.deepEqual(actual.checks.worker, []);
+  assert.deepEqual(actual.checks.container, []);
+  assert.deepEqual(actual.required_remediations, []);
+  assert.ok(actual.checks.tooling.some(check => check.id === 'node:operator-usage-scope'));
+  for (const component of ['worker', 'native', 'container', 'dashboard']) {
+    assert.equal(actual.components[component].action, 'not_executed');
+    assert.equal(actual.components[component].artifact, null);
+  }
 });

@@ -15,12 +15,14 @@ export const REQUIRED_CHECKS = [
   'node:scripts/deploy-workflow.test.mjs',
   'node:scripts/operator-usage-provenance.test.mjs',
 ];
+export const OPERATOR_SCOPE_CHECK = 'node:operator-usage-scope';
+const requiredChecks = plan => plan.verification_scope === 'operator-usage' ? [...REQUIRED_CHECKS, OPERATOR_SCOPE_CHECK] : REQUIRED_CHECKS;
 export const SOURCE_FILES = [
-  'scripts/deepseek-usage-probe.py', '.github/workflows/deploy.yml',
+  'scripts/deepseek-usage-probe.py', '.github/workflows/deploy.yml', '.github/workflows/ci.yml',
   'scripts/operator-usage-provenance.mjs', 'scripts/incremental-checks.mjs',
   'scripts/deploy-provenance.mjs', 'scripts/verification-baselines.json',
   'tests/e2e/test_deepseek_usage_probe.py', 'scripts/deploy-workflow.test.mjs',
-  'scripts/operator-usage-provenance.test.mjs',
+  'scripts/operator-usage-provenance.test.mjs', 'scripts/incremental-checks.test.mjs',
 ];
 const need = (value, code) => { if (!value) throw Error(code); };
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -56,12 +58,13 @@ function artifactFor(bundle, name, source, runId, now) {
 }
 
 function checkDescriptor(check) {
-  need(check && REQUIRED_CHECKS.includes(check.id) && Array.isArray(check.argv) && check.env && typeof check.env === 'object' && !Array.isArray(check.env), 'operator_selector_missing');
+  need(check && [...REQUIRED_CHECKS, OPERATOR_SCOPE_CHECK].includes(check.id) && Array.isArray(check.argv) && check.env && typeof check.env === 'object' && !Array.isArray(check.env), 'operator_selector_missing');
   need(Object.keys(check.env).length === 0, 'operator_check_has_unexpected_environment');
-  const file = check.id.slice(check.id.indexOf(':') + 1);
+  const file = check.id === OPERATOR_SCOPE_CHECK ? 'scripts/incremental-checks.test.mjs' : check.id.slice(check.id.indexOf(':') + 1);
   need(check.argv.includes(file), 'operator_selector_wrong_file');
   need(check.id.startsWith('node:') ? check.argv[0] === 'node' && check.argv.includes('--test') : check.argv.includes('pytest') && check.argv.includes('-m'), 'operator_selector_wrong_runner');
   need(HASH.test(check.input_fingerprint ?? ''), 'operator_selector_fingerprint_missing');
+  if (check.id === OPERATOR_SCOPE_CHECK) need(check.expected_test === 'operator usage scope never implies platform acceptance' && check.argv.includes('^operator usage scope never implies platform acceptance$'), 'operator_scope_unit_selector_changed');
 }
 
 function currentCheck(plan, receipt, check, source, checkHash) {
@@ -82,6 +85,8 @@ export function verifyOperatorUsageEvidence({ source, sourceRun, repository, pla
   need(HASH.test(planFileSha256 ?? ''), 'operator_plan_file_hash_required');
   need(typeof checkHash === 'function', 'operator_check_hash_function_required');
   need(plan?.schema_version === 1 && plan.source_sha === source && plan.policy === 'incremental-only' && plan.planned_checks_are_not_results === true && same(plan, expectedPlan), 'operator_plan_not_recomputed');
+  need(plan.verification_scope == null || ['incremental', 'operator-usage'].includes(plan.verification_scope), 'operator_verification_scope_unknown');
+  if (plan.verification_scope === 'operator-usage') need(plan.non_deployable === true && plan.app_validation === 'not_executed', 'operator_research_scope_mislabeled_deployable');
   need(SOURCE_FILES.every(file => HASH.test(sourceHashes?.[file] ?? '')) && Object.keys(sourceHashes).length === SOURCE_FILES.length, 'operator_exact_source_hashes_required');
   const bundle = metadata[String(sourceRun)];
   const run = normalRun(bundle, sourceRun, source, repository);
@@ -89,7 +94,7 @@ export function verifyOperatorUsageEvidence({ source, sourceRun, repository, pla
   need(changes.conclusion === 'success', 'operator_current_plan_job_not_successful');
   const planArtifact = artifactFor(bundle, 'incremental-plan', source, sourceRun, now);
   const current = [], reused = [];
-  for (const id of REQUIRED_CHECKS) {
+  for (const id of requiredChecks(plan)) {
     const pending = (plan.checks?.tooling ?? []).filter(check => check.id === id);
     const retained = (plan.reused_checks ?? []).filter(check => check.id === id);
     need(pending.length + retained.length === 1, 'operator_required_check_missing_or_ambiguous');
@@ -115,7 +120,7 @@ export function verifyOperatorUsageEvidence({ source, sourceRun, repository, pla
     need(HASH.test(files?.[check.receipt_path] ?? '') && HASH.test(files?.['plan.json'] ?? ''), 'operator_historical_file_hashes_missing');
     check.receipt_sha256 = files[check.receipt_path]; check.plan_sha256 = files['plan.json'];
   }
-  const checks = REQUIRED_CHECKS.map(id => [...current, ...retained].find(check => check.id === id));
+  const checks = requiredChecks(plan).map(id => [...current, ...retained].find(check => check.id === id));
   return { schema_version: 1, scope: 'operator_usage_helper_only', status: 'critical_operator_checks_verified', source_sha: source, source_run: String(sourceRun), ci_status: run.status, ci_conclusion: run.conclusion ?? null, plan_artifact_id: planArtifact.id, plan_sha256: planFileSha256, plan_json_sha256: hashJson(plan), source_files: sourceHashes, helper_source: { source_sha: source, path: 'scripts/deepseek-usage-probe.py', sha256: sourceHashes['scripts/deepseek-usage-probe.py'] }, workflow_source: { source_sha: source, path: '.github/workflows/deploy.yml', sha256: sourceHashes['.github/workflows/deploy.yml'] }, checks, platform_acceptance: 'not_established', paid_execution_authorized: false, production_authorized: false };
 }
 
@@ -157,7 +162,9 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   const catalog = JSON.parse(gitBytes('scripts/verification-baselines.json').toString('utf8').replace(/^\uFEFF/, ''));
   const engine = await loadEngine();
   const scope = plan.components?.container?.validation_scope === 'diagnostic_startup_only' ? 'startup-1g' : 'incremental';
-  const expectedPlan = engine.plan(source, catalog, scope);
+  const verificationScope = plan.verification_scope ?? 'incremental';
+  need(['incremental', 'operator-usage'].includes(verificationScope), 'operator_verification_scope_unknown');
+  const expectedPlan = engine.plan(source, catalog, scope, verificationScope);
   for (const item of Object.values(expectedPlan.components)) if (item.action === 'build' && item.artifact) item.artifact.run_id = values.run;
   const receiptFiles = folder => {
     const files = ['plan.json', 'tooling.json'];
@@ -168,11 +175,11 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     }));
     return { plan: stored['plan.json'], files: { 'tooling.json': stored['tooling.json'] }, file_hashes: Object.fromEntries(files.map(file => [file, hashBytes(readFileSync(path.join(folder, file)))])) };
   };
-  const hasCurrent = (plan.checks?.tooling ?? []).some(check => REQUIRED_CHECKS.includes(check.id));
+  const hasCurrent = (plan.checks?.tooling ?? []).some(check => requiredChecks(plan).includes(check.id));
   const verification = hasCurrent ? receiptFiles(download(values.run, 'verification-tooling', source)) : null;
   const reusedVerification = {};
   for (const check of plan.reused_checks ?? []) {
-    if (!REQUIRED_CHECKS.includes(check.id)) continue;
+    if (!requiredChecks(plan).includes(check.id)) continue;
     need(check.artifact_name === 'verification-tooling' && check.receipt_path === 'tooling.json', 'operator_reused_receipt_location_invalid');
     const key = `${check.run_id}:${check.artifact_name}`;
     if (!reusedVerification[key]) reusedVerification[key] = receiptFiles(download(check.run_id, check.artifact_name, check.source_sha));

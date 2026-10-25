@@ -79,6 +79,8 @@ function verifyReceipts(plan, verification, job) {
 }
 
 export function requirePromotionScope(plan) {
+  need(plan?.verification_scope == null || plan.verification_scope === 'incremental', 'research_only_verification_is_not_promotable');
+  need(plan?.non_deployable !== true, 'research_only_verification_is_not_promotable');
   need(!(plan?.diagnostic_only_components?.length > 0), 'diagnostic_only_component_is_not_promotable');
   for (const item of Object.values(plan?.components ?? {})) {
     need(item.validation_scope == null || item.validation_scope === 'incremental', 'diagnostic_only_component_is_not_promotable');
