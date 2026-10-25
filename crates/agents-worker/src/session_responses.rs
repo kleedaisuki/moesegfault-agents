@@ -653,8 +653,10 @@ impl SessionInner {
             run.traceparent = traceparent;
             run.response = Some(response.clone());
         }
-        let mut accepted = self.snapshot()?;
-        save_state(&self.state.storage(), &mut accepted).await?;
+        {
+            let mut accepted = self.snapshot()?;
+            save_state(&self.state.storage(), &mut accepted).await?;
+        }
         drop(acceptance);
         self.persist().await?;
         self.arm_alarm().await?;
