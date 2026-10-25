@@ -11,6 +11,7 @@ match them to the user's request rather than treating discoverability as consent
 magents space show
 magents space rename Research
 magents space files upload ./brief.txt --content-type text/plain
+magents space files upload ./screenshot.png --content-type image/png
 magents space files list --limit 20
 magents space files list --limit 20 --after FILE_ID
 magents space files show FILE_ID
@@ -25,6 +26,11 @@ plan/funding limits. `--name` selects its stored UTF-8 filename; it does not mov
 rewrite local files. The native transfer is streamed with length/SHA-256 receipts,
 not base64 JSON or a full memory copy. Upload failure may mean the reply was lost:
 inspect the Space metadata and digest before deciding to upload again.
+
+Raw upload defaults to `application/octet-stream`, not a filename-derived media
+type. For an image used in a Responses `input_image` part or local-function
+result, pass its actual supported type, for example `--content-type image/png`.
+A `.png` name or later rename does not establish the file's media type.
 
 Downloads require an explicit new local destination and never overwrite files or
 links. Output is published only after complete length/checksum verification.

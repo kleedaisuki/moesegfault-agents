@@ -171,6 +171,7 @@ Uploaded files are user data, distinct from immutable workspace versions:
 magents space show
 magents space rename Research
 magents space files upload ./brief.txt --content-type text/plain
+magents space files upload ./screenshot.png --content-type image/png
 magents space files upload ./notes.txt --name 'Project notes.txt'
 magents space files list --limit 20
 magents space files list --limit 20 --after FILE_ID
@@ -189,6 +190,11 @@ checksum. It uses the native raw upload endpoint, not base64 JSON or an in-memor
 multipart copy. UTF-8 filenames travel in an encoded query, not a header or local
 filesystem path. `--name` overrides only the stored name; content is not rewritten.
 The server's returned byte count and digest must match the local receipt.
+
+Raw upload defaults to `application/octet-stream`; the CLI does not infer media
+type from the filename. Set `--content-type image/png` (or the actual supported
+image type) before using an uploaded ID in an `input_image` part, including a
+local-function result. Renaming a `.png` file does not change its declared type.
 
 File download streams to private temporary output and requires both length and
 SHA-256 receipts before no-clobber publication. `--output -` explicitly selects

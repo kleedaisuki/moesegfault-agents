@@ -422,3 +422,96 @@ its real `--version`, offline template/validation and production journeys passed
 The release is stable, not a draft or prerelease. Existing `v0.1.0` tags/assets
 were not moved or replaced. Publication remains account-private, and subscription
 management does not silently enable card collection or automatic renewal.
+
+## v0.3 candidate: owned staging UI and Windows CLI
+
+This is acceptance of the owned-account journey at source
+`944ac9bde7a9e59e97d15d2d79fdf899a63cd8ea`, **not acceptance of the complete
+staging gate, a public v0.3.0 release, or production promotion**. The current
+requirement boundaries are in [the delivery ledger](v0.3-delivery.md).
+
+[Full CI 40163182420](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40163182420)
+passed all six required jobs at that SHA, including 239 Worker library tests,
+42 compiled-Worker checks and the exact tested container export.
+[Native candidate packaging 40163184570](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40163184570)
+passed on Linux and Windows. The actual Windows candidate used below has
+executable SHA-256
+`6af4025e2268ff994e7cf37ca7226fc3d6de563c301573c8ea98e9d941f51e08`;
+its ZIP SHA-256 is
+`cfe39480382df3b9254dfc588362a2a32ca11c0b483bfebb58ed34e02adf78b3`.
+BUILD-INFO identifies version `0.3.0`, that exact source and the Windows target.
+These are branch candidate artifacts, not public-tag assets. Linux execution is
+established by its packaging CI, not by the Windows client journey.
+
+The actual `adash-staging`/`agents-staging` journey used ordinary owned Pro/test
+SSO and BFF authentication, with health/source and native-binary gates before
+execution. No fabricated auth session, account reset, new account, production
+call or administrator allocation was needed.
+
+| User boundary | Observed result |
+| --- | --- |
+| Public entry and layout | Anonymous English/light desktop and Chinese/dark mobile, no private query/dashboard flash, persisted preferences and no horizontal overflow |
+| Shared Space | UI rename visible to the same-account native CLI; original Space name restored |
+| Files | UI Unicode multipart upload/rename/native byte-identical download; CLI binary corpus and empty file, exact SHA/length, rename, pagination and no-clobber output |
+| Responses | Uploaded text-only marker used by the model, separate custom instruction retained, real Bash writes a file; UI completed rendering and native ordered typed streaming/exact-head continuation pass |
+| Local functions | Invalid call ID rejected before acceptance; the original archived handoff accepts caller-owned text plus image result, and real Flash reports the exact text marker and image color |
+| Persistence and restore | UI and CLI persist/list/download immutable versions; native archive digests and restored files checked; dirty bytes retained in a safety version |
+| Recovery and source reads | Saved sequence replay causes no new inference; source pages reconstruct the full journal, read clock remains unchanged, matching ETag returns an empty 304 |
+| Native operation identity | Commit and restore reuse the same saved operation IDs, with exact changed archive bytes and final original file bytes verified |
+
+This journey made six model ledger calls. Its read-only financial inspection,
+restricted to the two newly owned sessions, found 159 ledger events, 972 microUSD
+of model cost, 1,077 microUSD of resource cost, and **zero unresolved session
+reservations** after cleanup. The combined 2,049 microUSD (USD 0.002049) excludes
+independent account-level Space transfers, no-model preflight operations and
+future retained-storage charges; it is not a complete account bill.
+The session measured 7,462 bytes for legacy status versus 930 for metadata
+(87.5% smaller for this particular session), with zero body bytes for its 304.
+Neither figure is a production traffic forecast.
+
+Both sessions closed; temporary agents, five uploads and the short-lived key were
+removed through ordinary APIs; the original Space name was restored and CSRF
+logout completed. Five immutable/safety versions remain retained user data by
+contract. No reservation or version was administratively rewritten/deleted to
+manufacture cleanup. The protected recovery state was removed after cleanup.
+
+The local safe report and final receipt are
+`.temp/v0.3-user-acceptance/REPORT.md` and
+`.temp/v0.3-user-acceptance/a787e6c6-cfe2-4d7a-8fd1-9c5c3f4dfc5f/receipt.json`.
+Earlier harness failures remain recorded: upload success is 200 rather than 201;
+an externally created agent requires refreshing a still-fresh UI query; raw PNG
+upload needs explicit `--content-type image/png`. The rejected image continuation
+left the original head unchanged. A correctly typed upload continued that same
+archived handoff once, rather than replaying accepted model work. Final receipt
+flags `successful`, `targetedComplete` and `cleanupComplete` are all true.
+
+### Separate complete staging gate remains failed
+
+[Staging 40163500012](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40163500012)
+deployed the exact accepted CI artifacts and matched public health to the source,
+but its 24-test authenticated Python suite ended **18 passed, 6 failed** in
+2,314.17 seconds. The subsequent Node SDK step did not run. The six failures are:
+
+- Existing Chat time/continuation and closed-workspace resume/readback returned
+  HTTP 500. Their cause and a corrected exact-source acceptance remain open.
+- Responses lifecycle used a nonexistent Python SDK `auto_paging_iter` method;
+  background deletion incorrectly assumed the pinned SDK returns a parsed object.
+- The empty-file test omitted its `deployed` fixture argument.
+- Rejected-checksum cleanup assumed failed receipts disappear from listing,
+  contrary to the documented discoverable `status:error` receipt lifecycle.
+
+The failures do not erase independent passed boundaries: the real-provider
+Chat-to-Responses compact preserved both fixed/custom instruction markers and
+the original source prefix. The full built-in workspace-version journey also
+passed: native binary import, active-reference deletion denial, terminal unpin,
+agent commit/list/restore, immutable download/mutation denial, and cross-session
+restoration of both dirty safety and original bytes after deleting the upload.
+These passed journeys do not waive the six failures or justify promotion.
+
+A separate 180-second bounded, content-free staging collector observed 50
+`request.completed`, one `run.started`, one `provider.completed` and one
+`session.archived` event correlated to this attempt; 57 correlated invocations
+contained no native exception in that window. It did not observe every lifecycle
+phase or establish absence of errors elsewhere. Raw tail content was not retained
+and the collector stopped normally. No additional inference was issued for this
+telemetry check.
