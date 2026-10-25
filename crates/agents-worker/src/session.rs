@@ -7,7 +7,7 @@ use crate::{
 };
 use agents_auth::billing::Resource;
 use agents_core::{IdleAction, SessionRecord, SessionStatus};
-use futures::channel::{mpsc, oneshot};
+use futures::channel::mpsc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -27,7 +27,7 @@ mod observer;
 #[path = "session_responses.rs"]
 mod responses;
 #[path = "session_sse.rs"]
-mod sse;
+pub(crate) mod sse;
 use crate::session_views as views;
 #[path = "session_view_routes.rs"]
 mod view_routes;
@@ -542,18 +542,11 @@ impl DurableObject for Session {
                     response.headers_mut().set("x-agents-run", &run_id)?;
                     Ok(response)
                 } else {
-                    let (tx, rx) = oneshot::channel();
+                    let (tx, mut response) = crate::observer_transport::channel("chat")?;
                     *inner.observer.borrow_mut() = Some(Observer::json(&run_id, tx));
                     inner.arm_alarm().await?;
-                    match observer::wait_json(rx).await {
-                        Ok(Ok(value)) => Response::from_json(&value),
-                        Ok(Err(code)) => crate::routes::error_response(&Error::RustError(code)),
-                        Err(_) => util::json_error(
-                            503,
-                            "run_detached",
-                            "Run continues durably; poll the session status",
-                        ),
-                    }
+                    response.headers_mut().set("x-agents-run", &run_id)?;
+                    Ok(response)
                 }
             }
             (Method::Post, "/checkpoint-gc") => {

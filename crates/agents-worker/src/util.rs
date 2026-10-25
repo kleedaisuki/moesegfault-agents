@@ -23,10 +23,11 @@ pub fn alarm_at(epoch_ms: u64) -> worker::ScheduledTime {
 }
 
 pub fn json_error(status: u16, code: &str, message: &str) -> Result<Response> {
-    Ok(Response::from_json(
-        &json!({"error":{"message":message,"type":"agents_error","code":code}}),
-    )?
-    .with_status(status))
+    Ok(Response::from_json(&error_body(code, message))?.with_status(status))
+}
+
+pub(crate) fn error_body(code: &str, message: &str) -> serde_json::Value {
+    json!({"error":{"message":message,"type":"agents_error","code":code}})
 }
 
 pub fn id(prefix: &str) -> String {

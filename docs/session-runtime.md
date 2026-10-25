@@ -93,6 +93,18 @@ run admission without advancing the user's append clock. A transport disconnect
 still does not authorize replay, and channel acceptance is not a network-delivery
 guarantee.
 
+Non-streaming Chat and Responses use the same native-backed observation boundary:
+the DO returns a private, terminal-only SSE stream immediately after admission.
+Its alarm still owns execution and commits the canonical outcome before publishing
+one status/body envelope. The edge consumes that stream with `eventsource-stream`
+and only then constructs the public JSON response and its final HTTP status.
+Private comment keepalives and the transport marker never reach the caller.
+This removes the cross-invocation JSON oneshot and its separate liveness timer;
+it does not introduce storage polling or an execution retry. An incomplete private
+stream returns `run_detached` with 503, not an invented successful completion.
+The original response/session remains the recovery authority. Public SSE is
+unchanged, and malformed or oversized internal envelopes fail closed.
+
 ## Responses execution and immutable receipts (v0.3)
 
 Responses and Chat Completions share the existing durable execution loop. A

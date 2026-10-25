@@ -106,7 +106,7 @@ impl ResponseRun {
 
 enum ResponseTransport {
     Stream(mpsc::Sender<Result<Vec<u8>>>),
-    Json(oneshot::Sender<Value>),
+    Json(crate::observer_transport::Sender),
 }
 
 pub(super) struct ResponseObserver {
@@ -728,20 +728,13 @@ impl SessionInner {
         if self.response_observers.borrow().len() >= MAX_RESPONSE_OBSERVERS {
             return util::json_error(429, "observer_limit", "Too many response observers");
         }
-        let (tx, rx) = oneshot::channel();
+        let (tx, output) = crate::observer_transport::channel("responses")?;
         self.response_observers.borrow_mut().push(ResponseObserver {
             id: response.id.clone(),
             transport: ResponseTransport::Json(tx),
             after: None,
         });
-        match observer::wait_json(rx).await {
-            Ok(value) => Response::from_json(&value),
-            Err(_) => util::json_error(
-                503,
-                "run_detached",
-                "Run continues durably; retrieve the original response",
-            ),
-        }
+        Ok(output)
     }
 
     pub(super) async fn read_response(&self, id: &str) -> Result<Option<ResponseRun>> {
@@ -1303,7 +1296,7 @@ impl SessionInner {
                     send_response_event(&mut sender, last);
                 }
                 ResponseTransport::Json(sender) => {
-                    let _ = sender.send(value.clone());
+                    crate::observer_transport::publish(sender, 200, value.clone());
                 }
             }
         }

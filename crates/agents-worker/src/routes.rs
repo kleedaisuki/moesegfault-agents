@@ -115,7 +115,7 @@ pub(crate) fn error_response(error: &worker::Error) -> Result<Response> {
     util::json_error(status, code, message)
 }
 
-fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
+pub(crate) fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
     if let Some(error) = attachment_input_error(text) {
         return error;
     }
@@ -1290,7 +1290,7 @@ async fn forward_inner(
         request.headers_mut()?.set("If-None-Match", etag)?;
     }
     env.trace.child().inject(request.headers_mut()?)?;
-    stub.fetch_with_request(request).await
+    crate::observer_transport::resolve(stub.fetch_with_request(request).await?).await
 }
 
 #[cfg(test)]

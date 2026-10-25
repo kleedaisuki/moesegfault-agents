@@ -19,6 +19,7 @@ import { createResponsesProviderFixture, runResponsesNodeSdkJourney, runResponse
 import { runResponsesPolicyJourney } from './responses-policy-journey.mjs';
 import { createCoalescingProviderFixture, runResponsesCoalescingJourney } from './responses-coalescing-journey.mjs';
 import { runSpaceJourney } from './space-journey.mjs';
+import { runJsonObserverJourney } from './json-observer-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -496,6 +497,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
+  await selected(t, 'JSON observers keep internal heartbeats private and preserve terminal success, errors and detached runs', { timeout: 40000 }, () =>
+    runJsonObserverJourney(responseContext()));
   await selected(t, 'Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>
     runSpaceJourney(responseContext()));
   await selected(t, 'Responses actual Node SDK streams, recovers and returns local function results', { timeout: 16000 }, () =>
