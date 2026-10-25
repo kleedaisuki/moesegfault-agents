@@ -6,7 +6,7 @@ const PREFIX: &str = "chat:terminal:";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+pub(super) struct Receipt {
     version: u8,
     run_id: String,
     source_begin: usize,
@@ -28,6 +28,14 @@ fn known_unavailable(error: &Error) -> bool {
 fn valid_id(id: &str) -> bool {
     id.strip_prefix("run_")
         .is_some_and(|tail| tail.len() == 32 && tail.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn stream_query(query: Option<&str>) -> Option<bool> {
+    match query {
+        None => Some(false),
+        Some("stream=true") => Some(true),
+        _ => None,
+    }
 }
 
 impl Receipt {
@@ -205,6 +213,19 @@ fn completion_metadata(value: &Value) -> Result<Value> {
     Ok(Value::Object(metadata))
 }
 
+fn follower_reply(run_id: &str, receipt: Option<&Receipt>, journal: &[Message]) -> (u16, Value) {
+    match receipt
+        .ok_or_else(unavailable)
+        .and_then(|receipt| receipt.value(run_id, journal))
+    {
+        Ok(value) => (200, value),
+        Err(_) => (
+            404,
+            util::error_body("chat_observation_unavailable", "Chat run is unavailable"),
+        ),
+    }
+}
+
 impl SessionInner {
     // The caller holds persistence and has validated the matching run before
     // preparing this key. Readers take the same lock and hide prepared receipts.
@@ -213,25 +234,46 @@ impl SessionInner {
         run: &RunState,
         result: &CompletionResult,
         completed: &PersistedSession,
-    ) -> Result<()> {
+    ) -> Result<Option<Receipt>> {
         let Some(receipt) =
             Receipt::prepare(run, result, &completed.journal, &completed.record.agent_id)?
         else {
-            return Ok(());
+            return Ok(None);
         };
         write_chunks(
             &self.state.storage(),
             &format!("{PREFIX}{}", run.id),
             &serde_json::to_vec(&receipt)?,
         )
-        .await
+        .await?;
+        Ok(Some(receipt))
+    }
+
+    // Called only after the canonical completion commit. A failed observation
+    // must never turn that completed execution back into a failed/busy run.
+    pub(super) fn publish_chat_followers(
+        &self,
+        run_id: &str,
+        receipt: Option<Receipt>,
+        completed: &PersistedSession,
+    ) {
+        if !self.terminal_followers.has(run_id) {
+            return;
+        }
+        let (status, value) = follower_reply(run_id, receipt.as_ref(), &completed.journal);
+        self.terminal_followers.publish(run_id, status, &value);
     }
 
     pub(super) async fn chat_run_receipt(&self, request: Request) -> Result<Response> {
         let path = request.path();
         let id = path.strip_prefix("/chat-runs/").unwrap_or("");
-        if request.method() != Method::Get || request.url()?.query().is_some() || !valid_id(id) {
-            return util::json_error(400, "invalid_chat_run", "Use an exact Chat run ID");
+        let stream = stream_query(request.url()?.query());
+        if request.method() != Method::Get || stream.is_none() || !valid_id(id) {
+            return util::json_error(
+                400,
+                "invalid_chat_run",
+                "Use an exact Chat run ID and optional stream=true",
+            );
         }
         let identity = self
             .data
@@ -252,7 +294,7 @@ impl SessionInner {
             .require_observation("chat.observe", Resource::DurableObject, "wall_ms")
             .await?;
         let started = util::now_ms();
-        let result = self.read_chat_receipt(id).await;
+        let result = self.read_chat_receipt(id, stream.unwrap()).await;
         let measured = meter
             .record_wall_time(
                 "chat.observe",
@@ -275,7 +317,7 @@ impl SessionInner {
         }
     }
 
-    async fn read_chat_receipt(&self, id: &str) -> Result<Response> {
+    async fn read_chat_receipt(&self, id: &str, stream: bool) -> Result<Response> {
         let _guard = self.persistence.lock().await;
         let active = self.data.borrow().as_ref().and_then(|data| {
             data.run
@@ -284,6 +326,11 @@ impl SessionInner {
                 .map(|run| run.source_begin.is_some() && run.response.is_none())
         });
         if active == Some(true) {
+            if stream {
+                return self
+                    .terminal_followers
+                    .subscribe(id, crate::observation_registry::TerminalKind::Chat);
+            }
             return Ok(
                 Response::from_json(&json!({"run_id":id,"status":"in_progress"}))?.with_status(202),
             );
@@ -467,6 +514,46 @@ mod tests {
         let mut altered = exact;
         altered["content"] = json!("different");
         assert!(!matches_message(&message, &altered).unwrap());
+    }
+
+    #[test]
+    fn observation_query_is_opt_in_and_unambiguous() {
+        assert_eq!(stream_query(None), Some(false));
+        assert_eq!(stream_query(Some("stream=true")), Some(true));
+        for query in [
+            "",
+            "stream=false",
+            "stream=1",
+            "stream=True",
+            "stream=true&",
+            "stream=true&stream=true",
+            "stream=true&after=0",
+            "after=0",
+            "%73tream=true",
+        ] {
+            assert_eq!(stream_query(Some(query)), None, "{query}");
+        }
+    }
+
+    #[test]
+    fn ready_followers_receive_the_same_committed_receipt_as_peek_readers() {
+        let journal = vec![Message::text("assistant", "Exact terminal 雪")];
+        let receipt = Receipt::prepare(&run(Some(0)), &completion(&journal[0]), &journal, "agent")
+            .unwrap()
+            .unwrap();
+        let peek = receipt.value(ID, &journal).unwrap();
+        let (status, followed) = follower_reply(ID, Some(&receipt), &journal);
+        assert_eq!(status, 200);
+        assert_eq!(followed, peek);
+        let (status, failed) = follower_reply(ID, None, &journal);
+        assert_eq!(status, 404);
+        assert_eq!(failed["error"]["code"], "chat_observation_unavailable");
+        let (status, _) = follower_reply(
+            "run_ffffffffffffffffffffffffffffffff",
+            Some(&receipt),
+            &journal,
+        );
+        assert_eq!(status, 404);
     }
 
     proptest! {

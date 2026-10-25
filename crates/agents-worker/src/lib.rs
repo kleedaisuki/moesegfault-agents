@@ -5,6 +5,7 @@ mod checkpoint_gc;
 mod cleanup;
 mod exports;
 mod metering;
+mod observation_registry;
 mod observer_transport;
 mod provider;
 mod reconcile;

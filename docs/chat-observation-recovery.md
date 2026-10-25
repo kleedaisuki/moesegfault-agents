@@ -16,6 +16,13 @@ This is observation repair, not an exactly-once inference claim. Responses keeps
 its existing per-ID receipts and event replay; do not build another harness or a
 new global routing/index service for Chat.
 
+The later `6552a93` staging run exposed a separate lifetime bug: its original
+workspace task completed in 303,762 ms with six provider rounds and five tools,
+but polling observation stopped at 120,096 ms. All original reservations were
+settled or released. Task duration is not a transport-failure budget. Active
+observation now subscribes once to the original run's native-backed terminal
+stream rather than polling for its completion.
+
 ## State and ownership
 
 | State | Owner | Lifetime / invariant |
@@ -25,6 +32,7 @@ new global routing/index service for Chat.
 | Terminal receipt under `chat:terminal:<run_id>` | Same DO, chunk helpers | Immutable after canonical run completion; user-data lifetime with the session |
 | Source span `[begin, end)` and final assistant index | Receipt references immutable journal | Fixed before admitting the next run; compaction cannot change these indices |
 | Forwarded text byte count and SHA-256 state | Edge response stream only | O(1) state; discarded when caller disconnects |
+| Terminal followers | Volatile Session registry | At most 32 per Session / 8 per ID, closed consumers pruned; never serialized into source state |
 
 The receipt is small metadata, not a second source journal. Store the exact
 canonical completion object **with its single final `choices[0].message` factored
@@ -89,6 +97,15 @@ Add `GET /chat-runs/<run_id>` to the Session's internal fetch surface only:
 - **404**: no such retained receipt and no matching active run; stop recovery.
 - **429 / overloaded**: stop rather than amplifying overload.
 
+With the explicit `?stream=true` query, the same persistence lock atomically
+selects a committed JSON receipt or registers an active terminal follower.
+Active subscriptions return private SSE headers immediately, send 15-second
+comment keepalives, and publish one canonical terminal envelope only after
+completion commits. They never publish a synthetic queued completion. Plain GET
+keeps the `200/202/404` peek contract. Unknown or duplicate query fields fail.
+Publication drains only the matching ID after the primary observer is notified;
+without matching followers, it does not reconstruct or serialize output text.
+
 The edge has already authenticated and resolved the owned Session. Keep the
 namespace identity `owner:session`, validate the run-ID shape, and never expose
 this route through the public router. Reading does not append input, move the
@@ -121,10 +138,13 @@ is a truncated observation, not success.
 
 On source error/EOF before a terminal:
 
-1. Create a fresh stub and READ the exact run. Never resubmit the creation POST.
-2. For pending, use bounded native-delay backoff: 250 ms, 500 ms, 1 s, 2 s, then
-   4 s; stop after 32 reads or 120 seconds, whichever occurs first. No overload
-   retry. Every new attempt gets a fresh stub and child trace context.
+1. Create a fresh stub and READ the exact run with `?stream=true`. Never resubmit
+   the creation POST or silently fall back to polling an older protocol.
+2. Bound reconnects to 32 connections and a cumulative 120 seconds of transport
+   opening, finite-result transfer and backoff. Use 250 ms, 500 ms, 1 s, 2 s,
+   then 4 s delays after transport loss; never retry overload. A healthy attached
+   SSE body is awaited until its authentic terminal, without a task-duration
+   deadline or repeated GETs. Every reconnect uses a fresh stub and child trace.
 3. For a successful receipt, require the recovered text length to cover sent
    bytes, the prefix boundary to be valid UTF-8, and its prefix SHA-256 to equal
    the accumulated digest. Then emit only the missing text suffix, the original
@@ -146,8 +166,8 @@ just because its outer body was cancelled. Native quiet-stream probes also show
 that transport cancellation may not be reported until another write. Therefore
 only a pending recovery emits a compact `:\n\n` comment every 100 ms, retaining
 the same recovery future/read budget across ticks. This bounds its additional
-payload to 3,600 bytes over the 120-second recovery window (excluding HTTP/TLS
-overhead); ordinary streams retain their existing 15-second heartbeat. The abort
+payload to 30 bytes/second while recovery is pending (excluding HTTP/TLS overhead);
+ordinary streams retain their existing 15-second heartbeat. The abort
 listener is unregistered before its Rust Closure is released, and abort quietly
 drops the in-flight observation rather than sending an error after the client left.
 

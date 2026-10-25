@@ -1276,11 +1276,12 @@ pub(crate) async fn read_chat_run(
     run: &str,
 ) -> Result<Response> {
     let context = RouteContext { env, trace };
-    forward(
+    forward_raw(
         &context,
         session,
         Method::Get,
-        &format!("/chat-runs/{run}"),
+        &format!("/chat-runs/{run}?stream=true"),
+        None,
         None,
     )
     .await
@@ -1306,6 +1307,18 @@ async fn forward_inner(
     body: Option<Value>,
     etag: Option<&str>,
 ) -> Result<Response> {
+    let response = forward_raw(env, session, method, path, body, etag).await?;
+    crate::observer_transport::resolve(response).await
+}
+
+async fn forward_raw(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    etag: Option<&str>,
+) -> Result<Response> {
     let namespace = env.durable_object("SESSIONS")?;
     let id = namespace.id_from_name(&format!("{}:{}", session.owner_id, session.id))?;
     let stub = id.get_stub()?;
@@ -1322,7 +1335,7 @@ async fn forward_inner(
         request.headers_mut()?.set("If-None-Match", etag)?;
     }
     env.trace.child().inject(request.headers_mut()?)?;
-    crate::observer_transport::resolve(stub.fetch_with_request(request).await?).await
+    stub.fetch_with_request(request).await
 }
 
 #[cfg(test)]

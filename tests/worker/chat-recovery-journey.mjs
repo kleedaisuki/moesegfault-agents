@@ -33,7 +33,8 @@ export function createChatRecoveryControl() {
     summary() { return [...cases].map(([caseId, state]) => ({ caseId, ...state })); },
     register(caseId, mode) {
       assert.ok(!cases.has(caseId));
-      const state = { mode, runPosts: 0, reads: 0, cuts: 0, statuses: [], readRunIds: [], runId: null };
+      const state = { mode, runPosts: 0, reads: 0, cuts: 0, statuses: [], readRunIds: [], readStreams: [],
+        subscriptions: 0, heartbeats: 0, subscriptionTerminals: 0, runId: null };
       cases.set(caseId, state);
       return state;
     },
@@ -43,8 +44,13 @@ export function createChatRecoveryControl() {
       const state = cases.get(input.caseId);
       assert.ok(state, 'Only the explicit test case may select an internal fault');
       if (input.operation === 'open') { state.runPosts++; state.runId = input.runId; }
-      else if (input.operation === 'read') { state.reads++; state.readRunIds.push(input.runId); }
-      else if (input.operation === 'read-result') state.statuses.push(input.status);
+      else if (input.operation === 'read') { state.reads++; state.readRunIds.push(input.runId); state.readStreams.push(input.stream); }
+      else if (input.operation === 'read-result') {
+        state.statuses.push(input.status);
+        if (input.status === 200 && input.contentType?.includes('text/event-stream') && input.marker === 'chat') state.subscriptions++;
+      }
+      else if (input.operation === 'subscription-heartbeat') state.heartbeats++;
+      else if (input.operation === 'subscription-terminal') state.subscriptionTerminals++;
       else if (input.operation === 'cut') state.cuts++;
       else assert.fail('Unknown Chat recovery test operation');
       return Response.json({ mode: state.mode });
@@ -109,6 +115,25 @@ export async function runChatRecoveryJourney(context) {
     return response.json();
   }
 
+  async function follow(sessionId, runId) {
+    const namespace = await context.mf.getDurableObjectNamespace('SESSIONS');
+    const stub = namespace.get(namespace.idFromName(`${principal.owner}:${sessionId}`));
+    const response = await stub.fetch(`https://session.internal/chat-runs/${runId}?stream=true`);
+    assert.equal(response.status, 200);
+    if (!response.headers.get('content-type')?.includes('text/event-stream')) return response.json();
+    assert.equal(response.headers.get('x-agents-internal-observer'), 'chat');
+    const read = bounded(response.text());
+    // Start draining immediately; completion may race the next subscription.
+    read.catch(() => {});
+    return { live: true, value: read.then(text => {
+      const payloads = text.split('\n\n').flatMap(block => block.split('\n').filter(line => line.startsWith('data: ')))
+        .map(line => line.slice(6)).filter(data => data !== '[DONE]').map(data => JSON.parse(data));
+      assert.equal(payloads.length, 1, 'Each committed follower receives one terminal envelope');
+      assert.equal(payloads[0].status, 200);
+      return payloads[0].body;
+    }) };
+  }
+
   async function complete(observation, text) {
     const result = await bounded(observation.observed.done);
     assert.equal(result.error, null, result.error?.message);
@@ -129,11 +154,32 @@ export async function runChatRecoveryJourney(context) {
     const before = await start('before-output', 'before');
     await waitUntil(() => before.state.reads > 0 || before.observed.finished);
     assert.equal(before.observed.finished, false, 'Internal observation loss must not truncate the public stream before its original terminal stop');
-    await waitUntil(() => before.state.statuses.includes(202) || before.observed.finished);
-    assert.ok(before.state.statuses.includes(202), 'An interrupted live observer must read the original pending run');
+    assert.equal(before.state.readStreams[0], true, 'Recovery must attach to the exact active run, not poll its task duration');
+    await waitUntil(() => before.state.subscriptions === 1 || before.observed.finished);
+    assert.equal(before.state.subscriptions, 1, 'An active run exposes one native terminal subscription');
     const pending = await owned('GET', `/v1/sessions/${before.sessionId}`);
+    assert.deepEqual(await receipt(before.sessionId, before.state.runId, 202),
+      { run_id: before.state.runId, status: 'in_progress' }, 'Plain reads retain their pending introspection contract');
+    const missing = await receipt(before.sessionId, `run_${'f'.repeat(32)}`, 404);
+    assert.equal(missing.error.code, 'chat_observation_unavailable');
+    await delay(16050);
+    await waitUntil(() => before.state.heartbeats > 0, 2500);
+    assert.equal(before.observed.finished, false, 'A healthy pending subscription cannot complete before its original run');
+    assert.equal(before.state.reads, 1, 'Healthy attached waiting across a native keepalive performs no repeated polling');
+    assert.equal(before.state.subscriptions, 1);
+    assert.equal(before.state.subscriptionTerminals, 0);
+    const peer = await follow(before.sessionId, before.state.runId);
+    assert.equal(peer.live, true, 'A second active follower registers without replacing the existing observer');
     gates[0].release();
+    const racing = [follow(before.sessionId, before.state.runId), follow(before.sessionId, before.state.runId)];
     const immutable = await complete(before, actions[0].text);
+    assert.deepEqual(await peer.value, immutable);
+    for (const connection of await Promise.all(racing)) {
+      assert.deepEqual(connection.live ? await connection.value : connection, immutable,
+        'Finish-versus-subscribe races must return the same committed result, never lose publication');
+    }
+    assert.equal(before.state.reads, 1);
+    assert.equal(before.state.subscriptionTerminals, 1);
     const after = await owned('GET', `/v1/sessions/${before.sessionId}`);
     assert.equal(after.input_revision, pending.input_revision);
     assert.equal(after.last_input_at_ms, pending.last_input_at_ms);
@@ -143,6 +189,9 @@ export async function runChatRecoveryJourney(context) {
     assert.equal(later.state.reads, 0, 'An ordinary completed stream performs no recovery reads');
     const fixedClock = await owned('GET', `/v1/sessions/${before.sessionId}`);
     assert.deepEqual(await receipt(before.sessionId, before.state.runId), immutable, 'A later run cannot replace the original receipt');
+    const completedFollower = await follow(before.sessionId, before.state.runId);
+    assert.equal(completedFollower.live, undefined);
+    assert.deepEqual(completedFollower, immutable, 'An already committed observation remains an immediate JSON read');
     await owned('DELETE', `/v1/sessions/${before.sessionId}`);
     await context.mf.unsafeEvictDurableObject('', 'Session', { name: `${principal.owner}:${before.sessionId}` });
     assert.deepEqual(await receipt(before.sessionId, before.state.runId), immutable, 'Archive/cold reconstruction retains the same exact receipt');
@@ -228,6 +277,7 @@ export async function runChatRecoveryJourney(context) {
     assert.equal(scenario.state.calls, actions.length, 'Every controlled provider action executes exactly once');
     context.diagnostic?.(JSON.stringify({ event: 'chat.observation_recovery_fixture', provider_calls: scenario.state.calls,
       before_output_reads: before.state.reads, unicode_prefix_reads: prefix.state.reads,
+      healthy_subscription_opens: before.state.subscriptions, healthy_keepalives: before.state.heartbeats,
       normal_reads: later.state.reads, terminal_reads: terminal.state.reads, overload_reads: overloaded.state.reads,
       exact_text_and_terminal: true, immutable_archived_receipt: true, caller_abort_stops_reads: true }));
   } catch (error) {

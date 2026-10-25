@@ -1,6 +1,6 @@
 //! Private terminal transport between a Session DO and the public HTTP worker.
 
-use eventsource_stream::Eventsource;
+use eventsource_stream::{EventStreamError, Eventsource};
 use futures::{Stream, StreamExt, channel::mpsc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +24,18 @@ pub(crate) struct Reply {
     pub(crate) body: Value,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DecodeError {
+    Detached,
+    Invalid,
+}
+
+#[derive(Serialize)]
+struct ReplyRef<'a> {
+    status: u16,
+    body: &'a Value,
+}
+
 pub(crate) fn channel(kind: &'static str) -> Result<(Sender, Response)> {
     let (sender, receiver) = mpsc::unbounded();
     let mut response = Response::from_stream(sse::keep_alive(receiver))?;
@@ -38,16 +50,35 @@ pub(crate) fn channel(kind: &'static str) -> Result<(Sender, Response)> {
 }
 
 pub(crate) fn publish(sender: Sender, status: u16, body: Value) -> bool {
-    let reply = Reply { status, body };
-    let Ok(data) = serde_json::to_string(&reply) else {
+    let Some(frame) = encode_terminal(status, &body) else {
         return false;
     };
-    if data.len() > MAX_BYTES {
+    publish_frame(sender, &frame)
+}
+
+pub(crate) fn encode_terminal(status: u16, body: &Value) -> Option<Vec<u8>> {
+    encode_with_limit(status, body, MAX_BYTES)
+}
+
+fn encode_with_limit(status: u16, body: &Value, limit: usize) -> Option<Vec<u8>> {
+    if !(status == 200 || (400..600).contains(&status)) || !body.is_object() {
+        return None;
+    }
+    let mut frame = format!("event: {EVENT}\ndata: ").into_bytes();
+    let prefix = frame.len();
+    serde_json::to_writer(&mut frame, &ReplyRef { status, body }).ok()?;
+    if frame.len().saturating_sub(prefix) > limit {
+        return None;
+    }
+    frame.extend_from_slice(b"\n\n");
+    Some(frame)
+}
+
+pub(crate) fn publish_frame(sender: Sender, frame: &[u8]) -> bool {
+    if frame.len() > MAX_WIRE_BYTES {
         return false;
     }
-    sender
-        .unbounded_send(Ok(format!("event: {EVENT}\ndata: {data}\n\n").into_bytes()))
-        .is_ok()
+    sender.unbounded_send(Ok(frame.to_vec())).is_ok()
         && sender
             .unbounded_send(Ok(b"data: [DONE]\n\n".to_vec()))
             .is_ok()
@@ -62,7 +93,7 @@ pub(crate) async fn resolve(mut response: Response) -> Result<Response> {
     }
     let headers = response.headers().clone();
     let result = match kind.as_deref() {
-        Some("chat" | "responses") => match response.stream() {
+        Some("chat" | "responses" | "compact") => match response.stream() {
             Ok(stream) => decode(stream).await,
             Err(_) => Err(()),
         },
@@ -73,10 +104,12 @@ pub(crate) async fn resolve(mut response: Response) -> Result<Response> {
         Err(()) => util::json_error(
             503,
             "run_detached",
-            if kind.as_deref() == Some("chat") {
-                "Run continues durably; poll the session status"
-            } else {
-                "Run continues durably; retrieve the original response"
+            match kind.as_deref() {
+                Some("chat") => "Run continues durably; poll the session status",
+                Some("compact") => {
+                    "Repeat the SAME compact idempotency key; do not recreate the operation"
+                }
+                _ => "Run continues durably; retrieve the original response",
             },
         )?,
     };
@@ -95,36 +128,56 @@ pub(crate) async fn decode<S>(source: S) -> std::result::Result<Reply, ()>
 where
     S: Stream<Item = Result<Vec<u8>>> + Unpin,
 {
+    decode_detailed(source).await.map_err(|_| ())
+}
+
+pub(crate) async fn decode_detailed<S>(source: S) -> std::result::Result<Reply, DecodeError>
+where
+    S: Stream<Item = Result<Vec<u8>>> + Unpin,
+{
+    decode_limited(source, MAX_WIRE_BYTES).await
+}
+
+async fn decode_limited<S>(source: S, limit: usize) -> std::result::Result<Reply, DecodeError>
+where
+    S: Stream<Item = Result<Vec<u8>>> + Unpin,
+{
     let mut bytes = 0usize;
     let mut events = source
         .map(move |chunk| {
-            let chunk = chunk.map_err(|_| ())?;
+            let chunk = chunk.map_err(|_| DecodeError::Detached)?;
             bytes = bytes.saturating_add(chunk.len());
-            if bytes > MAX_WIRE_BYTES {
-                return Err(());
+            if bytes > limit {
+                return Err(DecodeError::Invalid);
             }
             Ok(chunk)
         })
         .eventsource();
     let mut reply = None;
     while let Some(event) = events.next().await {
-        let event = event.map_err(|_| ())?;
+        let event = match event {
+            Ok(event) => event,
+            Err(EventStreamError::Transport(DecodeError::Detached)) => {
+                return reply.ok_or(DecodeError::Detached);
+            }
+            Err(_) => return Err(DecodeError::Invalid),
+        };
         if event.data == "[DONE]" {
-            return reply.ok_or(());
+            return reply.ok_or(DecodeError::Invalid);
         }
         if event.event != EVENT || reply.is_some() {
-            return Err(());
+            return Err(DecodeError::Invalid);
         }
         if event.data.len() > MAX_BYTES {
-            return Err(());
+            return Err(DecodeError::Invalid);
         }
-        let value: Reply = serde_json::from_str(&event.data).map_err(|_| ())?;
+        let value: Reply = serde_json::from_str(&event.data).map_err(|_| DecodeError::Invalid)?;
         if !(value.status == 200 || (400..600).contains(&value.status)) || !value.body.is_object() {
-            return Err(());
+            return Err(DecodeError::Invalid);
         }
         reply = Some(value);
     }
-    reply.ok_or(())
+    reply.ok_or(DecodeError::Detached)
 }
 
 #[cfg(test)]
@@ -180,5 +233,76 @@ mod tests {
         let (sender, receiver) = mpsc::unbounded();
         drop(receiver);
         assert!(!publish(sender, 200, json!({"status":"completed"})));
+    }
+
+    #[test]
+    fn shared_encoding_uses_the_same_typed_status_and_payload_bound() {
+        assert!(encode_terminal(201, &json!({})).is_none());
+        assert!(encode_terminal(200, &Value::Null).is_none());
+        let body = json!({"text":"雪"});
+        let bytes = serde_json::to_vec(&ReplyRef {
+            status: 200,
+            body: &body,
+        })
+        .unwrap()
+        .len();
+        assert!(encode_with_limit(200, &body, bytes - 1).is_none());
+        let frame = encode_with_limit(200, &body, bytes).unwrap();
+        let reply = read(&frame).unwrap();
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.body, body);
+        assert!(frame.len() < bytes + (MAX_WIRE_BYTES - MAX_BYTES));
+    }
+
+    #[test]
+    fn detailed_decode_distinguishes_transport_loss_from_protocol_failure() {
+        assert_eq!(
+            block_on(decode_detailed(stream::empty())).unwrap_err(),
+            DecodeError::Detached
+        );
+        let source = stream::iter([Err(worker::Error::RustError("connection_closed".into()))]);
+        assert_eq!(
+            block_on(decode_detailed(source)).unwrap_err(),
+            DecodeError::Detached
+        );
+        let bad = b"event: agents.json\ndata: {broken}\n\n".to_vec();
+        assert_eq!(
+            block_on(decode_detailed(stream::iter([Ok(bad)]))).unwrap_err(),
+            DecodeError::Invalid
+        );
+        assert_eq!(
+            block_on(decode_detailed(stream::iter([Ok(vec![0xff])]))).unwrap_err(),
+            DecodeError::Invalid
+        );
+        let frame = encode_terminal(200, &json!({"status":"completed"})).unwrap();
+        assert_eq!(
+            block_on(decode_limited(
+                stream::iter([Ok(frame.clone())]),
+                frame.len() - 1
+            ))
+            .unwrap_err(),
+            DecodeError::Invalid
+        );
+        assert_eq!(
+            block_on(decode_detailed(stream::iter([
+                Ok(frame.clone()),
+                Ok(frame)
+            ])))
+            .unwrap_err(),
+            DecodeError::Invalid
+        );
+    }
+
+    #[test]
+    fn an_authentic_terminal_survives_loss_before_the_optional_done_frame() {
+        let body = json!({"run_id":"run-original","status":"completed"});
+        let frame = encode_terminal(200, &body).unwrap();
+        let source = stream::iter([
+            Ok(frame),
+            Err(worker::Error::RustError("connection_closed".into())),
+        ]);
+        let reply = block_on(decode_detailed(source)).unwrap();
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.body, body);
     }
 }

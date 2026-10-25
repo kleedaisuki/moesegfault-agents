@@ -197,6 +197,7 @@ struct SessionInner {
     closing: Cell<bool>,
     observer: RefCell<Option<Observer>>,
     response_observers: RefCell<Vec<ResponseObserver>>,
+    terminal_followers: crate::observation_registry::TerminalFollowers,
     persistence: futures::lock::Mutex<()>,
 }
 
@@ -215,6 +216,7 @@ impl DurableObject for Session {
             closing: Cell::new(false),
             observer: RefCell::new(None),
             response_observers: RefCell::new(vec![]),
+            terminal_followers: crate::observation_registry::TerminalFollowers::default(),
             persistence: futures::lock::Mutex::new(()),
         });
         let loaded = inner.clone();
@@ -1535,7 +1537,7 @@ impl SessionInner {
             result.as_ref().err().cloned(),
             &generation,
         )?;
-        self.prepare_chat_receipt(run, &result, &committed).await?;
+        let chat_receipt = self.prepare_chat_receipt(run, &result, &committed).await?;
         // Keep the live terminal run busy until this authoritative commit succeeds.
         save_state(&self.state.storage(), &mut committed).await?;
         self.data
@@ -1579,6 +1581,9 @@ impl SessionInner {
                 "observer.completed",
                 json!({"session_id":committed.record.id,"run_id":run.id,"success":accepted}),
             );
+        }
+        if run.response.is_none() {
+            self.publish_chat_followers(&run.id, chat_receipt, &committed);
         }
         if self.project(&committed, false).await.is_err() {
             util::emit(

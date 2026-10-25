@@ -63,6 +63,44 @@ async function cutBody(response, caseId, mode) {
   });
 }
 
+function subscriptionBody(response, caseId, mode) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffer = '';
+  let cancelled = false;
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        while (!cancelled) {
+          const end = buffer.indexOf('\n\n');
+          if (end >= 0) {
+            let block = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            if (block.startsWith(':')) await control(caseId, 'subscription-heartbeat');
+            const line = block.split('\n').find(value => value.startsWith('data: '));
+            if (line && line.slice(6) !== '[DONE]') {
+              const envelope = JSON.parse(line.slice(6));
+              await control(caseId, 'subscription-terminal');
+              if (mode === 'mismatch' && envelope.status === 200) {
+                envelope.body.text = 'WRONG_PREFIX_' + envelope.body.text;
+                block = block.split('\n').map(value => value === line ? `data: ${JSON.stringify(envelope)}` : value).join('\n');
+              }
+            }
+            if (!cancelled) controller.enqueue(encoder.encode(block + '\n\n'));
+            return;
+          }
+          const item = await reader.read();
+          if (cancelled) return;
+          if (item.done) { controller.close(); return; }
+          buffer += decoder.decode(item.value, { stream: true });
+        }
+      } catch (error) { if (!cancelled) controller.error(error); }
+    },
+    cancel(reason) { cancelled = true; return reader.cancel(reason).catch(() => {}); },
+  });
+}
+
 function namespace(real, caseId) {
   return new Proxy(real, {
     get(target, property) {
@@ -79,16 +117,22 @@ function namespace(real, caseId) {
             }
             return async (...arguments_) => {
               const request = new Request(...arguments_);
-              const path = new URL(request.url).pathname;
+              const url = new URL(request.url);
+              const path = url.pathname;
               if (path.startsWith('/chat-runs/')) {
-                const plan = await control(caseId, 'read', { runId: path.split('/').at(-1) });
+                const plan = await control(caseId, 'read', { runId: path.split('/').at(-1), stream: url.searchParams.get('stream') === 'true' });
                 if (plan.mode === 'overload') {
                   const error = new Error('Synthetic Durable Object overload');
                   error.overloaded = true;
                   throw error;
                 }
                 const response = await instance.fetch(request);
-                await control(caseId, 'read-result', { status: response.status });
+                const contentType = response.headers.get('content-type');
+                const marker = response.headers.get('x-agents-internal-observer');
+                await control(caseId, 'read-result', { status: response.status, contentType, marker });
+                if (response.status === 200 && contentType?.includes('text/event-stream')) {
+                  return new Response(subscriptionBody(response, caseId, plan.mode), { status: response.status, headers: response.headers });
+                }
                 if (plan.mode !== 'mismatch' || response.status !== 200) return response;
                 const value = await response.json();
                 value.text = 'WRONG_PREFIX_' + value.text;

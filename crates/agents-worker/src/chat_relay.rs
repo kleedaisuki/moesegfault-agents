@@ -1,6 +1,6 @@
 //! Repair a lost Chat observation by reading its original durable run result.
 
-use std::{collections::VecDeque, future::Future, rc::Rc, time::Duration};
+use std::{cell::Cell, collections::VecDeque, future::Future, rc::Rc, time::Duration};
 
 use agents_core::SessionRecord;
 use eventsource_stream::{Event, Eventsource};
@@ -19,7 +19,7 @@ use worker::{Delay, Env, Response, Result};
 use crate::{routes, session::sse, telemetry::TraceContext, util};
 
 const MAX_READS: u8 = 32;
-const RECOVERY_MS: u64 = 120_000;
+const RECONNECT_MS: u64 = 120_000;
 // Recovery alone buffers text. This is generous relative to the provider's
 // 16 MiB completion bound; ordinary streaming keeps only a digest and byte count.
 const MAX_RECEIPT_BYTES: usize = 32 * 1024 * 1024;
@@ -166,16 +166,17 @@ struct Target {
 }
 
 enum Read {
-    Pending,
-    Ready(Receipt),
+    Retry,
+    Json(Response),
+    Subscription(Response),
 }
 
 impl Target {
-    async fn read(&self) -> std::result::Result<Read, Failure> {
+    async fn open(&self) -> std::result::Result<Read, Failure> {
         if self.signal.aborted() {
             return Err(Failure::Cancelled);
         }
-        let mut response = routes::read_chat_run(&self.env, &self.session, &self.trace, &self.run)
+        let response = routes::read_chat_run(&self.env, &self.session, &self.trace, &self.run)
             .await
             .map_err(|error| {
                 if overloaded(&error) {
@@ -185,32 +186,34 @@ impl Target {
                 }
             })?;
         match response.status_code() {
-            202 | 500 | 502 | 503 | 504 => return Ok(Read::Pending),
+            500 | 502 | 503 | 504 => return Ok(Read::Retry),
             429 => return Err(Failure::Overloaded),
             200 => {}
             _ => return Err(Failure::Unavailable),
         }
-        let mut bytes = Vec::new();
-        let mut source = response.stream().map_err(|_| Failure::Unavailable)?;
-        while let Some(chunk) = source.next().await {
-            let chunk = chunk.map_err(|_| Failure::Timeout)?;
-            if chunk.len() > MAX_RECEIPT_BYTES.saturating_sub(bytes.len()) {
-                return Err(Failure::Unavailable);
+        let marker = response
+            .headers()
+            .get("x-agents-internal-observer")
+            .map_err(|_| Failure::Unavailable)?;
+        let content_type = response
+            .headers()
+            .get("Content-Type")
+            .map_err(|_| Failure::Unavailable)?
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        match marker.as_deref() {
+            Some("chat") if content_type.starts_with("text/event-stream") => {
+                Ok(Read::Subscription(response))
             }
-            bytes.extend_from_slice(&chunk);
+            None if content_type.starts_with("application/json") => Ok(Read::Json(response)),
+            _ => Err(Failure::Unavailable),
         }
-        serde_json::from_slice(&bytes)
-            .map(Read::Ready)
-            .map_err(|_| Failure::Unavailable)
     }
 
-    async fn recover(
-        &self,
-        progress: &Progress,
-    ) -> std::result::Result<VecDeque<Vec<u8>>, Failure> {
+    async fn recover(&self, progress: &Progress) -> RecoveryResult {
         let started = util::now_ms();
         let mut budget = Budget::default();
-        let result = self.recover_until(progress, started, &mut budget).await;
+        let result = self.recover_until(progress, &mut budget).await;
         if self.signal.aborted() || result.as_ref().err() == Some(&Failure::Cancelled) {
             return Err(Failure::Cancelled);
         }
@@ -227,57 +230,140 @@ impl Target {
         result
     }
 
-    async fn recover_until(
-        &self,
-        progress: &Progress,
-        started: u64,
-        budget: &mut Budget,
-    ) -> std::result::Result<VecDeque<Vec<u8>>, Failure> {
+    async fn recover_until(&self, progress: &Progress, budget: &mut Budget) -> RecoveryResult {
         loop {
             if self.signal.aborted() {
                 return Err(Failure::Cancelled);
             }
-            let now = util::now_ms().saturating_sub(started);
-            let remaining = budget.begin(now)?;
-            let request = Box::pin(self.read());
+            let remaining = budget.begin()?;
+            let opened_at = util::now_ms();
+            let request = Box::pin(self.open());
             let timeout = Box::pin(Delay::from(Duration::from_millis(remaining)));
             let result = match futures::future::select(request, timeout).await {
                 Either::Left((result, _)) => result,
                 Either::Right(_) => return Err(Failure::Timeout),
             };
-            match result {
-                Ok(Read::Ready(receipt)) => {
-                    return repair(progress, &self.run, &self.session.agent_id, receipt);
-                }
-                Err(Failure::Timeout) | Ok(Read::Pending) => {}
+            budget.spend(util::now_ms().saturating_sub(opened_at))?;
+            let receipt = match result {
+                Ok(Read::Json(response)) => match read_finite_json(response, budget).await {
+                    Ok(receipt) => Some(receipt),
+                    Err(Failure::Timeout) => None,
+                    Err(error) => return Err(error),
+                },
+                // An attached subscription is healthy execution, not another
+                // reconnect attempt. Its body has no agent-task deadline.
+                Ok(Read::Subscription(response)) => read_subscription(response).await?,
+                Ok(Read::Retry) | Err(Failure::Timeout) => None,
                 Err(error) => return Err(error),
+            };
+            if let Some(receipt) = receipt {
+                return repair(progress, &self.run, &self.session.agent_id, receipt);
             }
-            let elapsed = util::now_ms().saturating_sub(started);
-            let delay = budget.delay(elapsed)?;
+            if self.signal.aborted() {
+                return Err(Failure::Cancelled);
+            }
+            let delay = budget.delay()?;
+            let backoff_at = util::now_ms();
             Delay::from(Duration::from_millis(delay)).await;
+            budget.spend(util::now_ms().saturating_sub(backoff_at))?;
         }
+    }
+}
+
+// An already-complete JSON reply is finite transport work. Only the active
+// subscription below may wait for an arbitrarily long healthy agent task.
+async fn read_finite_json(
+    response: Response,
+    budget: &mut Budget,
+) -> std::result::Result<Receipt, Failure> {
+    let started = util::now_ms();
+    let remaining = budget.remaining()?;
+    let timeout = Box::pin(Delay::from(Duration::from_millis(remaining)));
+    let (result, minimum_spent) =
+        match futures::future::select(Box::pin(read_json(response)), timeout).await {
+            Either::Left((result, _)) => (result, 0),
+            Either::Right(_) => (Err(Failure::Timeout), remaining),
+        };
+    budget.spend(util::now_ms().saturating_sub(started).max(minimum_spent))?;
+    result
+}
+
+async fn read_json(mut response: Response) -> std::result::Result<Receipt, Failure> {
+    let mut bytes = Vec::new();
+    let mut source = response.stream().map_err(|_| Failure::Unavailable)?;
+    while let Some(chunk) = source.next().await {
+        let chunk = chunk.map_err(|error| {
+            if overloaded(&error) {
+                Failure::Overloaded
+            } else {
+                Failure::Timeout
+            }
+        })?;
+        if chunk.len() > MAX_RECEIPT_BYTES.saturating_sub(bytes.len()) {
+            return Err(Failure::Unavailable);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| Failure::Unavailable)
+}
+
+async fn read_subscription(
+    mut response: Response,
+) -> std::result::Result<Option<Receipt>, Failure> {
+    use crate::observer_transport::{DecodeError, decode_detailed};
+    let source = response.stream().map_err(|_| Failure::Unavailable)?;
+    let is_overloaded = Rc::new(Cell::new(false));
+    let flag = is_overloaded.clone();
+    let source = source.map(move |chunk| {
+        if chunk.as_ref().err().is_some_and(overloaded) {
+            flag.set(true);
+        }
+        chunk
+    });
+    match decode_detailed(source).await {
+        Ok(reply) if reply.status == 200 => serde_json::from_value(reply.body)
+            .map(Some)
+            .map_err(|_| Failure::Unavailable),
+        Ok(reply) if reply.status == 429 => Err(Failure::Overloaded),
+        Ok(_) | Err(DecodeError::Invalid) => Err(Failure::Unavailable),
+        Err(DecodeError::Detached) if is_overloaded.get() => Err(Failure::Overloaded),
+        Err(DecodeError::Detached) => Ok(None),
     }
 }
 
 #[derive(Default)]
 struct Budget {
     reads: u8,
+    transport_ms: u64,
 }
 
 impl Budget {
-    fn begin(&mut self, elapsed: u64) -> std::result::Result<u64, Failure> {
-        if self.reads >= MAX_READS || elapsed >= RECOVERY_MS {
-            return Err(Failure::Timeout);
-        }
-        self.reads += 1;
-        Ok(RECOVERY_MS - elapsed)
+    fn remaining(&self) -> std::result::Result<u64, Failure> {
+        RECONNECT_MS
+            .checked_sub(self.transport_ms)
+            .filter(|remaining| *remaining > 0)
+            .ok_or(Failure::Timeout)
     }
 
-    fn delay(&self, elapsed: u64) -> std::result::Result<u64, Failure> {
-        if self.reads >= MAX_READS || elapsed >= RECOVERY_MS {
+    fn begin(&mut self) -> std::result::Result<u64, Failure> {
+        if self.reads >= MAX_READS {
             return Err(Failure::Timeout);
         }
-        Ok((250u64 << self.reads.saturating_sub(1).min(4)).min(RECOVERY_MS - elapsed))
+        let remaining = self.remaining()?;
+        self.reads += 1;
+        Ok(remaining)
+    }
+
+    fn spend(&mut self, elapsed: u64) -> std::result::Result<(), Failure> {
+        self.transport_ms = self.transport_ms.saturating_add(elapsed);
+        self.remaining().map(|_| ())
+    }
+
+    fn delay(&self) -> std::result::Result<u64, Failure> {
+        if self.reads >= MAX_READS {
+            return Err(Failure::Timeout);
+        }
+        Ok((250u64 << self.reads.saturating_sub(1).min(4)).min(self.remaining()?))
     }
 }
 
@@ -721,7 +807,7 @@ mod tests {
             let _lifetime = lifetime;
             started.set(started.get() + 1);
             let mut budget = Budget::default();
-            budget.begin(0).unwrap();
+            budget.begin().unwrap();
             let text = receiver.await.unwrap();
             assert_eq!(budget.reads, 1);
             assert_eq!(progress.bytes, "雪".len());
@@ -866,17 +952,59 @@ mod tests {
     }
 
     #[test]
-    fn recovery_budget_bounds_pending_reads_and_inflight_time() {
+    fn reconnect_budget_does_not_expire_a_healthy_long_subscription() {
+        let mut clock = 1000u64;
         let mut budget = Budget::default();
-        assert_eq!(budget.begin(0), Ok(RECOVERY_MS));
-        assert_eq!(budget.delay(0), Ok(250));
-        assert_eq!(budget.begin(250), Ok(RECOVERY_MS - 250));
-        assert_eq!(budget.delay(250), Ok(500));
-        while budget.reads < MAX_READS {
-            budget.begin(1000).unwrap();
+        assert_eq!(budget.begin(), Ok(RECONNECT_MS));
+        let handshake = clock;
+        clock += 25;
+        budget.spend(clock - handshake).unwrap();
+        let attached = clock;
+        clock += 303_763;
+        assert!(clock - attached > 303_762);
+        assert_eq!(budget.remaining(), Ok(RECONNECT_MS - 25));
+        assert_eq!(budget.reads, 1);
+        assert_eq!(budget.delay(), Ok(250));
+        let backoff = clock;
+        clock += 250;
+        budget.spend(clock - backoff).unwrap();
+        assert_eq!(budget.begin(), Ok(RECONNECT_MS - 275));
+        let handshake = clock;
+        clock += 30;
+        budget.spend(clock - handshake).unwrap();
+        assert_eq!(budget.reads, 2);
+        assert_eq!(budget.remaining(), Ok(RECONNECT_MS - 305));
+        assert_eq!(budget.delay(), Ok(500));
+        assert_eq!(budget.spend(RECONNECT_MS - 305), Err(Failure::Timeout));
+        assert_eq!(budget.begin(), Err(Failure::Timeout));
+        assert_eq!(budget.delay(), Err(Failure::Timeout));
+    }
+
+    #[test]
+    fn reconnect_count_stays_bounded_without_charging_healthy_body_time() {
+        let mut budget = Budget::default();
+        for _ in 0..MAX_READS {
+            assert!(budget.begin().is_ok());
+            budget.spend(1).unwrap();
         }
-        assert_eq!(budget.begin(1000), Err(Failure::Timeout));
-        assert_eq!(budget.delay(1000), Err(Failure::Timeout));
-        assert_eq!(Budget::default().begin(RECOVERY_MS), Err(Failure::Timeout));
+        assert_eq!(budget.begin(), Err(Failure::Timeout));
+        assert_eq!(budget.delay(), Err(Failure::Timeout));
+    }
+
+    #[test]
+    fn finite_body_deadline_consumes_the_remaining_transport_allowance() {
+        let mut budget = Budget::default();
+        budget.begin().unwrap();
+        budget.spend(25).unwrap();
+        let remaining = budget.remaining().unwrap();
+        // A clock sample may lag the timer notification; the expired timer is
+        // itself proof that at least its full remaining allowance was spent.
+        let sampled_elapsed = 0u64;
+        assert_eq!(
+            budget.spend(sampled_elapsed.max(remaining)),
+            Err(Failure::Timeout)
+        );
+        assert_eq!(budget.begin(), Err(Failure::Timeout));
+        assert_eq!(budget.delay(), Err(Failure::Timeout));
     }
 }
