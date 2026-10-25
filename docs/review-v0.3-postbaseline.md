@@ -204,3 +204,96 @@ Completion is still unproven. The remaining release checklist is concrete:
 No production request, paid model call, credential access, new build or deployment
 was performed for this review. No gate was weakened and no release completion is
 asserted.
+
+## Private terminal transport review at `23eaed0` (2026-10-25)
+
+Independently inspected `82a15a1` and the exact candidate
+`23eaed046d036b0e9ef516838684e815f74af647`. **No substantive source defect found**
+in the terminal-only transport or its Chat/Responses integration. This replaces,
+rather than accumulates another workaround around, the earlier JSON oneshots and
+30-second timer safeguard. The earlier `d8903e6` staging result was 23 passed and
+one failed local-function JSON create; its completed canonical handoff did not
+prove successful transport. The timer alone was not an accepted final fix.
+
+The Session DO now returns an explicitly marked, private SSE body after durable
+admission. The existing comment-only keepalive backs the binding with native I/O.
+The edge decodes that body before constructing any public JSON response: the
+private header, content type and heartbeat bytes are not passed through. Chat
+failure classification still yields its existing non-200 error status, whereas a
+canonical failed Responses object retains the existing HTTP 200/status-failed
+contract. Public SSE paths remain separate and unchanged. Session ownership and
+response routing/admission precede the private transport; clients cannot select a
+different owner or manufacture the trusted DO response marker. No provider/tool
+retry or D1 polling was introduced.
+
+Only one terminal envelope and optional DONE are decoded; malformed, duplicate,
+non-object, invalid-status or over-budget framing yields a recoverable 503 rather
+than fabricated success. The 32 MiB envelope and separately bounded wire overhead
+also bound parser accumulation across comment frames. JSON channels hold only a
+terminal envelope and DONE, not upstream token traffic. Channel closure preserves
+durable execution independently of observers and retains public recovery handles.
+
+Queried CI `40169050083`: exact candidate SHA, six successful normal jobs and only
+diagnostics skipped. Its retained Worker log shows 242 library and 43 actual-Worker
+checks passed. The new six-action check holds Chat public headers for a real
+16,050-millisecond quiet window crossing the native heartbeat, verifies both JSON
+success paths, Chat 502, canonical failed Responses, cancellation, explicit HTTP
+observer abort and unchanged retrievable completion, with exactly six provider
+calls. Codec tests also cover UTF-8 chunk boundaries and dropped receivers.
+These are meaningful compiled checks, not a replacement for real staging.
+
+Staging `40169406045` was still in progress at review. Production promotion,
+public CLI publication and the final backward-compatibility journey remain gated
+on its terminal acceptance; this review makes no deployment-success or proven
+native-platform root-cause claim. No source edits, new builds, live application
+requests, model calls or deployment operations were performed for the review.
+
+## Chat observation-repair source review (2026-10-25)
+
+Independently inspected the working change after `23eaed0`, principally
+`session_chat_receipts.rs`, `chat_relay.rs`, the completion commit barrier and
+private read dispatch. **No substantive source defect found in this bounded
+review.** The prior stage's truncated public SSE remains a failed transport
+acceptance, even though its original execution completed and settled. This
+review does not retroactively accept that stage or attribute the native failure
+to deployment or execution logic.
+
+The completion path holds the existing persistence mutex while preparing the
+metadata receipt, saving canonical terminal state and clearing the matching live
+run. The private reader takes that same mutex, returns 202 while that exact run
+is active, and does not expose an unpublished prepared receipt. A later run does
+not replace the per-ID key or fixed source span. New offsets use the hydrated live
+journal length; old defaulted `None` offsets finish normally but are explicitly
+unavailable for guessed reconstruction. Steering remains source data, and only
+assistant text within the fixed span contributes to repair.
+
+The receipt factors its exact final Message into an immutable journal index,
+checks that Message before publication and retains the original completion
+metadata and terminal builder output. This avoids a second text journal and
+does not reconstruct token counts or timestamps from current session state.
+Failure/unknown outcomes retain an error terminal rather than a successful stop.
+The relay validates run/model identity and complete terminal shape; byte-length,
+UTF-8 boundary and incremental SHA-256 checks permit only the missing suffix.
+Already forwarded terminal output needs only DONE, while the ordinary completed
+stream performs no recovery reads.
+
+Recovery uses only the private GET on the already owned Session/run, with fresh
+stubs/child traces, 32-read and 120-second bounds and capped backoff. No creation
+POST, provider/tool dispatch, session resume, execution admission or original
+model-reservation mutation was introduced. The resource-only `chat_read` operation
+gets its own existing maintenance reservation and measured settlement. Permanent
+receipt unavailability maps to 404 after measurement. Native overload propagates
+before generic error classification and is not retried; the pinned worker-rs
+conversion retains the original JavaScript error and its `overloaded` flag.
+Public routing does not expose the private lookup. Dropping the relay owns and
+drops its pending read/timer rather than spawning detached observer repair.
+
+Inspected test coverage includes native-style internal EOF/error before output,
+Unicode prefix/tool-round repair, pending-then-complete, immutable receipt after
+later run/archive/cold load, terminal-before-DONE with zero reads, mismatch,
+overload, unknown result and caller abort. Property tests target arbitrary Unicode
+segmentation and fixed journal ranges. This was source/test-contract inspection,
+not an exact-source compiled or live acceptance receipt. Those gates, including
+the original strict SDK terminal/usage oracle and full staging journey, remain
+required. No production changes, builds, credentials, application calls, model
+calls, collector changes or deployment operations were performed by this review.
