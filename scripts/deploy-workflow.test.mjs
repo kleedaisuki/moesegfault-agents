@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const workflow = readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
 const before = (first, second) => assert.ok(workflow.indexOf(first) >= 0 && workflow.indexOf(first) < workflow.indexOf(second), `${first} must precede ${second}`);
@@ -30,7 +31,7 @@ test('operator observation persists a global intent artifact before the single P
   before('Reject any previously sealed operator-probe intent', 'npx wrangler d1 migrations apply');
   before('name: v030-direct-deepseek-usage-probe-intent', 'run: python scripts/deepseek-usage-probe.py');
   assert.ok(workflow.includes('artifacts?name=v030-direct-deepseek-usage-probe-intent'));
-  assert.ok(workflow.includes("?'operator_observation_recorded'"));
+  assert.ok(workflow.includes('name: operator-usage-observation-evidence'));
   assert.ok(workflow.includes('MAGENTS_DEEPSEEK_PROBE_CLEARED_SOURCE: ${{ github.sha }}'));
 });
 
@@ -54,4 +55,42 @@ test('a profile cannot activate an older incompatible runner after infrastructur
   before('Selected native increment runner is not ready at this source', 'npx wrangler d1 migrations apply');
   assert.ok(workflow.includes("typeof runner.assertExecutionWorkspace !== 'function'"));
   assert.ok(workflow.includes('runner.requireLiveDeploymentProvenance('));
+});
+
+test('mixed-source health and API expectations preserve the real Worker source instead of relabeling it', () => {
+  assert.ok(workflow.includes('WORKER_SOURCE_SHA: ${{ steps.provenance.outputs.worker_artifact_sha }}'));
+  assert.ok(workflow.includes('--arg build "$WORKER_SOURCE_SHA"'));
+  assert.ok(workflow.includes('MAGENTS_TEST_EXPECTED_BUILD: ${{ steps.provenance.outputs.worker_artifact_sha }}'));
+  assert.ok(workflow.includes('MAGENTS_TEST_ASSEMBLY_SOURCE: ${{ github.sha }}'));
+  assert.ok(workflow.includes('assembly_source_sha:process.env.GITHUB_SHA'));
+});
+
+const operatorJob = workflow.slice(workflow.indexOf('  operator_usage:'), workflow.indexOf('  deploy:'));
+const deploymentJob = workflow.slice(workflow.indexOf('  deploy:'));
+
+test('operator-only job has no app deployment, Cloudflare credential or user API path', () => {
+  assert.ok(operatorJob.includes("if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'"));
+  assert.ok(deploymentJob.includes("if: inputs.acceptance_profile != 'direct-deepseek-usage-probe'"));
+  for (const forbidden of ['CLOUDFLARE_', 'wrangler', 'worker-secrets', 'STAGING_SMOKE_API_KEY', 'full-responses-sdk']) assert.equal(operatorJob.includes(forbidden), false);
+  assert.equal(deploymentJob.includes('run: python scripts/deepseek-usage-probe.py'), false);
+});
+
+test('operator-only request validation rejects production scope and retries before secret access', () => {
+  const code = workflow.match(/<<'REQUEST'\n([\s\S]*?)\n\s+REQUEST/)[1];
+  const run = overrides => vm.runInNewContext(code, { process: { env: { DEPLOY_ENVIRONMENT: 'staging', ACCEPTANCE_PROFILE: 'direct-deepseek-usage-probe', SOURCE_RUN: '123', GITHUB_RUN_ATTEMPT: '1', ...overrides } } });
+  assert.doesNotThrow(() => run({}));
+  assert.throws(() => run({ DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
+  assert.throws(() => run({ GITHUB_RUN_ATTEMPT: '2' }), /cannot be rerun/);
+  assert.throws(() => run({ SOURCE_RUN: 'invalid' }), /source CI/);
+});
+
+test('operator-only critical proof and one global immutable intent precede the only provider request', () => {
+  const proof = operatorJob.indexOf('node scripts/operator-usage-provenance.mjs');
+  const prior = operatorJob.indexOf('Reject any previously sealed operator-probe intent');
+  const intent = operatorJob.indexOf('name: v030-direct-deepseek-usage-probe-intent');
+  const submit = operatorJob.indexOf('run: python scripts/deepseek-usage-probe.py');
+  assert.ok(proof >= 0 && proof < prior && prior < intent && intent < submit);
+  assert.equal((operatorJob.match(/run: python scripts\/deepseek-usage-probe.py/g) ?? []).length, 1);
+  assert.ok(operatorJob.includes('artifacts?name=v030-direct-deepseek-usage-probe-intent'));
+  assert.ok(operatorJob.includes('if: always()'));
 });

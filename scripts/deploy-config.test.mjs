@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderDeploymentConfig } from './deploy-config.mjs';
+import { renderDeploymentConfig, requireDistinctEnvironmentDatabases } from './deploy-config.mjs';
 import { readFile } from 'node:fs/promises';
 
 const sha = '0123456789abcdef0123456789abcdef01234567';
@@ -35,7 +35,7 @@ test('deployment build identity cannot be missing, truncated, free-form, or supp
 test('rendering permits an environment with no preexisting variables', () => {
   const source = input();
   delete source.env.staging.vars;
-  assert.deepEqual(renderDeploymentConfig(source, { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha }).env.staging.vars, { BUILD_ID: sha });
+  assert.deepEqual(renderDeploymentConfig(source, { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha }).env.staging.vars, { BUILD_ID: sha, DEPLOYMENT_ASSEMBLY_SHA: sha });
 });
 
 test('reused container source remains immutable while the deployment identity advances', () => {
@@ -58,4 +58,22 @@ test('two runtime profile apps share exactly the same verified daemon image with
   assert.deepEqual(new Set(apps.map(app => app.image)), new Set([`registry.cloudflare.com/${account}/magents-workspace:${containerSource}`]));
   assert.ok(apps.every(app => !('image_build_context' in app)));
   assert.equal(source.env.staging.containers[1].image, 'unbuilt-4g');
+});
+
+test('mixed-source identity preserves the real Worker build separately from the assembly and daemon', () => {
+  const workerSource = 'c'.repeat(40), containerSource = 'd'.repeat(40);
+  const rendered = renderDeploymentConfig(input(), { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, WORKER_SOURCE_SHA: workerSource, CONTAINER_SOURCE_SHA: containerSource }).env.staging;
+  assert.equal(rendered.vars.BUILD_ID, workerSource);
+  assert.equal(rendered.vars.DEPLOYMENT_ASSEMBLY_SHA, sha);
+  assert.ok(rendered.containers.every(app => app.image.endsWith(`:${containerSource}`)));
+  assert.throws(() => renderDeploymentConfig(input(), { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, WORKER_SOURCE_SHA: 'latest' }), /Invalid immutable image identity/);
+});
+
+test('remote migration target uses distinct exact database IDs rather than staging name labels', () => {
+  const pair = { env: { staging: { d1_databases: [{ binding: 'DB', database_name: 'agents-staging', database_id: '11111111-1111-1111-1111-111111111111' }] }, production: { d1_databases: [{ binding: 'DB', database_name: 'agents-production', database_id: '22222222-2222-2222-2222-222222222222' }] } } };
+  requireDistinctEnvironmentDatabases(pair);
+  pair.env.staging.d1_databases[0].database_id = pair.env.production.d1_databases[0].database_id;
+  assert.throws(() => requireDistinctEnvironmentDatabases(pair), /overlap/);
+  delete pair.env.staging.d1_databases[0].database_id;
+  assert.throws(() => requireDistinctEnvironmentDatabases(pair), /exact environment database identity/);
 });

@@ -15,9 +15,9 @@ const need = (value, code) => { if (!value) fail(code); };
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const same = (left, right) => JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 
-function normalRun(bundle, runId, source, repository, requireSuccess) {
+function normalRun(bundle, runId, source, repository, requireSuccess, allowInProgress = false) {
   const run = bundle?.run;
-  need(run && String(run.id) === String(runId) && run.head_sha === source && run.status === 'completed', 'ci_identity_not_completed');
+  need(run && String(run.id) === String(runId) && run.head_sha === source && (run.status === 'completed' || allowInProgress && run.status === 'in_progress'), 'ci_identity_not_completed');
   need(run.repository?.full_name === repository && run.head_repository?.full_name === repository, 'untrusted_ci_repository');
   need(run.path === '.github/workflows/ci.yml' && ['push', 'workflow_dispatch'].includes(run.event) && !run.display_title?.startsWith('Worker diagnostics - '), 'not_normal_ci');
   need(!requireSuccess || run.conclusion === 'success', 'candidate_ci_not_successful');
@@ -86,7 +86,7 @@ export function requirePromotionScope(plan) {
   }
 }
 
-function verifyReusedChecks({ plan, catalog, source, repository, metadata, reusedVerification, checkHash }, now) {
+export function verifyReusedChecks({ plan, catalog, source, repository, metadata, reusedVerification, checkHash, allowInProgress = false }, now) {
   const verified = [];
   for (const check of plan.reused_checks ?? []) {
     need(check.status === 'reused_verified' && SHA.test(check.source_sha ?? '') && ID.test(String(check.run_id)) && DIGEST.test(check.input_fingerprint ?? '') && Number.isSafeInteger(check.executed_tests) && check.executed_tests > 0 && typeof checkHash === 'function', 'invalid_reused_check');
@@ -94,7 +94,7 @@ function verifyReusedChecks({ plan, catalog, source, repository, metadata, reuse
     need(seal, 'reused_check_not_sealed');
     need(checkHash(source, check) === check.input_fingerprint && checkHash(check.source_sha, check) === check.input_fingerprint, 'reused_check_inputs_changed');
     const old = metadata[String(check.run_id)];
-    normalRun(old, check.run_id, check.source_sha, repository, false);
+    normalRun(old, check.run_id, check.source_sha, repository, false, allowInProgress);
     const job = check.job === 'current_sdk' ? 'tooling' : check.job;
     need(Object.hasOwn(FILES, job) && check.artifact_name === `verification-${job}` && FILES[job].includes(check.receipt_path) && check.receipt_path !== 'native-build.json', 'invalid_reused_receipt_location');
     jobFor(old, job, check.source_sha, check.run_id);

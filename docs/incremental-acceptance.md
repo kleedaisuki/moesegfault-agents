@@ -18,7 +18,7 @@ The deployment gate checks normal trusted repository runs, required current jobs
 
 ## Artifact and runtime provenance
 
-Worker, dashboard and daemon may originate from different explicitly recorded successful component sources when their relevant source/dependency fingerprints are identical. The deployment manifest records each actual artifact source/run/ID; the deployment `BUILD_ID` labels the candidate configuration, not a claim that reused binaries were rebuilt. Diagnostic runs cannot substitute for release evidence.
+Worker, dashboard and daemon may originate from different explicitly recorded successful component sources when their relevant source/dependency fingerprints are identical. The deployment manifest records each actual artifact source/run/ID. `BUILD_ID` remains the real Worker artifact source; `DEPLOYMENT_ASSEMBLY_SHA` separately records the candidate configuration. Health validation expects the real Worker identity, not a newer UI/docs-only HEAD. Public tag/native binary sources are independently declared and verified. Diagnostic runs cannot substitute for release evidence.
 
 The daemon is loaded from the accepted archive and its original receipt/source before publication. `CONTAINER_SOURCE_SHA` selects that immutable source tag; it defaults to the candidate SHA for existing callers. Both `Session/basic` and `Session4G/standard-1` apps receive exactly the same tested image. There is no promotion rebuild, second harness or mutable image fallback.
 
@@ -28,7 +28,7 @@ The new 4 GiB profile is not accepted by configuration labels alone. Before paid
 
 Deployment defaults to `acceptance_profile=none`: publish verified components and record `not_selected`, without replaying legacy paid Chat/time/file CRUD, old browser/CLI journeys or the 80 KB compaction trajectory.
 
-- `direct-deepseek-usage-probe`: one explicitly authorized operator observation after coherent CI and Ops clearance. A globally named GitHub intent artifact is written before the single provider request, so a new workflow cannot silently evade an ambiguous prior attempt. Capture only real usage keys/integers and bounded model metadata. Missing cache-write is not zero. This profile records an observation, not full compact acceptance.
+- `direct-deepseek-usage-probe`: the original single authorized research observation has its own operator job, with no app deployment or Cloudflare credentials. Its pushed helper/workflow component must have actual positive scoped check receipts; unrelated Worker/container failures do not block that research proof. A globally named GitHub intent artifact is written before the single provider request, so a new workflow cannot silently evade an ambiguous prior attempt. Capture only real usage keys/integers and bounded model metadata. Missing cache-write is not zero. This profile records an observation, not platform or compact acceptance.
 - `responses-increment`: the first genuinely new native Responses/Conversations/fork/auxiliary/WebSocket cluster, using direct DeepSeek and a bounded potential-admission budget. Use cheap ownership/count/pin preflights before model work. Hosted dispatch is a separate later increment, not implicitly accepted by this profile.
 
 Selected paid profiles reject Actions reruns. After uncertainty, inspect the same accepted response, operation, event cursor and ledger; do not regenerate work. Successful subfeature evidence is retained if another new case fails. Before a later paid run, select only the unresolved/new behavior rather than repeating this whole first-increment profile.

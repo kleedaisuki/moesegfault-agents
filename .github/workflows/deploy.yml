@@ -8,7 +8,7 @@ on:
         default: staging
         required: true
       source_run:
-        description: Successful incremental CI run for this exact candidate and sealed component baselines
+        description: Source CI run with actual positive receipts for the selected deployment or operator scope
         type: string
         required: true
       acceptance_profile:
@@ -26,7 +26,79 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  request:
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+      ACCEPTANCE_PROFILE: ${{ inputs.acceptance_profile }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+    steps:
+      - name: Validate requested scope without service credentials
+        run: |
+          node --input-type=module <<'REQUEST'
+          const profile=process.env.ACCEPTANCE_PROFILE, environment=process.env.DEPLOY_ENVIRONMENT;
+          if (!['staging','production'].includes(environment) || !['none','direct-deepseek-usage-probe','responses-increment'].includes(profile)) throw Error('Invalid finite operation scope');
+          if (!/^[1-9][0-9]{0,14}$/.test(process.env.SOURCE_RUN ?? '')) throw Error('Invalid source CI identity');
+          if (environment!=='staging' && profile!=='none') throw Error('Operator and paid acceptance scopes are staging-only');
+          if (profile!=='none' && process.env.GITHUB_RUN_ATTEMPT!=='1') throw Error('Inspect the original accepted operation; paid actions cannot be rerun');
+          REQUEST
+
+  operator_usage:
+    needs: request
+    if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_ENVIRONMENT: staging
+      SOURCE_RUN: ${{ inputs.source_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - name: Verify only the pushed operator helper and workflow checks
+        run: node scripts/operator-usage-provenance.mjs --run "$SOURCE_RUN"
+      - name: Reject any previously sealed operator-probe intent
+        run: |
+          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=v030-direct-deepseek-usage-probe-intent&per_page=100" --jq '.total_count')
+          test "$count" = 0 || { echo 'A probe intent already exists; inspect that exact attempt, never redispatch'; exit 1; }
+      - name: Require the existing direct-DeepSeek secret without exposing it
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: test -n "$DEEPSEEK_API_KEY" || { echo 'Missing existing direct-DeepSeek secret'; exit 1; }
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Persist the single authorized operator-probe intent before dispatch
+        run: |
+          mkdir -p .temp/v0.3-full-acceptance/direct-deepseek-capability
+          node --input-type=module -e "import fs from 'node:fs'; fs.writeFileSync('.temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json', JSON.stringify({purpose:'operator_usage_probe_intent_not_execution_proof',source:process.env.GITHUB_SHA,run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT}),{flag:'wx'});"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: v030-direct-deepseek-usage-probe-intent
+          path: .temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json
+          retention-days: 90
+      - name: One bounded native direct-DeepSeek usage observation without an app deployment
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MAGENTS_DEEPSEEK_PROBE_CLEARED_SOURCE: ${{ github.sha }}
+        run: python scripts/deepseek-usage-probe.py --source "$GITHUB_SHA" --ci-run "$SOURCE_RUN" --operator-cost-confirmed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: operator-usage-observation-evidence
+          path: |
+            .temp/operator-probe-verification/operator-usage-provenance.json
+            .temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json
+            .temp/v0.3-full-acceptance/direct-deepseek-capability/attempt.json
+          retention-days: 14
+
   deploy:
+    needs: request
+    if: inputs.acceptance_profile != 'direct-deepseek-usage-probe'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     env:
@@ -85,7 +157,7 @@ jobs:
           test -n "$IDENTITY_CLIENT_PRIVATE_JWK" || { echo 'Missing registered client signing key'; exit 1; }
           test -n "$DATA_ENCRYPTION_KEY" || { echo 'Missing data-encryption key'; exit 1; }
       - name: Require only the selected NEW staging journey credentials
-        if: inputs.environment == 'staging' && inputs.acceptance_profile != 'none'
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           MAGENTS_TEST_API_KEY: ${{ secrets.STAGING_SMOKE_API_KEY }}
@@ -97,13 +169,8 @@ jobs:
             test -n "$MAGENTS_TEST_OTHER_API_KEY" || { echo 'Missing secondary owner key'; exit 1; }
           fi
       - name: Never replay paid stage work through an Actions rerun
-        if: inputs.environment == 'staging' && inputs.acceptance_profile != 'none'
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         run: test "$GITHUB_RUN_ATTEMPT" = 1 || { echo 'Inspect the original accepted operations; paid stage actions are not replayable'; exit 1; }
-      - name: Reject any previously sealed operator-probe intent
-        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
-        run: |
-          count=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=v030-direct-deepseek-usage-probe-intent&per_page=100" --jq '.total_count')
-          test "$count" = 0 || { echo 'An operator probe was already reserved; reconcile that exact attempt, never redispatch'; exit 1; }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: worker
@@ -132,6 +199,7 @@ jobs:
         run: npx wrangler containers push "magents-workspace:${CONTAINER_SOURCE_SHA}"
       - name: Render the deployment identity and shared immutable daemon image
         env:
+          WORKER_SOURCE_SHA: ${{ steps.provenance.outputs.worker_artifact_sha }}
           CONTAINER_SOURCE_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
         run: node scripts/deploy-config.mjs
       - name: Migrate only the selected environment
@@ -148,38 +216,24 @@ jobs:
       - name: Enforce opt-in diagnostic retention
         run: npx wrangler r2 bucket lifecycle set "moesegfault-agents-diagnostics-${DEPLOY_ENVIRONMENT}" --file deploy/r2-diagnostics-lifecycle.json --force
       - name: Verify public deployment identity without model work
+        env:
+          WORKER_SOURCE_SHA: ${{ steps.provenance.outputs.worker_artifact_sha }}
         run: |
           if [ "$DEPLOY_ENVIRONMENT" = staging ]; then host=agents-staging.moesegfault.dev; else host=agents.moesegfault.dev; fi
           curl --fail --retry 5 --retry-delay 5 "https://${host}/healthz" > .temp/deployed-health.json
-          jq --exit-status --arg build "$GITHUB_SHA" '.status == "ok" and .build_id == $build' .temp/deployed-health.json
+          jq --exit-status --arg build "$WORKER_SOURCE_SHA" '.status == "ok" and .build_id == $build' .temp/deployed-health.json
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        if: inputs.environment == 'staging' && inputs.acceptance_profile != 'none'
+        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         with:
           python-version: '3.13'
-      - name: Persist the single authorized operator-probe intent before dispatch
-        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
-        run: |
-          mkdir -p .temp/v0.3-full-acceptance/direct-deepseek-capability
-          node --input-type=module -e "import fs from 'node:fs'; fs.writeFileSync('.temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json', JSON.stringify({purpose:'operator_usage_probe_intent_not_execution_proof',source:process.env.GITHUB_SHA,run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT}),{flag:'wx'});"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
-        with:
-          name: v030-direct-deepseek-usage-probe-intent
-          path: .temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json
-          retention-days: 90
-      - name: One bounded native direct-DeepSeek usage observation
-        if: inputs.environment == 'staging' && inputs.acceptance_profile == 'direct-deepseek-usage-probe'
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          MAGENTS_DEEPSEEK_PROBE_CLEARED_SOURCE: ${{ github.sha }}
-        run: python scripts/deepseek-usage-probe.py --source "$GITHUB_SHA" --ci-run "$SOURCE_RUN" --operator-cost-confirmed
       - name: New Responses, Conversations, forks, auxiliary and WebSocket increment only
         if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         env:
           MAGENTS_TEST_API_ORIGIN: https://agents-staging.moesegfault.dev
           MAGENTS_TEST_API_KEY: ${{ secrets.STAGING_SMOKE_API_KEY }}
           MAGENTS_TEST_OTHER_API_KEY: ${{ secrets.STAGING_SECONDARY_API_KEY }}
-          MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
+          MAGENTS_TEST_EXPECTED_BUILD: ${{ steps.provenance.outputs.worker_artifact_sha }}
+          MAGENTS_TEST_ASSEMBLY_SOURCE: ${{ github.sha }}
           MAGENTS_TEST_DIRECT_MODEL: deepseek-flash
           MAGENTS_TEST_TRACE_SEED: ${{ github.run_id }}:${{ github.run_attempt }}
           MAGENTS_TEST_DEPLOYMENT_PROVENANCE: .temp/deploy-verification/deployment-provenance.json
@@ -191,13 +245,16 @@ jobs:
         if: always()
         env:
           OUTCOME: ${{ job.status }}
+          WORKER_SOURCE_SHA: ${{ steps.provenance.outputs.worker_artifact_sha }}
+          CONTAINER_SOURCE_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
+          DASHBOARD_SOURCE_SHA: ${{ steps.provenance.outputs.dashboard_artifact_sha }}
         run: |
           mkdir -p .temp/deploy-verification
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const profile=process.env.ACCEPTANCE_PROFILE;
-          const accepted=profile==='none'?'not_selected':process.env.OUTCOME!=='success'?'failed_or_not_observed':profile==='direct-deepseek-usage-probe'?'operator_observation_recorded':'selected_increment_passed';
-          fs.writeFileSync('.temp/deploy-verification/deployment-receipt.json', JSON.stringify({source_sha:process.env.GITHUB_SHA,source_run:process.env.SOURCE_RUN,environment:process.env.DEPLOY_ENVIRONMENT,acceptance_profile:profile,job_status:process.env.OUTCOME,acceptance_status:accepted,production_clearance:'external_root_decision_required'}));
+          const accepted=profile==='none'?'not_selected':process.env.OUTCOME!=='success'?'failed_or_not_observed':'selected_increment_passed';
+          fs.writeFileSync('.temp/deploy-verification/deployment-receipt.json', JSON.stringify({assembly_source_sha:process.env.GITHUB_SHA,source_run:process.env.SOURCE_RUN,component_sources:{worker:process.env.WORKER_SOURCE_SHA,dashboard:process.env.DASHBOARD_SOURCE_SHA,container:process.env.CONTAINER_SOURCE_SHA},environment:process.env.DEPLOY_ENVIRONMENT,acceptance_profile:profile,job_status:process.env.OUTCOME,acceptance_status:accepted,production_clearance:'external_root_decision_required'}));
           NODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
@@ -206,8 +263,6 @@ jobs:
           path: |
             .temp/deploy-verification/deployment-provenance.json
             .temp/deploy-verification/deployment-receipt.json
-            .temp/v0.3-full-acceptance/direct-deepseek-capability/intent.json
-            .temp/v0.3-full-acceptance/direct-deepseek-capability/attempt.json
             .temp/v0.3-full-acceptance/${{ github.sha }}/${{ github.run_id }}-responses.json
             .temp/v0.3-full-acceptance/${{ github.sha }}/${{ github.run_id }}-responses-current-python.json
           retention-days: 14
