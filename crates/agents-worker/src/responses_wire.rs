@@ -805,15 +805,34 @@ fn public_url(value: &str) -> Result<(), String> {
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
-        || !url
-            .host_str()
-            .is_some_and(crate::provider_keys::public_hostname)
+        || !url.host_str().is_some_and(public_attachment_host)
     {
         return Err(
             "Attachments require a public HTTPS URL without credentials or fragment".into(),
         );
     }
     bounded_text(value, 8192, "attachment URL")
+}
+
+fn public_attachment_host(host: &str) -> bool {
+    // This is syntax policy, not DNS authorization; remote freezing must also
+    // validate resolved addresses and every redirect before fetching bytes.
+    let host = host.trim_end_matches('.');
+    host.contains('.')
+        && host.parse::<std::net::IpAddr>().is_err()
+        && !host.starts_with('[')
+        && ![
+            "localhost",
+            "local",
+            "internal",
+            "home",
+            "lan",
+            "test",
+            "invalid",
+        ]
+        .iter()
+        .any(|suffix| host == *suffix || host.ends_with(&format!(".{suffix}")))
+        && !matches!(host, "metadata.google.internal" | "metadata.google")
 }
 
 fn validate_attachment_syntax(part: &Value) -> Result<(), String> {
@@ -1696,6 +1715,11 @@ mod tests {
             "http://files.example.com/a",
             "https://127.0.0.1/a",
             "https://localhost/a",
+            "https://localhost./a",
+            "https://service.internal./a",
+            "https://metadata.google/a",
+            "https://[::1]/a",
+            "https://2130706433/a",
             "https://user:pass@files.example.com/a",
             "file:///private",
         ] {

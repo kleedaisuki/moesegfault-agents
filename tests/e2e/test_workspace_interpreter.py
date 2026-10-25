@@ -153,3 +153,41 @@ def test_python_timeout_starts_a_new_explicit_logical_container(daemon: DockerDa
     assert result["timed_out"] and not result["cancelled"] and result["duration_ms"] < 10000
     fresh = cell(daemon, "print('before_timeout' in globals())")
     assert fresh["container_id"] != warm["container_id"] and "False" in logs(fresh)
+
+
+def test_repeated_resets_reclaim_contexts_but_preserve_unpublished_artifacts(daemon: DockerDaemon) -> None:
+    first = cell(daemon, "from pathlib import Path\nPath('retained.txt').write_bytes(b'unpublished artifact')")
+    artifact = next(entry for entry in first["artifacts"] if entry["filename"] == "retained.txt")
+    identities: set[str] = {first["container_id"]}
+    for index in range(10):
+        warm = cell(daemon, "reset_marker = 42")
+        current = warm["container_id"]
+        if index:
+            assert current not in identities
+        identities.add(current)
+        run_id = "reset_" + uuid.uuid4().hex
+        request: dict[str, Any] = {
+            "id": run_id, "container_id": current, "code": "import time\ntime.sleep(30)",
+        }
+        if index % 2:
+            request["timeout_ms"] = 150
+            result: dict[str, Any] = daemon.json("POST", "/v1/python", request)
+            assert result["timed_out"]
+        else:
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                running = pool.submit(daemon.json, "POST", "/v1/python", request)
+                for _ in range(100):
+                    if daemon.request("GET", "/v1/python/" + run_id)[0] == 202:
+                        break
+                    time.sleep(0.05)
+                else:
+                    pytest.fail("reset execution never became observable")
+                assert daemon.request("DELETE", "/v1/python/" + run_id)[0] == 204
+                result = running.result(timeout=10)
+            assert result["cancelled"]
+        assert daemon.request("POST", "/v1/python", {
+            "id": uuid.uuid4().hex, "container_id": current, "code": "print('BAD')",
+        })[0] == 404
+        assert daemon.request("GET", "/v1/python/artifacts/" + artifact["id"])[2] == b"unpublished artifact"
+    fresh = cell(daemon, "print('reset_marker' in globals())")
+    assert fresh["container_id"] not in identities and "False" in logs(fresh)

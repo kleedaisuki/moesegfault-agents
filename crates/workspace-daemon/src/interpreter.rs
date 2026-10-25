@@ -36,7 +36,6 @@ use crate::{
 // Four MiB of retained logs can require six JSON bytes per control byte.
 const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_CONTEXTS: usize = 8;
 
 #[derive(Debug)]
 enum InputFailure {
@@ -187,6 +186,7 @@ impl Bridge {
 
 struct ContextState {
     id: String,
+    expired: bool,
     data: PathBuf,
     inputs: PathBuf,
     runtime: PathBuf,
@@ -245,7 +245,10 @@ impl Interpreter {
 
     async fn has_context(&self, id: &str) -> bool {
         let mut slot = self.context.lock().await;
-        let Some(context) = slot.as_mut().filter(|context| context.id == id) else {
+        let Some(context) = slot
+            .as_mut()
+            .filter(|context| !context.expired && context.id == id)
+        else {
             return false;
         };
         context
@@ -255,11 +258,6 @@ impl Interpreter {
     }
 
     fn create_context(&self) -> anyhow::Result<ContextState> {
-        let count = std::fs::read_dir(&self.root)?
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with("cntr_"))
-            .count();
-        ensure!(count < MAX_CONTEXTS, "code context limit reached");
         let id = format!("cntr_{}", uuid::Uuid::new_v4().simple());
         let root = self.root.join(&id);
         protected_directory(&root, false)?;
@@ -271,12 +269,29 @@ impl Interpreter {
         protected_directory(&inputs, false)?;
         Ok(ContextState {
             id,
+            expired: false,
             data,
             inputs,
             runtime,
             bridge: None,
             inputs_index: BTreeMap::new(),
         })
+    }
+
+    async fn retire(&self, slot: &mut Option<ContextState>) -> anyhow::Result<()> {
+        let Some(context) = slot.as_mut() else {
+            return Ok(());
+        };
+        context.expired = true;
+        // Retain the expired slot if the kill barrier or cleanup fails. No new
+        // namespace may share this UID until every previous writer is gone.
+        sandbox::stop()?;
+        if let Some(mut bridge) = context.bridge.take() {
+            bridge.child.wait().await?;
+        }
+        remove_context(&self.root, &context.id)?;
+        *slot = None;
+        Ok(())
     }
 
     async fn ensure_bridge(&self, context: &mut ContextState) -> anyhow::Result<()> {
@@ -335,6 +350,12 @@ impl Interpreter {
         let started = Instant::now();
         let mut result = CodeResult::new(&request.id);
         let mut slot = self.context.lock().await;
+        if slot.as_ref().is_some_and(|context| context.expired)
+            && self.retire(&mut slot).await.is_err()
+        {
+            result.error = Some("code_container_unavailable".into());
+            return result;
+        }
         if slot.is_none() {
             if request.container_id.is_some() {
                 result.error = Some("code_container_not_found".into());
@@ -429,8 +450,7 @@ impl Interpreter {
             }
         }
         if result.error.is_some() {
-            let _ = sandbox::stop();
-            *slot = None;
+            let _ = self.retire(&mut slot).await;
         }
         result.duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         result
@@ -468,6 +488,23 @@ impl Interpreter {
             _ = cancel.cancelled() => anyhow::bail!("code cancelled"),
         }
     }
+}
+
+fn remove_context(root: &FsPath, id: &str) -> anyhow::Result<()> {
+    ensure!(context_id(id), "invalid retired code context");
+    let path = root.join(id);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "invalid code context directory"
+    );
+    // The parent is root-owned and cannot be renamed by either execution UID.
+    // remove_dir_all does not follow symlinks created inside untrusted scratch.
+    std::fs::remove_dir_all(path).context("retire code context")
 }
 
 fn resolve_outputs(
@@ -554,10 +591,10 @@ pub(super) async fn execute(
     let Ok(guard) = state.gate.clone().try_lock_owned() else {
         return error(StatusCode::CONFLICT, "workspace busy");
     };
-    if let Some(id) = &request.container_id {
-        if !state.interpreter.has_context(id).await {
-            return error(StatusCode::NOT_FOUND, "code container not found");
-        }
+    if let Some(id) = &request.container_id
+        && !state.interpreter.has_context(id).await
+    {
+        return error(StatusCode::NOT_FOUND, "code container not found");
     }
     if !state.interpreter.accept(&request.id).await {
         return error(StatusCode::CONFLICT, "execution id already exists");
@@ -652,10 +689,10 @@ pub(super) async fn acknowledge(State(state): State<Arc<App>>, Path(id): Path<St
         .get(&id)
         .cloned();
     if let Some(file) = file {
-        if let Err(error) = std::fs::remove_file(&file.file) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                return internal(error);
-            }
+        if let Err(error) = std::fs::remove_file(&file.file)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return internal(error);
         }
         state.interpreter.artifacts.lock().unwrap().remove(&id);
     }
@@ -683,10 +720,11 @@ pub(super) async fn list_files(
     }
     let slot = state.interpreter.context.lock().await;
     let Some(context) = slot.as_ref().filter(|context| {
-        query
-            .container_id
-            .as_ref()
-            .is_none_or(|id| id == &context.id)
+        !context.expired
+            && query
+                .container_id
+                .as_ref()
+                .is_none_or(|id| id == &context.id)
     }) else {
         return error(StatusCode::NOT_FOUND, "code container not found");
     };
@@ -716,7 +754,7 @@ pub(super) async fn export_file(
         return error(StatusCode::CONFLICT, "workspace busy");
     };
     let slot = state.interpreter.context.lock().await;
-    let Some(context) = slot.as_ref() else {
+    let Some(context) = slot.as_ref().filter(|context| !context.expired) else {
         return error(StatusCode::NOT_FOUND, "code container not found");
     };
     let data = context.data.clone();
@@ -820,6 +858,12 @@ impl Interpreter {
         body: Body,
     ) -> anyhow::Result<Value> {
         let mut slot = self.context.lock().await;
+        if slot.as_ref().is_some_and(|context| context.expired) {
+            if container.is_some() {
+                return Err(InputFailure::Expired.into());
+            }
+            self.retire(&mut slot).await?;
+        }
         if slot.is_none() {
             if container.is_some() {
                 return Err(InputFailure::Expired.into());
@@ -898,6 +942,37 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retirement_removes_only_context_scratch_and_preserves_spool() {
+        let root = tempfile::tempdir().unwrap();
+        let spool = root.path().join("artifacts");
+        std::fs::create_dir(&spool).unwrap();
+        std::fs::write(spool.join("pending"), b"unpublished").unwrap();
+        for _ in 0..12 {
+            let id = format!("cntr_{}", uuid::Uuid::new_v4().simple());
+            let scratch = root.path().join(&id).join("data");
+            std::fs::create_dir_all(&scratch).unwrap();
+            std::fs::write(scratch.join("output"), b"scratch").unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&spool, scratch.join("outside")).unwrap();
+            remove_context(root.path(), &id).unwrap();
+            remove_context(root.path(), &id).unwrap();
+            assert!(!root.path().join(&id).exists());
+        }
+        #[cfg(unix)]
+        {
+            let id = format!("cntr_{}", uuid::Uuid::new_v4().simple());
+            std::os::unix::fs::symlink(&spool, root.path().join(&id)).unwrap();
+            assert!(remove_context(root.path(), &id).is_err());
+        }
+        assert!(remove_context(root.path(), "../artifacts").is_err());
+        assert!(remove_context(root.path(), "artifacts").is_err());
+        assert_eq!(
+            std::fs::read(spool.join("pending")).unwrap(),
+            b"unpublished"
+        );
+    }
 
     #[test]
     fn request_limits_preserve_execution_and_context_identity() {

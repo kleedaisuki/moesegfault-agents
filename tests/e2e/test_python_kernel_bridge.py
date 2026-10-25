@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 from collections.abc import Callable
 import importlib.util
 from pathlib import Path
@@ -88,3 +89,34 @@ def test_plain_representations_never_execute_html(bridge: ModuleType, tmp_path: 
     output = bridge.Outputs(tmp_path, 100)
     output.message({"msg_type": "execute_result", "content": {"data": {"text/plain": "42", "text/html": "<img onerror=bad>"}}})
     assert output.values == [{"type": "logs", "logs": "42\n"}]
+
+
+@pytest.mark.parametrize("transport", ["ipython8", "wrapped", "lines"])
+def test_ipython_mime_base64_whitespace_preserves_exact_artifact(
+    bridge: ModuleType, tmp_path: Path, transport: str,
+) -> None:
+    raw = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+    encoded: str | list[str]
+    if transport == "ipython8":
+        encoded = binascii.b2a_base64(raw).decode("ascii")
+        assert encoded.endswith("\n")
+    else:
+        wrapped = base64.encodebytes(raw).decode("ascii").replace("\n", "\r\n")
+        encoded = wrapped.splitlines(keepends=True) if transport == "lines" else wrapped
+    output = bridge.Outputs(tmp_path, 100)
+    output.message({"msg_type": "display_data", "content": {"data": {"image/png": encoded}}})
+    assert output.artifact_error is None and len(output.values) == 1
+    assert (tmp_path / output.values[0]["path"]).read_bytes() == raw
+
+
+def test_mime_whitespace_does_not_relax_invalid_base64_or_transport_bound(
+    bridge: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bridge, "MAX_ARTIFACT_BYTES", 16)
+    for malformed in ("eA==!\n", "eA==\v", "eA==é", "eA==\u2003"):
+        output = bridge.Outputs(tmp_path, 100)
+        output.image("image/png", malformed)
+        assert output.artifact_error == "invalid_display_artifact" and output.values == []
+    output = bridge.Outputs(tmp_path, 100)
+    output.image("image/png", " " * 100)
+    assert output.artifact_error == "display_artifact_exceeds_limit" and output.values == []

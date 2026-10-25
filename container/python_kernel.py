@@ -52,15 +52,23 @@ class Outputs:
         if len(self.values) >= MAX_OUTPUTS:
             self.truncated = True
             return
+        encoded_limit = ((MAX_ARTIFACT_BYTES + 2) // 3) * 4
+        transport_limit = encoded_limit * 2 + 2
         if isinstance(value, list) and all(isinstance(part, str) for part in value):
-            if sum(len(part) for part in value) > ((MAX_ARTIFACT_BYTES + 2) // 3) * 4:
+            if sum(len(part) for part in value) > transport_limit:
                 self.artifact_error = "display_artifact_exceeds_limit"
                 return
             value = "".join(value)
         if not isinstance(value, str):
             self.artifact_error = "invalid_display_artifact"
             return
-        if len(value) > ((MAX_ARTIFACT_BYTES + 2) // 3) * 4:
+        if len(value) > transport_limit:
+            self.artifact_error = "display_artifact_exceeds_limit"
+            return
+        # IPython 8.x Image uses b2a_base64 with a terminating newline.
+        # Accept MIME whitespace, not arbitrary non-alphabet characters.
+        value = value.translate(str.maketrans("", "", " \t\r\n"))
+        if len(value) > encoded_limit:
             self.artifact_error = "display_artifact_exceeds_limit"
             return
         try:

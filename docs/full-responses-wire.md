@@ -52,6 +52,10 @@ ordinary conversation output or telemetry.
 Rich items preserve phase, reasoning/compaction state, custom calls/results,
 tool/search/MCP/computer/shell items and item references. Public HTTPS image/file
 URLs receive a syntax/host-policy check but **are not fetched by this module**.
+The pure wire validator rejects IP literals and local/reserved host suffixes,
+including trailing-dot spellings, without depending on Worker credential storage.
+Fetching still requires resolved-address and redirect checks at the admission
+boundary; a public-looking DNS name is not network authorization.
 Owned file resolution, bounded remote freezing, item-reference ownership,
 provider-bound opaque state and pending-result relationships are separate
 admission responsibilities. A preserved object is not a claim that its tool has

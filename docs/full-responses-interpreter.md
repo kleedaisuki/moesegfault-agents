@@ -23,6 +23,11 @@ execution payload and the mature Jupyter client inside the existing container.
 - A timeout, cancellation or broken kernel protocol kills that UID and expires the
   logical context. A stale explicit ID returns 404; it never silently starts a fresh
   namespace under the old identity. A subsequent auto context has a new ID.
+  After the all-UID kill barrier and child reaping, root retires the expired
+  context's inputs/runtime/data directory. Immutable unpublished artifact spool
+  entries survive retirement. A failed barrier or cleanup retains an expired,
+  unusable slot and blocks replacement until retirement succeeds; reset count
+  does not impose a lifetime limit on a healthy physical container.
 
 The logical code filesystem is separate from the Bash workspace generation. Its
 in-memory Python state and scratch files are volatile, like a hosted code container;
@@ -108,3 +113,14 @@ Primary references:
 - [Jupyter BlockingKernelClient](https://jupyter-client.readthedocs.io/en/stable/api/blocking.html)
 - [Linux pidfd_send_signal](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html)
 - [cap-std directory capabilities](https://docs.rs/cap-std/4.0.3/cap_std/fs/struct.Dir.html)
+
+### IPython MIME compatibility
+
+The Debian bookworm IPython 8.x `Image._data_and_metadata` uses
+[`b2a_base64(self.data)`](https://github.com/ipython/ipython/blob/8.5.0/IPython/core/display.py#L942-L945),
+which includes a trailing newline; newer releases disable that newline. The bridge
+normalizes only ASCII MIME whitespace within a separate bounded transport budget,
+then applies strict base64 validation and the unchanged decoded 16 MiB limit.
+The cheap bridge regression reproduces the upstream encoder, MIME line wrapping,
+and notebook-style string lists. Normal Matplotlib container acceptance remains
+an actual file/image rendering test, not a synthetic replacement.
