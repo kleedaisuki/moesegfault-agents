@@ -14,7 +14,7 @@ import {
 } from "./space-api";
 import { Empty, ErrorNotice, Modal } from "./ui";
 
-export type Attachment = Pick<SpaceFile, "id" | "filename">;
+export type Attachment = Pick<SpaceFile, "id" | "filename" | "content_type">;
 
 export function Attachments({
   selected,
@@ -42,7 +42,11 @@ export function Attachments({
     onSuccess: (file) => {
       setChosen((previous) => [
         ...previous,
-        { id: file.id, filename: file.filename },
+        {
+          id: file.id,
+          filename: file.filename,
+          content_type: file.content_type,
+        },
       ]);
       void cache.invalidateQueries({ queryKey: ["space-files"] });
       void cache.invalidateQueries({ queryKey: ["space"] });
@@ -86,7 +90,14 @@ export function Attachments({
                 onChange={(event) =>
                   setChosen((previous) =>
                     event.target.checked
-                      ? [...previous, { id: file.id, filename: file.filename }]
+                      ? [
+                          ...previous,
+                          {
+                            id: file.id,
+                            filename: file.filename,
+                            content_type: file.content_type,
+                          },
+                        ]
                       : previous.filter((value) => value.id !== file.id),
                   )
                 }

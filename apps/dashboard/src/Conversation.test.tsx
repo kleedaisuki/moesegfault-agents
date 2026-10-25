@@ -32,7 +32,14 @@ afterEach(() => {
   setCsrfToken(undefined);
 });
 
-function mount(options: { pending?: boolean; rejected?: boolean } = {}) {
+function mount(
+  options: {
+    pending?: boolean;
+    rejected?: boolean;
+    image?: boolean;
+    structured?: boolean;
+  } = {},
+) {
   i18n.changeLanguage("en");
   setCsrfToken("test-csrf");
   const writes: {
@@ -44,6 +51,19 @@ function mount(options: { pending?: boolean; rejected?: boolean } = {}) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, init: RequestInit = {}) => {
+      if (path === "/v1/space/files" && init.body instanceof FormData) {
+        const file = init.body.get("file") as File;
+        expect(file.type).toBe("image/png");
+        expect(file.name).toBe("local-image");
+        return new Response(
+          JSON.stringify({
+            id: "file-local",
+            filename: file.name,
+            content_type: file.type,
+            bytes: file.size,
+          }),
+        );
+      }
       if (init.method === "POST") {
         writes.push({
           path,
@@ -76,7 +96,15 @@ function mount(options: { pending?: boolean; rejected?: boolean } = {}) {
           id: "session-1",
           agent_id: agent.id,
           status: "idle",
-          message_count: completed ? 2 : 0,
+          message_count: completed || options.structured ? 2 : 0,
+          pending_messages: options.structured
+            ? [
+                {
+                  role: "user",
+                  content: [{ type: "text", text: "Queued typed input" }],
+                },
+              ]
+            : [],
           latest_response_id: completed ? "resp-new" : "resp-parent",
           pending_local_calls: options.pending
             ? [{ call_id: "call-1", name: "local_lookup", arguments: "{}" }]
@@ -85,21 +113,27 @@ function mount(options: { pending?: boolean; rejected?: boolean } = {}) {
       else if (path.startsWith("/v1/sessions/session-1/messages?"))
         data = {
           object: "list",
-          data: completed
-            ? [
-                {
-                  sequence: 0,
-                  message: { role: "user", content: "Read the brief" },
-                },
-                {
-                  sequence: 1,
-                  message: { role: "assistant", content: "Done." },
-                },
-              ]
-            : [],
+          data:
+            completed || options.structured
+              ? [
+                  {
+                    sequence: 0,
+                    message: {
+                      role: "user",
+                      content: options.structured
+                        ? [{ type: "text", text: "Journal typed input" }]
+                        : "Read the brief",
+                    },
+                  },
+                  {
+                    sequence: 1,
+                    message: { role: "assistant", content: "Done." },
+                  },
+                ]
+              : [],
           start: 0,
-          end: completed ? 2 : 0,
-          high_water: completed ? 2 : 0,
+          end: completed || options.structured ? 2 : 0,
+          high_water: completed || options.structured ? 2 : 0,
           before_cursor: "before-0",
           after_cursor: completed ? "after-2" : "after-0",
           has_older: false,
@@ -107,7 +141,14 @@ function mount(options: { pending?: boolean; rejected?: boolean } = {}) {
         };
       else if (path === "/v1/space/files?limit=20")
         data = {
-          data: [{ id: "file-brief", filename: "brief.md", bytes: 120 }],
+          data: [
+            {
+              id: "file-brief",
+              filename: "brief.md",
+              bytes: 120,
+              content_type: options.image ? "image/png" : "text/markdown",
+            },
+          ],
           has_more: false,
         };
       return new Response(
@@ -136,6 +177,58 @@ function mount(options: { pending?: boolean; rejected?: boolean } = {}) {
 }
 
 describe("Responses conversation", () => {
+  it("keeps MIME from a locally uploaded image through attachment submission", async () => {
+    const writes = mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /session-/ }));
+    await user.click(screen.getByRole("button", { name: "Attach files" }));
+    const dialog = within(screen.getByRole("dialog"));
+    await user.upload(
+      dialog.getByLabelText("Upload attachment"),
+      new File([new Uint8Array([137, 80, 78, 71])], "local-image", {
+        type: "image/png",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        dialog.getByRole("button", { name: "Attach selected" }),
+      ).toBeEnabled(),
+    );
+    await user.click(dialog.getByRole("button", { name: "Attach selected" }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.input).toEqual([
+      {
+        role: "user",
+        content: [{ type: "input_image", file_id: "file-local" }],
+      },
+    ]);
+  });
+  it("uses actual MIME rather than the filename for native image inputs", async () => {
+    const writes = mount({ image: true });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /session-/ }));
+    await user.click(screen.getByRole("button", { name: "Attach files" }));
+    const dialog = within(screen.getByRole("dialog"));
+    await user.click(await dialog.findByRole("checkbox", { name: /brief.md/ }));
+    await user.click(dialog.getByRole("button", { name: "Attach selected" }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.input).toEqual([
+      {
+        role: "user",
+        content: [{ type: "input_image", file_id: "file-brief" }],
+      },
+    ]);
+  });
+  it("renders structured journal and queued message content", async () => {
+    mount({ structured: true });
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("button", { name: /session-/ }));
+    expect(await screen.findByText("Journal typed input")).toBeInTheDocument();
+    expect(screen.getByText("Queued typed input")).toBeInTheDocument();
+  });
   it("submits Space file references and custom instructions to the current response head", async () => {
     const writes = mount();
     const user = userEvent.setup();

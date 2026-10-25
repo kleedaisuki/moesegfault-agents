@@ -16,6 +16,7 @@ export type SpaceFile = {
   bytes: number;
   created_at: number;
   filename: string;
+  content_type?: string;
   purpose: string;
   status: string;
   sha256: string;

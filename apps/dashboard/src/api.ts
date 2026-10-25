@@ -34,7 +34,14 @@ export type ProviderKey = {
   protocol?: "openai" | "anthropic";
   base_url?: string;
 };
-export type Message = { role: string; content: string };
+export type MessageContent =
+  | string
+  | number
+  | boolean
+  | null
+  | MessageContent[]
+  | { [key: string]: MessageContent };
+export type Message = { role: string; content: MessageContent };
 export type Session = {
   id: string;
   agent_id: string;

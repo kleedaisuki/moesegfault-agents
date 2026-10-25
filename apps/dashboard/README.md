@@ -53,6 +53,15 @@ R2 acceptance fixture and does not run in the production build.
   server for each session. Editing a configuration affects new sessions only.
 - Session messages start an idle run or steer a running run. Archived sessions
   explicitly resume through admission before accepting messages.
+- Space attachment selection retains the server's optional `content_type`.
+  PNG, JPEG, GIF and WebP use native Responses `input_image`; other or missing
+  MIME types retain `input_file` behavior. Filenames are never MIME evidence.
+  MIME is declared upload metadata, not a guarantee of decoded image validity.
+- Journal and queued message content accepts JSON, not only strings. Typed text
+  and nested tool results render as text; unknown structures remain readable
+  JSON. Image previews permit raster data URLs or same-origin authenticated file
+  content only, never remote URLs or SVG data. This is a presentation projection:
+  the original journal is neither rewritten nor compacted by the dashboard.
 - Diagnostics show the exact allowlisted JSON, require fresh consent, and exclude
   logs, user-agent fingerprints, credentials, free-form notes, and conversations.
 - Native `<dialog>` supplies modal focus isolation. The trigger is restored after

@@ -30,6 +30,13 @@ test("Responses attachments, custom instructions and workspace actions on a narr
     skills: [],
   };
   let completed = false;
+  const imageUrl =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5n8AAAAASUVORK5CYII=";
+  const remoteImages: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("tracker.invalid"))
+      remoteImages.push(request.url());
+  });
   const writes: { path: string; body: unknown }[] = [];
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -79,11 +86,24 @@ test("Responses attachments, custom instructions and workspace actions on a narr
             ? [
                 {
                   sequence: 0,
-                  message: { role: "user", content: "Read this brief" },
+                  message: {
+                    role: "user",
+                    content: [
+                      { type: "text", text: "Read this brief" },
+                      { type: "image_url", image_url: { url: imageUrl } },
+                      {
+                        type: "image_url",
+                        image_url: { url: "https://tracker.invalid/pixel.png" },
+                      },
+                    ],
+                  },
                 },
                 {
                   sequence: 1,
-                  message: { role: "assistant", content: "Brief reviewed." },
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "output_text", text: "Brief reviewed." }],
+                  },
                 },
               ]
             : [],
@@ -101,6 +121,12 @@ test("Responses attachments, custom instructions and workspace actions on a narr
         json: {
           object: "list",
           data: [
+            {
+              id: "file-image",
+              filename: "extensionless",
+              content_type: "image/png",
+              bytes: 68,
+            },
             {
               id: "file-brief",
               object: "file",
@@ -123,6 +149,7 @@ test("Responses attachments, custom instructions and workspace actions on a narr
             content: [
               { type: "input_text", text: "Read this brief" },
               { type: "input_file", file_id: "file-brief" },
+              { type: "input_image", file_id: "file-image" },
             ],
           },
         ],
@@ -189,6 +216,7 @@ test("Responses attachments, custom instructions and workspace actions on a narr
   await page.getByRole("button", { name: "Attach files" }).click();
   let dialog = page.getByRole("dialog");
   await dialog.getByRole("checkbox", { name: /a-long-project-brief/ }).check();
+  await dialog.getByRole("checkbox", { name: /extensionless/ }).check();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -211,6 +239,16 @@ test("Responses attachments, custom instructions and workspace actions on a narr
   await expect(
     page.getByText("Brief reviewed.", { exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole("img", { name: "Attached image" })).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .getByRole("img", { name: "Attached image" })
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBe(1);
+  await expect(page.getByText(/tracker.invalid/)).toBeVisible();
+  expect(remoteImages).toEqual([]);
   await expect(
     page.getByRole("button", { name: /Remove a-long-project/ }),
   ).not.toBeVisible();

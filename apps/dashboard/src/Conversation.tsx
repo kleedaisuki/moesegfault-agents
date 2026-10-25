@@ -13,6 +13,7 @@ import {
 } from "./session-data";
 import { Attachments, type Attachment } from "./Attachments";
 import { streamResponse } from "./responses-stream";
+import { MessageContent } from "./MessageContent";
 export function Conversation({
   agent,
   back,
@@ -77,7 +78,14 @@ export function Conversation({
                     ? [{ type: "input_text", text: content }]
                     : []),
                   ...files.map((file) => ({
-                    type: "input_file",
+                    type: [
+                      "image/png",
+                      "image/jpeg",
+                      "image/gif",
+                      "image/webp",
+                    ].includes(file.content_type ?? "")
+                      ? "input_image"
+                      : "input_file",
                     file_id: file.id,
                   })),
                 ],
@@ -335,11 +343,7 @@ export function Conversation({
               journal.data.data.map(({ message: m, sequence }) => (
                 <article className={`message ${m.role}`} key={sequence}>
                   <span>{t(m.role)}</span>
-                  <p>
-                    {typeof m.content === "string"
-                      ? m.content
-                      : JSON.stringify(m.content)}
-                  </p>
+                  <MessageContent content={m.content} />
                 </article>
               ))
             ) : (
@@ -368,7 +372,7 @@ export function Conversation({
             {session.data?.pending_messages?.map((m, i) => (
               <article className="message user pending" key={`pending-${i}`}>
                 <span>{t("queued")}</span>
-                <p>{m.content}</p>
+                <MessageContent content={m.content} />
               </article>
             ))}
           </div>

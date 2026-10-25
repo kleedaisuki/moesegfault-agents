@@ -720,6 +720,14 @@ pre {
   background: var(--soft);
   border-radius: 8px;
 }
+.message-image {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  margin-top: 8px;
+  border-radius: 8px;
+}
 .composer {
   padding: 20px;
   border-top: 1px solid var(--line);
