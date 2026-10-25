@@ -734,7 +734,7 @@ impl SessionInner {
             transport: ResponseTransport::Json(tx),
             after: None,
         });
-        match rx.await {
+        match observer::wait_json(rx).await {
             Ok(value) => Response::from_json(&value),
             Err(_) => util::json_error(
                 503,

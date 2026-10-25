@@ -125,3 +125,29 @@ it does not justify claiming deployment success before that run completes.
 **Decision: exact-candidate source and CI gate accepted; staging and final
 promotion review remain pending.** No production code or infrastructure was
 changed by this reviewer.
+
+## Native JSON-wait liveness review (2026-10-25)
+
+Reviewed the uncommitted change after `2e77dad`: `session_observer::wait_json`
+and its two call sites in Chat and Responses JSON observation. **No substantive
+source defect found.** The helper retains the original one-shot receiver across
+30-second native timer ticks. It neither accepts input nor invokes provider/tool
+work, changes alarm/run ownership, emits response bytes, or commits an HTTP status
+early. Existing success, failure and detached-channel mappings remain at the
+call sites. This preserves the documented prohibition on JSON whitespace
+heartbeats and the distinction between observer lifetime and durable execution.
+
+The pinned `worker` 0.8.7 implementation was inspected directly: dropping an
+unfinished `Delay` clears its native timeout. Therefore a completed receiver does
+not leave the losing 30-second timer running. Injected-future tests cover retaining
+the same result across ticks and channel cancellation; a drop-observable timer
+test was recommended to the implementation owner. `git diff --check` passed,
+apart from the existing line-ending advisory; no Rust build or live model call
+was performed for this review.
+
+This is source acceptance of a bounded liveness safeguard, **not identification
+of the earlier staging HTTP 500 cause or proof that the safeguard fixes it**.
+The prior compiled artifact completing a controlled 130-second upstream delay
+rules out a universal local 120-second timeout, but does not establish production
+platform behavior. Exact-source compiled checks and correlated staging transport
+acceptance remain required before production promotion.

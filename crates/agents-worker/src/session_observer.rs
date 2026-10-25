@@ -1,10 +1,31 @@
 use futures::channel::{mpsc, oneshot};
+use futures::future::{Either, select};
 use serde_json::{Value, json};
+use std::{future::Future, time::Duration};
 
 use crate::provider::Usage;
 
 pub(super) type CompletionResult = std::result::Result<Value, String>;
 type StreamSender = mpsc::UnboundedSender<worker::Result<Vec<u8>>>;
+
+pub(super) async fn wait_json<T>(receiver: oneshot::Receiver<T>) -> Result<T, oneshot::Canceled> {
+    // The producer belongs to an independent alarm invocation. Keep this fetch
+    // backed by native I/O without emitting bytes or changing final HTTP status.
+    with_liveness(receiver, || worker::Delay::from(Duration::from_secs(30))).await
+}
+
+async fn with_liveness<F, C, T>(mut result: F, mut timer: C) -> F::Output
+where
+    F: Future + Unpin,
+    C: FnMut() -> T,
+    T: Future<Output = ()>,
+{
+    loop {
+        if let Either::Left((value, _)) = select(&mut result, Box::pin(timer())).await {
+            return value;
+        }
+    }
+}
 
 enum Transport {
     Stream(StreamSender),
@@ -93,6 +114,69 @@ mod tests {
 
     fn completion() -> CompletionResult {
         Ok(json!({"created":123,"choices":[{"message":{"role":"assistant","content":"done"}}]}))
+    }
+
+    #[test]
+    fn native_liveness_ticks_preserve_the_original_receiver_and_result() {
+        let (sender, receiver) = oneshot::channel();
+        let mut sender = Some(sender);
+        let mut ticks = 0;
+        let outcome = block_on(with_liveness(receiver, || {
+            ticks += 1;
+            if ticks == 3 {
+                sender
+                    .take()
+                    .unwrap()
+                    .send(Err::<Value, _>("provider_error".to_owned()))
+                    .unwrap();
+            }
+            futures::future::ready(())
+        }));
+        assert_eq!(outcome.unwrap(), Err("provider_error".to_owned()));
+        assert_eq!(ticks, 3);
+    }
+
+    #[test]
+    fn closed_json_observer_remains_cancelled_without_another_wait() {
+        let (sender, receiver) = oneshot::channel::<Value>();
+        drop(sender);
+        let outcome = block_on(with_liveness(receiver, futures::future::pending::<()>));
+        assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn json_completion_drops_the_losing_native_timer_immediately() {
+        use std::{
+            cell::Cell,
+            pin::Pin,
+            rc::Rc,
+            task::{Context, Poll},
+        };
+
+        struct PendingTimer(Rc<Cell<bool>>);
+
+        impl Future for PendingTimer {
+            type Output = ();
+
+            fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+                Poll::Pending
+            }
+        }
+
+        impl Drop for PendingTimer {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        let dropped = Rc::new(Cell::new(false));
+        let (sender, receiver) = oneshot::channel();
+        sender.send("terminal").unwrap();
+        assert_eq!(
+            block_on(with_liveness(receiver, || PendingTimer(dropped.clone()))).unwrap(),
+            "terminal"
+        );
+        assert!(dropped.get());
     }
 
     #[test]

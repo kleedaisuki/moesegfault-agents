@@ -545,7 +545,7 @@ impl DurableObject for Session {
                     let (tx, rx) = oneshot::channel();
                     *inner.observer.borrow_mut() = Some(Observer::json(&run_id, tx));
                     inner.arm_alarm().await?;
-                    match rx.await {
+                    match observer::wait_json(rx).await {
                         Ok(Ok(value)) => Response::from_json(&value),
                         Ok(Err(code)) => crate::routes::error_response(&Error::RustError(code)),
                         Err(_) => util::json_error(
