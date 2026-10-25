@@ -59,7 +59,9 @@ pub async fn run(env: &Env) -> Result<()> {
 }
 
 async fn dispatch(env: &Env, session: &Position) -> Result<bool> {
-    let namespace = env.durable_object("SESSIONS")?;
+    let namespace =
+        crate::runtime_profiles::namespace_for(env, &session.account_id, &session.session_id)
+            .await?;
     let id = namespace.id_from_name(&format!("{}:{}", session.account_id, session.session_id))?;
     let controller = AbortController::default();
     let mut init = RequestInit::new();

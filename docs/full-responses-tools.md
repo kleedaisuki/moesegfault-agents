@@ -101,8 +101,10 @@ A request for Code Interpreter is an explicit per-response compute capability;
 it must not flip `PinnedContext.workspace` and accidentally inject Bash or rewrite
 the stable prefix. Funding/preflight and cleanup must account for the actual
 physical Container even when Bash workspace was disabled. Requested native memory
-profiles must be checked against real configured Container capacity; a label such
-as `64g` is not an allocation by itself.
+profiles must be checked against real configured Container capacity. The current
+platform SKUs are `1g` and `4g`; `16g` and `64g` must fail admission before compute
+or model reservations. A request for `4g` also fails if its selected physical
+mapping cannot supply it. A label is not an allocation by itself.
 
 ## Known outcomes, publication and billing
 
@@ -129,6 +131,32 @@ materialize/publish one at a time, not buffer every artifact simultaneously.
 Published references never expose R2 object keys, supervisor paths/tokens or owner
 identity. A known artifact that cannot yet be published stays recoverable; it does
 not justify rerunning Python or generating another paid image.
+
+Images differ from ordinary Files artifacts: the canonical response retains an
+immutable owner blob independently of optional Files metadata. The prepared
+`image_artifacts.rs` helper creates a small serializable candidate identity for
+the harness to persist, consumes the pre-provider physical-byte capacity hold,
+uploads with R2 SHA-256 verification, registers the actual physical storage clock,
+and returns the registry's ready deduplication winner. Retry after an ambiguous
+PUT reuses the persisted candidate and checks its existing checksum rather than
+creating a new object key. Each actual HEAD/PUT/GET attempt has a distinct durable
+resource-observation identity. A known R2 failure is still a request observation;
+an interrupted observation remains pending for reconciliation.
+
+The caller binds that ready blob to the response/item before releasing a remaining
+capacity hold or publishing a final result. A Files-count limit must not discard
+the already paid canonical image: linking is optional, and `file_id` exists only
+after an actual successful link. A bounded `file_link_pending` diagnostic may
+describe a retryable metadata failure without regenerating bytes. User-deleted
+Files links and deleted Responses must never be resurrected by late publication.
+The file link and response each hold their own strong reference; only registry GC
+deletes physical bytes after all applicable holders and leases are gone.
+
+Canonical response/event storage keeps a private blob reference, not repeated
+base64 copies. Public hydration authorizes its live Response first and then uses
+the helper's bounded, SHA-256-checked read; knowledge of a blob key alone is not
+download authority. The helper and its three pure tests are prepared for the next
+compiler checkpoint, not wired or accepted as a working public image journey.
 
 BYOK upstream model/tool fees are paid to that provider by the user; platform
 model debit remains zero as in existing BYOK inference. Platform infrastructure

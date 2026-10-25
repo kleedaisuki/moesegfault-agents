@@ -209,6 +209,7 @@ mod tests {
             input_revision: 0,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
             workspace_snapshot: None,
+            runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };
         let prefix = system_prefix(&record);
         serde_json::from_value(json!({

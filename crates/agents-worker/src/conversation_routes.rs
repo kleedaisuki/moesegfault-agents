@@ -1,5 +1,6 @@
 //! Authenticated public Conversations boundary and internal Response integration.
 use crate::{
+    conversation_meter::ConversationOperation,
     routes::{self, RouteContext},
     util,
 };
@@ -24,14 +25,25 @@ pub(crate) struct ConversationAdmission {
     pub predecessor_session_id: Option<String>,
     pub predecessor_agent_id: Option<String>,
     pub predecessor_pin_hash: Option<String>,
+    #[serde(default)]
+    pub item_provenance: std::collections::BTreeMap<String, ConversationItemProvenance>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub(crate) struct ConversationItemProvenance {
+    pub source_session_id: Option<String>,
+    pub response_id: Option<String>,
+    pub provider_binding: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct ConversationExecutionContext {
     pub session_id: String,
     pub agent_id: String,
     pub pin_hash: String,
     pub accepted_revision: u64,
+    pub defer_release: bool,
+    pub item_provenance: std::collections::BTreeMap<String, ConversationItemProvenance>,
 }
 
 #[derive(Deserialize)]
@@ -40,11 +52,23 @@ struct Route {
     request_hash: String,
 }
 
-pub(crate) async fn handle(
+pub(crate) async fn handle(req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
+    let operation = ConversationOperation::account(env, owner).await?;
+    let result = handle_inner(req, env, owner, &operation).await;
+    operation.finish_result(env, owner, result, false).await
+}
+
+async fn handle_inner(
     mut req: Request,
     env: &RouteContext<'_>,
     owner: &str,
+    operation: &ConversationOperation,
 ) -> Result<Response> {
+    let dispatch = Dispatch {
+        env,
+        owner,
+        operation,
+    };
     let path = req.path();
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     let method = req.method();
@@ -78,10 +102,9 @@ pub(crate) async fn handle(
             .as_ref()
             .map(|key| format!("conv_{}", hash(&format!("{owner}\0{key}"))))
             .unwrap_or_else(|| util::id("conv"));
-        env.d1("DB")?.prepare("INSERT INTO conversation_routes(id,account_id,request_hash,created_at) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING")
-            .bind(&[id.as_str().into(),owner.into(),request_hash.as_str().into(),wasm_bindgen::JsValue::from_f64(util::now_ms() as f64)])?
-            .run().await?;
-        let Some(route) = lookup(env, owner, &id).await? else {
+        operation.query(env, owner, "create-index", env.d1("DB")?.prepare("INSERT INTO conversation_routes(id,account_id,request_hash,created_at) VALUES(?,?,?,?) ON CONFLICT(id) DO NOTHING")
+            .bind(&[id.as_str().into(),owner.into(),request_hash.as_str().into(),wasm_bindgen::JsValue::from_f64(util::now_ms() as f64)])?).await?;
+        let Some(route) = dispatch.lookup(&id).await? else {
             return not_found();
         };
         if route.request_hash != request_hash {
@@ -93,7 +116,9 @@ pub(crate) async fn handle(
         }
         let mut init = body;
         init["id"] = json!(route.id);
-        return forward(env, owner, &route.id, Method::Post, "/init", Some(init)).await;
+        return dispatch
+            .forward(&route.id, Method::Post, "/init", Some(init))
+            .await;
     }
     let (id, suffix) = match segments.as_slice() {
         ["v1", "conversations", id] if valid_id(id) => (*id, "/metadata".to_owned()),
@@ -113,7 +138,7 @@ pub(crate) async fn handle(
     if !allowed {
         return method_not_allowed();
     }
-    if lookup(env, owner, id).await?.is_none() {
+    if dispatch.lookup(id).await?.is_none() {
         return not_found();
     }
     let suffix = match query(&req.url()?, &suffix, method.clone()) {
@@ -141,7 +166,7 @@ pub(crate) async fn handle(
     } else {
         None
     };
-    forward(env, owner, id, method, &suffix, body).await
+    dispatch.forward(id, method, &suffix, body).await
 }
 
 pub(crate) async fn snapshot(
@@ -149,10 +174,15 @@ pub(crate) async fn snapshot(
     owner: &str,
     id: &str,
 ) -> Result<Option<ConversationSnapshot>> {
-    if !valid_id(id) || lookup(env, owner, id).await?.is_none() {
-        return Ok(None);
+    let operation = ConversationOperation::account(env, owner).await?;
+    let result = Dispatch {
+        env,
+        owner,
+        operation: &operation,
     }
-    let mut response = forward(env, owner, id, Method::Get, "/snapshot", None).await?;
+    .existing(id, Method::Get, "/snapshot", None)
+    .await;
+    let mut response = operation.finish_result(env, owner, result, false).await?;
     if response.status_code() == 404 {
         return Ok(None);
     }
@@ -160,6 +190,84 @@ pub(crate) async fn snapshot(
         return Err(Error::RustError("conversation_snapshot_failed".into()));
     }
     response.json().await.map(Some)
+}
+
+pub(crate) async fn admit(env: &Env, owner: &str, id: &str, response_id: &str) -> Result<Response> {
+    let operation = ConversationOperation::response(env, owner, response_id).await?;
+    let result = Dispatch {
+        env,
+        owner,
+        operation: &operation,
+    }
+    .existing(
+        id,
+        Method::Post,
+        "/responses/admit",
+        Some(json!({"response_id":response_id})),
+    )
+    .await;
+    operation.finish_result(env, owner, result, false).await
+}
+
+pub(crate) async fn activate(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    session_id: &str,
+    accepted_revision: u64,
+) -> Result<Response> {
+    let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
+    let result = Dispatch { env, owner, operation: &operation }.existing(id, Method::Post, "/responses/activate", Some(json!({"response_id":response_id,"session_id":session_id,"accepted_revision":accepted_revision}))).await;
+    operation.finish_result(env, owner, result, false).await
+}
+
+pub(crate) async fn release(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+) -> Result<Response> {
+    let operation = ConversationOperation::response(env, owner, response_id).await?;
+    release_with_operation(env, owner, id, response_id, &operation).await
+}
+
+pub(crate) async fn release_actor(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+) -> Result<Response> {
+    let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
+    release_with_operation(env, owner, id, response_id, &operation).await
+}
+
+async fn release_with_operation(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    operation: &ConversationOperation,
+) -> Result<Response> {
+    if operation.is_finished() {
+        return Response::from_json(&json!({"id":id,"released":true}));
+    }
+    let result = Dispatch {
+        env,
+        owner,
+        operation,
+    }
+    .existing(
+        id,
+        Method::Post,
+        "/responses/release",
+        Some(json!({"response_id":response_id})),
+    )
+    .await;
+    let release = result
+        .as_ref()
+        .is_ok_and(|response| response.status_code() < 300);
+    operation.finish_result(env, owner, result, release).await
 }
 
 pub(crate) async fn commit_response(
@@ -172,41 +280,6 @@ pub(crate) async fn commit_response(
     commit_response_context(env, owner, id, response_id, items, None).await
 }
 
-pub(crate) async fn admit(env: &Env, owner: &str, id: &str, response_id: &str) -> Result<Response> {
-    if !valid_id(id) || lookup(env, owner, id).await?.is_none() {
-        return not_found();
-    }
-    forward(
-        env,
-        owner,
-        id,
-        Method::Post,
-        "/responses/admit",
-        Some(json!({"response_id":response_id})),
-    )
-    .await
-}
-
-pub(crate) async fn release(
-    env: &Env,
-    owner: &str,
-    id: &str,
-    response_id: &str,
-) -> Result<Response> {
-    if !valid_id(id) || lookup(env, owner, id).await?.is_none() {
-        return not_found();
-    }
-    forward(
-        env,
-        owner,
-        id,
-        Method::Post,
-        "/responses/release",
-        Some(json!({"response_id":response_id})),
-    )
-    .await
-}
-
 pub(crate) async fn commit_response_context(
     env: &Env,
     owner: &str,
@@ -215,9 +288,21 @@ pub(crate) async fn commit_response_context(
     items: &[Value],
     context: Option<&ConversationExecutionContext>,
 ) -> Result<Response> {
-    if !valid_id(id) || lookup(env, owner, id).await?.is_none() {
-        return not_found();
-    }
+    let operation = ConversationOperation::account(env, owner).await?;
+    let result =
+        commit_response_with_meter(env, owner, id, response_id, items, context, &operation).await;
+    operation.finish_result(env, owner, result, false).await
+}
+
+pub(crate) async fn commit_response_with_meter(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    items: &[Value],
+    context: Option<&ConversationExecutionContext>,
+    operation: &ConversationOperation,
+) -> Result<Response> {
     let mut body = json!({"response_id":response_id,"items":items});
     if let Some(context) = context {
         if let Some(fields) = serde_json::to_value(context)?.as_object() {
@@ -226,51 +311,72 @@ pub(crate) async fn commit_response_context(
                 .extend(fields.clone());
         }
     }
-    forward(
+    Dispatch {
         env,
         owner,
-        id,
-        Method::Post,
-        "/responses/commit",
-        Some(body),
-    )
+        operation,
+    }
+    .existing(id, Method::Post, "/responses/commit", Some(body))
     .await
 }
 
-async fn lookup(env: &Env, owner: &str, id: &str) -> Result<Option<Route>> {
-    env.d1("DB")?
-        .prepare("SELECT id,request_hash FROM conversation_routes WHERE account_id=? AND id=?")
-        .bind(&[owner.into(), id.into()])?
-        .first(None)
+struct Dispatch<'a> {
+    env: &'a Env,
+    owner: &'a str,
+    operation: &'a ConversationOperation,
+}
+
+impl Dispatch<'_> {
+    async fn lookup(&self, id: &str) -> Result<Option<Route>> {
+        let result = self.operation.query(self.env, self.owner, "lookup", self.env.d1("DB")?
+            .prepare("SELECT id,request_hash FROM conversation_routes WHERE account_id=? AND id=?")
+            .bind(&[self.owner.into(), id.into()])?).await?;
+        Ok(result.results::<Route>()?.into_iter().next())
+    }
+
+    async fn existing(
+        &self,
+        id: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Response> {
+        if !valid_id(id) || self.lookup(id).await?.is_none() {
+            return not_found();
+        }
+        self.forward(id, method, path, body).await
+    }
+
+    async fn forward(
+        &self,
+        id: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Response> {
+        let stub = self
+            .env
+            .durable_object("CONVERSATION_STATE")?
+            .id_from_name(&format!("{}:{id}", self.owner))?
+            .get_stub()?;
+        let headers = Headers::new();
+        headers.set("X-Agents-Owner", self.owner)?;
+        headers.set("Content-Type", "application/json")?;
+        self.operation
+            .actor_headers(self.env, self.owner, "actor", &headers)
+            .await?;
+        let init = RequestInit {
+            method,
+            headers,
+            body: body.map(|body| body.to_string().into()),
+            ..Default::default()
+        };
+        stub.fetch_with_request(Request::new_with_init(
+            &format!("https://conversation.internal{path}"),
+            &init,
+        )?)
         .await
-}
-
-async fn forward(
-    env: &Env,
-    owner: &str,
-    id: &str,
-    method: Method,
-    path: &str,
-    body: Option<Value>,
-) -> Result<Response> {
-    let stub = env
-        .durable_object("CONVERSATION_STATE")?
-        .id_from_name(&format!("{owner}:{id}"))?
-        .get_stub()?;
-    let headers = Headers::new();
-    headers.set("X-Agents-Owner", owner)?;
-    headers.set("Content-Type", "application/json")?;
-    let init = RequestInit {
-        method,
-        headers,
-        body: body.map(|body| body.to_string().into()),
-        ..Default::default()
-    };
-    stub.fetch_with_request(Request::new_with_init(
-        &format!("https://conversation.internal{path}"),
-        &init,
-    )?)
-    .await
+    }
 }
 
 fn query(url: &url::Url, path: &str, method: Method) -> std::result::Result<String, &'static str> {

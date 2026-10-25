@@ -101,10 +101,11 @@ export async function exerciseConversations(client, otherClient, remember) {
   return { metadata: true, cursorItems: listed.length, itemCrud: true, ownerIsolated: true, deletionRetainsItems: true };
 }
 
-export async function exerciseWebSocket(client, parentId, beforeDispatch, remember, makeSocket = value => new ResponsesWS(value, { reconnect: null, maxPayload: 4 * 1024 * 1024 })) {
+export async function exerciseWebSocket(client, parentId, beforeDispatch, remember, makeSocket = value => new ResponsesWS(value, { reconnect: null, maxPayload: 4 * 1024 * 1024 }), observeWire = () => {}) {
   const socket = makeSocket(client);
   const events = new Map([['fork-left', []], ['fork-right', []]]);
   const terminal = new Set();
+  const wireEvents = [];
   let accepted = 0;
   try {
     await new Promise((resolve, reject) => {
@@ -119,6 +120,7 @@ export async function exerciseWebSocket(client, parentId, beforeDispatch, rememb
         try {
           assert.ok(events.has(event.stream_id), 'unexpected_websocket_lane');
           events.get(event.stream_id).push(event);
+          wireEvents.push(event);
           if (event.type === 'response.created') { remember('responses', event.response.id); accepted++; }
           if (terminalTypes.has(event.type)) terminal.add(event.stream_id);
           if (terminal.size === events.size) resolve();
@@ -127,15 +129,38 @@ export async function exerciseWebSocket(client, parentId, beforeDispatch, rememb
     });
     for (const stream_id of events.keys()) {
       beforeDispatch(`websocket:${stream_id}`);
-      socket.send({ type: 'response.create', stream_id, previous_response_id: parentId, input: 'Reply with the word ready only.', max_output_tokens: 128 });
+      socket.send({ type: 'response.create', stream_id, previous_response_id: parentId, input: 'Reply with the word ready only.', max_output_tokens: 128, reasoning: { effort: 'none' } });
     }
     await done;
     const responses = [...events].map(([lane, values]) => assertCanonicalEvents(values, lane));
     assert.notEqual(responses[0].id, responses[1].id);
     assert.ok(responses.every(response => response.output.some(item => item.type === 'message' && item.content.some(part => part.type === 'output_text' && part.text.length > 0))), 'websocket_real_answer_missing');
     assert.equal(accepted, 2, 'each_socket_dispatch_has_one_created_identity');
+    observeWire(wireEvents);
     return { lanes: 2, canonicalTerminals: 2, forkIds: responses.map(value => value.id), parent: parentId };
   } finally { socket.close(); }
+}
+
+export async function exerciseNoStoreParentRejection(client, body, { beforeDispatch, remember, record }) {
+  const key = beforeDispatch('negative-store-false-parent', { parentResponse: body.previous_response_id, expectedStatus: 404 });
+  let result;
+  try {
+    result = await client.responses.create({ ...body, max_output_tokens: 128, reasoning: { effort: 'none' }, stream: true }, { headers: { 'Idempotency-Key': key } }).withResponse();
+  } catch (error) {
+    if (error.status !== 404) throw error;
+    record({ status: 'rejected', expectedStatus: 404, idempotencyKey: key });
+    return { rejected: true };
+  }
+  const responseId = result.response.headers.get('x-agents-response');
+  const sessionId = result.response.headers.get('x-agents-session');
+  if (responseId) remember('responses', responseId);
+  if (sessionId) remember('sessions', sessionId);
+  record({ status: 'unexpected_accepted_observing_same_work', responseId, sessionId, idempotencyKey: key });
+  for await (const event of result.data) {
+    if (event.response?.id) remember('responses', event.response.id);
+    if (terminalTypes.has(event.type)) record({ status: 'unexpected_terminal', terminal: event.type, responseId: event.response.id, sessionId, idempotencyKey: key });
+  }
+  throw Error('store_false_parent_unexpectedly_admitted_no_replay');
 }
 
 function configuration(argv, environment) {
@@ -143,7 +168,7 @@ function configuration(argv, environment) {
   assert.match(values.source ?? '', /^[a-f0-9]{40}$/, 'exact_source_required_before_network');
   assert.ok(['core', 'full'].includes(values.scope), 'unknown_acceptance_scope');
   assert.equal(values['allow-model-calls'], true, 'explicit_paid_execution_gate_required');
-  assertBudget(8, Number(values['max-paid-submissions']));
+  assertBudget(9, Number(values['max-paid-submissions']));
   const origin = environment.MAGENTS_TEST_API_ORIGIN;
   assert.equal(origin, 'https://agents-staging.moesegfault.dev', 'staging_only_exact_origin_required');
   assert.ok(environment.MAGENTS_TEST_API_KEY && environment.MAGENTS_TEST_OTHER_API_KEY, 'both_existing_owned_staging_keys_required');
@@ -174,14 +199,16 @@ export async function main(argv = process.argv.slice(2), environment = process.e
   const receipt = { source: config.source, scope: config.scope, status: 'running', run: randomUUID(), submissions: 0, resources: { agents: [], sessions: [], responses: [], conversations: [] }, checks: {}, dispatches: [], pending: null };
   const persist = () => { fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output + '.partial', JSON.stringify(receipt, null, 2)); fs.renameSync(output + '.partial', output); };
   const remember = (kind, id) => { assert.ok(id); if (!receipt.resources[kind].includes(id)) receipt.resources[kind].push(id); persist(); };
-  const beforeDispatch = purpose => { assert.ok(receipt.submissions < config.limit, 'paid_submission_budget_exhausted'); receipt.submissions++; receipt.pending = { purpose, transport: purpose.startsWith('websocket:') ? 'websocket' : 'http', idempotencyKey: purpose.startsWith('websocket:') ? null : `full-${receipt.run}-${receipt.submissions}` }; receipt.dispatches.push({ submission: receipt.submissions, ...receipt.pending }); persist(); return receipt.pending.idempotencyKey; };
+  const beforeDispatch = (purpose, details = {}) => { assert.ok(receipt.submissions < config.limit, 'paid_submission_budget_exhausted'); receipt.submissions++; receipt.pending = { purpose, ...details, transport: purpose.startsWith('websocket:') ? 'websocket' : 'http', idempotencyKey: purpose.startsWith('websocket:') ? null : `full-${receipt.run}-${receipt.submissions}` }; receipt.dispatches.push({ submission: receipt.submissions, ...receipt.pending }); persist(); return receipt.pending.idempotencyKey; };
   persist();
   const client = new OpenAI({ apiKey: environment.MAGENTS_TEST_API_KEY, baseURL: config.origin + '/v1', maxRetries: 0, timeout: 300000 });
   const other = new OpenAI({ apiKey: environment.MAGENTS_TEST_OTHER_API_KEY, baseURL: config.origin + '/v1', maxRetries: 0, timeout: 30000 });
   let agent;
   try {
     receipt.checks.conversations = await exerciseConversations(client, other, remember); persist();
-    agent = await request('POST', '/v1/agents', { name: `full-sdk-${receipt.run}`, model: { provider: 'deepseek', model: config.model, protocol: 'responses', max_output_tokens: 512 }, instructions: 'Respond briefly. Preserve the original user context on branches.', tools: [], skills: [], workspace: false, compaction_percent: 80 }, [201]);
+    const approvedModel = policy.assertAvailableDirectDeepSeek(await request('GET', '/v1/models'), config.model);
+    assert.ok(approvedModel.max_output_tokens >= 512, 'priced_model_output_budget_too_small');
+    agent = await request('POST', '/v1/agents', { name: `full-sdk-${receipt.run}`, model: { ...approvedModel, protocol: 'responses', max_output_tokens: 512 }, instructions: 'Respond briefly. Preserve the original user context on branches.', tools: [], skills: [], workspace: false, compaction_percent: 80 }, [201]);
     remember('agents', agent.id); policy.assertDirectDeepSeekModel(agent.model, config.model);
     const ownedSessions = { add: id => remember('sessions', id) };
     const initial = await policy.createPinnedSession(request, agent, ownedSessions, config.model);
@@ -194,7 +221,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       assert.ok(sourceSession, 'prepaid_source_session_not_verified');
       policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${sourceSession}`), agent.id, config.model);
       const key = beforeDispatch(purpose);
-      const result = await client.responses.create({ model: agent.id, max_output_tokens: 128, ...body, stream: true }, { headers: { 'Idempotency-Key': key, ...(sessionId ? { 'X-Agents-Session': sessionId } : {}) } }).withResponse();
+      const result = await client.responses.create({ model: agent.id, max_output_tokens: 128, reasoning: { effort: 'none' }, ...body, stream: true }, { headers: { 'Idempotency-Key': key, ...(sessionId ? { 'X-Agents-Session': sessionId } : {}) } }).withResponse();
       const id = result.response.headers.get('x-agents-response');
       const session = result.response.headers.get('x-agents-session');
       if (id) remember('responses', id);
@@ -216,6 +243,9 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     for await (const item of client.conversations.items.list(activeConversation.id, { limit: 1, order: 'asc' })) conversationItems.push(item);
     assert.equal(new Set(conversationItems.map(item => item.id)).size, conversationItems.length, 'conversation_response_appended_duplicates');
     assert.ok(conversationItems.length >= 3, 'conversation_response_missing_new_input_or_output');
+    assert.equal(conversationItems.filter(item => item.role === 'user' && JSON.stringify(item.content).includes('The original branch marker is ORIGIN.')).length, 1, 'conversation_root_input_not_appended_once');
+    for (const output of first.response.output) assert.equal(conversationItems.filter(item => item.id === output.id).length, 1, 'conversation_output_item_not_appended_once');
+    const conversationWire = await (await client.conversations.items.list(activeConversation.id, { limit: 100, order: 'asc' }).asResponse()).json();
     const immutable = await client.responses.retrieve(first.response.id);
     const next = await create({ previous_response_id: first.response.id, input: 'This later-head-only marker is LATER. Reply ready.' }, null, 'http-current-head');
     const fork = await create({ previous_response_id: first.response.id, input: 'Which marker was present before this branch? Reply briefly without inventing later history.' }, null, 'http-historical-fork');
@@ -244,21 +274,29 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     const compactSession = typeof compactContinuation === 'string' ? compactContinuation : compactContinuation.id; remember('sessions', compactSession);
     const reused = await create({ input: [...compact.output, { role: 'user', content: 'Report the original marker briefly.' }], previous_response_id: null }, compactSession, 'standalone-window-reuse');
     assert.equal(reused.response.previous_response_id ?? null, null, 'standalone_compact_must_start_fresh_chain');
+    assert.ok(reused.response.output.filter(item => item.type === 'message').flatMap(item => item.content).filter(part => part.type === 'output_text').some(part => part.text.includes('ORIGIN')), 'standalone_compact_lost_original_marker');
     const noStoreSession = await policy.createPinnedSession(request, agent, ownedSessions, config.model);
     const noStoreId = typeof noStoreSession === 'string' ? noStoreSession : noStoreSession.id; remember('sessions', noStoreId);
     const noStore = await create({ input: 'Reply ready.', store: false }, noStoreId, 'store-false');
     await assert.rejects(client.responses.retrieve(noStore.response.id), error => error.status === 404);
-    await assert.rejects(client.responses.create({ model: agent.id, previous_response_id: noStore.response.id, input: 'This unavailable parent must not create a model run.' }), error => error.status === 404);
+    policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${noStoreId}`), agent.id, config.model);
+    await exerciseNoStoreParentRejection(client, { model: agent.id, previous_response_id: noStore.response.id, input: 'This unavailable parent must not create a model run.' }, { beforeDispatch, remember, record: result => { receipt.checks.store_false_parent_negative = result; if (result.status === 'rejected') receipt.pending = null; persist(); } });
     await client.responses.delete(fork.response.id);
     await assert.rejects(client.responses.retrieve(fork.response.id), error => error.status === 404);
     assert.deepEqual(await client.responses.retrieve(first.response.id), immutable, 'child_tombstone_deleted_parent');
     receipt.checks.store_false_tombstone = { noStoreUnavailable: true, childDeletedParentIntact: true }; persist();
     policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${first.session}`), agent.id, config.model);
-    receipt.checks.websocket_lanes = await exerciseWebSocket(client, first.response.id, beforeDispatch, remember);
+    let websocketWire;
+    receipt.checks.websocket_lanes = await exerciseWebSocket(client, first.response.id, beforeDispatch, remember, undefined, events => { websocketWire = events; });
     const all = await request('GET', `/v1/agents/${agent.id}/sessions`);
     for (const session of all.data) { remember('sessions', session.id); policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${session.id}`), agent.id, config.model); }
     const python = path.resolve(config['current-python']);
     assert.ok(python.startsWith(path.join(root, '.cache') + path.sep), 'current_sdk_interpreter_must_be_project_managed');
+    const wire = JSON.stringify({ response: first.response, events: first.events, websocket_events: websocketWire, compact, count, conversation: activeConversation, conversation_items: conversationWire });
+    assert.ok(Buffer.byteLength(wire, 'utf8') <= 16 * 1024 * 1024, 'actual_wire_bundle_size_exceeded');
+    const typedWire = JSON.parse(execFileSync(python, [path.join(root, 'tests/e2e/current_responses_sdk.py'), 'wire', '--input', '-'], { cwd: root, input: wire, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 30000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }));
+    assert.equal(typedWire.passed, true, 'actual_wire_current_sdk_validation_failed');
+    receipt.checks.current_python_wire = { sdk: typedWire.sdk, actualPayloads: true, newModelRuns: 0, responseEvents: typedWire.response_events, websocketEvents: typedWire.websocket_events }; persist();
     const currentReceipt = output.replace(/\.json$/, '') + '-current-python.json';
     const current = JSON.parse(execFileSync(python, [path.join(root, 'tests/e2e/current_responses_sdk.py'), 'staging-inspect', '--source', config.source, '--session', first.session, '--response', first.response.id, '--agent', agent.id, '--receipt', currentReceipt], { cwd: root, env: { ...environment, MAGENTS_TEST_EXPECTED_BUILD: config.source }, encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 300000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }));
     assert.equal(current.passed, true, 'current_python_sdk_gate_failed');
@@ -303,8 +341,3 @@ export async function main(argv = process.argv.slice(2), environment = process.e
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(error => { process.stderr.write(JSON.stringify({ result: 'failed', error: error.name, ...(Number.isInteger(error.status) ? { status: error.status } : {}) }) + '\n'); process.exitCode = 1; });
-
-
-
-
-

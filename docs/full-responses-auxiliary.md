@@ -166,8 +166,13 @@ resource meter, not through unconditional reservation release. A cold I/O loss
 with unknown duration deliberately leaves pending funded observations rather
 than inventing a zero measurement.
 
-Private input, provider result and output have a maximum 24-hour recoverable
-retention. The alarm first records an expired tombstone, then erases all chunk
+Healthy provider execution has no fixed total wall-clock deadline. Operation
+alarms are recovery/observation hooks, not permission to cancel live I/O or retry
+a paid request. Private input, provider result and output remain recoverable
+while execution/accounting is active. The 24-hour private-content retention
+starts at the durable complete/failed transition, not initial acceptance. Active
+accepted/in-flight/known phases do not expire merely because creation was long
+ago. The alarm first records an expired tombstone, then erases all chunk
 content, retaining only owner/operation identity, request hash, timestamps,
 phase and non-content resource receipt. Expired keys cannot execute again.
 Content erasure precedes final resource settlement so accounting failures do
@@ -193,3 +198,46 @@ Actions must compile and test the actor and actual route integration. Local
 verification is limited to rustfmt, diff checks, the real SQL suite, and SDK
 contract tests. The public source-resolution hooks are owned by the Responses
 integration lead; adding this actor alone is not public endpoint acceptance.
+
+## Public route integration checkpoint
+
+`auxiliary_routes::handle` now owns POST-only compact/count routing, current
+endpoint-specific schema checks, and sanitized errors. `auxiliary_context`
+resolves the account-owned Agent/pin or retained previous Response, reads
+Conversations without admission, expands authenticated service compaction state,
+and prepares the same native input/tools/control codec as generation. Previous
+top-level response instructions are not inherited by count. Compact guidance is
+separate from protected ongoing instructions. The latter may be explicitly
+restored by a service compaction item; a new request override wins. An omitted
+model is inferred from the retained source Response, not from an arbitrary
+account Agent. An unresolved model-less standalone request is invalid.
+
+The new `context_prefix` functions contain the old generation renderer unchanged;
+Session wrappers delegate to them. The prefix-byte test includes skill markup
+and Unicode. No fake Session is needed to construct fixed tools or instructions.
+Hosted declarations use the shared `BoundTools` renderer, actual operator
+capabilities and read-only ownership validation, including tool-choice rewriting;
+counting never starts a Container or creates a retrieval index.
+
+The attachment resolver now separates read-only preparation from execution.
+Inline UTF-8 text uses the same pure filename/content rendering in both paths,
+without a generated permanent file ID. Existing owner-scoped file references
+retain the established renderer. Inline binary workspace attachments still need
+a stable owned file reference in auxiliary calls; this explicit capability
+failure must not be replaced with a random future workspace path.
+
+Native DeepSeek counting uses the official-recipe Rust counter over exactly the
+prepared count projection, with the same resource-only reservation. Content-free
+provenance includes renderer revision, tokenizer digest and WASM linear-memory
+high-water bytes (not a claim about full isolate heap). Legacy Chat/Anthropic pins
+are not relabeled native Responses to make this path appear supported.
+
+The compiled Worker journey `Responses auxiliary compact and count` exercises
+real authenticated SDK routes, exact count/generation prepared-input equality,
+pure inline text, source export, idempotent compact, sealed-item continuation,
+instruction restore/override/non-inheritance, rejected corrupted state, and known
+billing despite missing required usage details. It is integrated into the
+existing Miniflare harness, not yet claimed passed until Actions runs it. The
+independent `DeepSeek exact count-only tokenizer cold warm and profile
+replacement` journey uses the vendor's independent expected counts and records
+actual workerd memory/timing without paid inference.

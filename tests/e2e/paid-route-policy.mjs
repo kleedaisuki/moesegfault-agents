@@ -44,14 +44,22 @@ export function assertAvailableDirectDeepSeek(catalog, expectedModel = 'deepseek
   assertDirectDeepSeekModel(matching[0], expectedModel);
   return matching[0];
 }
+export function assertDirectDeepSeekBounds(model, registered) {
+  for (const field of ['context_window', 'max_output_tokens']) {
+    assert.ok(Number.isSafeInteger(model[field]) && Number.isSafeInteger(registered[field]) && model[field] > 0 && model[field] <= registered[field], 'paid_test_model_bounds_escape_registry');
+  }
+}
+
 export async function createPinnedSession(request, agent, sessions, expectedModel = 'deepseek-flash') {
   assertDirectDeepSeekModel(agent.model, expectedModel);
-  assertAvailableDirectDeepSeek(await request('GET', '/v1/models'), expectedModel);
+  const registered = assertAvailableDirectDeepSeek(await request('GET', '/v1/models'), expectedModel);
+  assertDirectDeepSeekBounds(agent.model, registered);
   const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, [201]);
   assert.ok(typeof session?.id === 'string', 'created_session_identity_missing');
   sessions.add(session.id);
   const canonical = await request('GET', `/v1/sessions/${session.id}`);
   assertDirectDeepSeekPin(canonical, agent.id, expectedModel);
+  assertDirectDeepSeekBounds(canonical.pinned.model, registered);
   assert.equal(canonical.status, 'idle', 'preflight_session_not_idle');
   assert.ok(!canonical.run_id, 'preflight_session_already_running');
   return canonical;

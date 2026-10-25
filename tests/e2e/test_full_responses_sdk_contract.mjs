@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { WebSocketServer } from 'ws';
 import OpenAI from 'openai';
 import { ResponsesWS } from 'openai/resources/responses/ws';
-import { assertBudget, assertCanonicalEvents, assertExternalEvidence, exerciseConversations, exerciseWebSocket, EXTERNAL_GROUPS, verifyExternalArtifacts, main } from './full-responses-sdk.mjs';
+import { assertBudget, assertCanonicalEvents, assertExternalEvidence, exerciseConversations, exerciseWebSocket, EXTERNAL_GROUPS, verifyExternalArtifacts, exerciseNoStoreParentRejection, main } from './full-responses-sdk.mjs';
 
 function response(id) { return { id, object: 'response', status: 'completed', output: [{ id: 'msg_' + id, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ready', annotations: [] }] }], usage: null }; }
 function events(id, lane) { return [
@@ -22,6 +22,8 @@ test('source/paid gates reject before network or credential access', async () =>
   assert.throws(() => assertBudget(8, 7));
   assert.throws(() => assertBudget(8, 33));
   assertBudget(8, 8);
+  assert.throws(() => assertBudget(9, 8), /explicit_bounded_paid_submission_budget_required/);
+  assertBudget(9, 9);
 });
 
 test('full evidence cannot turn absent groups or wrong source into a passed release', () => {
@@ -183,4 +185,66 @@ test('property probe preserves text and ordered identity across random event bou
     values[random() % count + 1].delta += 'corruption';
     assert.throws(() => assertCanonicalEvents(values, lane), /streamed_text_differs_from_canonical_terminal/);
   }
+});
+
+test('invalid no-store parent persists intent/key before its only POST and rejects without admission', async () => {
+  const order = [], records = [], remembered = [];
+  let posts = 0;
+  const client = new OpenAI({ apiKey: 'fixture-only', baseURL: 'https://fixture.invalid/v1', maxRetries: 0, fetch: async (url, init) => {
+    posts++; order.push('POST');
+    assert.equal(init.headers.get('Idempotency-Key'), 'negative-operation-owned');
+    const body = JSON.parse(init.body);
+    assert.equal(body.stream, true);
+    assert.equal(body.reasoning.effort, 'none');
+    return Response.json({ error: { message: 'Not found', code: 'not_found' } }, { status: 404 });
+  } });
+  const result = await exerciseNoStoreParentRejection(client, { model: 'agent_owned', previous_response_id: 'resp_unstored', input: 'reject' }, {
+    beforeDispatch: (purpose, details) => { order.push('durable-intent'); assert.equal(details.parentResponse, 'resp_unstored'); return 'negative-operation-owned'; },
+    remember: (kind, id) => remembered.push({ kind, id }),
+    record: value => records.push(value),
+  });
+  assert.deepEqual(order, ['durable-intent', 'POST']);
+  assert.equal(posts, 1);
+  assert.deepEqual(remembered, []);
+  assert.equal(result.rejected, true);
+  assert.equal(records[0].status, 'rejected');
+});
+
+test('unexpected negative admission preserves headers/canonical terminal and fails without retry', async () => {
+  const order = [], records = [], remembered = [];
+  let posts = 0;
+  const canonical = events('resp_unexpected');
+  const client = new OpenAI({ apiKey: 'fixture-only', baseURL: 'https://fixture.invalid/v1', maxRetries: 0, fetch: async () => {
+    posts++; order.push('POST');
+    const stream = canonical.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'x-agents-response': 'resp_unexpected', 'x-agents-session': 'session_unexpected' } });
+  } });
+  await assert.rejects(exerciseNoStoreParentRejection(client, { model: 'agent_owned', previous_response_id: 'resp_unstored' }, {
+    beforeDispatch: () => { order.push('durable-intent'); return 'negative-operation-owned'; },
+    remember: (kind, id) => { order.push('capture-' + kind); remembered.push({ kind, id }); },
+    record: value => { order.push(value.status); records.push(value); },
+  }), /store_false_parent_unexpectedly_admitted_no_replay/);
+  assert.equal(posts, 1);
+  assert.deepEqual(order.slice(0, 5), ['durable-intent', 'POST', 'capture-responses', 'capture-sessions', 'unexpected_accepted_observing_same_work']);
+  assert.ok(remembered.some(value => value.kind === 'sessions' && value.id === 'session_unexpected'));
+  assert.equal(records.at(-1).status, 'unexpected_terminal');
+  assert.equal(records.at(-1).responseId, 'resp_unexpected');
+  assert.equal(records.at(-1).terminal, 'response.completed');
+});
+
+test('negative admission observer failure retains accepted IDs and never resubmits work', async () => {
+  const remembered = [], records = [];
+  let posts = 0;
+  const client = { responses: { create: () => {
+    posts++;
+    return { withResponse: async () => ({ response: { headers: new Headers({ 'x-agents-response': 'resp_header', 'x-agents-session': 'session_owned' }) }, data: (async function* () { yield { type: 'response.created', response: { id: 'resp_canonical' } }; throw Error('observer_disconnected'); })() }) };
+  } } };
+  await assert.rejects(exerciseNoStoreParentRejection(client, { previous_response_id: 'resp_unstored' }, {
+    beforeDispatch: () => 'negative-operation-owned',
+    remember: (kind, id) => remembered.push({ kind, id }),
+    record: value => records.push(value),
+  }), /observer_disconnected/);
+  assert.equal(posts, 1);
+  assert.deepEqual(remembered.map(value => value.id), ['resp_header', 'session_owned', 'resp_canonical']);
+  assert.equal(records.at(-1).status, 'unexpected_accepted_observing_same_work');
 });

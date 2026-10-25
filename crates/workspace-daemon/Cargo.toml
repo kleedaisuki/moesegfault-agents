@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 axum = "0.8"
+base64 = "0.22"
 cap-std = "4"
 futures-util = "0.3"
 hex = "0.4"
@@ -23,6 +24,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+url = "2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler = { version = "0.5.0", default-features = false }

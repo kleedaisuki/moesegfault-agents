@@ -93,6 +93,61 @@ adapters remain unchanged for old pins.
 
 ## Verification boundary
 
+### Provider control effects
+
+`provider_controls.rs` validates native effects both when building a prepared
+request and when reusing one. DeepSeek's documented native format does not imply
+support for cache controls, vendor tiers, safety identifiers, moderation/access
+programs, or reasoning summaries. Unsupported explicit requests fail before
+reservation rather than silently succeeding. Its supported `user` isolation,
+structured output, logprobs, and model/mode-specific sampling remain available.
+Verbosity is adapted into a response-scoped system instruction in the exact
+counted input, leaving the protected prefix unchanged.
+
+`HarnessControlEffects` allows trusted Session preparation to attest real
+counter/window/single-call enforcement; defaults attest nothing. Merely accepting
+`max_tool_calls`, automatic truncation, or single-tool policy in request JSON is
+not proof of an implementation. Active integration owners must supply these
+effects only after their corresponding runtime behavior is connected.
+
+OpenRouter's live public `ResponsesRequest` schema is retained in
+`.cache/full-responses-provider/openrouter-response-request.json` for the
+bounded compatibility check. Explicit OpenAI/custom native BYOK routes retain
+their provider controls; the platform does not assume every OpenRouter route
+supports OpenAI-only extensions. Native actual service tier is preserved
+separately from the requested value for canonical response projection.
+
+Sources: [DeepSeek native compatibility](https://api-docs.deepseek.com/guides/responses_api/),
+[mode effects](https://api-docs.deepseek.com/guides/thinking_mode/),
+[OpenRouter schema](https://openrouter.ai/openapi.json), and
+[OpenAI create contract](https://developers.openai.com/api/reference/resources/responses/methods/create).
+
+### Incremental native delivery
+
+`complete_stream_with_options_and_native` adds a separate private semantic
+callback without changing legacy Chat text callbacks. It delivers accepted item,
+content-part, text/refusal, reasoning-summary, annotation, and function/custom
+input events before the provider's terminal response. Session assigns canonical
+item IDs, output ordinals, and event sequence numbers; upstream lifecycle events
+and sequence numbers are not public events.
+
+The typed `SemanticDelta` allowlists public fields, including nested citation
+and logprob fields. It excludes provider metadata, raw reasoning content,
+encrypted continuations, and hosted items requiring a separate service
+authority. A zero-delay cooperation point after delivery lets the Worker stream
+reader observe the first accepted semantic event without waiting for a whole
+provider turn. Native terminal reconciliation checks item identities and
+text/refusal/summary/function/custom fragments, including done-versus-delta
+agreement. Usage accounting and terminal failure handling remain Session's
+responsibility; incremental publication does not imply successful completion.
+Semantic-integrity disagreements suppress subsequent semantic callbacks while
+the provider drains. A valid terminal carrying known usage is returned as a
+failed `NativeTurn` with a safe protocol error rather than discarding its usage.
+
+Additional pure tests cover early delivery without a terminal turn, private-field
+suppression, tool/part event coverage, and inconsistent semantic fragments.
+These tests are added for Actions, not claimed as locally executed.
+
 Focused pure tests cover preparation/count context identity, forbidden state and
 hosted capabilities, output-budget ownership, private-item preservation and
 redacted Debug output, exact known usage/cost with absent details, failed terminal

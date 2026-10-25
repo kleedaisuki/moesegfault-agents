@@ -33,8 +33,14 @@ mod archives;
 mod download;
 #[path = "workspace_files.rs"]
 mod files;
+#[path = "workspace_interpreter.rs"]
+mod interpreter;
 #[path = "workspace_lease.rs"]
 mod lease;
+pub use interpreter::{
+    PythonArtifact, PythonDomainSecret, PythonFilePage, PythonInput, PythonMemoryTier,
+    PythonNetworkPolicy, PythonOutcome, PythonRequest,
+};
 #[path = "workspace_transport.rs"]
 mod transport;
 
@@ -55,6 +61,7 @@ const STARTUP_PENDING: &str = "workspace:startup-pending";
 /// A session DO is the sole writer. Its caller must serialize workspace operations,
 /// including checkpoint/release, against tool execution.
 pub struct Workspace<'a> {
+    runtime_profile: agents_core::RuntimeProfile,
     state: &'a State,
     env: &'a Env,
     prefix: String,
@@ -147,6 +154,7 @@ impl<'a> Workspace<'a> {
     pub fn new(state: &'a State, env: &'a Env, owner: &str, session: &str) -> Self {
         // Fixed-length, collision-resistant components cannot inject R2 path segments.
         Self {
+            runtime_profile: agents_core::RuntimeProfile::Basic1g,
             state,
             env,
             prefix: format!("workspaces/{}/{}", digest_key(owner), digest_key(session)),
@@ -166,6 +174,11 @@ impl<'a> Workspace<'a> {
                 id: lease.id,
                 pricing: lease.pricing,
             }))
+    }
+
+    pub fn with_runtime_profile(mut self, profile: agents_core::RuntimeProfile) -> Self {
+        self.runtime_profile = profile;
+        self
     }
 
     pub fn for_run(mut self, run: &str) -> Self {
@@ -1414,6 +1427,13 @@ impl<'a> Workspace<'a> {
         }
         let running = self.container()?.running();
         if running || intent.startup_pending {
+            if storage
+                .get::<Value>("workspace:python-publication-pending")
+                .await?
+                .is_some()
+            {
+                return Err(Error::RustError("python_publication_pending".into()));
+            }
             match self.container()?.destroy(None).await {
                 Ok(()) => {
                     if running {

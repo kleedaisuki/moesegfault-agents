@@ -263,6 +263,28 @@ pub(crate) fn expand_compaction_items(
     prefix_hash: &str,
     items: &[Value],
 ) -> worker::Result<ExpandedCompaction> {
+    expand_items(key, owner, agent, prefix_hash, items, None)
+}
+
+pub(crate) fn expand_for_prefix(
+    key: &str,
+    owner: &str,
+    agent: &str,
+    prefix_hash: &str,
+    items: &[Value],
+    base: &str,
+) -> worker::Result<ExpandedCompaction> {
+    expand_items(key, owner, agent, prefix_hash, items, Some(base))
+}
+
+fn expand_items(
+    key: &str,
+    owner: &str,
+    agent: &str,
+    prefix_hash: &str,
+    items: &[Value],
+    base: Option<&str>,
+) -> worker::Result<ExpandedCompaction> {
     let mut output = Vec::with_capacity(items.len());
     let mut instructions = None;
     let mut found = false;
@@ -275,8 +297,14 @@ pub(crate) fn expand_compaction_items(
             return Err(invalid());
         }
         found = true;
-        let state = CompactionState::open(key, owner, item, agent, prefix_hash)?;
+        let mut state = CompactionState::open(key, owner, item, agent, prefix_hash)?;
         instructions = state.instructions;
+        if state.messages.first().is_some_and(|message| {
+            message.role == "system"
+                && base.is_some_and(|base| message.content.as_str() == Some(base))
+        }) {
+            state.messages.remove(0);
+        }
         output.extend(
             crate::provider::responses::message_items(&state.messages).map_err(|_| invalid())?,
         );
@@ -414,6 +442,37 @@ pub(crate) async fn count_prepared(
     config: &ProviderConfig,
     prepared: &crate::provider::responses::PreparedRequest,
 ) -> worker::Result<InputTokenCount> {
+    if crate::deepseek_tokenizer::is_deepseek(config) {
+        let operation = crate::util::id("token_count");
+        crate::reconcile::maintenance_account_reservation(env, owner, &operation).await?;
+        let meter = crate::resources::ResourceMeter::account(env, owner, &operation)?;
+        meter
+            .require_observation("provider.count", Resource::Worker, "wall_ms")
+            .await?;
+        let started = crate::util::now_ms();
+        let counted =
+            crate::deepseek_tokenizer::count_deepseek(config, prepared).map_err(Error::RustError);
+        meter
+            .record_wall_time(
+                "provider.count",
+                Resource::Worker,
+                started,
+                crate::util::now_ms(),
+            )
+            .await?;
+        meter.settle_run().await?;
+        let count = counted?;
+        crate::util::emit(
+            "provider.count.local",
+            json!({"model":config.model,"input_tokens":count.input_tokens,
+            "renderer_revision":count.renderer_revision,"tokenizer_sha256":count.tokenizer_sha256,
+            "wasm_linear_memory_bytes":count.wasm_linear_memory_bytes}),
+        );
+        return Ok(InputTokenCount {
+            object: "response.input_tokens".into(),
+            input_tokens: count.input_tokens,
+        });
+    }
     count_account(
         env,
         owner,

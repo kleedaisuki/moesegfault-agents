@@ -113,3 +113,64 @@ the 16/32 limits, queued fork eviction, warm-up without model work, steering
 successor/pending tool input, owner isolation, caller disconnect, bounded slow
 readers and sixty-minute expiry. Model/tool calls and ledger counts must prove
 that transport reconnects never replay execution.
+
+## Public gateway integration checkpoint
+
+`GET /v1/responses` now performs the authenticated Worker WebSocket upgrade.
+The existing ingress and account gates still run before upgrade; each dispatched
+create or steer additionally passes account/mutation rate gates and credential
+validation. Browser-cookie upgrades require the exact application Origin. Native
+API keys do not require a browser Origin. No raw credential survives upgrade:
+API-key hashes are checked against non-revoked owner rows on every command,
+browser-session hashes are revalidated through AuthSession (including token
+refresh and local logout), and verified OIDC grants retain only their signed
+expiry. Native access-token revocation follows the existing short-lived JWT
+contract, not an invented introspection endpoint. Credential expiry does not
+cancel an already admitted durable run.
+
+The executor calls the shared owned Responses admission function directly. There
+is no public HTTP loopback and no second model engine. Native Session event SSE
+is decoded through the mature `eventsource-stream` parser; comments are ignored,
+canonical event objects and sequence numbers are preserved, and each frame has a
+32 MiB bound independent of task duration. Observation failures never retry
+creation or synthesize terminal completion. Account-plan admission remains below
+the protocol's sixteen concurrent execution lanes.
+
+`tests/worker/responses-websocket.test.mjs` exercises actual compiled Worker
+upgrade and socket frames in isolated Miniflare with deterministic providers,
+including cookie Origin rejection, native API-key access, 32 named lanes,
+post-upgrade revocation, warm-up/no-store continuation, Free-plan admission and
+run survival after disconnect. These are integration acceptance tests, not an
+offline fake WebSocket server. At this checkpoint only syntax/format/diff checks
+have run locally; Rust compilation and these integration journeys await the
+coordinated GitHub Actions build. Warm-up, canonical steering successors and
+private connection-parent leases are being joined to the actor-owned execution
+context; the public API must not be called complete before those journeys pass.
+
+Private `ExecutionContext` now carries a server-generated connection lease and
+warm-up flag separately from public request JSON. A cached parent becomes an
+`OwnedParent` only through a token issued by the owning actor for the exact
+connection, owner, response and expiry. Terminal observation captures this token
+without exposing it on the wire. Failed lease capture does not rewrite the
+original terminal result. Replaced cache parents are revoked only after no lane
+cache and no in-flight fork still references them; a focused scheduler test
+protects this ordering. Both the cleanup queue and cleanup concurrency are
+bounded. Disconnect invalidates only connection grants in remembered actors;
+actor alarms provide bounded eventual expiry if an isolate or close-time RPC is
+lost. Admitted model/tool work is never cancelled by this cleanup.
+
+The compiled journey suite also includes a held server `time` tool followed by
+`response.incomplete(reason=steered)` and an automatic successor, plus a client
+function that produces `response.steer.pending` and continues only after explicit
+matching results. Assertions count real provider fixture calls and check accepted
+input appears exactly once, rather than treating transport acknowledgements as
+proof of model application.
+
+
+The current official Node `ResponsesWS` client is also exercised against the
+actual Miniflare HTTP listener (`mf.ready`), not a substituted socket factory.
+Two same-lane requests use real network upgrades, canonical IDs and a parent
+continuation. SDK reconnect/retry is disabled so observation failures cannot
+silently create extra model requests. The accepted-steering disconnect test
+asserts the project's explicit durable-intent policy: one automatic successor,
+one source-journal occurrence and exactly two model-ledger settlements.

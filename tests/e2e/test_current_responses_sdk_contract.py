@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
+import subprocess
+import sys
 from threading import Thread
 from typing import Any
 
@@ -11,7 +14,7 @@ from openai import OpenAI
 import pytest
 from websockets.sync.server import ServerConnection, serve
 
-from current_responses_sdk import validate_wire
+from current_responses_sdk import MAX_WIRE_BYTES, read_wire, validate_wire
 
 
 def response_fixture() -> dict[str, Any]:
@@ -28,8 +31,8 @@ def usage_fixture() -> dict[str, Any]:
 
 def bundle_fixture() -> dict[str, Any]:
     response: dict[str, Any] = response_fixture()
-    terminal: dict[str, Any] = {"type": "response.completed", "sequence_number": 1, "response": response}
-    return {"response": response, "events": [terminal], "websocket_events": [{**terminal, "stream_id": "main"}],
+    events: list[dict[str, Any]] = events_fixture(response)
+    return {"response": response, "events": events, "websocket_events": [{**copy.deepcopy(event), "stream_id": "main"} for event in events],
             "compact": {"id": "cmp_fixture", "created_at": 1, "object": "response.compaction",
                         "output": [{"id": "cmp_item", "type": "compaction", "encrypted_content": "fixture-opaque"}], "usage": usage_fixture()},
             "count": {"object": "response.input_tokens", "input_tokens": 2},
@@ -37,6 +40,18 @@ def bundle_fixture() -> dict[str, Any]:
             "conversation_items": {"object": "list", "data": [{"id": "msg_user", "type": "message", "role": "user", "status": "completed",
                                                                    "content": [{"type": "input_text", "text": "fixture"}]}],
                                    "first_id": "msg_user", "last_id": "msg_user", "has_more": False}}
+
+
+def events_fixture(response: dict[str, Any]) -> list[dict[str, Any]]:
+    pending: dict[str, Any] = {**response, "status": "in_progress", "output": [], "usage": None}
+    return [
+        {"type": "response.created", "sequence_number": 0, "response": pending},
+        {"type": "response.output_text.delta", "sequence_number": 1, "output_index": 0, "content_index": 0,
+         "item_id": "msg_fixture", "delta": "SDK fixture", "logprobs": []},
+        {"type": "response.output_text.done", "sequence_number": 2, "output_index": 0, "content_index": 0,
+         "item_id": "msg_fixture", "text": "SDK fixture", "logprobs": []},
+        {"type": "response.completed", "sequence_number": 3, "response": response},
+    ]
 
 
 def test_current_sdk_all_surface_strict_wire_bundle() -> None:
@@ -59,11 +74,11 @@ def test_current_sdk_bad_wire_and_fake_terminal_fail() -> None:
     with pytest.raises(ValueError):
         validate_wire(bundle)
     bundle = bundle_fixture()
-    bundle["events"][0]["response"] = {**response_fixture(), "id": "wrong"}
-    with pytest.raises(ValueError, match="terminal_snapshot_differs"):
+    bundle["events"][-1]["response"] = {**response_fixture(), "id": "wrong"}
+    with pytest.raises(ValueError, match="response_identity_changed"):
         validate_wire(bundle)
     bundle = bundle_fixture()
-    bundle["events"] *= 2
+    bundle["events"][1]["sequence_number"] = 0
     with pytest.raises(ValueError, match="response_sequence_not_strict"):
         validate_wire(bundle)
 
@@ -236,3 +251,124 @@ def test_current_sdk_unknown_cache_details_are_not_fabricated() -> None:
     del bundle["compact"]["usage"]["input_tokens_details"]["cache_write_tokens"]
     with pytest.raises(ValueError, match="cache_write_tokens"):
         validate_wire(bundle)
+
+
+def test_current_sdk_interleaved_lanes_and_sequential_lane_responses() -> None:
+    bundle: dict[str, Any] = bundle_fixture()
+    second: dict[str, Any] = {**response_fixture(), "id": "resp_second"}
+    left: list[dict[str, Any]] = [{**event, "stream_id": "left"} for event in events_fixture(bundle["response"])]
+    right: list[dict[str, Any]] = [{**event, "stream_id": "right"} for event in events_fixture(second)]
+    bundle["websocket_events"] = [event for pair in zip(left, right) for event in pair]
+    result: dict[str, Any] = validate_wire(bundle)
+    assert result["websocket_lanes"] == 2 and result["websocket_responses"] == 2
+    third: dict[str, Any] = {**response_fixture(), "id": "resp_third"}
+    bundle["websocket_events"] += [{**event, "stream_id": "left"} for event in events_fixture(third)]
+    assert validate_wire(bundle)["websocket_responses"] == 3
+
+
+def test_current_sdk_default_lane_omits_lane_field() -> None:
+    bundle: dict[str, Any] = bundle_fixture()
+    bundle["websocket_events"] = copy.deepcopy(bundle["events"])
+    assert validate_wire(bundle)["websocket_lanes"] == 1
+
+
+@pytest.mark.parametrize("case", [
+    "orphan_terminal", "missing_terminal", "overlap", "lane_switch", "null_lane", "empty_lane", "invalid_lane",
+    "duplicate_sequence", "decreasing_sequence", "string_sequence", "identity_change", "model_change",
+    "duplicate_terminal", "event_after_terminal", "response_id_change", "text_mismatch", "done_mismatch",
+    "delta_item_mismatch", "delta_index_mismatch", "fake_created_status", "fake_terminal_status", "terminal_only_text",
+])
+def test_current_sdk_rejects_broken_websocket_contract(case: str) -> None:
+    bundle: dict[str, Any] = bundle_fixture()
+    events: list[dict[str, Any]] = bundle["websocket_events"]
+    if case == "orphan_terminal":
+        bundle["websocket_events"] = [events[-1]]
+    elif case == "missing_terminal":
+        events.pop()
+    elif case == "overlap":
+        events.insert(1, copy.deepcopy(events[0]))
+    elif case == "lane_switch":
+        events[1]["stream_id"] = "other"
+    elif case == "null_lane":
+        events[1]["stream_id"] = None
+    elif case == "empty_lane":
+        events[1]["stream_id"] = ""
+    elif case == "invalid_lane":
+        events[1]["stream_id"] = "bad lane"
+    elif case == "duplicate_sequence":
+        events[1]["sequence_number"] = 0
+    elif case == "decreasing_sequence":
+        events[2]["sequence_number"] = 0
+    elif case == "string_sequence":
+        events[1]["sequence_number"] = "1"
+    elif case == "identity_change":
+        events[-1]["response"]["id"] = "resp_wrong"
+    elif case == "model_change":
+        events[-1]["response"]["model"] = "agent_wrong"
+    elif case == "duplicate_terminal":
+        events.append(copy.deepcopy(events[-1]))
+    elif case == "event_after_terminal":
+        events.append(copy.deepcopy(events[1]))
+    elif case == "response_id_change":
+        events[1]["response_id"] = "resp_wrong"
+    elif case == "text_mismatch":
+        events[1]["delta"] = "invented model answer"
+    elif case == "done_mismatch":
+        events[2]["text"] = "invented done answer"
+    elif case == "delta_item_mismatch":
+        events[1]["item_id"] = "msg_wrong"
+    elif case == "delta_index_mismatch":
+        events[1]["output_index"] = 1
+    elif case == "fake_created_status":
+        events[0]["response"]["status"] = "completed"
+    elif case == "fake_terminal_status":
+        events[-1]["response"]["status"] = "in_progress"
+    elif case == "terminal_only_text":
+        del events[1:3]
+    with pytest.raises(ValueError):
+        validate_wire(bundle)
+
+
+def run_wire_stdin(payload: bytes) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("current_responses_sdk.py")), "wire", "--input", "-"],
+        input=payload, capture_output=True, check=False, timeout=20,
+    )
+
+
+def test_current_sdk_stdin_bridge_is_safe_and_in_memory() -> None:
+    bundle: dict[str, Any] = bundle_fixture()
+    sentinel: str = "private prompt answer authorization Bearer sentinel"
+    bundle["response"]["metadata"] = {"private": sentinel}
+    result: subprocess.CompletedProcess[bytes] = run_wire_stdin(json.dumps(bundle).encode())
+    assert result.returncode == 0 and result.stderr == b""
+    summary: dict[str, Any] = json.loads(result.stdout)
+    assert summary["passed"] and summary["websocket_responses"] == 1
+    assert sentinel.encode() not in result.stdout and len(result.stdout) < 2048
+
+
+@pytest.mark.parametrize("payload", [
+    b'{"private_prompt":"never print this sentinel",',
+    b'{"private_prompt":"never print this sentinel","response":{}}',
+    b'"never print this sentinel"',
+    b'{"private_prompt":"never print this sentinel","count":NaN}',
+    b'{"private_prompt":"never print this sentinel","count":1,"count":2}',
+    b'\xffnever print this sentinel',
+])
+def test_current_sdk_stdin_failures_do_not_disclose_raw_data(payload: bytes) -> None:
+    result: subprocess.CompletedProcess[bytes] = run_wire_stdin(payload)
+    assert result.returncode == 1 and result.stderr == b""
+    summary: dict[str, Any] = json.loads(result.stdout)
+    assert summary["passed"] is False and set(summary) == {"passed", "error_type"}
+    assert b"sentinel" not in result.stdout and len(result.stdout) < 256
+
+
+def test_current_sdk_stdin_byte_limit_and_file_compatibility(tmp_path: Path) -> None:
+    payload: bytes = json.dumps(bundle_fixture()).encode()
+    result: subprocess.CompletedProcess[bytes] = run_wire_stdin(payload + b" " * (MAX_WIRE_BYTES + 1 - len(payload)))
+    assert result.returncode == 1 and result.stderr == b""
+    accepted: subprocess.CompletedProcess[bytes] = run_wire_stdin(payload + b" " * (MAX_WIRE_BYTES - len(payload)))
+    assert accepted.returncode == 0 and accepted.stderr == b""
+    fixture: Path = tmp_path / "synthetic-sdk-wire.json"
+    fixture.write_bytes(json.dumps(bundle_fixture()).encode())
+    assert validate_wire(read_wire(fixture))["passed"]

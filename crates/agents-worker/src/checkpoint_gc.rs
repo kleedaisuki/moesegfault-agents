@@ -137,7 +137,8 @@ async fn delete_owner_blob(
 }
 
 async fn dispatch(env: &Env, row: &Intent) -> Result<bool> {
-    let namespace = env.durable_object("SESSIONS")?;
+    let namespace =
+        crate::runtime_profiles::namespace_for(env, &row.account_id, &row.session_id).await?;
     let id = namespace.id_from_name(&format!("{}:{}", row.account_id, row.session_id))?;
     let stub = id.get_stub()?;
     let mut init = RequestInit::new();

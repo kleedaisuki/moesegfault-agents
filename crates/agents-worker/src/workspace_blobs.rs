@@ -445,6 +445,68 @@ pub(crate) async fn release_transfer(env: &Env, owner: &str, child_response: &st
     Ok(())
 }
 
+fn connection_ref_id(connection: &str, response: &str) -> Result<String> {
+    if connection.is_empty()
+        || connection.len() > 256
+        || response.is_empty()
+        || response.len() > 256
+    {
+        return Err(fail("invalid_connection_workspace_lease"));
+    }
+    let digest = Sha256::digest(serde_json::to_vec(&(connection, response))?);
+    Ok(format!("connection:{digest:x}"))
+}
+
+pub(super) fn validate_connection_lease(
+    connection: &str,
+    response: &str,
+    expiry: u64,
+    now: u64,
+) -> Result<()> {
+    connection_ref_id(connection, response)?;
+    if expiry <= now || expiry > now.saturating_add(3_600_000) {
+        return Err(fail("invalid_connection_workspace_lease"));
+    }
+    Ok(())
+}
+
+/// The connection's authority expires independently of delayed physical GC.
+/// Repeated seals may shorten this holder but never extend its original expiry.
+pub(crate) async fn bind_connection(
+    env: &Env,
+    owner: &str,
+    connection: &str,
+    response: &str,
+    expires_at_ms: u64,
+    archive: &OwnedArchiveRef,
+) -> Result<()> {
+    validate_connection_lease(connection, response, expires_at_ms, crate::util::now_ms())?;
+    archive.validate(owner)?;
+    let stored = find_key(env, owner, &archive.object_key).await?;
+    if !stored
+        .as_ref()
+        .is_some_and(|stored| stored.same_object(archive))
+    {
+        return Err(fail("workspace_blob_identity_conflict"));
+    }
+    let id = connection_ref_id(connection, response)?;
+    env.d1("DB")?.prepare("INSERT INTO workspace_blob_refs(account_id,kind,ref_id,object_key,lease_until_ms) VALUES(?,'fork-transfer',?,?,CAST(? AS INTEGER)) ON CONFLICT(account_id,kind,ref_id) DO UPDATE SET object_key=excluded.object_key,lease_until_ms=MIN(workspace_blob_refs.lease_until_ms,excluded.lease_until_ms)")
+        .bind(&[text(owner),text(&id),text(&archive.object_key),text(&expires_at_ms.to_string())])?.run().await?;
+    Ok(())
+}
+
+/// Grant metadata is tombstoned first. Child/current/session user data holders
+/// are independent and must not be released when an observer disconnects.
+pub(crate) async fn release_connection(
+    env: &Env,
+    owner: &str,
+    connection: &str,
+    response: &str,
+) -> Result<()> {
+    let id = connection_ref_id(connection, response)?;
+    release_transfer(env, owner, &id).await
+}
+
 /// Keep both old and candidate archives alive until pointer publication commits.
 pub(crate) async fn bind_session(
     env: &Env,
@@ -580,6 +642,29 @@ fn fail(code: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_lease_has_a_hard_hour_boundary_and_no_identity_aliases() {
+        let now = 1_000;
+        for expiry in [now + 1, now + 3_600_000] {
+            assert!(validate_connection_lease("connection", "response", expiry, now).is_ok());
+        }
+        for expiry in [0, now, now + 3_600_001, u64::MAX] {
+            assert!(validate_connection_lease("connection", "response", expiry, now).is_err());
+        }
+        for (connection, response) in [("", "response"), ("connection", "")] {
+            assert!(validate_connection_lease(connection, response, now + 1, now).is_err());
+        }
+        assert!(connection_ref_id(&"x".repeat(257), "response").is_err());
+        assert_ne!(
+            connection_ref_id("a:b", "c").unwrap(),
+            connection_ref_id("a", "b:c").unwrap()
+        );
+        assert_ne!(
+            connection_ref_id("connection-a", "response").unwrap(),
+            connection_ref_id("connection-b", "response").unwrap()
+        );
+    }
 
     fn archive(owner: &str, legacy: bool) -> OwnedArchiveRef {
         let digest = Sha256::digest(owner.as_bytes());

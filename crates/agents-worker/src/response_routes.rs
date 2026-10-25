@@ -16,6 +16,9 @@ pub(crate) async fn handle(req: Request, env: &RouteContext<'_>, owner: &str) ->
     let path = req.path();
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
     match segments.as_slice() {
+        ["v1", "responses", "compact" | "input_tokens"] => {
+            crate::auxiliary_routes::handle(req, env, owner).await
+        }
         ["v1", "responses"] if req.method() == Method::Post => create(req, env, owner).await,
         ["v1", "responses"] => method_not_allowed(),
         ["v1", "responses", id] if valid_id(id) => {
@@ -54,13 +57,44 @@ async fn create(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result
         return invalid("Responses creation does not accept query parameters");
     }
     let session_header = req.headers().get("X-Agents-Session")?;
-    let key = match idempotency_key(req.headers().get("Idempotency-Key")?.as_deref()) {
-        Ok(key) => key,
-        Err(message) => return invalid(message),
-    };
-    let mut value: Value = match routes::body(&mut req).await {
+    let key = req.headers().get("Idempotency-Key")?;
+    let value: Value = match routes::body(&mut req).await {
         Ok(value) => value,
         Err(response) => return Ok(response),
+    };
+    create_owned(env, owner, value, session_header, key).await
+}
+
+/// Shared owned dispatch for HTTP and authenticated WebSocket lanes.
+pub(crate) async fn create_owned(
+    env: &RouteContext<'_>,
+    owner: &str,
+    value: Value,
+    session_header: Option<String>,
+    key: Option<String>,
+) -> Result<Response> {
+    create_owned_with_context(
+        env,
+        owner,
+        value,
+        session_header,
+        key,
+        crate::response_execution::ExecutionContext::default(),
+    )
+    .await
+}
+
+pub(crate) async fn create_owned_with_context(
+    env: &RouteContext<'_>,
+    owner: &str,
+    mut value: Value,
+    session_header: Option<String>,
+    key: Option<String>,
+    execution: crate::response_execution::ExecutionContext,
+) -> Result<Response> {
+    let key = match idempotency_key(key.as_deref()) {
+        Ok(key) => key,
+        Err(message) => return invalid(message),
     };
     let previous = match value.get("previous_response_id") {
         Some(Value::String(id)) if valid_id(id) => response_index::get(env, owner, id).await?,
@@ -99,8 +133,30 @@ async fn create(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result
     let existing_session = previous.is_some() || session_header.is_some();
     if let Some(key) = &key {
         if let Some(route) = response_index::by_key(env, owner, key).await? {
-            return dispatch_create(env, owner, route, &request_hash, value, existing_session)
-                .await;
+            return dispatch_create(
+                env,
+                owner,
+                route,
+                &request_hash,
+                value,
+                existing_session,
+                execution,
+            )
+            .await;
+        }
+    }
+    if let Some(session_id) = session_header.as_deref() {
+        let requested = match crate::runtime_profiles::requested_tools(&input.tools) {
+            Ok(profile) => profile,
+            Err(_) => return invalid("Requested Container memory is not supported"),
+        };
+        if let Some(requested) = requested {
+            let Some(session) = Store::new(env).get_session(owner, session_id).await? else {
+                return not_found();
+            };
+            if requested != session.runtime_profile {
+                return invalid("The selected Session has a different immutable Container profile");
+            }
         }
     }
     let session_id = match (&previous, session_header) {
@@ -137,16 +193,26 @@ async fn create(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result
         key.as_deref(),
     )
     .await?;
-    dispatch_create(env, owner, route, &request_hash, value, existing_session).await
+    dispatch_create(
+        env,
+        owner,
+        route,
+        &request_hash,
+        value,
+        existing_session,
+        execution,
+    )
+    .await
 }
 
 async fn dispatch_create(
     env: &RouteContext<'_>,
     owner: &str,
-    route: ResponseRoute,
+    mut route: ResponseRoute,
     request_hash: &str,
     request: Value,
     existing_session: bool,
+    mut execution: crate::response_execution::ExecutionContext,
 ) -> Result<Response> {
     if route.request_hash != request_hash {
         return util::json_error(
@@ -155,6 +221,53 @@ async fn dispatch_create(
             "This Idempotency-Key was already used for a different request",
         );
     }
+    if execution.conversation.is_none() {
+        let parsed: ResponseRequest = serde_json::from_value(request.clone())?;
+        if let Some(id) = parsed.conversation_id().map_err(worker::Error::RustError)? {
+            let mut accepted = crate::conversation_routes::admit(env, owner, id, &route.id).await?;
+            if accepted.status_code() >= 300 {
+                return with_identity(accepted, &route);
+            }
+            let admission: crate::conversation_routes::ConversationAdmission =
+                accepted.json().await?;
+            let existing = Store::new(env)
+                .get_session(owner, &route.session_id)
+                .await?;
+            if existing.is_none() {
+                if let Some(session_id) = &admission.predecessor_session_id {
+                    if let Some(candidate) = Store::new(env).get_session(owner, session_id).await? {
+                        let requested = crate::runtime_profiles::requested(&request)?;
+                        if admission.predecessor_agent_id.as_deref()
+                            == Some(route.agent_id.as_str())
+                            && admission.predecessor_pin_hash.as_deref()
+                                == Some(candidate.pinned.prefix_hash().as_str())
+                            && requested.is_none_or(|profile| profile == candidate.runtime_profile)
+                        {
+                            route = response_index::move_to_child(
+                                env,
+                                owner,
+                                &route.id,
+                                &route.session_id,
+                                session_id,
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                worker::Error::RustError("response_route_unavailable".into())
+                            })?;
+                        }
+                    }
+                }
+            }
+            let reuse_head = admission.predecessor_session_id.as_deref()
+                == Some(route.session_id.as_str())
+                && admission.predecessor_agent_id.as_deref() == Some(route.agent_id.as_str());
+            execution.conversation = Some(crate::response_execution::ConversationInput {
+                admission,
+                reuse_head,
+            });
+        }
+    }
+    let requested_profile = crate::runtime_profiles::requested(&request)?;
     let session = if existing_session {
         let Some(session) = Store::new(env)
             .get_session(owner, &route.session_id)
@@ -162,15 +275,41 @@ async fn dispatch_create(
         else {
             return not_found();
         };
+        if requested_profile.is_some_and(|profile| profile != session.runtime_profile)
+            && request["previous_response_id"].is_null()
+        {
+            return with_identity(
+                util::json_error(
+                    400,
+                    "runtime_profile_mismatch",
+                    "The session runtime profile is immutable",
+                )?,
+                &route,
+            );
+        }
         session
     } else {
-        match routes::response_session(env, owner, &route.agent_id, &route.session_id).await {
+        let profile = Store::new(env)
+            .get_session(owner, &route.session_id)
+            .await?
+            .map(|session| session.runtime_profile)
+            .or(requested_profile)
+            .unwrap_or_default();
+        match routes::response_session_profile(
+            env,
+            owner,
+            &route.agent_id,
+            &route.session_id,
+            profile,
+        )
+        .await
+        {
             Ok(Ok(session)) => session,
             Ok(Err(response)) => return with_identity(response, &route),
             Err(error) => return with_identity(routes::error_response(&error)?, &route),
         }
     };
-    let payload = json!({"response_id":route.id,"request":request});
+    let payload = json!({"response_id":route.id,"request":request,"execution":execution});
     let mut response = match routes::forward(
         env,
         &session,
@@ -200,7 +339,7 @@ async fn dispatch_create(
     if code == Some("response_branch_required")
         || (code == Some("session_busy") && request["previous_response_id"].is_string())
     {
-        return dispatch_branch(env, owner, &route, &session, request).await;
+        return dispatch_branch(env, owner, &route, &session, request, execution).await;
     }
     if body.pointer("/error/code").and_then(Value::as_str) != Some("response_session_closed") {
         retire_rejected_session(env, &session, &route, existing_session, 409).await;
@@ -245,6 +384,7 @@ async fn dispatch_branch(
     route: &ResponseRoute,
     source: &agents_core::SessionRecord,
     request: Value,
+    execution: crate::response_execution::ExecutionContext,
 ) -> Result<Response> {
     let Some(parent) = request["previous_response_id"].as_str() else {
         return invalid("A branch requires a previous response");
@@ -255,7 +395,7 @@ async fn dispatch_branch(
         Method::Post,
         "/branches/export",
         Some(json!({
-            "owner_id": owner, "parent_response_id": parent, "child_response_id": route.id, "request": request,
+            "owner_id": owner, "parent_response_id": parent, "child_response_id": route.id, "request": request, "parent_lease": execution.parent_lease,
         })),
     )
     .await?;
@@ -272,7 +412,7 @@ async fn dispatch_branch(
                 Method::Post,
                 "/responses",
                 Some(json!({
-                    "response_id": route.id, "request": request,
+                    "response_id": route.id, "request": request, "execution": execution,
                 })),
             )
             .await?;
@@ -283,13 +423,23 @@ async fn dispatch_branch(
     let seed: crate::session::branch::BranchExport = exported.json().await?;
     let child_id = crate::session::branch::child_session_id(owner, &route.id);
     let retained_pin = (seed.agent_id == route.agent_id).then(|| seed.pinned.clone());
-    let child =
-        match routes::response_branch_session(env, owner, &route.agent_id, &child_id, retained_pin)
-            .await?
-        {
-            Ok(child) => child,
-            Err(response) => return with_identity(response, route),
-        };
+    let profile = crate::runtime_profiles::requested(&request)?.unwrap_or(source.runtime_profile);
+    if let crate::session::branch::WorkspaceSeed::Archive { archive } = &seed.point.workspace {
+        crate::runtime_profiles::check_archive(profile, archive.logical_bytes)?;
+    }
+    let child = match routes::response_branch_session_profile(
+        env,
+        owner,
+        &route.agent_id,
+        &child_id,
+        retained_pin,
+        profile,
+    )
+    .await?
+    {
+        Ok(child) => child,
+        Err(response) => return with_identity(response, route),
+    };
     let imported = routes::forward(
         env,
         &child,
@@ -319,7 +469,7 @@ async fn dispatch_branch(
         Method::Post,
         "/responses",
         Some(json!({
-            "response_id": route.id, "request": request,
+            "response_id": route.id, "request": request, "execution": execution,
         })),
     )
     .await?;
@@ -353,6 +503,30 @@ async fn retire_rejected_session(
             json!({"session_id":session.id,"agent_id":session.agent_id}),
         );
     }
+}
+
+pub(crate) async fn context(
+    env: &RouteContext<'_>,
+    owner: &str,
+    response_id: &str,
+) -> Result<Response> {
+    let Some(route) = response_index::get(env, owner, response_id).await? else {
+        return not_found();
+    };
+    let Some(session) = Store::new(env)
+        .get_session(owner, &route.session_id)
+        .await?
+    else {
+        return not_found();
+    };
+    routes::forward(
+        env,
+        &session,
+        Method::Post,
+        "/response-context",
+        Some(json!({"response_id":response_id})),
+    )
+    .await
 }
 
 async fn indexed(
@@ -399,26 +573,11 @@ fn with_identity(response: Response, route: &ResponseRoute) -> Result<Response> 
 }
 
 fn retrieve_query(url: &url::Url, allow_query: bool) -> std::result::Result<String, &'static str> {
-    let mut stream = false;
-    let mut after = None;
-    let mut seen = std::collections::BTreeSet::new();
-    for (key, value) in url.query_pairs() {
-        if !allow_query || !seen.insert(key.to_string()) {
-            return Err("Unsupported or repeated Responses query parameter");
-        }
-        match key.as_ref() {
-            "stream" if value == "true" => stream = true,
-            "stream" if value == "false" => {}
-            "starting_after" => after = Some(sequence(&value)?),
-            _ => return Err("Unsupported Responses query parameter"),
-        }
+    if !allow_query && url.query().is_some() {
+        return Err("Responses deletion does not accept query parameters");
     }
-    match (stream, after) {
-        (true, Some(after)) => Ok(format!("/events?after={after}")),
-        (true, None) => Ok("/events".into()),
-        (false, Some(_)) => Err("starting_after requires stream=true"),
-        (false, None) => Ok(String::new()),
-    }
+    crate::responses_wire::RetrieveOptions::parse(url, false)
+        .map(|options| options.private_suffix())
 }
 
 fn input_query(url: &url::Url) -> std::result::Result<String, &'static str> {
@@ -453,19 +612,7 @@ fn input_query(url: &url::Url) -> std::result::Result<String, &'static str> {
 }
 
 fn event_query(url: &url::Url) -> std::result::Result<String, &'static str> {
-    let pairs: Vec<_> = url.query_pairs().collect();
-    match pairs.as_slice() {
-        [] => Ok(String::new()),
-        [(key, value)] if key == "after" => Ok(format!("?after={}", sequence(value)?)),
-        _ => Err("Only the after sequence cursor is supported for response events"),
-    }
-}
-
-fn sequence(value: &str) -> std::result::Result<u64, &'static str> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err("The event cursor must be a nonnegative integer");
-    }
-    value.parse().map_err(|_| "The event cursor is too large")
+    crate::responses_wire::RetrieveOptions::parse(url, true).map(|options| options.private_query())
 }
 
 fn valid_id(id: &str) -> bool {
@@ -546,6 +693,12 @@ mod tests {
             assert!(retrieve_query(&url(query), true).is_err(), "{query}");
         }
         assert!(retrieve_query(&url("?stream=true"), false).is_err());
+        let suffix = retrieve_query(&url("?stream=true&include[]=code_interpreter_call.outputs&include[]=message.output_text.logprobs&include_obfuscation=false"), true).unwrap();
+        assert!(suffix.starts_with("/events?"));
+        assert!(suffix.contains("include%5B%5D=code_interpreter_call.outputs"));
+        assert!(suffix.contains("include_obfuscation=false"));
+        assert!(retrieve_query(&url("?include[]=unknown"), true).is_err());
+        assert!(retrieve_query(&url("?include_obfuscation=0"), true).is_err());
     }
 
     #[test]

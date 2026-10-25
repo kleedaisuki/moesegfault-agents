@@ -128,6 +128,32 @@ def test_canonical_pin_mismatch_rejected(configured: Mock) -> None:
         policy.assert_direct_deepseek_pin(api, supplied)
 
 
+def test_native_transport_and_smaller_output_budget_reuse_the_same_route(configured: Mock) -> None:
+    api = Api()
+    api.session["pinned"]["model"].update({"protocol": "responses", "max_output_tokens": 512})
+    policy.assert_direct_deepseek_pin(api, api.session)
+    assert api.model["max_output_tokens"] == 8192
+    assert "protocol" not in api.model
+
+
+@pytest.mark.parametrize("field,value", [
+    ("context_window", 1000001), ("context_window", 0), ("context_window", True),
+    ("max_output_tokens", 8193), ("max_output_tokens", 0), ("max_output_tokens", "512"),
+])
+def test_session_bounds_cannot_escape_the_registry(configured: Mock, field: str, value: object) -> None:
+    api = Api()
+    api.session["pinned"]["model"][field] = value
+    with pytest.raises(AssertionError, match="bounds"):
+        policy.assert_direct_deepseek_pin(api, api.session)
+
+
+def test_another_supported_model_is_not_the_selected_test_route(configured: Mock) -> None:
+    api = Api()
+    api.session["pinned"]["model"]["model"] = "deepseek-v4-pro"
+    with pytest.raises(AssertionError, match="selected effective platform route"):
+        policy.assert_direct_deepseek_pin(api, api.session)
+
+
 def test_actual_http_session_creation_applies_guard(configured: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAGENTS_TEST_INFERENCE", "1")
     api = Api()

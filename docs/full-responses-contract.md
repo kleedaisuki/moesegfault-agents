@@ -195,3 +195,127 @@ This ordering preserves the existing tested base and lets storage/performance
 work optimize shared immutable structures rather than another set of linear-only
 special cases. None of the missing slices becomes complete merely because its
 request object is accepted or a provider silently ignores it.
+
+## Wiring closure audit: working tree 2026-10-25 12:17 UTC
+
+This section supersedes the **baseline status column**, not the public contract
+above. Inspected HEAD `b1edf97746d3902373dbb05e224799f03d9a3a10` plus concurrent
+uncommitted subsystem work. It records source wiring, not compiled/staging
+acceptance. Active owners can close gaps after this snapshot; use their delivery
+notes and selected changed-feature evidence rather than rerunning old baselines.
+
+Legend: **W** = concrete dispatch/consumer exists; **P** = implemented partial path
+with a named remaining coupling; **D** = DTO/validation/echo only; **C** = genuinely
+provider-dependent effect needs a real capability adapter. D or a global refusal
+is not completion of a common portable field.
+
+### All 32 create fields: concrete dispatch status
+
+| Fields | Status and evidence | Next closure / recommended owner |
+| --- | --- | --- |
+| `model`, `input` | W/P: edge agent ownership and DO admission; attachment resolution and private native input batch wired. Rich reference/opaque classes still fail `unresolved_input`. | State/native: resolve trusted owner references before native preparation. |
+| `previous_response_id`, `conversation` | P: branch routes, Conversation admission authority and terminal integration actively being completed by state lead. | State: retain exact immutable history revision, branch/workspace authority and terminal append gate. |
+| `instructions` | W: current response's protected-prefix construction; native generation takes current prefix independently from private log. | Preserve compact/branch/steering instruction invariants in changed-feature tests. |
+| `background`, `store`, `stream`, `metadata` | W/P: durable response run, observers, background acknowledgement and retrieval/storage lifecycle exist; no-store WS lifetime owned by WS lead. | State/WS: selected no-store/disconnect/lifetime tests, not another full old journey. |
+| `stream_options` | W/P: `response_event` reads `include_obfuscation` and adds default-on random padding to delta events. Not DTO-only. | Wire/WS: current SDK retrieval also has independent `include_obfuscation`; retrieval rejects it at snapshot. |
+| `max_output_tokens`, `temperature`, `top_p` | W/C: generation options and output-budget admission wired. Chat DeepSeek has mode checks; native path skips them. | Native policy: unify effective model/mode checks without regressing old saved Chat routes. |
+| `text` | P/C: text/JSON/schema native forwarding and final JSON/schema validation wired; verbosity forwards only native, DeepSeek explicitly ignores it. | Native policy: capable route for verbosity or honest model boundary; do not echo ignored requested verbosity as effective behavior. |
+| `reasoning` | P/C: effort and native summaries/rich output wired. Current native checks do not enforce provider support for context/mode/summary. Public encrypted replay missing. | Native policy + native context: route-bound public envelope/resolver and model-specific supported effects. |
+| `truncation` | P: `fit_response_prompt` drops complete legacy message groups for auto and fails disabled overflows; uses working estimate. Private native history remains separate. | Native/context: trim the same prepared/native window and exact count authority; never report successful truncation while sending untrimmed native log. |
+| `tools` | P: full unions validate; four hosted families have binding foundation; client custom/namespace native representation and pending code exist. Admission still unconditionally invokes function-only `request.tool_definitions()`. | Hosted/native: first remove this wiring choke point using one resolved tool set shared by generation/count. Additional families below. |
+| `tool_choice`, `parallel_tool_calls` | P: legacy simple policy and native none/required/named/single-call checks exist; hosted rewrites available. Native `allowed_tools` subset/mode is not enforced in `validate_policy`. | Tool binding + native policy: actual allowed set governs declaration, native output, execution and continuation. |
+| `max_tool_calls` | D/P: validated and forwarded native, no harness-side aggregate counter consumer found. DeepSeek ignores it. | Harness/native: persist per-response built-in call budget, decrement once at accepted tool intent across rounds/retries. Do not count caller function calls incorrectly as hosted budget. |
+| `include`, `top_logprobs` | P/C: creation canonical-copy projection and SSE projection are wired; native sanitizer retains reported logprobs/annotations. Retrieve query rejects include and cannot request a new projection. | Wire/state: retrieve include[] against canonical retained data; model capability for logprobs; reference ownership before revealing URLs/ciphertext. |
+| `context_management` | D: syntax/response echo and steering rejection only; no execution consumer found. Existing agent percentage compaction is a different policy. | Context/aux: implement requested compaction operation/trigger/opaque item using same actor and exact prepared context; integrate with steering rather than permanent exclusion. |
+| `prompt` | D: ID/version/typed variables validated and echoed, but absent from `native_controls`, no registry/resolver consumer found. | Dedicated prompt/registry slice: owned versioned templates resolved at admission, include typed media variables and actual count input, preserve protected-prefix precedence. |
+| `prompt_cache_key`, `prompt_cache_options`, `prompt_cache_retention` | P/C: native forwarding exists and prefix pin already helps implicit caches. Explicit provider unsupported controls can silently no-op today. | Native policy/cache: preserve provider-supported cache contract and exact prefix boundaries; support comparison-response ownership, breakpoints/prewarm/TTL with real semantics or specific model boundary. |
+| `service_tier` | P/C: native forwarding + requested-value echo, no resolved effective-tier reporting identified. | Native provider: report actual accepted tier from provider or explicitly reject unavailable tier before reservation; request echo is not effective-tier evidence. |
+| `safety_identifier`, `user` | P/C: native forwarding only; legacy paths do not consume native-only controls. | Native policy: route-specific documented identity/isolation semantics; do not substitute either for platform auth. |
+| `moderation`, `access_programs` | P/C: parsed/forwarded native; no platform moderation execution or entitlement resolver identified. | Native policy: capable configured provider/account or explicit capability refusal; implement portable moderation if advertised platform-wide. Vendor access programs may remain vendor-exclusive. |
+
+Important shared defect: `requires_native_provider()` has **no production
+consumer** at this snapshot. Merely setting that predicate does not protect legacy
+paths from ignored controls. Conversely, `GenerationOptions::validate_for_config`
+early-returns `native.validate_model` for Responses. That validator checks model,
+store/history identity and output budget, **not DeepSeek effect support**. A
+native-codec allowlist is not a provider capability matrix.
+
+Current official retrieval schema additionally accepts `include` and
+`include_obfuscation`; inspected directly in
+[official Python ResponseRetrieveParams](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_retrieve_params.py).
+Current edge `retrieve_query` admits only stream and starting_after. Retrieval
+must not mutate the stored canonical item while applying a per-observer include
+or padding decision. Existing persisted SSE has creation-time projection; define
+replay semantics without inventing events or exposing previously unauthorized data.
+
+### Tool families: execution and canonical item coupling
+
+Hosted lead confirmed four active hosted families; parent requested allocation of
+remaining families during this audit. These rows identify required boundaries,
+not an instruction to build unrelated hosted VMs.
+
+| Tool family | Current status | Required coherent slice / owner recommendation |
+| --- | --- | --- |
+| Function | W baseline; schemas/strict validation and call-ID handoff. | Native: preserve nested namespace identity and strict schema validation over shared resolved declaration. |
+| Custom text / grammar | P/D: grammar lark/regex shape/size validates; generic native accepts custom; pending string/result pairing exists. No grammar acceptance validator or matching-model guard. DeepSeek documents only custom apply_patch. | Native tools: capable native constrained-format adapter or mature bounded grammar library; do not accept arbitrary grammar on DeepSeek and assume enforcement. |
+| Namespace | P: nested function/custom declarations, choice lookup and pending namespace identity exist; function-only admission currently blocks. | Native tools: flatten/rebind stable private aliases when model needs it, preserve public namespace/call identity and count the actual rewritten declaration. |
+| Tool search | D: tool/item union and offline tokenizer recognize it, but codec refuses unresolved tool_search. No registry search/load executor. | Registry-discovery worker: server execution loads authorized function/namespace definitions with versioned deferred state; client execution uses typed pending search/result pairing. Never map to web search. |
+| MCP | D: secret redaction/DTO only; no mature MCP client, approval state, ownership or dispatch. | MCP worker: existing maintained protocol client, bounded SSRF-safe transport, private credential refs, allowed tools/approval gate and persisted list/call/approval items. No provider-side forwarding under default LLM key. |
+| Shell / local_shell | D: unions/environment syntax exist; no native shell pending result or execution mapping. Existing Bash is not automatically the shell API contract. | Workspace-tool worker: map hosted shell to supervised existing workspace; local/client shell remains caller handoff. Preserve environment lifetime, policy, outputs/outcome/limits. |
+| Apply patch | D/P: public builtin accepted syntactically; provider codec rejects it. DeepSeek custom apply_patch is a different wire declaration. | Workspace-tool worker: mature patch application/parser + sandbox path policy; adapt native/custom forms without confusing public call/result identity. |
+| Computer / computer_use_preview | D: dimensions/actions/results retain payload; no canonical pending computer or supported provider emission adapter. | Client-tool worker: model-capability adapter and caller-executed action/screenshot/safety acknowledgement lifecycle. Full API does not inherently require our own remote desktop service. |
+| Programmatic tool calling | D: declaration accepted, no execution capability. Hosted `allowed_callers` rejects unsupported caller kinds and preserves intended rights. | Hosted interpreter/native: only advertise when actual sandbox invokes authorized bound tools; enforce caller rights at dispatch, not merely hidden declarations. |
+| Code interpreter / image generation / web search / file search | P: real adapters and pure binding/runtime foundations; authoritative details in corresponding documents; integration active. | Hosted lead: shared resolved binding -> execution intent -> known usage/artifacts -> canonical item/events; outer native provider must not bypass it. |
+
+Concrete central limits at snapshot:
+
+- `provider_responses::validate_tool` permits only function/custom/namespaces;
+  correctly refuses all unresolved hosted/client builtins instead of letting
+  DeepSeek silently ignore them. Add a real adapter, not an allowlist exception.
+- `GeneralPendingCall::from_item` and `validate_returns` handle only
+  function/custom. Extend one typed pending-state model for computer, shell,
+  local_shell, apply_patch, MCP approval and client tool_search, with exact
+  expected result discriminant and call/approval identity.
+- `native::completion_failure` currently permits only message/reasoning/function/
+  custom native outputs; additional families fail `native_output_binding_required`.
+  Their output projection/SSE and terminal pause must be integrated together.
+- Native `validate_policy` verifies allowed declarations/strict functions but not
+  `allowed_tools` subsets, grammar validity or deferred activation. Do not accept
+  these policies on a model merely because it parses their JSON.
+
+### Item classes: storage is not execution
+
+| Items | Current source status / closure |
+| --- | --- |
+| Message, phase, text/image/file content | Original native item retained; attachments resolved; canonical message phase/refusal/citations/logprobs and typed deltas implemented. Cross-check file-variable/media freezing through shared preparation. |
+| Function/custom calls and outputs | Typed native pending pairing implemented; nested namespace preserved; admission/binding choke point above remains. |
+| Reasoning | Private log has owner/provider/base/model/credential binding. Canonical output intentionally removes raw reasoning and encrypted_content; public encrypted include cannot restore it. `unresolved_input` rejects reasoning, compaction, item_reference. Need sealed platform-owned opaque envelope + trusted resolver, not upstream ciphertext passthrough. |
+| Compaction / compaction_trigger | Authenticated compact helper exists; actor/route integration active. Trigger has no execution semantics in inspected code; private native replacement currently recreates legacy message projection. Preserve rich/opaque context or document the exact valid transformation. |
+| Item reference | Validates only ID then blocked at native admission. Resolve retained owner item with original trusted private provider context; never ask shared vendor account to resolve arbitrary user ID. |
+| Search/interpreter/image outputs | Four hosted family projection integration active; retaining DTO alone does not execute a tool. |
+| Computer/shell/local_shell/apply_patch call/results | Broad wire object acceptance only; no complete typed relationship/effect validation. Add per-family bounded types and shared pending lifecycle before admission. |
+| MCP list/call/approval request/response | Approval response validates some keys; no expected-approval relationship/transport discovered. MCP worker must bind approval to the exact owned server/tool arguments. |
+| Tool search / additional_tools / configuration | Payload preservation only at snapshot. Registry changes must be owner/version scoped, activate at explicit boundary and feed the subsequent prepared prompt, not silently modify fixed session prefix. |
+
+### Priority integration order
+
+1. **One preparation/capability choke point** (captain + native + hosted): resolve
+   prompt/template, references, media, active/deferred tool set and all effective
+   policies before financial admission; remove function-only choke point. Share
+   resulting immutable input/tool representation with exact counting.
+2. **Close common portable controls** (dedicated control/registry workers): prompt
+   versions/variables, real context_management, harness max_tool_calls,
+   allowed_tools, native truncation synchronization, retrieval include/padding.
+   These cannot be declared done by rejecting every caller request.
+3. **Typed caller/server tool families** (hosted subteam): shell/patch and registry
+   discovery in parallel with MCP; computer caller lifecycle through same pending
+   model. Provider capability adapters must emit or translate real calls.
+4. **Opaque and current usage** (native/context): owner-bound encrypted replay,
+   item references and current cache-write usage. Existing private log retention
+   is necessary but not public include/round-trip implementation.
+5. **Selective new-feature acceptance**: real current-SDK prompt variables,
+   retrieve different include, constrained custom call, deferred registry load,
+   approval/result pause, exact count with tools and native truncation, plus
+   limit/accounting failure tests only where changed. Reuse already passing
+   baseline receipts with exact source/dependency fingerprint; no gratuitous
+   old paid/model/UI journeys.

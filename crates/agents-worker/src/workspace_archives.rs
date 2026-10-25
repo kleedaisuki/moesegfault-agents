@@ -44,6 +44,50 @@ impl Workspace<'_> {
         if response_id.is_empty() {
             return Err(fail("invalid_response_workspace_anchor"));
         }
+        let Some(archive) = self.seal_archive().await? else {
+            return Ok(None);
+        };
+        blobs::bind(
+            self.env,
+            &self.owner,
+            RefKind::Response,
+            response_id,
+            &archive,
+        )
+        .await?;
+        Ok(Some(archive))
+    }
+
+    pub(crate) async fn seal_connection_archive(
+        &self,
+        response_id: &str,
+        connection_id: &str,
+        expires_at_ms: u64,
+    ) -> Result<Option<OwnedArchiveRef>> {
+        blobs::validate_connection_lease(
+            connection_id,
+            response_id,
+            expires_at_ms,
+            crate::util::now_ms(),
+        )?;
+        let Some(archive) = self.seal_archive().await? else {
+            return Ok(None);
+        };
+        blobs::bind_connection(
+            self.env,
+            &self.owner,
+            connection_id,
+            response_id,
+            expires_at_ms,
+            &archive,
+        )
+        .await?;
+        Ok(Some(archive))
+    }
+
+    // Callers select the public-response or private-connection holder only after
+    // capture succeeds; store=false must never briefly acquire a permanent ref.
+    async fn seal_archive(&self) -> Result<Option<OwnedArchiveRef>> {
         let running = self
             .state
             .container()
@@ -71,14 +115,6 @@ impl Workspace<'_> {
         if archive.object_key != manifest.object_key {
             archive.generation = self.promote_manifest(&manifest, &archive).await?;
         }
-        blobs::bind(
-            self.env,
-            &self.owner,
-            RefKind::Response,
-            response_id,
-            &archive,
-        )
-        .await?;
         Ok(Some(archive))
     }
 

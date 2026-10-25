@@ -64,10 +64,10 @@ silently assigned the latest native context.
 
 ## Remaining full-contract integration
 
-Rich native public item/event projection, generalized pending client calls and
-hosted tool bindings must precede claiming those paths complete. Until that
-projection is connected, an unexpected native execution item fails explicitly
-after known usage rather than becoming a false completed response. Public item
+The semantic projection and generalized caller continuations described below are
+implemented. Hosted execution items still require their service-owned bindings;
+unexpected unbound execution items fail after known usage rather than becoming
+a false completed response. Public item
 references and caller-provided opaque reasoning/compaction items also require
 owner/provider-bound resolution before entering a platform-funded provider
 request; raw vendor IDs are not authorization.
@@ -75,3 +75,35 @@ request; raw vendor IDs are not authorization.
 Formatting and diff checks are inexpensive local checks. New native compilation,
 actual Worker context/branch/compaction fixtures and live provider acceptance
 belong in the captain's Actions gate. No live model call is claimed by this note.
+
+## Native semantic output and caller continuations
+
+`session_native_output.rs` maps private upstream output ordinals to deterministic
+platform item IDs and contiguous public indexes. The provider's typed semantic
+callback runs while upstream inference is still active; it never forwards vendor
+response lifecycle IDs or sequence numbers. Harness-owned function aliases are
+not exposed as caller function calls. Final known-usage processing verifies each
+streamed item reached its terminal boundary and persists the canonical output
+without replaying its deltas. The existing run actor remains the only harness.
+
+Message parts retain phase, annotations, log probabilities and refusals. Public
+reasoning contains summaries only; raw reasoning and unsealed provider ciphertext
+remain in the private continuation log. Include filtering runs on public event
+copies and public response copies, not on private native history.
+
+`GeneralPendingCall` preserves the function/custom distinction, optional
+namespace, exact call ID and input. New fields default to empty so legacy
+function-only sessions keep their stored representation. A continuation must
+supply every outstanding result once, with the corresponding function or custom
+output type; a client cannot switch a custom tool return into a function return.
+Historical branch points retain this pending-call set alongside native context.
+Chat admission and idle processing use one combined pending-client predicate,
+preventing an outstanding custom call from accidentally restarting the harness.
+
+Official semantic event and tool shapes:
+https://developers.openai.com/api/reference/resources/responses/streaming-events
+https://developers.openai.com/api/reference/resources/responses/methods/create
+
+Local verification remains rustfmt and diff checks. Pure projector/policy tests
+and the controlled actual-Worker native streaming/fork journey belong to the
+incremental Actions gate; no live model execution is implied by this change.

@@ -24,12 +24,22 @@ pub(crate) mod branch;
 mod budget;
 #[path = "session_chat_receipts.rs"]
 mod chat_receipts;
+#[path = "session_connection.rs"]
+mod connection;
+#[path = "session_context.rs"]
+pub(crate) mod context;
+#[path = "session_conversations.rs"]
+mod conversations;
 #[path = "session_file_pins.rs"]
 mod file_pins;
 #[path = "session_native.rs"]
 mod native;
+#[path = "session_native_output.rs"]
+mod native_output;
 #[path = "session_observer.rs"]
 mod observer;
+#[path = "session_response_steering.rs"]
+mod response_steering;
 #[path = "session_responses.rs"]
 mod responses;
 #[path = "session_sse.rs"]
@@ -42,6 +52,11 @@ mod persistence_perf;
 mod view_routes;
 use observer::{CompletionResult, Observer};
 use responses::{ResponseObserver, ResponseRun};
+
+#[path = "session_hosted.rs"]
+mod hosted;
+#[path = "session_tool_budget.rs"]
+mod tool_budget;
 
 const STATE_KEY: &str = "session.v1";
 const PROJECTION_ACK_KEY: &str = "session.projection-ack";
@@ -82,6 +97,8 @@ struct RunState {
     response: Option<ResponseRun>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_input: Option<native::NativeInputBatch>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    tool_dispatches: std::collections::BTreeSet<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -128,10 +145,18 @@ struct PersistedSession {
     response_head: Option<String>,
     #[serde(default)]
     pending_client_tools: Vec<provider::ToolCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_general_tools: Vec<native_output::GeneralPendingCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    steering_queue: Vec<response_steering::SteeringSubmission>,
     #[serde(default)]
     history_instructions: Vec<Message>,
     #[serde(default)]
     imported_parent: Option<branch::ImportedParent>,
+    #[serde(default)]
+    inherited_source_exclusions: Vec<crate::response_execution::SourceRange>,
+    #[serde(default)]
+    connection_cleanup_at: Option<u64>,
     #[serde(default)]
     response_archive_releases: Vec<String>,
     #[serde(default)]
@@ -140,9 +165,17 @@ struct PersistedSession {
     response_archive_retry_attempts: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_context: Option<native::NativeContext>,
+    #[serde(default)]
+    conversation_releases: Vec<conversations::ConversationRelease>,
+    #[serde(default)]
+    conversation_retry_at: u64,
 }
 
 impl PersistedSession {
+    fn has_pending_client_tools(&self) -> bool {
+        !self.pending_client_tools.is_empty() || !self.pending_general_tools.is_empty()
+    }
+
     fn complete_run_commit(
         &mut self,
         run_id: &str,
@@ -206,6 +239,7 @@ struct ChatRequest {
 }
 
 struct SessionInner {
+    physical_profile: agents_core::RuntimeProfile,
     state: State,
     env: Env,
     data: Rc<RefCell<Option<PersistedSession>>>,
@@ -213,6 +247,7 @@ struct SessionInner {
     closing: Cell<bool>,
     observer: RefCell<Option<Observer>>,
     response_observers: RefCell<Vec<ResponseObserver>>,
+    response_publication_barrier: RefCell<response_steering::PublicationBarrier>,
     terminal_followers: crate::observation_registry::TerminalFollowers,
     persistence: futures::lock::Mutex<()>,
 }
@@ -222,9 +257,10 @@ pub struct Session {
     inner: Rc<SessionInner>,
 }
 
-impl DurableObject for Session {
-    fn new(state: State, env: Env) -> Self {
+impl Session {
+    fn with_profile(state: State, env: Env, physical_profile: agents_core::RuntimeProfile) -> Self {
         let inner = Rc::new(SessionInner {
+            physical_profile,
             state,
             env,
             data: Rc::new(RefCell::new(None)),
@@ -232,6 +268,9 @@ impl DurableObject for Session {
             closing: Cell::new(false),
             observer: RefCell::new(None),
             response_observers: RefCell::new(vec![]),
+            response_publication_barrier: RefCell::new(
+                response_steering::PublicationBarrier::default(),
+            ),
             terminal_followers: crate::observation_registry::TerminalFollowers::default(),
             persistence: futures::lock::Mutex::new(()),
         });
@@ -240,6 +279,11 @@ impl DurableObject for Session {
             let storage = loaded.state.storage();
             let restored = load_state(&storage).await?;
             if let Some(data) = &restored {
+                if data.record.runtime_profile != loaded.physical_profile {
+                    return Err(Error::RustError(
+                        "runtime_profile_namespace_mismatch".into(),
+                    ));
+                }
                 match alarm_deadline(data, util::now_ms()) {
                     Some(expected) => {
                         if storage
@@ -258,7 +302,8 @@ impl DurableObject for Session {
                         &loaded.env,
                         &data.record.owner_id,
                         &data.record.id,
-                    );
+                    )
+                    .with_runtime_profile(data.record.runtime_profile);
                     if let Err(error) = workspace.configure_inactivity_if_running().await {
                         let Some(code) = unfunded_inactivity_code(&error) else {
                             return Err(error);
@@ -273,13 +318,28 @@ impl DurableObject for Session {
                 }
             }
             *loaded.data.borrow_mut() = restored;
+            let initialized = loaded.data.borrow().is_some();
+            if initialized {
+                loaded.restore_connection_cleanup().await?;
+            }
             Ok(())
         });
         Self { inner }
     }
+}
+
+impl DurableObject for Session {
+    fn new(state: State, env: Env) -> Self {
+        Self::with_profile(state, env, agents_core::RuntimeProfile::Basic1g)
+    }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let inner = &self.inner;
+        if req.path().starts_with("/connection-leases/")
+            || req.path().ends_with("/connection-parent")
+        {
+            return inner.connection_route(req).await;
+        }
         if req.path() == "/responses" || req.path().starts_with("/responses/") {
             return match inner.response_route(req).await {
                 Ok(response) => Ok(response),
@@ -298,6 +358,13 @@ impl DurableObject for Session {
         match (req.method(), req.path().as_str()) {
             (Method::Post, "/init") => {
                 let record: SessionRecord = req.json().await?;
+                if record.runtime_profile != inner.physical_profile {
+                    return util::json_error(
+                        409,
+                        "runtime_profile_namespace_mismatch",
+                        "Session profile does not match the deployed Container application",
+                    );
+                }
                 let initialized = inner
                     .data
                     .borrow()
@@ -345,17 +412,24 @@ impl DurableObject for Session {
                     measured_messages: 1,
                     response_head: None,
                     pending_client_tools: vec![],
+                    pending_general_tools: vec![],
+                    steering_queue: vec![],
                     history_instructions: vec![],
                     imported_parent: None,
+                    inherited_source_exclusions: vec![],
+                    connection_cleanup_at: None,
                     response_archive_releases: vec![],
                     response_archive_retry_at: 0,
                     response_archive_retry_attempts: 0,
                     native_context: None,
+                    conversation_releases: vec![],
+                    conversation_retry_at: 0,
                 });
                 inner.persist().await?;
                 inner.arm_alarm().await?;
                 Response::from_json(&inner.snapshot()?.record)
             }
+            (Method::Post, "/response-context") => inner.response_context(req).await,
             (Method::Post, "/retire-empty") => inner.retire_empty(req).await,
             (Method::Post, "/file-pins/reconcile") => inner.reconcile_file_pins().await,
             (Method::Get, "/view") => inner.lightweight_view(&req),
@@ -416,6 +490,7 @@ impl DurableObject for Session {
                     return util::json_error(status, code, message);
                 }
                 Workspace::new(&inner.state, &inner.env, &record.owner_id, &record.id)
+                    .with_runtime_profile(record.runtime_profile)
                     .download_checkpoint(record.workspace_snapshot.as_ref().unwrap())
                     .await
             }
@@ -447,7 +522,7 @@ impl DurableObject for Session {
                 Response::from_json(&inner.snapshot()?.record)
             }
             (Method::Post, "/steer") => {
-                if !inner.snapshot()?.pending_client_tools.is_empty() {
+                if inner.snapshot()?.has_pending_client_tools() {
                     return util::json_error(
                         409,
                         "client_tool_outputs_required",
@@ -493,7 +568,7 @@ impl DurableObject for Session {
                 Response::from_json(&json!({"queued":true,"input_revision":revision}))
             }
             (Method::Post, "/run") => {
-                if !inner.snapshot()?.pending_client_tools.is_empty() {
+                if inner.snapshot()?.has_pending_client_tools() {
                     return util::json_error(
                         409,
                         "client_tool_outputs_required",
@@ -644,6 +719,8 @@ impl DurableObject for Session {
 
     async fn alarm(&self) -> Result<Response> {
         let inner = &self.inner;
+        inner.cleanup_connection_grants().await?;
+        inner.reconcile_conversation_releases().await?;
         inner.reconcile_response_archives().await?;
         if inner.closing.get() {
             inner
@@ -672,7 +749,7 @@ impl DurableObject for Session {
         if inner.snapshot()?.record.status != SessionStatus::Closed
             && inner.snapshot()?.run.is_none()
             && !inner.snapshot()?.pending.is_empty()
-            && inner.snapshot()?.pending_client_tools.is_empty()
+            && !inner.snapshot()?.has_pending_client_tools()
         {
             inner.start_run()?;
             if let Err(error) = inner.persist().await {
@@ -680,6 +757,13 @@ impl DurableObject for Session {
                 let _ = inner.arm_alarm().await;
                 return Err(error);
             }
+        }
+        if inner.snapshot()?.run.is_none()
+            && let Err(error) = inner.advance_response_steering().await
+        {
+            inner.running.set(false);
+            let _ = inner.arm_alarm().await;
+            return Err(error);
         }
         let snapshot = inner.snapshot()?;
         if snapshot.archive_pending || snapshot.archive_preparing {
@@ -752,6 +836,12 @@ impl SessionInner {
                 .projection_generation = data.projection_generation.clone();
         }
         save_state(&self.state.storage(), &mut data).await?;
+        self.flush_response_publication_barrier();
+        if let Some(response) = data.run.as_ref().and_then(|run| run.response.as_ref())
+            && let Some(parent) = response.execution.steering_parent.as_deref()
+        {
+            self.forward_steering_successor(parent, Some(response), &[]);
+        }
         let observe = include_ending_run
             || data
                 .run
@@ -894,6 +984,7 @@ impl SessionInner {
             ended_at_ms: None,
             response: None,
             native_input: None,
+            tool_dispatches: Default::default(),
         });
         Ok(id)
     }
@@ -905,7 +996,9 @@ impl SessionInner {
             .as_ref()
             .and_then(|d| d.run.as_ref())
             .and_then(|r| r.traceparent.clone());
-        Workspace::new(&self.state, &self.env, &record.owner_id, &record.id).with_traceparent(trace)
+        Workspace::new(&self.state, &self.env, &record.owner_id, &record.id)
+            .with_runtime_profile(record.runtime_profile)
+            .with_traceparent(trace)
     }
 
     async fn observed_step(&self) -> Result<Option<Value>> {
@@ -949,6 +1042,13 @@ impl SessionInner {
         let data = self.snapshot()?;
         let record = &data.record;
         let run = data.run.as_ref().unwrap();
+        if run
+            .response
+            .as_ref()
+            .is_some_and(|response| response.execution.warmup)
+        {
+            return self.prepare_response_warmup().await.map(Some);
+        }
         let store = Store::new(&self.env);
         let trace = crate::telemetry::TraceContext::from_traceparent(run.traceparent.as_deref());
         let _span = crate::telemetry::NativeSpan::start("session.step", Some(&trace));
@@ -962,6 +1062,7 @@ impl SessionInner {
         }
         meter.preflight(record.pinned.workspace)?;
         if !run.admitted {
+            self.activate_conversation_run(run).await?;
             if record.pinned.model.provider == agents_core::Provider::Byok {
                 let mut model = record.pinned.model.clone();
                 if !crate::routes::normalize_model(&self.env, &record.owner_id, &mut model).await? {
@@ -1251,11 +1352,32 @@ impl SessionInner {
             );
             return Ok(None);
         }
+        if run
+            .response
+            .as_ref()
+            .is_some_and(|response| !response.general_pending_calls.is_empty())
+        {
+            let value = self.response_terminal_value(&run);
+            self.data
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .run
+                .as_mut()
+                .unwrap()
+                .terminal = value.clone();
+            self.persist().await?;
+            return Ok(value);
+        }
         if run.provider_in_flight {
             return Err(Error::RustError("provider_outcome_unknown".into()));
         }
         if run.round >= MAX_TOOL_ROUNDS {
             return Err(Error::RustError("execution_round_limit".into()));
+        }
+        if let Some(value) = self.steering_boundary()? {
+            self.persist().await?;
+            return Ok(Some(value));
         }
         self.drain_pending();
         if record.pinned.workspace {
@@ -1311,10 +1433,14 @@ impl SessionInner {
             definitions.extend(
                 response
                     .request
-                    .tool_definitions()
+                    .function_definitions()
                     .map_err(Error::RustError)?,
             );
+            definitions.extend(response.bound_tools.definitions()?);
             options = response.request.generation_options();
+            if let Some(choice) = options.tool_choice.take() {
+                options.tool_choice = Some(response.bound_tools.rewrite_choice(choice)?);
+            }
             if run.round > 0
                 && options
                     .tool_choice
@@ -1324,6 +1450,7 @@ impl SessionInner {
                 options.tool_choice = Some(json!("auto"));
             }
         }
+        tool_budget::filter_exhausted_tools(&run, record, &mut definitions);
         self.prepare_native_generation(&config, &definitions, &mut options)
             .await?;
         let event = format!("round:{}", run.round);
@@ -1369,7 +1496,7 @@ impl SessionInner {
                 .is_some_and(|kind| kind != "text")
         });
         let mut publish = |delta: &str| {
-            if !structured {
+            if !structured && config.protocol != agents_core::ProviderProtocol::Responses {
                 let _ = self.response_delta(delta);
             }
             if let Some(tx) = &sender {
@@ -1383,7 +1510,19 @@ impl SessionInner {
                 );
             }
         };
-        let completion = if run.response.is_some() && !structured {
+        let completion = if config.protocol == agents_core::ProviderProtocol::Responses
+            && run.response.is_some()
+        {
+            bounded_provider(provider::complete_stream_with_options_and_native(
+                &config,
+                &messages,
+                &definitions,
+                &options,
+                &mut publish,
+                |delta| self.native_semantic_delta(delta),
+            ))
+            .await?
+        } else if run.response.is_some() && !structured {
             bounded_provider(provider::complete_stream_with_options_and_buffer(
                 &config,
                 &messages,
@@ -1481,6 +1620,7 @@ impl SessionInner {
             }
         }
         self.prepare_response_branch().await?;
+        self.prepare_conversation_commit().await?;
         self.reserve_response_events();
         let needs_end = saved.run.as_ref().unwrap().ended_at_ms.is_none();
         if needs_end {
@@ -1538,19 +1678,23 @@ impl SessionInner {
         let success = result.is_ok();
         self.commit_completion(run, result, accounting_pending, observer)
             .await?;
+        util::emit(
+            "run.completed",
+            json!({"session_id":data.record.id,"run_id":run.id,"success":success}),
+        );
+        if self.advance_response_steering().await? {
+            self.arm_alarm().await?;
+            return Ok(());
+        }
         if !self.snapshot()?.projection_pending
-            && (self.snapshot()?.pending.is_empty()
-                || !self.snapshot()?.pending_client_tools.is_empty())
+            && (self.snapshot()?.pending.is_empty() || self.snapshot()?.has_pending_client_tools())
             && self.snapshot()?.record.idle_action(util::now_ms()) == IdleAction::Archive
         {
             self.archive(false).await?;
         } else {
             self.arm_alarm().await?;
         }
-        util::emit(
-            "run.completed",
-            json!({"session_id":data.record.id,"run_id":run.id,"success":success}),
-        );
+
         Ok(())
     }
 
@@ -1566,6 +1710,7 @@ impl SessionInner {
         let mut committed = self.snapshot()?;
         if let Some(response) = &response {
             committed.pending_client_tools = response.awaiting_calls.clone();
+            committed.pending_general_tools = response.general_pending_calls.clone();
         }
         let generation = util::id("projection");
         committed.complete_run_commit(
@@ -1587,9 +1732,15 @@ impl SessionInner {
                 result.as_ref().err().cloned(),
                 &generation,
             )?;
+        self.release_conversations_locked().await?;
         if let Some(response) = response {
             let has_attachments = !response.attachments.is_empty();
             let response_id = response.id.clone();
+            self.data
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .pending_general_tools = response.general_pending_calls.clone();
             self.data
                 .borrow_mut()
                 .as_mut()
@@ -1658,6 +1809,9 @@ impl SessionInner {
                 .and_then(|r| r.traceparent.as_deref()),
         );
         let _span = crate::telemetry::NativeSpan::start("session.tool", Some(&trace));
+        if !self.admit_tool_dispatch(record, execution_id, name).await? {
+            return Ok(tool_budget::exhausted_result());
+        }
         if !record.pinned.tools.iter().any(|t| t.name == *name) {
             return Err(Error::RustError("tool_not_pinned".into()));
         }
@@ -2081,7 +2235,12 @@ fn next_tool(messages: &[Message], response: Option<&ResponseRun>) -> Option<pro
     calls
         .iter()
         .find(|call| {
-            !response.is_some_and(|r| r.request.tools.iter().any(|t| t.name == call.function.name))
+            !response.is_some_and(|r| {
+                r.general_pending_calls
+                    .iter()
+                    .any(|pending| pending.call_id == call.id)
+                    || r.request.tools.iter().any(|t| t.name == call.function.name)
+            })
         })
         .or(calls.first())
         .map(|call| (*call).clone())
@@ -2100,31 +2259,10 @@ fn unresolved_tool(messages: &[Message]) -> Option<provider::ToolCall> {
         .cloned()
 }
 fn tool_definitions(record: &SessionRecord) -> Vec<tools::ToolDefinition> {
-    record
-        .pinned
-        .tools
-        .iter()
-        .map(|t| tools::ToolDefinition {
-            kind: "function".into(),
-            function: tools::FunctionDefinition {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters: t.parameters.clone(),
-                strict: None,
-            },
-        })
-        .collect()
+    crate::context_prefix::definitions(&record.pinned)
 }
 fn system_prefix(record: &SessionRecord) -> String {
-    let mut prefix="You are an agent running in moeSegFault Agents. Tools and skills below are pinned for this session.\n".to_owned();
-    prefix.push_str(&record.pinned.instructions);
-    for skill in &record.pinned.skills {
-        prefix.push_str(&format!(
-            "\n\n<skill name={:?} version={:?}>\n{}\n</skill>",
-            skill.name, skill.version, skill.instructions
-        ));
-    }
-    prefix
+    crate::context_prefix::prefix(&record.pinned)
 }
 fn openai_usage(usage: &Usage) -> Value {
     json!({"prompt_tokens":usage.prompt_tokens,"completion_tokens":usage.completion_tokens,"total_tokens":usage.total_tokens,"prompt_tokens_details":{"cached_tokens":usage.cached_tokens}})
@@ -2390,7 +2528,16 @@ fn projection_retry_delay(attempts: u8) -> u64 {
 }
 
 fn alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
-    let normal = primary_alarm_deadline(data, now);
+    let mut normal = primary_alarm_deadline(data, now);
+    for deadline in [
+        data.connection_cleanup_at,
+        conversations::cleanup_deadline(data, now),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        normal = Some(normal.map_or(deadline, |current| current.min(deadline)));
+    }
     if data.response_archive_releases.is_empty() {
         return normal;
     }
@@ -2409,7 +2556,12 @@ fn primary_alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
         return None;
     }
     if data.run.is_some()
-        || (!data.pending.is_empty() && data.pending_client_tools.is_empty())
+        || (!data.has_pending_client_tools()
+            && data.steering_queue.iter().any(|steer| {
+                steer.applied_to.is_none()
+                    && Some(steer.parent.as_str()) == data.response_head.as_deref()
+            }))
+        || (!data.pending.is_empty() && !data.has_pending_client_tools())
         || data.archive_pending
         || data.archive_preparing
     {
@@ -2446,6 +2598,7 @@ fn apply_resume(
         || old.owner_id != admitted.owner_id
         || old.agent_id != admitted.agent_id
         || old.pinned != admitted.pinned
+        || old.runtime_profile != admitted.runtime_profile
         || old.created_at_ms != admitted.created_at_ms
         || old.workspace_snapshot != admitted.workspace_snapshot
     {
@@ -2454,7 +2607,7 @@ fn apply_resume(
     if data.run.is_some()
         || data.archive_pending
         || data.archive_preparing
-        || (!data.pending.is_empty() && data.pending_client_tools.is_empty())
+        || (!data.pending.is_empty() && !data.has_pending_client_tools())
         || admitted.status != SessionStatus::Idle
     {
         return Err("session_busy");
@@ -2479,6 +2632,7 @@ fn initialization_matches(existing: &SessionRecord, incoming: &SessionRecord) ->
         && existing.owner_id == incoming.owner_id
         && existing.agent_id == incoming.agent_id
         && existing.pinned == incoming.pinned
+        && existing.runtime_profile == incoming.runtime_profile
         && existing.created_at_ms == incoming.created_at_ms
 }
 
@@ -2531,6 +2685,7 @@ mod tests {
                 input_revision: 0,
                 pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
                 workspace_snapshot: None,
+                runtime_profile: agents_core::RuntimeProfile::Basic1g,
             },
             messages: vec![Message::text("system", "fixed-prefix")],
             pending: vec![],
@@ -2553,12 +2708,18 @@ mod tests {
             measured_messages: 1,
             response_head: None,
             pending_client_tools: vec![],
+            pending_general_tools: vec![],
+            steering_queue: vec![],
             history_instructions: vec![],
             imported_parent: None,
+            inherited_source_exclusions: vec![],
+            connection_cleanup_at: None,
             response_archive_releases: vec![],
             response_archive_retry_at: 0,
             response_archive_retry_attempts: 0,
             native_context: None,
+            conversation_releases: vec![],
+            conversation_retry_at: 0,
         }
     }
 
@@ -2865,6 +3026,7 @@ mod tests {
             ended_at_ms: Some(12),
             response: None,
             native_input: None,
+            tool_dispatches: Default::default(),
         };
         let restored: RunState =
             serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();
@@ -3053,5 +3215,27 @@ mod tests {
         assert_eq!(failed["error"]["execution_status"], "unknown");
         assert_eq!(cancelled["error"]["execution_status"], "not_executed");
         assert_eq!(restored.messages.last().unwrap().role, "user");
+    }
+}
+
+/// A different physical application, not a different execution engine.
+#[durable_object]
+pub struct Session4G {
+    session: Session,
+}
+
+impl DurableObject for Session4G {
+    fn new(state: State, env: Env) -> Self {
+        Self {
+            session: Session::with_profile(state, env, agents_core::RuntimeProfile::Standard4g),
+        }
+    }
+
+    async fn fetch(&self, req: Request) -> Result<Response> {
+        self.session.fetch(req).await
+    }
+
+    async fn alarm(&self) -> Result<Response> {
+        self.session.alarm().await
     }
 }

@@ -50,6 +50,15 @@ pub(crate) trait Executor {
         &self,
         request: Steer,
     ) -> LocalBoxFuture<'static, Result<Vec<ServerEvent>, RequestFailure>>;
+
+    /// Release only connection-owned caches; admitted durable work keeps running.
+    fn disconnected(&self) -> LocalBoxFuture<'static, ()> {
+        async {}.boxed_local()
+    }
+
+    fn retire_parent(&self, _parent: Parent) -> LocalBoxFuture<'static, ()> {
+        async {}.boxed_local()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -322,6 +331,7 @@ pub(crate) struct Connection {
     queued: usize,
     queued_bytes: usize,
     next: u64,
+    retired: VecDeque<Parent>,
 }
 
 impl Connection {
@@ -335,6 +345,7 @@ impl Connection {
             queued: 0,
             queued_bytes: 0,
             next: 0,
+            retired: VecDeque::new(),
         }
     }
 
@@ -481,8 +492,45 @@ impl Connection {
         let Some(running) = self.running.get(&job) else {
             return false;
         };
-        self.lanes.get_mut(&running.lane).unwrap().parent = Some(parent);
+        let old = self
+            .lanes
+            .get_mut(&running.lane)
+            .unwrap()
+            .parent
+            .replace(parent);
+        if let Some(old) = old {
+            self.retire(old);
+        }
         true
+    }
+
+    fn retire(&mut self, parent: Parent) {
+        self.retired.push_back(parent);
+        // Actor expiry remains the fallback when cleanup cannot keep up.
+        if self.retired.len() > MAX_QUEUED {
+            self.retired.pop_front();
+        }
+    }
+
+    fn take_retired(&mut self, limit: usize) -> Vec<Parent> {
+        let mut ready = Vec::new();
+        self.retired.retain(|parent| {
+            let cached = self.lanes.values().any(|lane| {
+                lane.parent
+                    .as_ref()
+                    .is_some_and(|current| current.token == parent.token)
+            });
+            let running = self
+                .running
+                .values()
+                .any(|run| run.previous.as_deref() == Some(parent.response_id.as_str()));
+            if cached || running || ready.len() >= limit {
+                return true;
+            }
+            ready.push(parent.clone());
+            false
+        });
+        ready
     }
 
     pub(crate) fn finish(&mut self, job: u64, status: Option<u16>) -> bool {
@@ -491,16 +539,20 @@ impl Connection {
         };
         self.active_responses.retain(|_, active| *active != job);
         let lane = self.lanes.get_mut(&running.lane).unwrap();
-        if status.is_some_and(|status| (400..600).contains(&status))
+        let evicted = if status.is_some_and(|status| (400..600).contains(&status))
             && lane.parent.as_ref().is_some_and(|parent| {
                 Some(parent.response_id.as_str()) == running.previous.as_deref()
-            })
-        {
-            lane.parent = None;
-        }
+            }) {
+            lane.parent.take()
+        } else {
+            None
+        };
         lane.active = false;
         if !lane.queue.is_empty() {
             self.ready.push_back(running.lane);
+        }
+        if let Some(parent) = evicted {
+            self.retire(parent);
         }
         true
     }
@@ -524,6 +576,7 @@ pub(crate) fn authorize_browser_upgrade(
 }
 
 enum JobResult {
+    Released,
     Opened(u64, Result<ServerEvents, RequestFailure>),
     Event(
         u64,
@@ -632,6 +685,7 @@ fn complete_job(
     result: JobResult,
 ) -> worker::Result<()> {
     match result {
+        JobResult::Released => {}
         JobResult::Opened(id, Ok(events)) => jobs.push(next_event(id, events)),
         JobResult::Event(id, events, Some(Ok(event))) => {
             send_server(socket, state, id, event)?;
@@ -682,6 +736,17 @@ async fn serve(
     let lifetime = Delay::from(Duration::from_millis(MAX_CONNECTION_MS)).fuse();
     futures::pin_mut!(lifetime);
     loop {
+        let controls = jobs.len().saturating_sub(state.running.len());
+        for parent in state.take_retired(MAX_PENDING_CONTROLS.saturating_sub(controls)) {
+            let future = executor.retire_parent(parent);
+            jobs.push(
+                async move {
+                    future.await;
+                    JobResult::Released
+                }
+                .boxed_local(),
+            );
+        }
         for dispatch in state.dispatch() {
             let id = dispatch.id;
             let future = executor.create(dispatch);
@@ -797,9 +862,10 @@ pub(crate) async fn upgrade(executor: Rc<dyn Executor>) -> worker::Result<Respon
             return;
         }
         let _ = ready.send(Ok(()));
-        if serve(&server, &mut events, executor).await.is_err() {
+        if serve(&server, &mut events, executor.clone()).await.is_err() {
             let _ = server.close(Some(1011), Some("Observation connection ended"));
         }
+        executor.disconnected().await;
     });
     setup
         .await
@@ -811,6 +877,42 @@ pub(crate) async fn upgrade(executor: Rc<dyn Executor>) -> worker::Result<Respon
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn retired_parent_waits_for_in_flight_cross_lane_fork() {
+        let mut state = Connection::new(0);
+        state
+            .enqueue(request(Some("source"), None, "Root"))
+            .unwrap();
+        let root = state.dispatch().pop().unwrap().id;
+        state.cache(
+            root,
+            Parent {
+                response_id: "resp_root".into(),
+                token: "token-root".into(),
+            },
+        );
+        state.finish(root, None);
+        state
+            .enqueue(request(Some("fork"), Some("resp_root"), "Fork"))
+            .unwrap();
+        let fork = state.dispatch().pop().unwrap().id;
+        state
+            .enqueue(request(Some("source"), None, "New root"))
+            .unwrap();
+        let next = state.dispatch().pop().unwrap().id;
+        state.cache(
+            next,
+            Parent {
+                response_id: "resp_next".into(),
+                token: "token-next".into(),
+            },
+        );
+        state.finish(next, None);
+        assert!(state.take_retired(16).is_empty());
+        state.finish(fork, None);
+        assert_eq!(state.take_retired(16).pop().unwrap().token, "token-root");
+    }
 
     fn request(lane: Option<&str>, previous: Option<&str>, input: &str) -> Create {
         let mut event = json!({"type":"response.create", "model":"agent", "input":input});

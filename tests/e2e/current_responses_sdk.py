@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 from typing import Any
 
 import httpx2
@@ -26,6 +27,8 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 TERMINALS: set[str] = {"response.completed", "response.failed", "response.incomplete"}
 RESPONSE_EVENT: TypeAdapter[Any] = TypeAdapter(ResponseStreamEvent)
 WEBSOCKET_EVENT: TypeAdapter[Any] = TypeAdapter(BetaResponsesServerEvent)
+MAX_WIRE_BYTES: int = 16 * 1024 * 1024
+TextKey = tuple[str, int, int]
 
 
 def require(value: object, code: str) -> None:
@@ -33,33 +36,140 @@ def require(value: object, code: str) -> None:
         raise ValueError(code)
 
 
+def unique_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key, value in pairs:
+        require(key not in fields, "duplicate_wire_field")
+        fields[key] = value
+    return fields
+
+
+def reject_constant(value: str) -> None:
+    raise ValueError("invalid_json_constant")
+
+
+def read_wire(filename: Path) -> dict[str, Any]:
+    if str(filename) == "-":
+        raw: bytes = sys.stdin.buffer.read(MAX_WIRE_BYTES + 1)
+    else:
+        with filename.open("rb") as handle:
+            raw = handle.read(MAX_WIRE_BYTES + 1)
+    require(len(raw) <= MAX_WIRE_BYTES, "wire_bundle_too_large")
+    bundle: Any = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_fields, parse_constant=reject_constant)
+    require(isinstance(bundle, dict), "wire_bundle_must_be_object")
+    return bundle
+
+
+def event_lane(event: dict[str, Any], websocket: bool) -> str | None:
+    if not websocket:
+        require("stream_id" not in event, "http_event_has_lane")
+        return None
+    if "stream_id" not in event:
+        return None
+    lane: Any = event["stream_id"]
+    require(isinstance(lane, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", lane), "invalid_websocket_lane")
+    return lane
+
+
+def text_key(event: dict[str, Any]) -> TextKey:
+    item_id: str = event["item_id"]
+    output_index: int = event["output_index"]
+    content_index: int = event["content_index"]
+    require(item_id and output_index >= 0 and content_index >= 0, "invalid_stream_text_identity")
+    return (item_id, output_index, content_index)
+
+
+def terminal_text(response: dict[str, Any]) -> dict[TextKey, str]:
+    parts: dict[TextKey, str] = {}
+    for output_index, item in enumerate(response["output"]):
+        if item["type"] != "message":
+            continue
+        for content_index, part in enumerate(item["content"]):
+            if part["type"] == "output_text":
+                parts[(item["id"], output_index, content_index)] = part["text"]
+    return parts
+
+
+def validate_run(events: list[dict[str, Any]]) -> dict[str, Any]:
+    created: dict[str, Any] = events[0]["response"]
+    require(created.get("status") in {"queued", "in_progress"}, "created_response_not_pending")
+    sequences: list[int] = [event["sequence_number"] for event in events]
+    require(all(type(sequence) is int and sequence >= 0 for sequence in sequences), "invalid_response_sequence")
+    require(sequences == sorted(set(sequences)), "response_sequence_not_strict")
+    require(events[-1]["type"] == "response.completed", "response_not_completed")
+    response: dict[str, Any] = events[-1]["response"]
+    require(response.get("status") == "completed", "terminal_status_mismatch")
+    deltas: dict[TextKey, list[str]] = {}
+    done: dict[TextKey, str] = {}
+    for event in events:
+        if "response" in event:
+            require(event["response"]["id"] == created["id"], "response_identity_changed")
+            require(event["response"]["model"] == created["model"], "response_model_changed")
+        if "response_id" in event:
+            require(event["response_id"] == created["id"], "response_identity_changed")
+        if event["type"] == "response.output_text.delta":
+            key: TextKey = text_key(event)
+            require(key not in done, "text_delta_after_done")
+            deltas.setdefault(key, []).append(event["delta"])
+        elif event["type"] == "response.output_text.done":
+            key = text_key(event)
+            require(key not in done, "duplicate_text_done")
+            done[key] = event["text"]
+    actual: dict[TextKey, str] = {key: "".join(chunks) for key, chunks in deltas.items()}
+    expected: dict[TextKey, str] = terminal_text(response)
+    require(all(key in expected and value == expected[key] for key, value in actual.items()), "streamed_text_differs_from_terminal")
+    require(all(actual.get(key, "") == value for key, value in expected.items()), "terminal_text_missing_from_stream")
+    require(all(key in expected and value == expected[key] for key, value in done.items()), "text_done_differs_from_terminal")
+    return response
+
+
+def validate_events(events: list[dict[str, Any]], websocket: bool) -> tuple[list[dict[str, Any]], int]:
+    require(isinstance(events, list) and events, "missing_native_events")
+    active: dict[str | None, list[dict[str, Any]]] = {}
+    identities: set[str] = set()
+    lanes: set[str | None] = set()
+    completed: list[dict[str, Any]] = []
+    adapter: TypeAdapter[Any] = WEBSOCKET_EVENT if websocket else RESPONSE_EVENT
+    for event in events:
+        require(isinstance(event, dict), "invalid_native_event")
+        adapter.validate_python(event, strict=True)
+        lane: str | None = event_lane(event, websocket)
+        lanes.add(lane)
+        if event["type"] == "response.created":
+            require(lane not in active, "overlapping_lane_responses")
+            response_id: str = event["response"]["id"]
+            require(response_id not in identities, "reused_response_identity")
+            identities.add(response_id)
+            active[lane] = []
+        require(lane in active, "native_event_without_active_response")
+        active[lane].append(event)
+        if event["type"] in TERMINALS:
+            completed.append(validate_run(active.pop(lane)))
+    require(not active, "native_response_missing_terminal")
+    require(completed, "missing_authentic_terminal")
+    return completed, len(lanes)
+
+
 def validate_wire(bundle: dict[str, Any]) -> dict[str, Any]:
-    """Validate all named surfaces strictly; absence is a failure, never a skip."""
-    response: Response = Response.model_validate(bundle["response"])
+    """Validate original wire objects, never filling defaults or synthesizing events."""
+    require(isinstance(bundle, dict), "wire_bundle_must_be_object")
+    response: Response = Response.model_validate(bundle["response"], strict=True)
     require(response.status == "completed", "response_not_completed")
     events: list[dict[str, Any]] = bundle["events"]
-    require(events, "missing_response_events")
-    sequences: list[int] = []
-    for raw in events:
-        event: Any = RESPONSE_EVENT.validate_python(raw)
-        sequences.append(event.sequence_number)
-    require(sequences == sorted(set(sequences)), "response_sequence_not_strict")
-    require(events[-1]["type"] == "response.completed", "missing_authentic_terminal")
-    require(events[-1]["response"] == bundle["response"], "terminal_snapshot_differs")
+    http_responses, _ = validate_events(events, websocket=False)
+    require(len(http_responses) == 1 and http_responses[0] == bundle["response"], "terminal_snapshot_differs")
     websocket_events: list[dict[str, Any]] = bundle["websocket_events"]
-    require(websocket_events, "missing_websocket_events")
-    for raw in websocket_events:
-        WEBSOCKET_EVENT.validate_python(raw)
-    require(any(event["type"] in TERMINALS for event in websocket_events), "missing_websocket_terminal")
-    compact: CompactedResponse = CompactedResponse.model_validate(bundle["compact"])
+    websocket_responses, websocket_lanes = validate_events(websocket_events, websocket=True)
+    compact: CompactedResponse = CompactedResponse.model_validate(bundle["compact"], strict=True)
     require(any(item.type == "compaction" for item in compact.output), "missing_compaction_item")
-    counted: InputTokenCountResponse = InputTokenCountResponse.model_validate(bundle["count"])
+    counted: InputTokenCountResponse = InputTokenCountResponse.model_validate(bundle["count"], strict=True)
     require(counted.input_tokens >= 0, "negative_input_count")
-    conversation: Conversation = Conversation.model_validate(bundle["conversation"])
-    items: ConversationItemList = ConversationItemList.model_validate(bundle["conversation_items"])
+    conversation: Conversation = Conversation.model_validate(bundle["conversation"], strict=True)
+    items: ConversationItemList = ConversationItemList.model_validate(bundle["conversation_items"], strict=True)
     require(items.data, "missing_conversation_items")
     return {"sdk": openai.__version__, "scope": "strict_current_sdk_wire", "response_events": len(events),
             "websocket_events": len(websocket_events), "conversation_items": len(items.data),
+            "websocket_lanes": websocket_lanes, "websocket_responses": len(websocket_responses),
             "conversation_object": conversation.object, "compact_object": compact.object,
             "count_object": counted.object, "passed": True, "live_execution_proven": False}
 
@@ -163,8 +273,7 @@ def main() -> None:
         stage.add_argument("--" + flag, required=True)
     args: argparse.Namespace = parser.parse_args()
     if args.mode == "wire":
-        require(args.input.stat().st_size <= 16 * 1024 * 1024, "wire_bundle_too_large")
-        result: dict[str, Any] = validate_wire(json.loads(args.input.read_text(encoding="utf-8")))
+        result: dict[str, Any] = validate_wire(read_wire(args.input))
     else:
         result = inspect_staging(args.source, args.session, args.response, args.agent, args.receipt)
     print(json.dumps(result, sort_keys=True))

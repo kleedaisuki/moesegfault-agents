@@ -1,6 +1,8 @@
 //! Syntax of public controls, separate from model/provider capability checks.
 
-use super::{ResponseRequest, ResponseTool, bounded_text, identifier, object_keys};
+use super::{
+    CodeNetworkPolicy, ResponseRequest, ResponseTool, bounded_text, identifier, object_keys,
+};
 use serde_json::Value;
 
 const INCLUDES: &[&str] = &[
@@ -13,6 +15,10 @@ const INCLUDES: &[&str] = &[
     "reasoning.encrypted_content",
     "message.output_text.logprobs",
 ];
+
+pub(super) fn valid_include(value: &str) -> bool {
+    INCLUDES.contains(&value)
+}
 
 pub(super) fn validate(request: &ResponseRequest) -> Result<(), String> {
     conversation(request)?;
@@ -77,7 +83,7 @@ pub(super) fn validate(request: &ResponseRequest) -> Result<(), String> {
         )?;
     }
     if let Some(value) = &request.tool_choice {
-        tool_choice(value, &request.tools)?;
+        tool_choice(value)?;
     }
     Ok(())
 }
@@ -264,11 +270,8 @@ fn moderation(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn tool_choice(value: &Value, tools: &[ResponseTool]) -> Result<(), String> {
+pub(super) fn tool_choice(value: &Value) -> Result<(), String> {
     if let Some(choice) = value.as_str() {
-        if choice == "required" && tools.is_empty() {
-            return Err("Required tool_choice needs an available tool".into());
-        }
         return string_choice(Some(choice), &["none", "auto", "required"], "tool_choice");
     }
     let kind = value
@@ -277,7 +280,9 @@ pub(super) fn tool_choice(value: &Value, tools: &[ResponseTool]) -> Result<(), S
         .ok_or("tool_choice requires a type")?;
     if kind == "allowed_tools" {
         object_keys(value, &["type", "mode", "tools"], "allowed_tools")?;
-        choice(value, "mode", &["auto", "required"])?;
+        if !matches!(value["mode"].as_str(), Some("auto" | "required")) {
+            return Err("allowed_tools requires mode auto or required".into());
+        }
         let subset = value["tools"]
             .as_array()
             .filter(|items| !items.is_empty() && items.len() <= 128)
@@ -286,7 +291,10 @@ pub(super) fn tool_choice(value: &Value, tools: &[ResponseTool]) -> Result<(), S
             if item["type"] == "allowed_tools" {
                 return Err("Allowed tool subsets cannot contain another subset".into());
             }
-            tool_choice(item, tools)?;
+            if item.is_string() {
+                return Err("Allowed tool subsets require typed tool choices".into());
+            }
+            tool_choice(item)?;
         }
         return Ok(());
     }
@@ -294,6 +302,81 @@ pub(super) fn tool_choice(value: &Value, tools: &[ResponseTool]) -> Result<(), S
     if matches!(kind, "function" | "custom") {
         object_keys(value, &["type", "name", "namespace"], "named tool_choice")?;
         let name = name.ok_or("Named tool_choice requires a name")?;
+        identifier(name, "tool_choice name")?;
+        if name.starts_with("__agents_") {
+            return Err("Private hosted aliases cannot be selected as caller functions".into());
+        }
+        if let Some(namespace) = value.get("namespace").filter(|value| !value.is_null()) {
+            identifier(
+                namespace
+                    .as_str()
+                    .ok_or("tool_choice namespace must be a string")?,
+                "tool_choice namespace",
+            )?;
+        }
+        return Ok(());
+    }
+    if kind == "mcp" {
+        object_keys(value, &["type", "server_label", "name"], "MCP tool_choice")?;
+        identifier(
+            value["server_label"]
+                .as_str()
+                .ok_or("MCP tool_choice requires server_label")?,
+            "MCP server_label",
+        )?;
+        if let Some(name) = value.get("name").filter(|value| !value.is_null()) {
+            bounded_text(
+                name.as_str()
+                    .ok_or("MCP tool_choice name must be a string")?,
+                256,
+                "MCP tool name",
+            )?;
+        }
+        return Ok(());
+    }
+    if !matches!(
+        kind,
+        "file_search"
+            | "web_search"
+            | "web_search_preview"
+            | "web_search_preview_2025_03_11"
+            | "computer"
+            | "computer_use"
+            | "computer_use_preview"
+            | "code_interpreter"
+            | "image_generation"
+            | "programmatic_tool_calling"
+            | "apply_patch"
+            | "shell"
+            | "tool_search"
+    ) {
+        return Err("Unknown tool_choice type".into());
+    }
+    object_keys(value, &["type"], "tool_choice")
+}
+
+pub(super) fn resolved_tool_choice(
+    value: &Value,
+    tools: &[ResponseTool],
+    definitions: &[crate::tools::ToolDefinition],
+) -> Result<(), String> {
+    tool_choice(value)?;
+    if let Some(choice) = value.as_str() {
+        return if choice == "required" && tools.is_empty() && definitions.is_empty() {
+            Err("Required tool_choice needs an available tool".into())
+        } else {
+            Ok(())
+        };
+    }
+    let kind = value["type"].as_str().unwrap();
+    if kind == "allowed_tools" {
+        for item in value["tools"].as_array().unwrap() {
+            resolved_tool_choice(item, tools, definitions)?;
+        }
+        return Ok(());
+    }
+    if matches!(kind, "function" | "custom") {
+        let name = value["name"].as_str().unwrap();
         let available = if let Some(namespace) = value.get("namespace").and_then(Value::as_str) {
             tools
                 .iter()
@@ -312,6 +395,7 @@ pub(super) fn tool_choice(value: &Value, tools: &[ResponseTool]) -> Result<(), S
             tools
                 .iter()
                 .any(|tool| tool.kind == kind && tool.name == name)
+                || (kind == "function" && definitions.iter().any(|tool| tool.function.name == name))
         };
         return if available {
             Ok(())
@@ -319,7 +403,10 @@ pub(super) fn tool_choice(value: &Value, tools: &[ResponseTool]) -> Result<(), S
             Err("tool_choice names an unavailable tool".into())
         };
     }
-    if !tools.iter().any(|tool| tool.kind == kind) {
+    if !tools.iter().any(|tool| {
+        tool.kind == kind
+            && (kind != "mcp" || tool.options.get("server_label") == value.get("server_label"))
+    }) {
         return Err("tool_choice selects an unavailable tool kind".into());
     }
     Ok(())
@@ -414,11 +501,8 @@ pub(super) fn builtin_tool(
     if tool.kind == "file_search" {
         string_array(&raw["vector_store_ids"], 128, "vector_store_ids")?;
     }
-    if tool.kind == "code_interpreter"
-        && !raw["container"].is_string()
-        && !raw["container"].is_object()
-    {
-        return Err("code_interpreter requires a container".into());
+    if tool.kind == "code_interpreter" {
+        code_container(tool, &raw["container"])?;
     }
     if tool.kind == "mcp"
         && (!raw["server_label"].is_string()
@@ -433,6 +517,67 @@ pub(super) fn builtin_tool(
                 .is_some_and(|value| value > 0))
     {
         return Err("Computer display dimensions must be positive integers".into());
+    }
+    Ok(())
+}
+
+fn code_container(tool: &ResponseTool, container: &Value) -> Result<(), String> {
+    if let Some(id) = container.as_str() {
+        return identifier(id, "code interpreter container");
+    }
+    object_keys(
+        container,
+        &["type", "file_ids", "memory_limit", "network_policy"],
+        "code interpreter container",
+    )?;
+    if container["type"] != "auto" {
+        return Err("Code interpreter container type must be auto".into());
+    }
+    if let Some(files) = container.get("file_ids") {
+        string_array(files, 128, "code interpreter file_ids")?;
+        for id in files.as_array().unwrap() {
+            identifier(id.as_str().unwrap(), "code interpreter file ID")?;
+        }
+    }
+    if let Some(memory) = container
+        .get("memory_limit")
+        .filter(|value| !value.is_null())
+        && !matches!(memory.as_str(), Some("1g" | "4g" | "16g" | "64g"))
+    {
+        return Err("Invalid code interpreter memory_limit".into());
+    }
+    let Some(CodeNetworkPolicy::Allowlist {
+        allowed_domains,
+        domain_secrets,
+    }) = tool.code_network_policy()?
+    else {
+        return Ok(());
+    };
+    if allowed_domains.len() > 128 || domain_secrets.len() > 128 {
+        return Err("Code interpreter network policy exceeds its entry limit".into());
+    }
+    for domain in &allowed_domains {
+        network_domain(domain)?;
+    }
+    for secret in &domain_secrets {
+        network_domain(&secret.domain)?;
+        if secret.name.is_empty() || secret.name.chars().any(char::is_control) {
+            return Err("Invalid code interpreter domain secret name".into());
+        }
+        bounded_text(&secret.name, 256, "domain secret name")?;
+        bounded_text(&secret.value, 16 * 1024, "domain secret value")?;
+    }
+    Ok(())
+}
+
+fn network_domain(domain: &str) -> Result<(), String> {
+    if domain.is_empty()
+        || domain.len() > 253
+        || domain.chars().any(|character| {
+            character.is_whitespace() || character.is_control() || "/:@?#".contains(character)
+        })
+    {
+        return Err("Invalid code interpreter network domain".into());
     }
     Ok(())
 }

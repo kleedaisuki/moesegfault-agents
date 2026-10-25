@@ -6,6 +6,29 @@ use serde_json::{Value, json};
 
 use crate::tools::{FunctionDefinition, ToolDefinition};
 
+/// Admission and counting share explicit operator facts. A Bash pin or provider
+/// model name cannot establish an interpreter SKU or a deployed tool service.
+pub(crate) fn capabilities(
+    env: &worker::Env,
+) -> worker::Result<crate::hosted_bindings::HostCapabilities> {
+    let json = env
+        .var("HOSTED_TOOL_CAPABILITIES_JSON")
+        .map_err(|_| worker::Error::RustError("hosted_tool_capabilities_not_configured".into()))?
+        .to_string();
+    let mut value: Value = serde_json::from_str(&json)
+        .map_err(|_| worker::Error::RustError("invalid_hosted_tool_capabilities".into()))?;
+    let fields = value
+        .as_object_mut()
+        .ok_or_else(|| worker::Error::RustError("invalid_hosted_tool_capabilities".into()))?;
+    if fields.remove("version") != Some(json!(1)) {
+        return Err(worker::Error::RustError(
+            "unsupported_hosted_tool_capabilities_version".into(),
+        ));
+    }
+    serde_json::from_value(value)
+        .map_err(|_| worker::Error::RustError("invalid_hosted_tool_capabilities".into()))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -170,6 +193,22 @@ pub fn context_result(kind: Kind, item_id: &str, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokenizer_dependencies_preserve_platform_json_order_and_legacy_pin_golden() {
+        let unordered = json!({"z":2,"a":{"z":4,"a":3}});
+        assert_eq!(unordered.to_string(), r#"{"a":{"a":3,"z":4},"z":2}"#);
+        let pin: agents_core::PinnedContext = serde_json::from_str(
+            r#"{"workspace":false,"tools":[{"version":"1","parameters":{"z":2,"a":1},"name":"time","execution":"harness","description":"Stable tool"}],"skills":[],"model":{"provider":"deepseek","model":"fixture-model","max_output_tokens":512,"context_window":4096},"instructions":"Legacy prefix","compaction_percent":80,"agent_revision":7}"#,
+        )
+        .unwrap();
+        let expected = r#"{"agent_revision":7,"compaction_percent":80,"instructions":"Legacy prefix","model":{"context_window":4096,"max_output_tokens":512,"model":"fixture-model","provider":"deepseek"},"skills":[],"tools":[{"description":"Stable tool","execution":"harness","name":"time","parameters":{"a":1,"z":2},"version":"1"}],"workspace":false}"#;
+        assert_eq!(pin.prefix_bytes(), expected.as_bytes());
+        assert_eq!(
+            pin.prefix_hash(),
+            "dec8debe7572f7b066fd1dbb89a943f8c9cda0a6653a3aff0fbb8bd290a76acd"
+        );
+    }
 
     #[test]
     fn hosted_aliases_are_private_and_roundtrip_without_pin_mutation() {

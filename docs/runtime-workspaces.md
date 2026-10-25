@@ -76,3 +76,46 @@ The complete lease is stored as canonical JSON text at all three DO keys (candid
 Only model-correctable argument/unknown-tool failures become actionable tool-result messages. Workspace availability, storage-codec, pricing, budget and uncertain-execution failures stop the run with bounded safe codes instead of asking the model to blindly retry infrastructure. An ordinary nonzero Bash exit remains a normal tool result, preserving the agent's ability to inspect stderr and correct a command. Before a fatal stop, the harness persists a matching error result for the failed call and `not_executed` results for every remaining serial call in that assistant tool group, together with the terminal error. A restored run or a later explicit user append therefore cannot replay an old unresolved command or submit an invalid tool-message sequence. Operator logs contain only known tool names, fixed error families/codes and opaque run/session identifiers, never argument strings or output.
 
 Resume admission is retryable across a lost DO acknowledgement. Once D1 has admitted an Idle revision, retries reuse its existing quota slot, pinned context, input revision and inactivity timestamp. The DO accepts only the next Closed-to-Idle revision or an identical already-Idle record; running or newer state rejects stale attempts. Unknown forwarding outcomes retain the admission rather than falsely releasing active quota. Historical D1 JSON REAL timestamps are read only when they represent exact nonnegative safe integers; subsequent normal writes restore canonical integer JSON.
+
+
+## Immutable runtime profiles
+
+`RuntimeProfile` is persisted before Session admission and is not an API header.
+Legacy records deserialize to `basic1g`; migration `0018_runtime_profile.sql`
+pins the same finite identity in D1 and rejects JSON/column mismatches or later
+profile changes. The existing `Session` class remains the basic Container app.
+`Session4G` delegates the same Rust Session/harness constructor, fetch and alarm
+implementation with the immutable `standard4g` physical profile. The constructor
+and initialization path reject a record dispatched through the wrong class.
+
+`runtime_profiles.rs` owns the namespace mapping (`SESSIONS` / `SESSION_4G`).
+Normal forwarding uses the pinned record without an extra D1 lookup; maintenance
+jobs that only have an owner/session identity resolve the indexed D1 profile.
+No profile selection comes from caller-supplied routing or capacity labels.
+Ordinary legacy Session creation remains basic. A new code declaration's default
+is 4g; explicit 1g/4g select the corresponding new Session, while 16g/64g are
+rejected. A declared existing logical container is not an allocation request.
+A parent Session is never resized; independently created branches may select a
+different profile only after destination capacity validation.
+
+Wrangler appends `v3-runtime-profiles` for `Session4G`, leaving `v1` and
+`v2-full-responses` unchanged. The two apps use the same daemon image and settings,
+but `Session` uses `basic` and `Session4G` uses `standard-1`. Release rendering must
+map both classes to the same verified immutable daemon digest.
+
+The [Cloudflare instance limits](https://developers.cloudflare.com/containers/platform/limits/)
+and [pricing](https://developers.cloudflare.com/containers/platform/pricing/)
+identify basic as 1 GiB / 4 GB / 0.25 vCPU and standard-1 as 4 GiB / 8 GB / 0.5 vCPU.
+Memory and disk are provisioned; CPU is charged upstream by active usage. Our
+approved standard4g tariff is explicitly a published **allocation wall-time**
+tariff of 21 microUSD/second, revision `2026-10-25-platform-standard4g-v1`, not a
+claim to measure exact upstream active CPU. `CONTAINER_PROFILE_PRICING_JSON`
+configures that tariff; missing configuration fails before new allocation.
+A new lease snapshots its profile pricing. Existing basic pricing and existing
+live lease snapshots are never rewritten or repriced.
+
+Verification at this checkpoint: four focused SQLite/config tests pass, including
+production Session INSERT, legacy defaults, immutable identity, mismatched
+metadata rejection and shared-image/different-SKU configuration. Rust compilation,
+actual CF app metadata and daemon cgroup capacity remain separate CI/staging
+gates; configuring `standard-1` alone is not proof of a running 4 GiB container.

@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 DIRECT_MODELS: frozenset[str] = frozenset({"deepseek-flash", "deepseek-v4-pro"})
+MODEL_FIELDS: frozenset[str] = frozenset({"provider", "model", "context_window", "max_output_tokens", "credential_id", "protocol"})
 
 
 class AcceptanceApi(Protocol):
@@ -65,6 +66,7 @@ def assert_direct_model(model: dict[str, Any]) -> None:
     assert model.get("protocol") in (None, "openai", "responses"), "paid DeepSeek acceptance requires a compatible OpenAI-family transport"
     assert not model.get("credential_id"), "paid platform acceptance must not override credential routing"
     assert not any(key.lower().replace("_", "") in {"baseurl", "endpoint", "origin", "url"} for key in model), "paid platform acceptance must not override the provider origin"
+    assert model.keys() <= MODEL_FIELDS, "paid platform acceptance contains an unreviewed model field"
 
 
 def assert_direct_deepseek_pin(api: AcceptanceApi, session: dict[str, Any]) -> None:
@@ -77,4 +79,9 @@ def assert_direct_deepseek_pin(api: AcceptanceApi, session: dict[str, Any]) -> N
     model = pin.get("model")
     assert isinstance(model, dict), "session model pin is required"
     assert_direct_model(model)
-    assert model == expected, "session must pin the exact effective platform registry model"
+    assert (model["provider"], model["model"]) == (expected["provider"], expected["model"]), "session must pin the selected effective platform route"
+    for field in ("context_window", "max_output_tokens"):
+        selected = model.get(field)
+        available = expected.get(field)
+        assert (type(selected) is int and type(available) is int
+                and 0 < selected <= available), "session model bounds must fit the effective platform registry"

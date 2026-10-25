@@ -28,8 +28,12 @@ pub(crate) struct BranchPoint {
     pub response_id: String,
     pub source_session_id: String,
     pub source_end: usize,
+    #[serde(default)]
+    pub excluded_source_ranges: Vec<crate::response_execution::SourceRange>,
     pub pin_hash: String,
     pub pending_calls: Vec<provider::ToolCall>,
+    #[serde(default)]
+    pub general_pending_calls: Vec<super::native_output::GeneralPendingCall>,
     pub workspace: WorkspaceSeed,
     #[serde(default)]
     pub native: Option<NativeHistoryRef>,
@@ -60,6 +64,8 @@ struct ExportRequest {
     parent_response_id: String,
     child_response_id: String,
     request: crate::responses_wire::ResponseRequest,
+    #[serde(default)]
+    parent_lease: Option<crate::response_execution::OwnedParent>,
 }
 
 pub(crate) fn child_session_id(owner: &str, response: &str) -> String {
@@ -71,8 +77,38 @@ pub(crate) fn child_session_id(owner: &str, response: &str) -> String {
     format!("branch_{:x}", digest.finalize())
 }
 
-fn project_branch_history(source: &[Message]) -> Result<(Vec<Message>, Vec<Message>)> {
-    let mut messages = Vec::with_capacity(source.len());
+pub(super) fn project_branch_history(source: &[Message]) -> Result<(Vec<Message>, Vec<Message>)> {
+    project_history(source.iter(), source.len())
+}
+
+pub(super) fn project_selected_history(
+    source: &[Message],
+    excluded: &[crate::response_execution::SourceRange],
+) -> Result<(Vec<Message>, Vec<Message>)> {
+    if excluded
+        .iter()
+        .any(|range| range.begin > range.end || range.end > source.len())
+    {
+        return Err(Error::RustError(
+            "response_branch_source_range_invalid".into(),
+        ));
+    }
+    project_history(
+        source.iter().enumerate().filter_map(|(index, message)| {
+            (!excluded
+                .iter()
+                .any(|range| range.begin <= index && index < range.end))
+            .then_some(message)
+        }),
+        source.len(),
+    )
+}
+
+fn project_history<'a>(
+    source: impl Iterator<Item = &'a Message>,
+    capacity: usize,
+) -> Result<(Vec<Message>, Vec<Message>)> {
+    let mut messages = Vec::with_capacity(capacity);
     let mut pending = vec![];
     let mut calls = std::collections::BTreeSet::new();
     for message in source {
@@ -219,6 +255,31 @@ impl SessionInner {
                 .record
                 .workspace_snapshot = metadata;
         }
+        if run.admitted && !response.request.store {
+            if let Some(lease) = &response.execution.connection_lease {
+                if self.connection_grant_active(&response.id, lease).await? {
+                    let workspace = self.workspace(&data.record).for_run(&run.id);
+                    if let Some(archive) = workspace
+                        .seal_connection_archive(
+                            &response.id,
+                            &lease.connection_id,
+                            lease.expires_at_ms,
+                        )
+                        .await?
+                    {
+                        response.branch_point.as_mut().unwrap().workspace =
+                            WorkspaceSeed::Archive { archive };
+                        let metadata = workspace.snapshot_metadata().await?;
+                        self.data
+                            .borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .record
+                            .workspace_snapshot = metadata;
+                    }
+                }
+            }
+        }
         let mut current = self.data.borrow_mut();
         let Some(current) = current
             .as_mut()
@@ -235,7 +296,21 @@ impl SessionInner {
         if response.branch_point.is_some() {
             return Ok(());
         }
-        let (source_session_id, source_end, pin_hash, checkpoint) = {
+        let checkpoint = self
+            .data
+            .borrow()
+            .as_ref()
+            .is_some_and(|data| data.record.workspace_snapshot.is_some());
+        let used_workspace = checkpoint
+            || self
+                .state
+                .storage()
+                .get::<String>("workspace:token")
+                .await?
+                .is_some();
+        // All source coordinates are observed after I/O in one synchronous turn.
+        // A later accepted steer is outside this immutable prefix.
+        let (source_session_id, source_end, pin_hash, mut excluded_source_ranges) = {
             let data = self.data.borrow();
             let data = data
                 .as_ref()
@@ -244,28 +319,25 @@ impl SessionInner {
                 data.record.id.clone(),
                 data.journal.len(),
                 data.record.pinned.prefix_hash(),
-                data.record.workspace_snapshot.is_some(),
+                data.inherited_source_exclusions.clone(),
             )
         };
-        let used_workspace = checkpoint
-            || self
-                .state
-                .storage()
-                .get::<String>("workspace:token")
-                .await?
-                .is_some();
+        excluded_source_ranges.extend(self.unapplied_steering_ranges()?);
+        let native = self.native_branch_ref()?;
         response.branch_point = Some(BranchPoint {
             response_id: response.id.clone(),
             source_session_id,
             source_end,
+            excluded_source_ranges,
             pin_hash,
             pending_calls: response.awaiting_calls.clone(),
+            general_pending_calls: response.general_pending_calls.clone(),
             workspace: if used_workspace {
                 WorkspaceSeed::Unsealed
             } else {
                 WorkspaceSeed::Empty
             },
-            native: self.native_branch_ref()?,
+            native,
         });
         Ok(())
     }
@@ -307,7 +379,14 @@ impl SessionInner {
         let Some(mut response) = self.read_response(&input.parent_response_id).await? else {
             return util::json_error(404, "not_found", "Response not retained");
         };
-        if response.deleted || !response.request.store {
+        let leased = match &input.parent_lease {
+            Some(parent) => {
+                self.validate_parent_grant(&input.parent_response_id, parent)
+                    .await?
+            }
+            None => false,
+        };
+        if response.deleted || (!response.request.store && !leased) {
             return util::json_error(404, "not_found", "Response not retained");
         }
         if !matches!(
@@ -346,13 +425,19 @@ impl SessionInner {
             Ok(input) => input,
             Err(error) => return util::json_error(400, error.code, &error.message),
         };
-        if let Err(code) =
+        let outputs = if point.general_pending_calls.is_empty() {
             super::responses::validate_tool_outputs(&point.pending_calls, &normalized.tool_outputs)
-        {
+        } else {
+            super::native_output::validate_returns(
+                &point.general_pending_calls,
+                &normalized.native_items,
+            )
+        };
+        if let Err(code) = outputs {
             return util::json_error(
                 400,
                 code,
-                "Provide each outstanding function result exactly once before continuing",
+                "Provide each outstanding tool result exactly once before continuing",
             );
         }
         if matches!(point.workspace, WorkspaceSeed::Unsealed) {
@@ -444,6 +529,18 @@ impl SessionInner {
             );
         }
         if let WorkspaceSeed::Archive { archive } = &seed.point.workspace {
+            let source_profile = crate::runtime_profiles::profile_for(
+                &self.env,
+                &seed.owner_id,
+                &seed.point.source_session_id,
+            )
+            .await?;
+            if source_profile != data.record.runtime_profile {
+                crate::runtime_profiles::check_archive(
+                    data.record.runtime_profile,
+                    archive.logical_bytes,
+                )?;
+            }
             self.workspace(&data.record)
                 .import_response_archive(archive, &seed.child_response_id)
                 .await?;
@@ -462,7 +559,8 @@ impl SessionInner {
         imported.messages = vec![Message::text("system", system_prefix(&imported.record))];
         // Source order records acceptance, not provider adjacency: user steering
         // accepted during a tool handoff follows its results in the model view.
-        let (messages, pending) = project_branch_history(&seed.messages)?;
+        let (messages, pending) =
+            project_selected_history(&seed.messages, &seed.point.excluded_source_ranges)?;
         imported.messages.extend(messages);
         imported.pending = pending;
         if let (Some(reference), Some(items)) = (&seed.point.native, &seed.native_items) {
@@ -489,8 +587,10 @@ impl SessionInner {
                 }
             }
         }
+        imported.inherited_source_exclusions = seed.point.excluded_source_ranges;
         imported.journal = seed.messages;
         imported.pending_client_tools = seed.point.pending_calls;
+        imported.pending_general_tools = seed.point.general_pending_calls;
         imported.response_head = Some(seed.point.response_id.clone());
         imported.imported_parent = Some(ImportedParent {
             response_id: seed.point.response_id,

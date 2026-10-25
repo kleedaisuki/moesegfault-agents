@@ -49,6 +49,8 @@ const COUNT_FIELDS: &[&str] = &[
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct PreparedRequest {
     body: Value,
+    #[serde(default)]
+    effects: super::controls::HarnessControlEffects,
 }
 
 impl fmt::Debug for PreparedRequest {
@@ -92,13 +94,29 @@ impl PreparedRequest {
         {
             return Err("prepared native context does not match the model budget".into());
         }
-        Ok(())
+        super::controls::validate(config, &self.body, self.effects)
     }
     pub(crate) fn new(
         config: &ProviderConfig,
         input: &[Value],
         tools: &[Value],
         controls: &Value,
+    ) -> Result<Self, String> {
+        Self::new_with_effects(
+            config,
+            input,
+            tools,
+            controls,
+            super::controls::HarnessControlEffects::default(),
+        )
+    }
+
+    pub(crate) fn new_with_effects(
+        config: &ProviderConfig,
+        input: &[Value],
+        tools: &[Value],
+        controls: &Value,
+        effects: super::controls::HarnessControlEffects,
     ) -> Result<Self, String> {
         if config.model.is_empty() || input.iter().any(|item| !item.is_object()) {
             return Err("invalid native Responses context".into());
@@ -141,7 +159,8 @@ impl PreparedRequest {
                 body["max_output_tokens"] = json!(limit);
             }
         }
-        Ok(Self { body })
+        super::controls::prepare(config, &mut body, effects)?;
+        Ok(Self { body, effects })
     }
 
     pub(crate) fn payload(&self, stream: bool) -> Value {
@@ -206,6 +225,8 @@ pub(crate) struct NativeTurn {
     pub output: Vec<Value>,
     pub usage_details: Option<Value>,
     pub cache_write_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_service_tier: Option<String>,
     pub error: Option<Value>,
     pub incomplete_details: Option<Value>,
 }
@@ -373,6 +394,247 @@ pub(crate) struct NativeEvent {
     pub value: Value,
 }
 
+/// Only public semantic categories cross the provider/Session callback boundary.
+/// Provider lifecycle, raw reasoning, and encrypted continuations never do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SemanticKind {
+    ItemAdded,
+    ItemDone,
+    PartAdded,
+    PartDone,
+    TextDelta,
+    TextDone,
+    AnnotationAdded,
+    RefusalDelta,
+    RefusalDone,
+    SummaryPartAdded,
+    SummaryPartDone,
+    SummaryTextDelta,
+    SummaryTextDone,
+    ArgumentsDelta,
+    ArgumentsDone,
+    CustomInputDelta,
+    CustomInputDone,
+}
+
+pub(crate) struct SemanticDelta {
+    pub kind: SemanticKind,
+    pub payload: Value,
+}
+
+impl SemanticDelta {
+    pub(crate) fn event_type(&self) -> &'static str {
+        match self.kind {
+            SemanticKind::ItemAdded => "response.output_item.added",
+            SemanticKind::ItemDone => "response.output_item.done",
+            SemanticKind::PartAdded => "response.content_part.added",
+            SemanticKind::PartDone => "response.content_part.done",
+            SemanticKind::TextDelta => "response.output_text.delta",
+            SemanticKind::TextDone => "response.output_text.done",
+            SemanticKind::AnnotationAdded => "response.output_text.annotation.added",
+            SemanticKind::RefusalDelta => "response.refusal.delta",
+            SemanticKind::RefusalDone => "response.refusal.done",
+            SemanticKind::SummaryPartAdded => "response.reasoning_summary_part.added",
+            SemanticKind::SummaryPartDone => "response.reasoning_summary_part.done",
+            SemanticKind::SummaryTextDelta => "response.reasoning_summary_text.delta",
+            SemanticKind::SummaryTextDone => "response.reasoning_summary_text.done",
+            SemanticKind::ArgumentsDelta => "response.function_call_arguments.delta",
+            SemanticKind::ArgumentsDone => "response.function_call_arguments.done",
+            SemanticKind::CustomInputDelta => "response.custom_tool_call_input.delta",
+            SemanticKind::CustomInputDone => "response.custom_tool_call_input.done",
+        }
+    }
+
+    pub(crate) fn from_event(event: &Value) -> Result<Option<Self>, String> {
+        let kind = match event["type"].as_str().unwrap_or("") {
+            "response.output_item.added" => SemanticKind::ItemAdded,
+            "response.output_item.done" => SemanticKind::ItemDone,
+            "response.content_part.added" => SemanticKind::PartAdded,
+            "response.content_part.done" => SemanticKind::PartDone,
+            "response.output_text.delta" => SemanticKind::TextDelta,
+            "response.output_text.done" => SemanticKind::TextDone,
+            "response.output_text.annotation.added" => SemanticKind::AnnotationAdded,
+            "response.refusal.delta" => SemanticKind::RefusalDelta,
+            "response.refusal.done" => SemanticKind::RefusalDone,
+            "response.reasoning_summary_part.added" => SemanticKind::SummaryPartAdded,
+            "response.reasoning_summary_part.done" => SemanticKind::SummaryPartDone,
+            "response.reasoning_summary_text.delta" => SemanticKind::SummaryTextDelta,
+            "response.reasoning_summary_text.done" => SemanticKind::SummaryTextDone,
+            "response.function_call_arguments.delta" => SemanticKind::ArgumentsDelta,
+            "response.function_call_arguments.done" => SemanticKind::ArgumentsDone,
+            "response.custom_tool_call_input.delta" => SemanticKind::CustomInputDelta,
+            "response.custom_tool_call_input.done" => SemanticKind::CustomInputDone,
+            _ => return Ok(None),
+        };
+        index(event, "output_index")?;
+        let mut payload = select_fields(
+            event,
+            &[
+                "output_index",
+                "item_id",
+                "content_index",
+                "summary_index",
+                "delta",
+                "text",
+                "refusal",
+                "arguments",
+                "input",
+                "name",
+                "logprobs",
+                "annotation_index",
+                "annotation",
+            ],
+        );
+        if let Some(annotation) = event.get("annotation") {
+            let Some(annotation) = public_annotation(annotation) else {
+                return Ok(None);
+            };
+            payload["annotation"] = annotation;
+        }
+        if let Some(logprobs) = event.get("logprobs") {
+            payload["logprobs"] = public_logprobs(logprobs);
+        }
+        if matches!(kind, SemanticKind::ItemAdded | SemanticKind::ItemDone) {
+            let Some(item) = public_item(&event["item"])? else {
+                return Ok(None);
+            };
+            payload["item"] = item;
+        }
+        if matches!(
+            kind,
+            SemanticKind::PartAdded
+                | SemanticKind::PartDone
+                | SemanticKind::SummaryPartAdded
+                | SemanticKind::SummaryPartDone
+        ) {
+            let Some(part) = public_part(&event["part"]) else {
+                return Ok(None);
+            };
+            payload["part"] = part;
+        }
+        Ok(Some(Self { kind, payload }))
+    }
+}
+
+fn select_fields(value: &Value, names: &[&str]) -> Value {
+    Value::Object(
+        names
+            .iter()
+            .filter_map(|name| {
+                value
+                    .get(*name)
+                    .map(|value| ((*name).to_owned(), value.clone()))
+            })
+            .collect(),
+    )
+}
+
+fn public_part(value: &Value) -> Option<Value> {
+    match value["type"].as_str()? {
+        "output_text" => {
+            let mut part = select_fields(value, &["type", "text"]);
+            if let Some(annotations) = value.get("annotations").and_then(Value::as_array) {
+                part["annotations"] =
+                    Value::Array(annotations.iter().filter_map(public_annotation).collect());
+            }
+            if let Some(logprobs) = value.get("logprobs") {
+                part["logprobs"] = public_logprobs(logprobs);
+            }
+            Some(part)
+        }
+        "refusal" => Some(select_fields(value, &["type", "refusal"])),
+        "summary_text" => Some(select_fields(value, &["type", "text"])),
+        _ => None,
+    }
+}
+
+fn public_annotation(value: &Value) -> Option<Value> {
+    let fields: &[&str] = match value["type"].as_str()? {
+        "url_citation" => &["type", "start_index", "end_index", "url", "title"],
+        "file_citation" => &["type", "file_id", "filename", "index"],
+        "container_file_citation" => &[
+            "type",
+            "container_id",
+            "file_id",
+            "filename",
+            "start_index",
+            "end_index",
+        ],
+        "file_path" => &["type", "file_id", "index"],
+        _ => return None,
+    };
+    Some(select_fields(value, fields))
+}
+
+fn public_logprobs(value: &Value) -> Value {
+    Value::Array(
+        value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|value| {
+                let mut token = select_fields(value, &["token", "logprob", "bytes"]);
+                if let Some(top) = value.get("top_logprobs").and_then(Value::as_array) {
+                    token["top_logprobs"] = Value::Array(
+                        top.iter()
+                            .map(|value| select_fields(value, &["token", "logprob", "bytes"]))
+                            .collect(),
+                    );
+                }
+                token
+            })
+            .collect(),
+    )
+}
+
+pub(crate) fn public_item(value: &Value) -> Result<Option<Value>, String> {
+    nonempty(value, "id")?;
+    let fields: &[&str] = match value["type"].as_str().unwrap_or("") {
+        "message" => &["id", "type", "status", "role", "phase"],
+        "reasoning" => &["id", "type", "status"],
+        "function_call" => &[
+            "id",
+            "type",
+            "status",
+            "call_id",
+            "name",
+            "namespace",
+            "arguments",
+            "async",
+        ],
+        "custom_tool_call" => &[
+            "id",
+            "type",
+            "status",
+            "call_id",
+            "name",
+            "namespace",
+            "input",
+            "async",
+        ],
+        // Hosted tools have a separate service authority and public projection.
+        _ => return Ok(None),
+    };
+    let mut item = select_fields(value, fields);
+    if matches!(
+        value["type"].as_str(),
+        Some("function_call" | "custom_tool_call")
+    ) {
+        if let Some(caller) = value.get("caller") {
+            item["caller"] = select_fields(caller, &["type", "caller_id"]);
+        }
+    }
+    for field in ["content", "summary"] {
+        if field == "content" && value["type"] != "message" {
+            continue;
+        }
+        if let Some(parts) = value.get(field).and_then(Value::as_array) {
+            item[field] = Value::Array(parts.iter().filter_map(public_part).collect());
+        }
+    }
+    Ok(Some(item))
+}
+
 pub(crate) async fn complete(
     config: &ProviderConfig,
     prepared: &PreparedRequest,
@@ -419,7 +681,9 @@ pub(crate) async fn complete_stream<F: FnMut(&NativeEvent)>(
             return Err(protocol_failure());
         }
         let terminal = accumulator.push(&value).map_err(|_| protocol_failure())?;
-        on_event(&NativeEvent { value });
+        if accumulator.semantic_valid() {
+            on_event(&NativeEvent { value });
+        }
         if let Some(completion) = terminal {
             return Ok(completion);
         }
@@ -551,6 +815,16 @@ pub(crate) fn parse(value: Value) -> Result<NativeCompletion, String> {
         provider_response_id: id.clone(),
         status,
         output,
+        effective_service_tier: value
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .filter(|tier| {
+                matches!(
+                    *tier,
+                    "auto" | "default" | "flex" | "scale" | "priority" | "fast" | "ultrafast"
+                )
+            })
+            .map(str::to_owned),
         cache_write_tokens: usage_details
             .as_ref()
             .and_then(|usage| usage["input_tokens_details"]["cache_write_tokens"].as_u64()),
@@ -636,10 +910,17 @@ pub(crate) struct Accumulator {
     id: Option<String>,
     sequence: Option<u64>,
     text: BTreeMap<(usize, usize), String>,
+    fragments: BTreeMap<(usize, usize, &'static str), String>,
+    item_ids: BTreeMap<usize, String>,
+    integrity_error: bool,
     terminal: bool,
 }
 
 impl Accumulator {
+    pub(crate) fn semantic_valid(&self) -> bool {
+        !self.integrity_error
+    }
+
     pub(crate) fn push(&mut self, value: &Value) -> Result<Option<NativeCompletion>, String> {
         if self.terminal {
             return Err("native event after terminal".into());
@@ -667,6 +948,76 @@ impl Accumulator {
                 return Err("native stream response identity changed".into());
             }
         }
+        if matches!(
+            kind,
+            "response.output_item.added" | "response.output_item.done"
+        ) {
+            let output = index(value, "output_index")?;
+            let item_id = nonempty(&value["item"], "id")?;
+            if self.item_ids.get(&output).is_some_and(|id| id != item_id) {
+                self.integrity_error = true;
+            }
+            self.item_ids.insert(output, item_id.into());
+        }
+        if let Some(item_id) = value.get("item_id").and_then(Value::as_str) {
+            let output = index(value, "output_index")?;
+            if self.item_ids.get(&output).is_some_and(|id| id != item_id) {
+                self.integrity_error = true;
+            }
+        }
+        let fragment = match kind {
+            "response.refusal.delta" => Some(("refusal", index(value, "content_index")?)),
+            "response.reasoning_summary_text.delta" => {
+                Some(("summary", index(value, "summary_index")?))
+            }
+            "response.function_call_arguments.delta" => Some(("arguments", 0)),
+            "response.custom_tool_call_input.delta" => Some(("input", 0)),
+            _ => None,
+        };
+        if let Some((field, part)) = fragment {
+            self.fragments
+                .entry((index(value, "output_index")?, part, field))
+                .or_default()
+                .push_str(
+                    value["delta"]
+                        .as_str()
+                        .ok_or("invalid native semantic delta")?,
+                );
+        }
+        let done = match kind {
+            "response.refusal.done" => Some(("refusal", index(value, "content_index")?, "refusal")),
+            "response.reasoning_summary_text.done" => {
+                Some(("summary", index(value, "summary_index")?, "text"))
+            }
+            "response.function_call_arguments.done" => Some(("arguments", 0, "arguments")),
+            "response.custom_tool_call_input.done" => Some(("input", 0, "input")),
+            _ => None,
+        };
+        if let Some((field, part, source)) = done {
+            let key = (index(value, "output_index")?, part, field);
+            let text = value[source]
+                .as_str()
+                .ok_or("invalid native semantic done")?;
+            if self
+                .fragments
+                .get(&key)
+                .is_some_and(|fragment| fragment != text)
+            {
+                self.integrity_error = true;
+            }
+            self.fragments.insert(key, text.into());
+        }
+        if kind == "response.output_text.done" {
+            let key = (
+                index(value, "output_index")?,
+                index(value, "content_index")?,
+            );
+            let text = value["text"].as_str().ok_or("invalid native text done")?;
+            if self.text.get(&key).is_some_and(|fragment| fragment != text) {
+                self.integrity_error = true;
+            }
+            self.text.insert(key, text.into());
+        }
         if kind == "response.output_text.delta" {
             let output = index(value, "output_index")?;
             let content = index(value, "content_index")?;
@@ -684,14 +1035,43 @@ impl Accumulator {
             }
             return Ok(None);
         }
-        let parsed = parse(value["response"].clone())?;
+        let mut parsed = parse(value["response"].clone())?;
         if kind
             != format!(
                 "response.{}",
                 value["response"]["status"].as_str().unwrap_or("")
             )
         {
-            return Err("native terminal status disagrees with its event".into());
+            self.integrity_error = true;
+        }
+        for (output, id) in &self.item_ids {
+            if parsed
+                .turn
+                .output
+                .get(*output)
+                .and_then(|item| item["id"].as_str())
+                != Some(id.as_str())
+            {
+                self.integrity_error = true;
+            }
+        }
+        for ((output, part, field), fragment) in &self.fragments {
+            let item = parsed.turn.output.get(*output);
+            let actual = match *field {
+                "arguments" | "input" => item
+                    .and_then(|item| item.get(*field))
+                    .and_then(Value::as_str),
+                "summary" => item
+                    .and_then(|item| item["summary"].get(*part))
+                    .and_then(|part| part["text"].as_str()),
+                "refusal" => item
+                    .and_then(|item| item["content"].get(*part))
+                    .and_then(|part| part["refusal"].as_str()),
+                _ => None,
+            };
+            if actual != Some(fragment.as_str()) {
+                self.integrity_error = true;
+            }
         }
         for ((output, content), text) in &self.text {
             let actual = parsed
@@ -704,8 +1084,17 @@ impl Accumulator {
                 .and_then(|part| part.get("text"))
                 .and_then(Value::as_str);
             if actual != Some(text.as_str()) {
-                return Err("native streamed and terminal text disagree".into());
+                self.integrity_error = true;
             }
+        }
+        if self.integrity_error {
+            // Preserve known usage for the Session accounting barrier. A
+            // malformed semantic stream is failed, never a successful turn.
+            parsed.turn.status = TerminalStatus::Failed;
+            parsed.turn.error = Some(
+                json!({"code":"provider_protocol_error","message":"Provider stream disagrees with its terminal output"}),
+            );
+            parsed.completion.finish_reason = "error".into();
         }
         self.terminal = true;
         Ok(Some(parsed))
@@ -723,6 +1112,123 @@ fn index(value: &Value, name: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_tool_and_summary_fragments_must_match_done_and_terminal() {
+        let mut parser = Accumulator::default();
+        parser.push(&json!({"type":"response.created","sequence_number":0,"response":{"id":"upstream-response"}})).unwrap();
+        parser
+            .push(
+                &json!({"type":"response.function_call_arguments.delta","sequence_number":1,
+            "output_index":2,"item_id":"call","delta":"{\"unexpected\":true}"}),
+            )
+            .unwrap();
+        assert!(
+            parser
+                .push(
+                    &json!({"type":"response.function_call_arguments.done","sequence_number":2,
+            "output_index":2,"item_id":"call","arguments":"{}"})
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(!parser.semantic_valid());
+        let mut parser = Accumulator::default();
+        parser.push(&json!({"type":"response.created","sequence_number":0,"response":{"id":"upstream-response"}})).unwrap();
+        parser
+            .push(
+                &json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,
+            "output_index":0,"item_id":"reasoning","summary_index":0,"delta":"Visible summary"}),
+            )
+            .unwrap();
+        let failed = parser
+            .push(&json!({"type":"response.completed","sequence_number":2,
+            "response":response("completed")}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.turn.status, TerminalStatus::Failed);
+        assert!(failed.completion.usage.reported);
+    }
+
+    #[test]
+    fn incremental_semantics_strip_private_state_without_waiting_for_terminal() {
+        let mut parser = Accumulator::default();
+        let events = [
+            json!({"type":"response.created","sequence_number":0,"response":{"id":"r"}}),
+            json!({"type":"response.output_item.added","sequence_number":1,"output_index":0,
+                "item":{"id":"reason","type":"reasoning","summary":[],"content":[{"text":"private"}],"encrypted_content":"secret","created_by":"upstream"}}),
+            json!({"type":"response.reasoning_summary_text.delta","sequence_number":2,
+                "output_index":0,"item_id":"reason","summary_index":0,"delta":"Public summary","encrypted_content":"secret"}),
+            json!({"type":"response.output_item.added","sequence_number":3,"output_index":1,
+                "item":{"id":"m","type":"message","role":"assistant","content":[]}}),
+            json!({"type":"response.output_text.delta","sequence_number":4,"output_index":1,
+                "item_id":"m","content_index":0,"delta":"First token"}),
+        ];
+        let mut visible = Vec::new();
+        for event in events {
+            assert!(parser.push(&event).unwrap().is_none());
+            if let Some(delta) = SemanticDelta::from_event(&event).unwrap() {
+                assert!(!delta.payload.to_string().contains("secret"));
+                assert!(delta.payload.get("sequence_number").is_none());
+                visible.push((delta.event_type(), delta.payload));
+            }
+        }
+        assert_eq!(visible.len(), 4);
+        assert_eq!(
+            visible[0].1["item"],
+            json!({"id":"reason","type":"reasoning","summary":[]})
+        );
+        assert_eq!(visible[3].0, "response.output_text.delta");
+        assert_eq!(visible[3].1["delta"], "First token");
+        assert!(!parser.terminal);
+        assert!(
+            SemanticDelta::from_event(&json!({"type":"response.reasoning_text.delta",
+            "output_index":0,"delta":"private reasoning"}))
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn semantic_payloads_cover_public_tool_and_part_events_only() {
+        for kind in [
+            "response.content_part.added",
+            "response.content_part.done",
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+        ] {
+            let event = json!({"type":kind,"output_index":0,"item_id":"i","content_index":0,
+                "summary_index":0,"part":{"type":"summary_text","text":"safe","private":"secret"}});
+            let delta = SemanticDelta::from_event(&event).unwrap().unwrap();
+            assert_eq!(delta.event_type(), kind);
+            assert_eq!(
+                delta.payload["part"],
+                json!({"type":"summary_text","text":"safe"})
+            );
+        }
+        for (kind, field) in [
+            ("response.function_call_arguments.delta", "delta"),
+            ("response.function_call_arguments.done", "arguments"),
+            ("response.custom_tool_call_input.delta", "delta"),
+            ("response.custom_tool_call_input.done", "input"),
+            ("response.refusal.delta", "delta"),
+            ("response.refusal.done", "refusal"),
+        ] {
+            let mut event = json!({"type":kind,"output_index":1,"item_id":"i"});
+            event[field] = json!("fragment");
+            let delta = SemanticDelta::from_event(&event).unwrap().unwrap();
+            assert_eq!(delta.event_type(), kind);
+            assert_eq!(delta.payload[field], "fragment");
+        }
+        assert!(
+            SemanticDelta::from_event(
+                &json!({"type":"response.output_item.added", "output_index":0,
+            "item":{"id":"host","type":"mcp_call","authorization":"secret"}})
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
 
     fn config() -> ProviderConfig {
         ProviderConfig {
@@ -905,6 +1411,8 @@ mod tests {
         let mut mismatch = Accumulator::default();
         mismatch.push(&json!({"type":"response.created","sequence_number":0,"response":{"id":"upstream-response"}})).unwrap();
         mismatch.push(&json!({"type":"response.output_text.delta","sequence_number":1,"output_index":1,"content_index":0,"delta":"Wrong"})).unwrap();
-        assert!(mismatch.push(&terminal).is_err());
+        let failed = mismatch.push(&terminal).unwrap().unwrap();
+        assert_eq!(failed.turn.status, TerminalStatus::Failed);
+        assert!(failed.completion.usage.reported);
     }
 }

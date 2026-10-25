@@ -118,8 +118,10 @@ impl ComputeLease<'_> {
         let next = match candidate {
             Some(lease) => lease,
             None => {
-                let pricing =
-                    ResourcePricing::parse(&self.env.var("RESOURCE_PRICING_JSON")?.to_string())?;
+                let profile =
+                    crate::runtime_profiles::profile_for(self.env, self.owner, self.session)
+                        .await?;
+                let pricing = crate::runtime_profiles::pricing(self.env, profile)?;
                 let compute = pricing
                     .tariff(&Resource::Container, "wall_ms")?
                     .charge(DURATION_MS)

@@ -22,6 +22,8 @@ use crate::{
 mod anthropic;
 #[path = "provider_config.rs"]
 mod config;
+#[path = "provider_controls.rs"]
+pub(crate) mod controls;
 #[path = "provider_responses.rs"]
 pub(crate) mod responses;
 #[path = "provider_tool_media.rs"]
@@ -562,7 +564,7 @@ pub async fn complete_stream_with_options<F: FnMut(&str)>(
     options: &GenerationOptions,
     on_delta: F,
 ) -> worker::Result<Completion> {
-    complete_stream_policy(config, messages, tools, options, on_delta, false).await
+    complete_stream_policy(config, messages, tools, options, on_delta, |_| {}, false).await
 }
 
 /// Responses text framing only; legacy Chat Completions keeps immediate deltas.
@@ -573,15 +575,31 @@ pub async fn complete_stream_with_options_and_buffer<F: FnMut(&str)>(
     options: &GenerationOptions,
     on_delta: F,
 ) -> worker::Result<Completion> {
-    complete_stream_policy(config, messages, tools, options, on_delta, true).await
+    complete_stream_policy(config, messages, tools, options, on_delta, |_| {}, true).await
 }
 
-async fn complete_stream_policy<F: FnMut(&str)>(
+/// Native semantics are private harness input; the Session assigns public IDs.
+pub(crate) async fn complete_stream_with_options_and_native<
+    F: FnMut(&str),
+    N: FnMut(&responses::SemanticDelta),
+>(
     config: &ProviderConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
     options: &GenerationOptions,
     on_delta: F,
+    on_native: N,
+) -> worker::Result<Completion> {
+    complete_stream_policy(config, messages, tools, options, on_delta, on_native, false).await
+}
+
+async fn complete_stream_policy<F: FnMut(&str), N: FnMut(&responses::SemanticDelta)>(
+    config: &ProviderConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    options: &GenerationOptions,
+    on_delta: F,
+    mut on_native: N,
     buffered: bool,
 ) -> worker::Result<Completion> {
     let trace = config.trace_context();
@@ -629,12 +647,32 @@ async fn complete_stream_policy<F: FnMut(&str)>(
                 break;
             }
             let value: Value = serde_json::from_str(&event.data).map_err(|_| protocol_failure())?;
+            if config.protocol == ProviderProtocol::Responses
+                && !event.event.is_empty()
+                && event.event != "message"
+                && value["type"].as_str() != Some(event.event.as_str())
+            {
+                return Err(protocol_failure());
+            }
             let barrier = text_barrier(config.protocol, &value);
             if barrier {
                 delivery.flush();
             }
+            // Validate provider order and terminal reconciliation before any
+            // semantic event can enter the canonical Session event journal.
+            let semantic = (config.protocol == ProviderProtocol::Responses)
+                .then(|| responses::SemanticDelta::from_event(&value))
+                .transpose()
+                .map_err(|_| protocol_failure())?
+                .flatten();
             if let Some(text) = accumulator.push(value).map_err(|_| protocol_failure())? {
                 delivery.push(&text);
+            }
+            if let Some(semantic) = semantic.filter(|_| accumulator.semantic_valid()) {
+                on_native(&semantic);
+                // A ready upstream stream must not postpone delivery until its
+                // terminal turn. This also applies to reasoning-only output.
+                worker::Delay::from(Duration::ZERO).await;
             }
             if barrier {
                 delivery.finish();
@@ -767,6 +805,13 @@ enum ProviderAccumulator {
 }
 
 impl ProviderAccumulator {
+    fn semantic_valid(&self) -> bool {
+        match self {
+            Self::Responses { parser, .. } => parser.semantic_valid(),
+            _ => true,
+        }
+    }
+
     fn new(protocol: ProviderProtocol) -> Self {
         match protocol {
             ProviderProtocol::Openai => Self::Openai(StreamAccumulator::default()),

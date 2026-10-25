@@ -27,15 +27,23 @@ pub(super) fn directory(path: &Path, private: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(super) fn configure(command: &mut Command) {
+pub(super) fn configure(command: &mut Command) -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    let network_filter = crate::interpreter_network::filter()?;
     #[cfg(target_os = "linux")]
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setpgid(0, 0) != 0
                 || libc::setgroups(0, std::ptr::null()) != 0
                 || libc::setgid(UID) != 0
                 || libc::setuid(UID) != 0
                 || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+                || libc::syscall(
+                    libc::SYS_close_range,
+                    3_u32,
+                    u32::MAX,
+                    libc::CLOSE_RANGE_CLOEXEC,
+                ) != 0
             {
                 return Err(std::io::Error::last_os_error());
             }
@@ -53,10 +61,11 @@ pub(super) fn configure(command: &mut Command) {
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            Ok(())
+            crate::interpreter_network::install(&network_filter)
         });
     }
     let _ = command;
+    Ok(())
 }
 
 pub(super) fn pause() -> anyhow::Result<()> {

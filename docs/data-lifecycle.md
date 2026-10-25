@@ -104,12 +104,24 @@ Actual candidates atomically replace holds. Fork-transfer leases protect an
 exported archive until its child has a durable independent current reference.
 Only those intermediate holds/transfer leases have a 24-hour TTL.
 
+Private WebSocket parent grants use the same transfer-reference engine with a
+namespaced connection/response identity and their exact expiry, capped at 60
+minutes rather than the normal fork-transfer day. Retrying a seal never extends
+the original holder expiry. Connection authority is denied at expiry regardless
+of later GC; disconnect cleanup releases only that private holder, never an
+accepted child's current reference or source user data.
+
 Generated image Files are metadata links. Explicit File deletion releases only
 the file's strong reference; response results retain independent immutable bytes.
 Active linked metadata also guards the pre-reference publication crash window.
 Deleted-file provenance is retained without an unconditional blob foreign key,
 so a metadata tombstone cannot pin physical bytes forever. Indexed bounded
 maintenance repairs stale file references by checking explicit tombstones.
+Deferred image metadata publication treats a deleted/deleting publication as a
+terminal tombstone (`file_publication_deleted`). Both lookup and atomic insertion
+honor all prior states; a partial active-row unique index alone would permit
+resurrection after user deletion. The underlying canonical response image can
+remain usable through its independent reference without republishing the File.
 
 Published version references cannot be removed. A response reference is released
 only after its owning DO durably tombstones that public response; descendant

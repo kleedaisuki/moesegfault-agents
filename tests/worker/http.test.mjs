@@ -22,6 +22,10 @@ import { runSpaceJourney } from './space-journey.mjs';
 import { runWorkspaceBlobJourney } from './workspace-blob-journey.mjs';
 import { runJsonObserverJourney } from './json-observer-journey.mjs';
 import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
+import { createAuxiliaryProviderFixture, runAuxiliaryJourney } from './auxiliary-journey.mjs';
+import { runDeepSeekTokenizerJourney } from './deepseek-tokenizer-journey.mjs';
+import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
+import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -43,6 +47,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const responsesProvider = createResponsesProviderFixture();
   const coalescingProviders = createCoalescingProviderFixture();
   const chatRecoveryControl = createChatRecoveryControl();
+  const auxiliaryProvider = createAuxiliaryProviderFixture();
+  const promptProvider = createPromptProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -97,8 +103,13 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       // exhaustion remains covered separately rather than sharing a global cap.
       FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000',
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
+      PROMPT_REGISTRY_JSON: promptRegistry,
     },
     outboundService: async request => {
+      const promptResponse = await promptProvider.handle(request);
+      if (promptResponse !== undefined) return promptResponse;
+      const auxiliaryResponse = await auxiliaryProvider.handle(request);
+      if (auxiliaryResponse !== undefined) return auxiliaryResponse;
       const chatRecoveryResponse = await chatRecoveryControl.handle(request);
       if (chatRecoveryResponse !== undefined) return chatRecoveryResponse;
       const coalescingResponse = await coalescingProviders.handle(request);
@@ -508,6 +519,18 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
+  await selected(t, 'response-wide server tool allowance survives disobedient calls and cold retrieval', { timeout: 40000 }, () =>
+    runResponsesToolBudgetJourney(responseContext()));
+  await selected(t, 'Responses auxiliary compact and count', { timeout: 60000 }, () =>
+    runAuxiliaryJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
+  await selected(t, 'DeepSeek exact count-only tokenizer cold warm and profile replacement', { timeout: 60000 }, () =>
+    runDeepSeekTokenizerJourney(responseContext()));
+  await selected(t, 'Responses prompt templates preserve version owner variables and replay identity', { timeout: 40000 }, () =>
+    runPromptTemplatesJourney({ ...responseContext(), provider: promptProvider,
+      replaceRegistry: async value => {
+        mfOptions.workers[0].config.env.PROMPT_REGISTRY_JSON.value = value;
+        await mf.setOptions(mfOptions);
+      } }));
   await selected(t, 'Chat internal observation loss recovers original durable text and terminal without replay', { timeout: 40000 }, () =>
     runChatRecoveryJourney({ ...responseContext(), chatRecoveryControl }));
   await selected(t, 'JSON observers keep internal heartbeats private and preserve terminal success, errors and detached runs', { timeout: 40000 }, () =>

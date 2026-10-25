@@ -7,13 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       diagnostic_run:
-        description: Reuse a completed CI Worker artifact for fixture diagnostics only (empty runs full CI)
+        description: Reuse a retained Worker for diagnostics only (empty runs incremental CI)
         type: string
         required: false
         default: ''
 
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.diagnostic_run || 'build' }}
   cancel-in-progress: ${{ !inputs.diagnostic_run }}
@@ -31,15 +32,23 @@ jobs:
       dashboard: ${{ steps.paths.outputs.dashboard }}
       container: ${{ steps.paths.outputs.container }}
       tooling: ${{ steps.paths.outputs.tooling }}
+      worker_build: ${{ steps.paths.outputs.worker_build }}
+      worker_artifact_run: ${{ steps.paths.outputs.worker_artifact_run }}
+      worker_artifact_sha: ${{ steps.paths.outputs.worker_artifact_sha }}
+      container_build: ${{ steps.paths.outputs.container_build }}
+      container_artifact_run: ${{ steps.paths.outputs.container_artifact_run }}
+      container_artifact_sha: ${{ steps.paths.outputs.container_artifact_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: paths
-        env:
-          CHANGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' }}
-        run: node scripts/ci-changes.mjs
+        run: node scripts/incremental-checks.mjs plan
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: incremental-plan
+          path: .cache/verification/plan.json
+          retention-days: 14
 
   rust:
     needs: changes
@@ -47,6 +56,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: incremental-plan
+          path: .cache/verification
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.98.1
@@ -55,10 +68,9 @@ jobs:
         with:
           shared-key: native
           cache-on-failure: true
-      - run: cargo fmt --all --check
-      - run: cargo test --locked --workspace --exclude agents-worker
-      - run: python3 -m unittest discover -s tests -p 'test_*sql.py' -v
-      - run: cargo clippy --locked --workspace --exclude agents-worker --all-targets -- -D warnings
+      - run: cargo fmt --check
+      - run: node scripts/incremental-checks.mjs run rust
+      - run: node scripts/incremental-checks.mjs check-native
       - name: Retain native performance measurements
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -67,6 +79,12 @@ jobs:
           path: .cache/perf/v3/*.json
           if-no-files-found: warn
           retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: verification-rust
+          path: .cache/verification/*.json
+          retention-days: 14
 
   dashboard:
     needs: changes
@@ -77,25 +95,30 @@ jobs:
         working-directory: apps/dashboard
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: incremental-plan
+          path: .cache/verification
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: apps/dashboard/package-lock.json
       - run: npm ci
-      - run: npm test
+      - run: node scripts/incremental-checks.mjs run dashboard
+        working-directory: .
       - run: npm run build
-      - name: Use the runner's installed Chrome
-        run: |
-          chrome=$(command -v google-chrome)
-          "$chrome" --version
-          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$chrome" >> "$GITHUB_ENV"
-      - run: npm run test:browser
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard
           path: apps/dashboard/dist
           retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: verification-dashboard
+          path: .cache/verification/*.json
+          retention-days: 14
 
   worker:
     needs: changes
@@ -103,6 +126,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: incremental-plan
+          path: .cache/verification
+      - name: Reuse the sealed identical Worker artifact
+        if: needs.changes.outputs.worker_build != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: worker
+          path: crates/agents-worker/build
+          run-id: ${{ needs.changes.outputs.worker_artifact_run }}
+          github-token: ${{ github.token }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.98.1
@@ -113,9 +148,12 @@ jobs:
           cache-all-crates: true
           cache-on-failure: true
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
-      - run: cargo test --locked -p agents-worker --lib
+        if: needs.changes.outputs.worker_build == 'true'
+      - run: node scripts/incremental-checks.mjs run worker-rust
       - run: cargo install --locked worker-build --version 0.8.7
+        if: needs.changes.outputs.worker_build == 'true'
       - run: worker-build --release
+        if: needs.changes.outputs.worker_build == 'true'
         working-directory: crates/agents-worker
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -123,6 +161,7 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: node scripts/bundle-worker.mjs
+        if: needs.changes.outputs.worker_build == 'true'
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
@@ -132,7 +171,7 @@ jobs:
         run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
-      - run: npm run test:worker
+      - run: node scripts/incremental-checks.mjs run worker-journeys
         env:
           MAGENTS_SCHEMA_PYTHON: .cache/e2e-venv/bin/python
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -143,11 +182,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: always()
+        if: always() && needs.changes.outputs.worker_build == 'true'
         with:
           name: worker
           path: crates/agents-worker/build
           retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: verification-worker
+          path: .cache/verification/*.json
+          retention-days: 14
 
   container:
     needs: changes
@@ -155,8 +200,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: incremental-plan
+          path: .cache/verification
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        if: needs.changes.outputs.container_build == 'true'
         with:
           context: .
           file: container/Dockerfile
@@ -164,6 +214,21 @@ jobs:
           tags: magents-workspace:acceptance
           cache-from: type=gha,scope=workspace
           cache-to: type=gha,mode=max,scope=workspace
+      - name: Reuse the sealed identical container image
+        if: needs.changes.outputs.container_build != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: container-image
+          path: .temp/container-release
+          run-id: ${{ needs.changes.outputs.container_artifact_run }}
+          github-token: ${{ github.token }}
+      - name: Load the retained image under its original source identity
+        if: needs.changes.outputs.container_build != 'true'
+        env:
+          REUSED_SOURCE_SHA: ${{ needs.changes.outputs.container_artifact_sha }}
+        run: |
+          node --input-type=module -e 'import { loadImageArtifact } from "./scripts/container-artifact.mjs"; await loadImageArtifact(".temp/container-release", process.env.REUSED_SOURCE_SHA)'
+          docker image tag "magents-workspace:${REUSED_SOURCE_SHA}" magents-workspace:acceptance
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
@@ -172,13 +237,15 @@ jobs:
       - run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
-          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_workspace_daemon.py tests/e2e/test_workspace_interpreter.py -ra -rP -o cache_dir=.cache/pytest --basetemp=.temp/pytest
+          node scripts/incremental-checks.mjs run container
         env:
           MAGENTS_DAEMON_IMAGE: magents-workspace:acceptance
+          RUN_EGRESS_NETWORK_PROBE: '1'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
       - name: Save the exact tested container for promotion
+        if: needs.changes.outputs.container_build == 'true'
         run: |
           set -euo pipefail
           mkdir -p .temp/container-release
@@ -187,12 +254,19 @@ jobs:
           node scripts/container-artifact.mjs create .temp/container-release
           node scripts/container-artifact.mjs load .temp/container-release
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: needs.changes.outputs.container_build == 'true'
         with:
           name: container-image
           path: .temp/container-release/
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: verification-container
+          path: .cache/verification/*.json
+          retention-days: 14
 
   tooling:
     needs: changes
@@ -200,15 +274,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: incremental-plan
+          path: .cache/verification
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm audit --audit-level=high
-      - run: npm run test:tooling
-      - run: node --test tests/e2e/paid-route-policy.test.mjs tests/e2e/test_full_responses_sdk_contract.mjs
-      - run: node --test scripts/perf/v3-*.test.mjs
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
@@ -217,14 +292,20 @@ jobs:
       - run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
-          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_sdk_contract.py tests/e2e/test_responses_contract.py tests/e2e/test_responses_observation.py tests/e2e/test_paid_route_policy.py tests/e2e/test_python_kernel_bridge.py tests/e2e/test_daemon_harness.py tests/e2e/test_cleanup.py scripts/perf/test_measure.py -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest
-          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_deployed.py tests/e2e/test_responses.py tests/e2e/test_space.py --collect-only -q -o cache_dir=.cache/pytest
+          node scripts/incremental-checks.mjs run tooling
       - name: Verify current SDK HTTP and WebSocket contracts separately from legacy clients
         run: |
           python3 -m venv .cache/e2e-current-venv
           .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
           .cache/e2e-current-venv/bin/pip check
-          .cache/e2e-current-venv/bin/python -m pytest tests/e2e/test_current_responses_sdk_contract.py -ra -o cache_dir=.cache/pytest-current --basetemp=.temp/pytest-current
+          node scripts/incremental-checks.mjs run current_sdk
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: verification-tooling
+          path: .cache/verification/*.json
+          retention-days: 14
 
   # Fixture revisions may target a retained older binary; this is never release CI.
   diagnostic:

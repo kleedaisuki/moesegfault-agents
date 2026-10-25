@@ -7,6 +7,9 @@ use agents_core::{AgentConfig, ModelConfig, Plan, Provider, SessionRecord, Sessi
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{D1PreparedStatement, Env, Error, Result, wasm_bindgen::JsValue};
 
+#[path = "model_pricing.rs"]
+mod model_pricing;
+
 #[path = "store_auxiliary.rs"]
 mod auxiliary;
 
@@ -175,8 +178,8 @@ impl<'a> Store<'a> {
             return Err(Error::RustError("new session cannot be closed".into()));
         }
         self.changed(
-            "INSERT INTO sessions(id,account_id,agent_id,do_id,status,config_snapshot_json,instructions_hash,created_at,last_input_at) SELECT ?,?,?,?,'active',?,?,?,? WHERE EXISTS(SELECT 1 FROM agents WHERE id=? AND account_id=? AND deleted_at IS NULL) AND (SELECT COUNT(*) FROM sessions WHERE account_id=? AND status!='closed') < ? RETURNING id",
-            &[session.id.as_str().into(), session.owner_id.as_str().into(), session.agent_id.as_str().into(), do_id.into(), encode(session)?.into(), session.pinned.prefix_hash().into(), number(session.created_at_ms)?, number(session.last_input_at_ms)?, session.agent_id.as_str().into(), session.owner_id.as_str().into(), session.owner_id.as_str().into(), max_sessions.into()],
+            "INSERT INTO sessions(id,account_id,agent_id,do_id,status,config_snapshot_json,instructions_hash,created_at,last_input_at,runtime_profile) SELECT ?,?,?,?,'active',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM agents WHERE id=? AND account_id=? AND deleted_at IS NULL) AND (SELECT COUNT(*) FROM sessions WHERE account_id=? AND status!='closed') < ? RETURNING id",
+            &[session.id.as_str().into(), session.owner_id.as_str().into(), session.agent_id.as_str().into(), do_id.into(), encode(session)?.into(), session.pinned.prefix_hash().into(), number(session.created_at_ms)?, number(session.last_input_at_ms)?, session.runtime_profile.name().into(), session.agent_id.as_str().into(), session.owner_id.as_str().into(), session.owner_id.as_str().into(), max_sessions.into()],
         ).await
     }
 
@@ -387,7 +390,11 @@ impl<'a> Store<'a> {
     }
 
     fn model_price(&self, provider: Provider, model: &str) -> Result<ModelPrice> {
-        let registry: std::collections::BTreeMap<String, ModelPrice> =
+        self.model_price_at(provider, model, now_seconds())
+    }
+
+    fn model_price_at(&self, provider: Provider, model: &str, now: i64) -> Result<ModelPrice> {
+        let registry: std::collections::BTreeMap<String, model_pricing::PriceDefinition> =
             decode(&self.env.var("MODEL_PRICING_JSON")?.to_string())?;
         let key = platform_price_key(provider, model)
             .ok_or_else(|| fail("byok_has_no_platform_model_price"))?;
@@ -395,10 +402,10 @@ impl<'a> Store<'a> {
             .get(&key)
             .cloned()
             .ok_or_else(|| fail("model_price_unconfigured"))?;
-        if !price.valid() {
-            return Err(fail("invalid_model_price"));
+        if !price.supports_key(&key) {
+            return Err(fail("invalid_model_price_provider"));
         }
-        Ok(price)
+        price.select(now).map_err(fail)
     }
 }
 
@@ -414,12 +421,15 @@ fn platform_price_key(provider: Provider, model: &str) -> Option<String> {
 fn platform_models(models: &[ModelConfig], pricing: Option<&str>) -> Vec<ModelConfig> {
     let registry = pricing
         .and_then(|value| {
-            serde_json::from_str::<std::collections::BTreeMap<String, ModelPrice>>(value).ok()
+            serde_json::from_str::<
+                    std::collections::BTreeMap<String, model_pricing::PriceDefinition>,
+                >(value)
+                .ok()
         })
         .unwrap_or_default();
     let priced: std::collections::HashSet<&str> = registry
         .iter()
-        .filter(|(_, price)| price.valid())
+        .filter(|(key, price)| price.valid() && price.supports_key(key))
         .map(|(key, _)| key.as_str())
         .collect();
     models
@@ -457,7 +467,7 @@ fn money_from_text<'de, D: serde::Deserializer<'de>>(
 
 /// Convert the provider's decimal USD amount without a binary floating-point
 /// multiplication. Positive sub-micro-USD charges round upward once per event.
-fn usd_to_microusd(decimal: &str) -> Result<i64> {
+pub(crate) fn usd_to_microusd(decimal: &str) -> Result<i64> {
     let (mantissa, exponent) = decimal.split_once(['e', 'E']).unwrap_or((decimal, "0"));
     let exponent = exponent
         .parse::<i64>()
@@ -731,6 +741,7 @@ mod tests {
             input_revision: 1,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
             workspace_snapshot: None,
+            runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };
         encode(&record).unwrap().replace(
             "\"last_input_at_ms\":0",

@@ -17,6 +17,18 @@ fn run_hash(owner: &str, session: Option<&str>, model: &ModelConfig) -> Result<S
     }
 }
 
+fn replayed_price(
+    payload: &str,
+    model: &ModelConfig,
+    input_bound: u64,
+) -> Result<Option<ModelPrice>> {
+    let receipt: CompletionReservation = decode(payload)?;
+    if receipt.model != *model || receipt.input_upper_bound != input_bound {
+        return Err(fail("idempotency_conflict"));
+    }
+    Ok(receipt.price)
+}
+
 impl Store<'_> {
     /// A paid account operation has concurrency and funding, but no invented
     /// conversation, workspace, or archive-maintenance lease.
@@ -70,7 +82,13 @@ impl Store<'_> {
             crate::cleanup::ensure(self.env, owner, session, generation).await?;
         }
         if model.provider != Provider::Byok {
-            self.model_price(model.provider, &model.model)?;
+            let existing: Option<IdRow> = self.statement(
+                "SELECT id FROM usage_reservations WHERE id=? AND account_id=? AND session_id IS ?",
+                &[run.into(), owner.into(), session_binding(session)],
+            )?.first(None).await?;
+            if existing.is_none() {
+                self.model_price(model.provider, &model.model)?;
+            }
         }
         let amount = self
             .env
@@ -120,10 +138,17 @@ impl Store<'_> {
         if input_tokens_upper_bound > u64::from(model.context_window) {
             return Err(fail("context_budget_exceeded"));
         }
-        let price = if model.provider == Provider::Byok {
-            None
-        } else {
-            Some(self.model_price(model.provider, &model.model)?)
+        let key = format!("completion:{run}:{event}");
+        let id = completion_id(owner, run, event);
+        let previous: Option<JsonRow> = self.statement(
+            "SELECT request_hash AS payload FROM usage_reservations WHERE id=? AND account_id=? AND session_id IS ?",
+            &[id.as_str().into(), owner.into(), session_binding(session)],
+        )?.first(None).await?;
+        let now = now_seconds();
+        let price = match &previous {
+            Some(row) => replayed_price(&row.payload, model, input_tokens_upper_bound)?,
+            None if model.provider == Provider::Byok => None,
+            None => Some(self.model_price_at(model.provider, &model.model, now)?),
         };
         let amount = if let Some(price) = &price {
             token_cost(input_tokens_upper_bound, price.input_microusd_per_million)?
@@ -135,16 +160,16 @@ impl Store<'_> {
         } else {
             0
         };
-        let key = format!("completion:{run}:{event}");
-        let id = completion_id(owner, run, event);
-        let hash = encode(&CompletionReservation {
-            model: model.clone(),
-            input_upper_bound: input_tokens_upper_bound,
-            price,
-        })?;
+        let hash = match previous {
+            Some(row) => row.payload,
+            None => encode(&CompletionReservation {
+                model: model.clone(),
+                input_upper_bound: input_tokens_upper_bound,
+                price,
+            })?,
+        };
         let reservation =
-            crate::metering::reserve(&db, owner, session, &id, &key, &hash, amount, now_seconds())
-                .await?;
+            crate::metering::reserve(&db, owner, session, &id, &key, &hash, amount, now).await?;
         if reservation.state != ReservationState::Reserved {
             return Err(fail("completion_already_finalized"));
         }
@@ -224,6 +249,30 @@ impl Store<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_uses_frozen_tariff_and_rejects_changed_request() {
+        let model = ModelConfig::default();
+        let receipt = CompletionReservation {
+            model: model.clone(),
+            input_upper_bound: 100,
+            price: Some(ModelPrice {
+                input_microusd_per_million: 150000,
+                cached_input_microusd_per_million: 3000,
+                output_microusd_per_million: 600000,
+                revision: "old-offpeak".into(),
+            }),
+        };
+        let payload = encode(&receipt).unwrap();
+        let frozen = replayed_price(&payload, &model, 100).unwrap().unwrap();
+        assert_eq!(frozen.revision, "old-offpeak");
+        assert_eq!(frozen.output_microusd_per_million, 600000);
+        assert!(replayed_price(&payload, &model, 101).is_err());
+        let mut other = model.clone();
+        other.max_output_tokens += 1;
+        assert!(replayed_price(&payload, &other, 100).is_err());
+        assert_eq!(model_cost(100, 100, 100, &frozen).unwrap(), 76);
+    }
 
     #[test]
     fn session_retry_hash_stays_exact_and_account_work_has_a_distinct_scope() {

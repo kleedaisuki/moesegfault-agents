@@ -45,6 +45,10 @@
     {
       "tag": "v2-full-responses",
       "new_sqlite_classes": ["ConversationState", "ModelOperation"]
+    },
+    {
+      "tag": "v3-runtime-profiles",
+      "new_sqlite_classes": ["Session4G"]
     }
   ],
   "env": {
@@ -61,6 +65,7 @@
         }
       ],
       "vars": {
+        "CONTAINER_PROFILE_PRICING_JSON": "{\"standard4g\":{\"version\":\"2026-10-25-platform-standard4g-v1\",\"microusd_numerator\":21,\"quantity_denominator\":1000}}",
         "ENVIRONMENT": "staging",
         "APP_ORIGIN": "https://adash-staging.moesegfault.dev",
         "ALLOWED_ORIGIN": "https://adash-staging.moesegfault.dev",
@@ -77,8 +82,8 @@
         "DEFAULT_MODEL": "deepseek/deepseek-v4.1-flash-1017",
         "BILLING_MODE": "test",
         "RUN_RESOURCE_RESERVATION_MICROUSD": "20000",
-        "MODEL_REGISTRY_JSON": "[{\"provider\":\"openrouter\",\"model\":\"deepseek/deepseek-v4.1-flash-1017\",\"context_window\":1048576,\"max_output_tokens\":8192},{\"provider\":\"openrouter\",\"model\":\"openai/gpt-4.1-mini\",\"context_window\":1047576,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-flash\",\"context_window\":1000000,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-v4-pro\",\"context_window\":1000000,\"max_output_tokens\":8192}]",
-        "MODEL_PRICING_JSON": "{\"openrouter/openai/gpt-4.1-mini\":{\"input_microusd_per_million\":400000,\"cached_input_microusd_per_million\":100000,\"output_microusd_per_million\":1600000,\"revision\":\"openrouter-2026-10-23\"},\"openrouter/deepseek/deepseek-v4.1-flash-1017\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"openrouter-2026-10-23\"}}",
+        "MODEL_REGISTRY_JSON": "[{\"provider\":\"openrouter\",\"model\":\"deepseek/deepseek-v4.1-flash-1017\",\"context_window\":1048576,\"max_output_tokens\":8192},{\"provider\":\"openrouter\",\"model\":\"openai/gpt-4.1-mini\",\"context_window\":1047576,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-flash\",\"context_window\":1000000,\"max_output_tokens\":8192,\"protocol\":\"responses\"},{\"provider\":\"deepseek\",\"model\":\"deepseek-v4-pro\",\"context_window\":1000000,\"max_output_tokens\":8192,\"protocol\":\"responses\"}]",
+        "MODEL_PRICING_JSON": "{\"openrouter/openai/gpt-4.1-mini\":{\"input_microusd_per_million\":400000,\"cached_input_microusd_per_million\":100000,\"output_microusd_per_million\":1600000,\"revision\":\"openrouter-2026-10-23\"},\"openrouter/deepseek/deepseek-v4.1-flash-1017\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"openrouter-2026-10-23\"},\"deepseek/deepseek-flash\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_flash_2026_10_25\"},\"deepseek/deepseek-v4-flash\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_flash_2026_10_25\"},\"deepseek/deepseek-v4-flash-vision-exp\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_flash_2026_10_25\"},\"deepseek/deepseek-v4-pro\":{\"input_microusd_per_million\":1320000,\"cached_input_microusd_per_million\":44000,\"output_microusd_per_million\":3960000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_pro_2026_10_25\"}}",
         "RESOURCE_PRICING_JSON": "{\"version\":\"2026-10-23-platform-v1\",\"tariffs\":[{\"resource\":\"container\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"durable_object\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":500,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"worker\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":10000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_a\",\"microusd_numerator\":45,\"quantity_denominator\":10,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_b\",\"microusd_numerator\":36,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_storage\",\"unit\":\"byte_ms\",\"microusd_numerator\":15000,\"quantity_denominator\":2592000000000000000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_read\",\"microusd_numerator\":1,\"quantity_denominator\":1000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_written\",\"microusd_numerator\":1,\"quantity_denominator\":1,\"price_version\":\"2026-10-23-platform-v1\"}]}",
         "FREE_GRANT_BUDGET_MICROUSD_PER_DAY": "10000000"
       },
@@ -121,6 +126,10 @@
           {
             "name": "MODEL_OPERATIONS",
             "class_name": "ModelOperation"
+          },
+          {
+            "name": "SESSION_4G",
+            "class_name": "Session4G"
           }
         ]
       },
@@ -130,6 +139,19 @@
           "image": "./container/Dockerfile",
           "image_build_context": ".",
           "instance_type": "basic",
+          "max_instances": 5,
+          "rollout_active_grace_period": 900,
+          "observability": {
+            "logs": {
+              "enabled": true
+            }
+          }
+        },
+        {
+          "class_name": "Session4G",
+          "image": "./container/Dockerfile",
+          "image_build_context": ".",
+          "instance_type": "standard-1",
           "max_instances": 5,
           "rollout_active_grace_period": 900,
           "observability": {
@@ -184,6 +206,7 @@
         }
       ],
       "vars": {
+        "CONTAINER_PROFILE_PRICING_JSON": "{\"standard4g\":{\"version\":\"2026-10-25-platform-standard4g-v1\",\"microusd_numerator\":21,\"quantity_denominator\":1000}}",
         "ENVIRONMENT": "production",
         "APP_ORIGIN": "https://adash.moesegfault.dev",
         "ALLOWED_ORIGIN": "https://adash.moesegfault.dev",
@@ -200,8 +223,8 @@
         "DEFAULT_MODEL": "deepseek/deepseek-v4.1-flash-1017",
         "BILLING_MODE": "live",
         "RUN_RESOURCE_RESERVATION_MICROUSD": "20000",
-        "MODEL_REGISTRY_JSON": "[{\"provider\":\"openrouter\",\"model\":\"deepseek/deepseek-v4.1-flash-1017\",\"context_window\":1048576,\"max_output_tokens\":8192},{\"provider\":\"openrouter\",\"model\":\"openai/gpt-4.1-mini\",\"context_window\":1047576,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-flash\",\"context_window\":1000000,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-v4-pro\",\"context_window\":1000000,\"max_output_tokens\":8192}]",
-        "MODEL_PRICING_JSON": "{\"openrouter/openai/gpt-4.1-mini\":{\"input_microusd_per_million\":400000,\"cached_input_microusd_per_million\":100000,\"output_microusd_per_million\":1600000,\"revision\":\"openrouter-2026-10-23\"},\"openrouter/deepseek/deepseek-v4.1-flash-1017\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"openrouter-2026-10-23\"}}",
+        "MODEL_REGISTRY_JSON": "[{\"provider\":\"openrouter\",\"model\":\"deepseek/deepseek-v4.1-flash-1017\",\"context_window\":1048576,\"max_output_tokens\":8192},{\"provider\":\"openrouter\",\"model\":\"openai/gpt-4.1-mini\",\"context_window\":1047576,\"max_output_tokens\":8192},{\"provider\":\"deepseek\",\"model\":\"deepseek-flash\",\"context_window\":1000000,\"max_output_tokens\":8192,\"protocol\":\"responses\"},{\"provider\":\"deepseek\",\"model\":\"deepseek-v4-pro\",\"context_window\":1000000,\"max_output_tokens\":8192,\"protocol\":\"responses\"}]",
+        "MODEL_PRICING_JSON": "{\"openrouter/openai/gpt-4.1-mini\":{\"input_microusd_per_million\":400000,\"cached_input_microusd_per_million\":100000,\"output_microusd_per_million\":1600000,\"revision\":\"openrouter-2026-10-23\"},\"openrouter/deepseek/deepseek-v4.1-flash-1017\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"openrouter-2026-10-23\"},\"deepseek/deepseek-flash\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_flash_2026_10_25\"},\"deepseek/deepseek-v4-flash\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_flash_2026_10_25\"},\"deepseek/deepseek-v4-flash-vision-exp\":{\"input_microusd_per_million\":300000,\"cached_input_microusd_per_million\":6000,\"output_microusd_per_million\":1200000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_flash_2026_10_25\"},\"deepseek/deepseek-v4-pro\":{\"input_microusd_per_million\":1320000,\"cached_input_microusd_per_million\":44000,\"output_microusd_per_million\":3960000,\"revision\":\"deepseek-2026-10-25-cn2026-v1\",\"schedule\":\"deepseek_pro_2026_10_25\"}}",
         "RESOURCE_PRICING_JSON": "{\"version\":\"2026-10-23-platform-v1\",\"tariffs\":[{\"resource\":\"container\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"durable_object\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":500,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"worker\",\"unit\":\"wall_ms\",\"microusd_numerator\":1,\"quantity_denominator\":10000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_a\",\"microusd_numerator\":45,\"quantity_denominator\":10,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_operation\",\"unit\":\"class_b\",\"microusd_numerator\":36,\"quantity_denominator\":100,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"r2_storage\",\"unit\":\"byte_ms\",\"microusd_numerator\":15000,\"quantity_denominator\":2592000000000000000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_read\",\"microusd_numerator\":1,\"quantity_denominator\":1000,\"price_version\":\"2026-10-23-platform-v1\"},{\"resource\":\"d1\",\"unit\":\"rows_written\",\"microusd_numerator\":1,\"quantity_denominator\":1,\"price_version\":\"2026-10-23-platform-v1\"}]}",
         "FREE_GRANT_BUDGET_MICROUSD_PER_DAY": "100000000"
       },
@@ -244,6 +267,10 @@
           {
             "name": "MODEL_OPERATIONS",
             "class_name": "ModelOperation"
+          },
+          {
+            "name": "SESSION_4G",
+            "class_name": "Session4G"
           }
         ]
       },
@@ -253,6 +280,19 @@
           "image": "./container/Dockerfile",
           "image_build_context": ".",
           "instance_type": "basic",
+          "max_instances": 20,
+          "rollout_active_grace_period": 900,
+          "observability": {
+            "logs": {
+              "enabled": true
+            }
+          }
+        },
+        {
+          "class_name": "Session4G",
+          "image": "./container/Dockerfile",
+          "image_build_context": ".",
+          "instance_type": "standard-1",
           "max_instances": 20,
           "rollout_active_grace_period": 900,
           "observability": {

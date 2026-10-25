@@ -118,10 +118,10 @@ No local Rust rebuild, paid model call, deployment, or restart of the live stagi
 baseline was used for this optimization. A subsequent test-only, thread-local
 counter now guards the actual `create` call against reintroducing `hash_file`:
 its independently read-back archive checksum remains a separate assertion.
-That additional guard is queued for the next full-feature checkpoint and was
-not part of the `1c262016` CI measurement above.
+That additional guard was not part of the `1c262016` CI measurement above;
+its later compiled result is recorded in the exact-source evidence below.
 
-## Shared physical archive foundation (pending full-feature CI)
+## Shared physical archive foundation
 
 The next checkpoint removes the separate physical copy made when the first
 immutable user version is published. This is the same owner-scoped blob/reference
@@ -138,13 +138,13 @@ existed.
 | --- | --- | --- | --- |
 | Current checkpoint plus first saved version | Two archives, `2A` bytes | One archive, `A` bytes | Source/SQL mechanism; real checkpoint acceptance pending |
 | First saved-version publication after upload | Extra archive GET + PUT (+ destination HEAD) | Reference/metadata only | Source/SQL mechanism; no latency claim |
-| Historical child import | No compatible archived-state fork | Trusted DO seed + current reference, no archive copy | Public Worker journey queued |
+| Historical child import | No compatible archived-state fork | Trusted DO seed + current reference, no archive copy | Actual compiled Worker journey passed; see exact-source evidence |
 | Further versions of the same content | Shared saved-version archive | Same physical owner archive | SQL quota/idempotency tests |
 
 `A` is the compressed archive size; manifests and D1 metadata are additional.
 The table is a deterministic operation/representation comparison, not measured
 production savings. The first native CI measurement above predates this feature.
-The forthcoming `.cache/perf/v3/workspace-blobs.json` intentionally distinguishes
+The `.cache/perf/v3/workspace-blobs.json` receipt intentionally distinguishes
 actual Miniflare public fork/download/GC measurements from seeded uploads and an
 analytical `2A` baseline. Its binary stand-in does not exercise native tar/zstd
 restore. A real Worker+Container staging checkpoint/commit is still required for
@@ -196,8 +196,8 @@ upload-path acceptance; a seeded fixture alone cannot prove that path.
 Cheap validation uses production SQL extracted from Rust, all migrations and
 SQLite fault-boundary tests. It covers quota boundaries, owner fencing, dedup
 races, reference-vs-delete ordering, failed-delete retries, and unique clocks.
-These checks are complementary to, not replacements for, the queued real Worker
-journey and real-container upload acceptance. No local heavy Rust build or live
+These checks complement the compiled Worker journey below and do not replace
+real-container upload acceptance. No local heavy Rust build or live
 model invocation was used.
 
 The initial workspace-only pre-CI integration passed 120 SQL tests. After generic
@@ -265,6 +265,97 @@ local repeats had different wall times under concurrent runner load; indexed
 owner selection and equal results, not one favorable timing sample, are the
 accepted mechanism. This measurement concerns metadata admission/usage queries, not R2 transfer or the
 still-pending real-container `2A`→`A` upload acceptance.
+
+### Exact-source compiled Worker evidence
+
+[CI 40191955285](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40191955285)
+compiled source `b1edf97746d3902373dbb05e224799f03d9a3a10`. The actual Worker
+selector **“Workspace shared owner archive historical fork and immutable download
+retain one physical copy”** passed in 1,378.280 ms. The exact-source 363 Worker
+library tests and 146 native SQL tests also passed. The run **failed overall** on
+other selectors; this receipt is accepted component evidence, not an overall
+release/CI success or staging deployment claim.
+
+Artifacts retained by that run:
+
+| Artifact | ID | Relevant receipt |
+| --- | --- | --- |
+| `worker` | `12598806413` | Compiled Worker, not rebuilt during evidence inspection |
+| `performance-v3` | `12598721509` | `workspace-blobs.json` |
+| `performance-native-v3` | `12597778704` | `snapshot-io.json`, `space-capacity-query.json` |
+
+The downloaded `workspace-blobs.json` records these actual public-API/R2/D1
+observations after seeding one checked archive:
+
+| Boundary | Physical archive objects | Archive bytes | Active physical clocks | User-metered R2 A / B |
+| --- | ---: | ---: | ---: | ---: |
+| Before historical fork | 1 | 32,771 | 1 | 0 / 0 |
+| After independent child import | 1 | 32,771 | 1 | 0 / 0 |
+| After immutable version download | 1 | 32,771 | 1 | 0 / 1 |
+| After orphan-GC negative control | 1 | 32,771 | 1 | 0 / 1 |
+
+The child used a distinct Session DO and durable seed/current reference, without
+reading or copying the archive during import. The immutable download's SHA-256
+was `5e2936d3f993f969bd08b401e42b60e7a596c37da11012bac50962b4cb9e76d4`.
+GC deleted the deliberately expired unreferenced candidate but retained the
+referenced object. Maintenance HEAD/DELETE operations are platform overhead, not
+zero physical operations inferred from the user-metered A/B columns.
+
+The receipt explicitly has `upload_path_measured: false` and
+`native_archive_restore_measured: false`: its deterministic binary payload is not
+a native tar/zstd restore corpus. The `65,542`-byte old `2A` comparison remains
+analytical. Real Worker+Container checkpoint/commit upload object/operation
+measurement is still pending authorized staging acceptance.
+
+The exact-source native receipt now also confirms the actual production
+`SnapshotStore::create` checksum-reader counter is **0**. Across five equivalent
+archive-stage samples, the old checksum pass read 41,947,800 bytes and the
+streaming path read 0. Warm debug timing medians were 265.811 ms versus 266.195 ms;
+these mixed timing samples still do not demonstrate an archive-stage latency win.
+
+On that Linux CI runner (Python 3.12.3 / SQLite 3.45.1), the same 4,000-row
+capacity-query corpus returned identical usage and owner-index plans. Five
+alternating samples had medians 543,246 ns (rejected grouped view) versus
+89,325 ns (owner-filter-before-group). These are in-memory SQLite query timings,
+not D1/network timings, and are separate from the Windows measurements above.
+
+Downloaded receipts are under `.cache/perf/40191955285-worker/` and
+`.cache/perf/40191955285-native/`. The inspection manifest
+`.cache/perf/40191955285-storage-proof.json` records their SHA-256 hashes,
+artifact IDs and exact-source component Git blob IDs. Evidence closure downloaded
+only the small performance artifacts and inspected existing logs; it did not
+rebuild or rerun any already-passing selector. Preserve these proofs when the
+component and its relevant contracts are unchanged; new connection leases,
+artifact consumers or runtime-profile hooks require focused incremental tests,
+not a blanket rerun of the sealed snapshot/CRUD/146-SQL baseline.
+
+### Subsequent focused increments (pending compiled acceptance)
+
+- Private WebSocket `store=false` workspace parents use
+  `Workspace::seal_connection_archive(response_id, connection_id, expires_at_ms)`.
+  A common capture helper retains the existing checkpoint/publication boundary;
+  only the holder selection differs. The private path never temporarily creates
+  a permanent response reference. Its namespaced, owner-bound transfer reference
+  has the exact grant expiry, at most 60 minutes; retries cannot extend that
+  original expiry. Connection authority must stop immediately at expiry even if
+  bounded physical GC is later. Releasing the connection holder does not release
+  current-session, version, public-response or accepted-child user data. This
+  uses the existing registry/lease schema, with no second registry or migration.
+- Source inspection found a concrete deferred-image-link resurrection bug: the
+  old active-only lookup and partial unique index excluded deleted metadata.
+  Image publication now looks up all states and atomically rejects any existing
+  owner/publication identity. Deleting/deleted metadata returns terminal
+  `file_publication_deleted`; consumers must not retry that publication into a
+  new File. Ordinary inline user-upload behavior is unchanged.
+
+Only the two new focused Python modules were executed: 3 connection-reference
+tests and 2 image-tombstone regression tests passed. The latter includes an
+ablation negative control which reproduces resurrection when only the new
+predicate is removed. A new pure Rust connection-boundary/identity test is queued
+for the next compilation. No sealed snapshot, full-SQL or old CRUD suite was
+rerun for these increments. The new private-connection end-to-end selector remains
+the state/connection integration owner's responsibility; these local SQL checks
+are not a claim that the new wire journey has passed.
 
 ## Grounding
 

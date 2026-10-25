@@ -85,6 +85,20 @@ pub(super) fn unresolved_input(items: &[Value]) -> bool {
     })
 }
 
+pub(super) fn ordered_input(items: Vec<Value>, closes_calls: bool) -> Vec<Value> {
+    if !closes_calls {
+        return items;
+    }
+    let (mut results, input): (Vec<_>, Vec<_>) = items.into_iter().partition(|item| {
+        matches!(
+            item["type"].as_str(),
+            Some("function_call_output" | "custom_tool_call_output")
+        )
+    });
+    results.extend(input);
+    results
+}
+
 async fn read_history(
     storage: &Storage,
     reference: &branch::NativeHistoryRef,
@@ -210,22 +224,121 @@ fn portable_projection(items: &[Value]) -> bool {
     })
 }
 
+fn conversation_projection(
+    items: &[Value],
+    provenance: &std::collections::BTreeMap<
+        String,
+        crate::conversation_routes::ConversationItemProvenance,
+    >,
+    provider_binding: &str,
+) -> Result<Vec<Value>> {
+    let mut adapted = Vec::with_capacity(items.len());
+    for source in items {
+        let origin = source["id"].as_str().and_then(|id| provenance.get(id));
+        let trusted_binding = origin.and_then(|origin| origin.provider_binding.as_deref());
+        let kind = source["type"].as_str().unwrap_or_default();
+        if matches!(kind, "item_reference" | "reasoning" | "compaction") {
+            if trusted_binding.is_none() {
+                return Err(fault("unresolved_native_item"));
+            }
+            if trusted_binding == Some(provider_binding)
+                && source.get("encrypted_content").is_some()
+            {
+                return Err(fault("native_context_resolution_required"));
+            }
+            let summary = source["summary"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !summary.is_empty() {
+                adapted.push(json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":summary,"annotations":[]}]}));
+            }
+            continue;
+        }
+        if trusted_binding.is_some_and(|binding| binding != provider_binding)
+            && !portable_projection(std::slice::from_ref(source))
+        {
+            return Err(fault("unsupported_native_context_transfer"));
+        }
+        let mut item = source.clone();
+        if let Some(fields) = item.as_object_mut() {
+            fields.remove("id");
+            fields.remove("created_by");
+        }
+        adapted.push(item);
+    }
+    validate_items(&adapted)?;
+    Ok(adapted)
+}
+
 impl SessionInner {
+    pub(super) async fn native_conversation_import(
+        &self,
+        items: &[Value],
+        provenance: &std::collections::BTreeMap<
+            String,
+            crate::conversation_routes::ConversationItemProvenance,
+        >,
+        operation: &str,
+    ) -> Result<(Vec<Value>, Option<branch::NativeHistoryRef>)> {
+        let record = self
+            .data
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| fault("session_not_initialized"))?
+            .record
+            .clone();
+        let config = self.provider_config(&record).await?;
+        let provider_binding = binding(&record, &config)?;
+        let adapted = conversation_projection(items, provenance, &provider_binding)?;
+        let reference = self
+            .native_import(&adapted, &provider_binding, operation)
+            .await?;
+        Ok((adapted, reference))
+    }
+
+    pub(super) async fn warm_native_input(&self) -> Result<()> {
+        let record = self
+            .data
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| fault("session_missing"))?
+            .record
+            .clone();
+        let config = self.provider_config(&record).await?;
+        if config.protocol == ProviderProtocol::Responses {
+            self.native_generation_input(&config).await?;
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_native_generation(
         config: &ProviderConfig,
         request: &crate::responses_wire::ResponseRequest,
+        bindings: &crate::hosted_bindings::BoundTools,
         definitions: &[tools::ToolDefinition],
         options: &mut provider::GenerationOptions,
     ) -> Result<()> {
         if config.protocol != ProviderProtocol::Responses {
             return Ok(());
         }
+        let mut controls = request.native_controls();
+        if let Some(choice) = controls.get_mut("tool_choice") {
+            *choice = bindings.rewrite_choice(choice.clone())?;
+        }
         options.native = Some(
-            provider::responses::PreparedRequest::new(
+            provider::responses::PreparedRequest::new_with_effects(
                 config,
                 &[],
-                &native_tools(Some(request), definitions)?,
-                &request.native_controls(),
+                &native_tools(Some(request), bindings, definitions, false)?,
+                &controls,
+                provider::controls::HarnessControlEffects {
+                    max_tool_calls: true,
+                    ..Default::default()
+                },
             )
             .map_err(Error::RustError)?,
         );
@@ -301,7 +414,15 @@ impl SessionInner {
                 request
                     .map(|request| request.native_controls())
                     .unwrap_or_else(|| provider::responses::option_controls(options)),
-                native_tools(request, definitions)?,
+                native_tools(
+                    request,
+                    run.response
+                        .as_ref()
+                        .map(|response| &response.bound_tools)
+                        .unwrap_or(&crate::hosted_bindings::BoundTools::default()),
+                    definitions,
+                    run.tool_budget_exhausted(),
+                )?,
             )
         };
         for (key, value) in provider::responses::option_controls(options)
@@ -328,8 +449,17 @@ impl SessionInner {
             controls["max_output_tokens"] = json!(limit);
         }
         options.native = Some(
-            provider::responses::PreparedRequest::new(config, &input, &tools, &controls)
-                .map_err(Error::RustError)?,
+            provider::responses::PreparedRequest::new_with_effects(
+                config,
+                &input,
+                &tools,
+                &controls,
+                provider::controls::HarnessControlEffects {
+                    max_tool_calls: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(Error::RustError)?,
         );
         Ok(())
     }
@@ -516,7 +646,9 @@ impl SessionInner {
 
 fn native_tools(
     request: Option<&crate::responses_wire::ResponseRequest>,
+    bindings: &crate::hosted_bindings::BoundTools,
     definitions: &[tools::ToolDefinition],
+    exhausted: bool,
 ) -> Result<Vec<Value>> {
     let Some(request) = request else {
         return provider::responses::tool_items(definitions).map_err(Error::RustError);
@@ -524,14 +656,24 @@ fn native_tools(
     let retained = definitions
         .iter()
         .filter(|definition| {
-            !request
-                .function_tools()
-                .any(|tool| tool.name == definition.function.name)
+            bindings.lookup(&definition.function.name).is_none()
+                && !request
+                    .function_tools()
+                    .any(|tool| tool.name == definition.function.name)
         })
         .cloned()
         .collect::<Vec<_>>();
     let mut tools = provider::responses::tool_items(&retained).map_err(Error::RustError)?;
-    tools.extend(request.native_tool_items().map_err(Error::RustError)?);
+    let mut declared =
+        bindings.render_native(&request.native_tool_items().map_err(Error::RustError)?)?;
+    if exhausted {
+        declared.retain(|tool| {
+            !tool["name"]
+                .as_str()
+                .is_some_and(|name| bindings.lookup(name).is_some())
+        });
+    }
+    tools.extend(declared);
     Ok(tools)
 }
 
@@ -544,7 +686,7 @@ pub(super) fn completion_failure(completion: &Completion) -> Option<&'static str
         _ if native.output.iter().any(|item| {
             !matches!(
                 item["type"].as_str(),
-                Some("message" | "reasoning" | "function_call")
+                Some("message" | "reasoning" | "function_call" | "custom_tool_call")
             )
         }) =>
         {
@@ -559,10 +701,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn conversation_private_state_needs_trusted_route_provenance() {
+        let mut provenance = std::collections::BTreeMap::new();
+        let reasoning = json!({"id":"ours","type":"reasoning","summary":[{"type":"summary_text","text":"visible summary"}],"encrypted_content":"vendor-opaque"});
+        assert!(
+            conversation_projection(std::slice::from_ref(&reasoning), &provenance, "target")
+                .is_err()
+        );
+        provenance.insert(
+            "ours".into(),
+            crate::conversation_routes::ConversationItemProvenance {
+                source_session_id: Some("source".into()),
+                response_id: Some("response".into()),
+                provider_binding: Some("foreign".into()),
+            },
+        );
+        let portable =
+            conversation_projection(std::slice::from_ref(&reasoning), &provenance, "target")
+                .unwrap();
+        assert_eq!(portable[0]["content"][0]["text"], "visible summary");
+        assert!(
+            !serde_json::to_string(&portable)
+                .unwrap()
+                .contains("vendor-opaque")
+        );
+        provenance.get_mut("ours").unwrap().provider_binding = Some("target".into());
+        assert!(conversation_projection(&[reasoning], &provenance, "target").is_err());
+    }
+
+    #[test]
     fn operation_identity_is_length_delimited_and_content_bound() {
         assert_ne!(key(&["ab", "c"]), key(&["a", "bc"]));
         assert_eq!(key(&["same", "op"]), key(&["same", "op"]));
         assert_ne!(key(&["same", "op"]), key(&["same", "other"]));
+    }
+
+    #[test]
+    fn client_returns_close_call_group_before_queued_input_without_source_mutation() {
+        let input = vec![
+            json!({"type":"message","role":"user","content":"queued"}),
+            json!({"type":"custom_tool_call_output","call_id":"call","output":"done"}),
+        ];
+        let canonical = input.clone();
+        assert_eq!(ordered_input(input.clone(), false), canonical);
+        let execution = ordered_input(input, true);
+        assert_eq!(execution[0]["type"], "custom_tool_call_output");
+        assert_eq!(canonical[0]["role"], "user");
     }
 
     #[test]

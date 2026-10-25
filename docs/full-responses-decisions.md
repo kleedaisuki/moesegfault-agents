@@ -57,3 +57,29 @@ The root owns user decisions, global contract/dependency arbitration and the
 final production/public-release decision. Existing staging evidence is a
 baseline, not acceptance of the expanded full objective. Production remains on
 its prior accepted release until the new objective's actual end-to-end gates pass.
+
+## Incremental validation policy
+
+The user explicitly requires that already tested, passing functionality is not
+repeatedly regression-tested unless there is failure evidence. This supersedes
+the earlier default requirement to rerun all normal suites or the complete paid
+staging journey at every checkpoint.
+
+- Seal and reuse passing baseline receipts. Record their source/component and
+  dependency identity; do not claim old checks ran again on the current commit.
+- Validate new capabilities and changed behavior with focused tests and real
+  user journeys. Repeat a regression only for a documented failure and its fix.
+- Build/type-check changed components as necessary, reuse valid unchanged
+  artifacts and caches, and preserve exact deployment provenance. A skipped or
+  reused test is not a new passing execution.
+- Select CI and staging cases from the increment, rather than rerunning old
+  Chat, file, UI, CLI or large-prefill trajectories by default. Deployment health
+  and artifact activation checks verify the new deployment itself.
+- Keep strict correctness, ownership, instruction, storage and accounting
+  assertions in the selected tests. Narrowing redundant execution does not
+  narrow the required final product or permit synthetic completion evidence.
+- Paid calls remain purpose-bounded, preserve accepted IDs and use the user's
+  prescribed providers. Observation recovery never repeats accepted execution.
+
+The integration captain and release lead own the CI selectors, evidence ledger
+and artifact/deployment gate changes needed to implement this policy.

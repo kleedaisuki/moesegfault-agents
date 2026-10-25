@@ -1,6 +1,7 @@
 //! Model-independent, owner-scoped conversation authority. The outer API authenticates
 //! the caller; this object verifies the resulting owner binding on every operation.
 use crate::{
+    conversation_routes::ConversationItemProvenance,
     session_storage::{read_chunks, read_many, write_chunks},
     util,
 };
@@ -12,6 +13,7 @@ use worker::*;
 const HEAD: &str = "conversation.v1";
 const MAX_ITEMS: usize = 20;
 const MAX_BODY: usize = 16 * 1024 * 1024;
+const PENDING_LEASE_MS: u64 = 120_000;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ConversationRecord {
@@ -29,6 +31,12 @@ struct ConversationRecord {
     admitted_responses: BTreeSet<String>,
     #[serde(default)]
     active_response_id: Option<String>,
+    #[serde(default)]
+    active_session_id: Option<String>,
+    #[serde(default)]
+    active_activated: bool,
+    #[serde(default)]
+    pending_expires_at_ms: Option<u64>,
     #[serde(default)]
     execution_hint: Option<ExecutionHint>,
 }
@@ -53,41 +61,74 @@ impl ConversationRecord {
     fn public(&self) -> Value {
         json!({"id":self.id,"object":"conversation","created_at":self.created_at,"metadata":self.metadata})
     }
+
+    fn pending_expired(&self, now_ms: u64) -> bool {
+        !self.active_activated
+            && self
+                .pending_expires_at_ms
+                .is_some_and(|deadline| now_ms >= deadline)
+    }
+
+    fn clear_lease(&mut self) {
+        self.active_response_id = None;
+        self.active_session_id = None;
+        self.active_activated = false;
+        self.pending_expires_at_ms = None;
+    }
+
+    fn reserve_lease(&mut self, response_id: &str, now_ms: u64) {
+        if self.active_response_id.as_deref() == Some(response_id)
+            && (self.active_activated || self.pending_expires_at_ms.is_none())
+        {
+            return;
+        }
+        self.active_response_id = Some(response_id.into());
+        self.active_session_id = None;
+        self.active_activated = false;
+        self.pending_expires_at_ms = Some(now_ms.saturating_add(PENDING_LEASE_MS));
+    }
 }
 
 #[durable_object]
 pub struct ConversationState {
     state: State,
+    env: Env,
 }
 
 impl DurableObject for ConversationState {
-    fn new(state: State, _env: Env) -> Self {
-        Self { state }
+    fn new(state: State, env: Env) -> Self {
+        Self { state, env }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
         let storage = self.state.storage();
+        let env = self.env.clone();
+        let owner = req.headers().get("X-Agents-Owner")?.unwrap_or_default();
+        let headers = req.headers().clone();
         self.state
             .block_concurrency_while(async move {
-                match handle(req, &storage).await {
-                    Err(Error::RustError(code)) if code == "conversation_item_conflict" => {
-                        util::json_error(
-                            409,
-                            "invalid_request",
-                            "Item id already exists in this conversation",
-                        )
+                crate::conversation_meter::actor(&env, &owner, &headers, async {
+                    match handle(req, &storage).await {
+                        Err(Error::RustError(code)) if code == "conversation_item_conflict" => {
+                            util::json_error(
+                                409,
+                                "invalid_request",
+                                "Item id already exists in this conversation",
+                            )
+                        }
+                        Err(Error::RustError(code))
+                            if code == "conversation_execution_context_invalid" =>
+                        {
+                            util::json_error(
+                                400,
+                                "invalid_request",
+                                "Invalid conversation execution context",
+                            )
+                        }
+                        result => result,
                     }
-                    Err(Error::RustError(code))
-                        if code == "conversation_execution_context_invalid" =>
-                    {
-                        util::json_error(
-                            400,
-                            "invalid_request",
-                            "Invalid conversation execution context",
-                        )
-                    }
-                    result => result,
-                }
+                })
+                .await
             })
             .await
     }
@@ -127,6 +168,8 @@ fn busy(record: &ConversationRecord) -> Result<Response> {
         "Another response is using this conversation",
     );
     body["error"]["active_response_id"] = json!(record.active_response_id);
+    body["error"]["active_session_id"] = json!(record.active_session_id);
+    body["error"]["activated"] = json!(record.active_activated);
     Ok(Response::from_json(&body)?.with_status(409))
 }
 
@@ -142,6 +185,10 @@ async fn admit(
     let accepted = receipt(storage, record, response_id).await?;
     if accepted.is_none() && record.deleted {
         return util::json_error(404, "not_found", "Conversation not found");
+    }
+    let now_ms = util::now_ms();
+    if record.pending_expired(now_ms) {
+        record.clear_lease();
     }
     if !record.committed_responses.contains_key(response_id)
         && record
@@ -181,7 +228,7 @@ async fn admit(
         }
     };
     if !record.deleted && !record.committed_responses.contains_key(response_id) {
-        record.active_response_id = Some(response_id.into());
+        record.reserve_lease(response_id, now_ms);
         save(storage, record).await?;
     }
     let ids = accepted
@@ -190,14 +237,72 @@ async fn admit(
         .map(String::as_str)
         .collect::<Vec<_>>();
     let items = items(storage, &ids).await?;
+    let provenance = item_provenance(storage, &accepted.item_ids).await?;
     let previous = accepted.predecessor.as_ref();
     Response::from_json(
-        &json!({"id":record.id,"revision":accepted.revision,"items":items,
+        &json!({"id":record.id,"revision":accepted.revision,"items":items,"item_provenance":provenance,
         "predecessor_response_id":previous.map(|hint| &hint.response_id),
         "predecessor_session_id":previous.map(|hint| &hint.session_id),
         "predecessor_agent_id":previous.map(|hint| &hint.agent_id),
         "predecessor_pin_hash":previous.map(|hint| &hint.pin_hash)}),
     )
+}
+
+async fn activate(
+    storage: &Storage,
+    record: &mut ConversationRecord,
+    body: &Value,
+) -> Result<Response> {
+    let response_id = body["response_id"].as_str().unwrap_or_default();
+    let session_id = body["session_id"].as_str().unwrap_or_default();
+    if !valid_id(response_id) || !valid_id(session_id) {
+        return util::json_error(
+            400,
+            "invalid_request",
+            "Invalid response or session identity",
+        );
+    }
+    let accepted = receipt(storage, record, response_id).await?;
+    if accepted.is_none()
+        || accepted.as_ref().map(|receipt| receipt.revision) != body["accepted_revision"].as_u64()
+    {
+        return util::json_error(
+            409,
+            "conversation_revision_mismatch",
+            "Response admission revision does not match",
+        );
+    }
+    if record.active_response_id.as_deref() != Some(response_id)
+        || record.pending_expired(util::now_ms())
+        || (record.active_activated && record.active_session_id.as_deref() != Some(session_id))
+    {
+        return busy(record);
+    }
+    record.active_session_id = Some(session_id.into());
+    record.active_activated = true;
+    record.pending_expires_at_ms = None;
+    save(storage, record).await?;
+    Response::from_json(
+        &json!({"id":record.id,"response_id":response_id,"session_id":session_id,"activated":true}),
+    )
+}
+
+async fn item_provenance(
+    storage: &Storage,
+    ids: &[String],
+) -> Result<BTreeMap<String, ConversationItemProvenance>> {
+    let keys = ids
+        .iter()
+        .map(|id| format!("provenance:{id}"))
+        .collect::<Vec<_>>();
+    let entries = read_many(storage, &keys).await?;
+    let mut result = BTreeMap::new();
+    for (id, bytes) in ids.iter().zip(entries) {
+        if let Some(bytes) = bytes {
+            result.insert(id.clone(), serde_json::from_slice(&bytes)?);
+        }
+    }
+    Ok(result)
 }
 
 fn execution_hint(
@@ -445,12 +550,31 @@ async fn append(
     storage: &Storage,
     record: &mut ConversationRecord,
     items: Vec<Value>,
+    provenance: Option<&BTreeMap<String, ConversationItemProvenance>>,
 ) -> Result<Vec<Value>> {
     let mut seen = record.items.iter().cloned().collect::<BTreeSet<_>>();
     for item in &items {
         let id = item["id"].as_str().unwrap_or_default();
         if !seen.insert(id.to_owned()) {
             return Err(Error::RustError("conversation_item_conflict".into()));
+        }
+    }
+    if let Some(provenance) = provenance {
+        for (id, source) in provenance {
+            if !items
+                .iter()
+                .any(|item| item["id"].as_str() == Some(id.as_str()))
+            {
+                return Err(Error::RustError(
+                    "conversation_execution_context_invalid".into(),
+                ));
+            }
+            write_chunks(
+                storage,
+                &format!("provenance:{id}"),
+                &serde_json::to_vec(source)?,
+            )
+            .await?;
         }
     }
     // Bodies are immutable. Publishing the header last hides partial writes after
@@ -509,9 +633,12 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
             committed_responses: BTreeMap::new(),
             admitted_responses: BTreeSet::new(),
             active_response_id: None,
+            active_session_id: None,
+            active_activated: false,
+            pending_expires_at_ms: None,
             execution_hint: None,
         };
-        append(storage, &mut record, items).await?;
+        append(storage, &mut record, items, None).await?;
         return Response::from_json(&record.public());
     }
     let Some(mut record) = record.take() else {
@@ -525,6 +652,10 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
             let body: Value = req.json().await?;
             admit(storage, &mut record, &body).await
         }
+        (Method::Post, "/responses/activate") => {
+            let body: Value = req.json().await?;
+            activate(storage, &mut record, &body).await
+        }
         (Method::Post, "/responses/release") => {
             let body: Value = req.json().await?;
             let response_id = body["response_id"].as_str().unwrap_or_default();
@@ -532,7 +663,7 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
                 return util::json_error(400, "invalid_request", "Invalid response identity");
             }
             if record.active_response_id.as_deref() == Some(response_id) {
-                record.active_response_id = None;
+                record.clear_lease();
                 save(storage, &record).await?;
             }
             Response::from_json(&json!({"id":record.id,"response_id":response_id,"released":true}))
@@ -544,7 +675,6 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
                 return util::json_error(400, "invalid_request", "Invalid metadata");
             }
             record.metadata = body["metadata"].clone();
-            record.revision += 1;
             save(storage, &record).await?;
             Response::from_json(&record.public())
         }
@@ -601,19 +731,39 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
                 Ok(items) => items,
                 Err(message) => return util::json_error(400, "invalid_request", message),
             };
+            if body["defer_release"] == true
+                && (record.active_response_id.as_deref() != Some(response_id)
+                    || !record.active_activated
+                    || record.active_session_id.as_deref() != body["session_id"].as_str())
+            {
+                return busy(&record);
+            }
+            let provenance: BTreeMap<String, ConversationItemProvenance> = match body
+                .get("item_provenance")
+            {
+                Some(value) => match serde_json::from_value(value.clone()) {
+                    Ok(provenance) => provenance,
+                    Err(_) => {
+                        return util::json_error(400, "invalid_request", "Invalid item provenance");
+                    }
+                },
+                None => BTreeMap::new(),
+            };
             // Publish the receipt with the same header that exposes its items:
             // an interrupted transport can retry without duplicating model work.
             record
                 .committed_responses
                 .insert(response_id.into(), record.revision + 1);
-            record.active_response_id = None;
+            if body["defer_release"] != true {
+                record.clear_lease();
+            }
             record.execution_hint = execution_hint(
                 &body,
                 response_id,
                 record.revision,
                 receipt.as_ref().map(|receipt| receipt.revision),
             )?;
-            append(storage, &mut record, items).await?;
+            append(storage, &mut record, items, Some(&provenance)).await?;
             Response::from_json(
                 &json!({"id":record.id,"revision":record.revision,"response_id":response_id}),
             )
@@ -636,7 +786,7 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
                 Ok(items) => items,
                 Err(message) => return util::json_error(400, "invalid_request", message),
             };
-            let items = append(storage, &mut record, items).await?;
+            let items = append(storage, &mut record, items, None).await?;
             Response::from_json(&page(
                 items
                     .into_iter()
@@ -711,6 +861,48 @@ async fn list(req: Request, storage: &Storage, record: &ConversationRecord) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record() -> ConversationRecord {
+        serde_json::from_value(json!({"id":"conv_a","owner":"owner_a","created_at":0,
+            "metadata":{},"revision":1,"deleted":false,"items":[],"tombstones":[]}))
+        .unwrap()
+    }
+
+    #[test]
+    fn pending_deadline_never_expires_an_activated_long_run() {
+        let mut record = record();
+        record.reserve_lease("resp_a", 1000);
+        assert!(!record.pending_expired(120_999));
+        assert!(record.pending_expired(121_000));
+        record.active_activated = true;
+        assert!(!record.pending_expired(u64::MAX));
+    }
+
+    #[test]
+    fn renewal_extends_only_pending_lease_and_release_clears_all_fences() {
+        let mut record = record();
+        record.reserve_lease("resp_a", 1000);
+        record.reserve_lease("resp_a", 2000);
+        assert_eq!(record.pending_expires_at_ms, Some(122_000));
+        record.active_activated = true;
+        record.active_session_id = Some("session_a".into());
+        record.pending_expires_at_ms = None;
+        record.reserve_lease("resp_a", u64::MAX);
+        assert_eq!(record.active_session_id.as_deref(), Some("session_a"));
+        assert_eq!(record.pending_expires_at_ms, None);
+        record.clear_lease();
+        assert!(record.active_response_id.is_none());
+        assert!(!record.active_activated);
+    }
+
+    #[test]
+    fn legacy_active_lease_has_no_invented_timeout() {
+        let mut record = record();
+        record.active_response_id = Some("resp_legacy".into());
+        record.reserve_lease("resp_legacy", 1000);
+        assert!(record.pending_expires_at_ms.is_none());
+        assert!(!record.pending_expired(u64::MAX));
+    }
     #[test]
     fn metadata_counts_characters_and_checks_values() {
         assert!(metadata(&json!({"label":"中文"})));

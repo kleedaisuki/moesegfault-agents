@@ -1,0 +1,233 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const SHA = /^[a-f0-9]{40}$/;
+const OUTPUT = '.cache/verification';
+const COMPONENTS = {
+  worker: ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/agents-worker', 'crates/agents-core', 'crates/agents-auth', 'third_party', 'wrangler.jsonc', 'scripts/bundle-worker.mjs', 'package.json', 'package-lock.json'],
+  native: ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/agents-core', 'crates/agents-auth', 'crates/magents', 'crates/workspace-daemon'],
+  container: ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/workspace-daemon', 'container', '.dockerignore'],
+  dashboard: ['apps/dashboard'],
+  tooling: ['scripts', 'tests/e2e', 'tests/fixtures', 'package.json', 'package-lock.json'],
+};
+const JOBS = { worker: 'worker', native: 'rust', container: 'container', dashboard: 'dashboard', tooling: 'tooling' };
+const ARTIFACTS = { worker: 'worker', container: 'container-image', dashboard: 'dashboard' };
+const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024 }).trim();
+const reads = new Map();
+const read = (source, file) => { const key = `${source}:${file}`; if (!reads.has(key)) { try { reads.set(key, git('show', key)); } catch { reads.set(key, ''); } } return reads.get(key); };
+
+export function fingerprint(source, component, runGit = git) {
+  if (!SHA.test(source) || !Object.hasOwn(COMPONENTS, component)) throw Error('Invalid fingerprint identity');
+  // Git tree entries bind path, file mode and exact bytes, including dependency locks.
+  return createHash('sha256').update(runGit('ls-tree', '-r', source, '--', ...COMPONENTS[component])).digest('hex');
+}
+
+export function baselineFor(source, component, baselines, hash = fingerprint) {
+  const candidates = baselines.filter(base => base.components.includes(component));
+  if (!candidates.length) throw Error(`No sealed baseline for ${component}`);
+  const current = hash(source, component);
+  const base = [...candidates].reverse().find(base => hash(base.source_sha, component) === current)
+    ?? candidates.at(-1);
+  return { ...base, source_sha: base.source_sha, run_id: base.run_id, job: JOBS[component],
+    fingerprint: hash(base.source_sha, component), matches: hash(base.source_sha, component) === current };
+}
+
+function changed(source, base) {
+  return git('diff', '--name-only', base, source).split('\n').filter(Boolean);
+}
+
+function changedLines(source, base, file) {
+  const diff = git('diff', '--unified=0', base, source, '--', file);
+  return [...diff.matchAll(/^@@ .* \+(\d+)(?:,(\d+))? @@/gm)]
+    .map(match => [Number(match[1]), Number(match[1]) + Number(match[2] ?? 1)]);
+}
+
+export function changedRustTests(content, ranges) {
+  const lines = content.split('\n');
+  const tests = [];
+  let attribute = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*#\[(?:[\w:]+::)?test(?:\([^\]]*\))?\]/.test(lines[i])) attribute = true;
+    const match = lines[i].match(/^\s*(?:async\s+)?fn\s+([a-zA-Z0-9_]+)\s*\(/);
+    if (!match) continue;
+    if (attribute) tests.push({ name: match[1], start: i + 1 });
+    attribute = false;
+  }
+  return tests.filter((test, index) => ranges.some(([start, end]) =>
+    start < (tests[index + 1]?.start ?? lines.length + 1) && end >= test.start))
+    .map(test => test.name);
+}
+
+const command = (id, argv, reason, env = {}) => ({ id, argv: argv[0] === 'node' && argv[1] === '--test' ? [argv[0], argv[1], '--test-reporter=tap', ...argv.slice(2)] : argv, env, reason });
+const python = (...args) => ['.cache/e2e-venv/bin/python', ...args];
+
+export function selections(source, base, files) {
+  const checks = { rust: [], worker: [], dashboard: [], container: [], tooling: [], current_sdk: [] };
+  for (const file of files) {
+    if (file.endsWith('.rs') && file.startsWith('crates/')) {
+      const crate = file.split('/')[1];
+      const names = changedRustTests(read(source, file), changedLines(source, base, file));
+      const job = crate === 'agents-worker' ? 'worker' : 'rust';
+      for (const name of names) checks[job].push(command(`rust:${crate}:${name}`,
+        ['cargo', 'test', '--locked', '-p', crate, name, '--', '--nocapture'], `Changed test in ${file}`));
+
+    }
+    if (/^tests\/test_.*\.py$/.test(file)) checks.rust.push(command(`python:${file}`, ['python3', '-m', 'unittest', 'discover', '-s', 'tests', '-p', path.basename(file), '-v'], `Changed offline contract ${file}`));
+    if (/^tests\/e2e\/test_.*\.py$/.test(file)) {
+      if (/test_workspace_(daemon|interpreter)/.test(file)) {
+        checks.container.push(command(`pytest:${file}`, python('-m', 'pytest', file, '-ra', '-rP'), `Changed real-container journey ${file}`));
+      } else if (/test_(current_responses_sdk_contract)/.test(file)) {
+        checks.current_sdk.push(command(`pytest:${file}`, ['.cache/e2e-current-venv/bin/python', '-m', 'pytest', file, '-ra'], `Changed current SDK schema ${file}`));
+      } else if (!/test_(deployed|responses|space)\.py$/.test(file)) {
+        checks.tooling.push(command(`pytest:${file}`, python('-m', 'pytest', file, '-ra'), `Changed offline contract ${file}`));
+      }
+    }
+    if (/^(scripts\/.*\.test\.mjs|tests\/e2e\/.*(?:\.test|_contract)\.mjs)$/.test(file)) checks.tooling.push(command(`node:${file}`, ['node', '--test', file], `Changed tooling contract ${file}`));
+    if (/^tests\/worker\/.*\.test\.mjs$/.test(file) && !file.endsWith('/http.test.mjs')) checks.worker.push(command(`node:${file}`, ['node', '--test', file], `Changed real Worker/SDK contract ${file}`));
+  }
+  const journeys = [
+    [/workspace[-_]blob|workspace_archives|0016/, 'Workspace shared owner archive historical fork and immutable download retain one physical copy'],
+    [/responses-journey|responses-branch|session_branch/, 'Responses concurrent children admit independent background executions'],
+    [/responses-sdk|session_branch/, 'Responses actual Node SDK streams, recovers and returns local function results'],
+    [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
+    [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
+    [/auxiliary|context_prefix/, 'Responses auxiliary compact and count'],
+    [/deepseek[_-]tokenizer/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
+  ];
+  for (const [pattern, name] of journeys) {
+    if (files.some(file => pattern.test(file))) checks.worker.push(command(`journey:${name}`,
+      ['node', '--test', 'tests/worker/http.test.mjs'], 'Changed behavior: bounded compiled-Worker journey', { MAGENTS_WORKER_CASE: name }));
+  }
+  if (files.some(file => /^apps\/dashboard\//.test(file))) {
+    const tests = files.filter(file => /^apps\/dashboard\/.*\.(test|spec)\.[cm]?[jt]sx?$/.test(file));
+    for (const file of tests) checks.dashboard.push(command(`ui:${file}`, ['npm', '--prefix', 'apps/dashboard', 'test', '--', file.replace('apps/dashboard/', '')], `Changed UI contract ${file}`));
+  }
+  for (const job of Object.keys(checks)) checks[job] = [...new Map(checks[job].map(check => [check.id, check])).values()];
+  return checks;
+}
+
+function remediation(source, check) {
+  const selected = { ...command(check.id, check.argv, check.reason, check.env), expected_test: check.expected_test };
+  if (check.nested_except) {
+    const file = check.argv.at(-1);
+    const names = [...read(source, file).matchAll(/\bt\.test\(['"]([^'"]+)['"]/g)].map(match => match[1]);
+    if (!names.includes(check.nested_except)) throw Error('Missing historical failure selector');
+    const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const desired = new Set([check.nested_except]);
+    if (check.baseline_sha && read(check.baseline_sha, file) !== read(source, file)) {
+      const ranges = changedLines(source, check.baseline_sha, file);
+      const lines = read(source, file).split('\n');
+      const positions = lines.flatMap((line, index) => { const match = /\bt\.test\(['"]([^'"]+)['"]/.exec(line); return match ? [{name: match[1], start: index + 1}] : []; });
+      positions.forEach((test, index) => { if (ranges.some(([start,end]) => start < (positions[index+1]?.start ?? lines.length + 1) && end >= test.start)) desired.add(test.name); });
+    }
+    selected.expected_tests = [...desired];
+    selected.nested_file = file;
+    const excluded = names.filter(name => !desired.has(name)).map(escape);
+    if (excluded.length) selected.argv.splice(selected.argv.length - 1, 0, '--test-skip-pattern', `^(?:${excluded.join('|')})$`);
+  }
+  return selected;
+}
+
+export function plan(source, baselines) {
+  if (!SHA.test(source)) throw Error('Invalid source SHA');
+  const components = {};
+  const checks = { rust: [], worker: [], dashboard: [], container: [], tooling: [], current_sdk: [] };
+  const changedFiles = new Set();
+  let nativePackages = [];
+  for (const component of Object.keys(COMPONENTS)) {
+    const baseline = baselineFor(source, component, baselines);
+    const files = changed(source, baseline.source_sha);
+    if (component === 'native') {
+      nativePackages = files.some(file => /^(Cargo\.(lock|toml)|rust-toolchain\.toml)$/.test(file))
+        ? ['agents-core', 'agents-auth', 'magents', 'workspace-daemon']
+        : [...new Set(files.map(file => /^crates\/(agents-core|agents-auth|magents|workspace-daemon)\//.exec(file)?.[1]).filter(Boolean))].sort();
+    }
+    for (const file of files) changedFiles.add(file);
+    const selected = selections(source, baseline.source_sha, files);
+    const jobs = component === 'tooling' ? ['tooling', 'current_sdk'] : [JOBS[component]];
+    for (const job of jobs) checks[job].push(...selected[job]);
+    for (const check of baseline.unresolved_checks ?? []) {
+      const repair = remediation(source, {...check, baseline_sha: baseline.source_sha});
+      if (repair.nested_file) checks[JOBS[component]] = checks[JOBS[component]].filter(item => item.id !== `node:${repair.nested_file}`);
+      checks[JOBS[component]].push(repair);
+    }
+    const build = !baseline.matches;
+    components[component] = { fingerprint: fingerprint(source, component), action: build ? 'build' : 'reuse', baseline,
+      artifact: ARTIFACTS[component] ? { name: ARTIFACTS[component], artifact_id: build ? null : baseline.artifact_id ?? null, run_id: build ? process.env.GITHUB_RUN_ID ?? null : baseline.run_id, source_sha: build ? source : baseline.source_sha } : null };
+  }
+  for (const job of Object.keys(checks)) checks[job] = [...new Map(checks[job].map(check => [check.id, check])).values()];
+  const requiredJobs = ['changes', ...Object.entries(components).filter(([component, details]) => details.action === 'build' || checks[JOBS[component]].length > 0 || (component === 'tooling' && checks.current_sdk.length > 0)).map(([component]) => JOBS[component])];
+  return { schema_version: 1, source_sha: source, policy: 'incremental-only', planned_checks_are_not_results: true,
+    required_jobs: requiredJobs, required_remediations: [...new Set(Object.values(components).flatMap(component => (component.baseline.unresolved_checks ?? []).map(check => check.id)))], receipt_paths: { rust: ['rust.json', 'native-build.json'], worker: ['worker-rust.json', 'worker-journeys.json'], dashboard: ['dashboard.json'], container: ['container.json'], tooling: ['tooling.json', 'current_sdk.json'] },
+    changed_files: [...changedFiles].sort(), native_packages: nativePackages, components, checks };
+}
+
+export function executedTests(argv, output) {
+  if (argv[0] === 'cargo') return [...output.matchAll(/test result: ok\. (\d+) passed;/g)].reduce((sum, match) => sum + Number(match[1]), 0);
+  if (argv.includes('unittest')) return Number(/Ran (\d+) tests? in/.exec(output)?.[1] ?? 0);
+  if (argv.includes('pytest')) return Number(/(?:^|[ ,=])(\d+) passed(?:[ ,=]|$)/m.exec(output)?.[1] ?? 0);
+  if (argv[0] === 'node' && argv.includes('--test')) return Number(/^# pass (\d+)$/m.exec(output)?.[1] ?? 0);
+  // Vitest's narrow UI file invocation reports its passed test count.
+  if (argv[0] === 'npm') return Number(/Tests\s+(\d+) passed/.exec(output.replace(/\u001b\[[0-9;]*m/g, ''))?.[1] ?? 0);
+  throw Error('Unknown selected test runner');
+}
+
+export function runChecks(receipt, job, execute = spawnSync, directory = OUTPUT) {
+  const sourceJob = job.startsWith('worker-') ? 'worker' : job;
+  if (!Object.hasOwn(receipt.checks, sourceJob)) throw Error('Unknown check job');
+  const selected = receipt.checks[sourceJob].filter(check => job === 'worker-rust' ? check.argv[0] === 'cargo' : job === 'worker-journeys' ? check.argv[0] !== 'cargo' : true);
+  const results = [];
+  mkdirSync(directory, { recursive: true });
+  for (const check of selected) {
+    if (check.env.MAGENTS_WORKER_CASE && !readFileSync('tests/worker/http.test.mjs', 'utf8').includes(check.env.MAGENTS_WORKER_CASE)) {
+      throw Error(`Selected Worker journey does not exist: ${check.env.MAGENTS_WORKER_CASE}`);
+    }
+    const started = Date.now();
+    console.log(`::group::${check.id} — ${check.reason}`);
+    const result = execute(check.argv[0], check.argv.slice(1), { stdio: 'pipe', encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, env: { ...process.env, ...check.env } });
+    process.stdout.write(result.stdout ?? ''); process.stderr.write(result.stderr ?? '');
+    const tests = executedTests(check.argv, `${result.stdout ?? ''}\n${result.stderr ?? ''}`);
+    const requiredNames = check.expected_tests ?? (check.expected_test ? [check.expected_test] : []);
+    const observed = requiredNames.every(name => (result.stdout ?? '').includes(`# Subtest: ${name}`));
+    const passed = result.status === 0 && tests > 0 && observed;
+    console.log('::endgroup::');
+    results.push({ id: check.id, argv: check.argv, env: check.env, status: passed ? 'passed_current' : 'failed_current', executed_tests: tests, duration_ms: Date.now() - started });
+    writeFileSync(`${directory}/${job}.json`, JSON.stringify({ schema_version: 1, source_sha: receipt.source_sha, job, results }, null, 2) + '\n');
+    if (!passed) throw Error(`Incremental check failed or selected zero tests: ${check.id}`);
+  }
+  if (!results.length) writeFileSync(`${directory}/${job}.json`, JSON.stringify({ schema_version: 1, source_sha: receipt.source_sha, job, results: [], status: 'no_selected_tests' }, null, 2) + '\n');
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [mode, job] = process.argv.slice(2);
+  if (mode === 'plan') {
+    const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
+    const receipt = plan(git('rev-parse', 'HEAD'), baselines);
+    mkdirSync(OUTPUT, { recursive: true });
+    writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
+    for (const [component, details] of Object.entries(receipt.components)) {
+      const job = JOBS[component];
+      const required = details.action === 'build' || receipt.checks[job].length > 0 || (job === 'tooling' && receipt.checks.current_sdk.length > 0);
+      const line = `${job}=${required}\n`;
+      process.stdout.write(line);
+      if (process.env.GITHUB_OUTPUT) {
+        appendFileSync(process.env.GITHUB_OUTPUT, line);
+        appendFileSync(process.env.GITHUB_OUTPUT, `${component}_build=${details.action === 'build'}\n`);
+        if (details.artifact) appendFileSync(process.env.GITHUB_OUTPUT, `${component}_artifact_run=${details.artifact.run_id}\n${component}_artifact_sha=${details.artifact.source_sha}\n`);
+      }
+    }
+  } else if (mode === 'check-native') {
+    const receipt = JSON.parse(readFileSync(`${OUTPUT}/plan.json`, 'utf8'));
+    const argv = ['cargo', 'clippy', '--locked', ...receipt.native_packages.flatMap(name => ['-p', name]), '--all-targets', '--', '-D', 'warnings'];
+    if (receipt.native_packages.length) {
+      const result = spawnSync(argv[0], argv.slice(1), { stdio: 'inherit' });
+      if (result.status !== 0) throw Error('Changed native package type/lint gate failed');
+    }
+    writeFileSync(`${OUTPUT}/native-build.json`, JSON.stringify({ source_sha: receipt.source_sha, argv, status: receipt.native_packages.length ? 'passed_current' : 'no_changed_native_packages' }, null, 2) + '\n');
+  } else if (mode === 'run') {
+    runChecks(JSON.parse(readFileSync(`${OUTPUT}/plan.json`, 'utf8')), job);
+  } else throw Error('Usage: node scripts/incremental-checks.mjs plan | run <job>');
+}

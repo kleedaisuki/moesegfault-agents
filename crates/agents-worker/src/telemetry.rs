@@ -496,6 +496,7 @@ mod tests {
             input_revision: 1,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![tool], vec![]),
             workspace_snapshot: None,
+            runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };
         let sha = "0123456789abcdef0123456789abcdef01234567";
         let fields = sanitize_fields(run_provenance(

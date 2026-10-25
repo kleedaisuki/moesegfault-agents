@@ -28,6 +28,12 @@ eventsource-stream = "0.2"
 url = "2"
 jsonschema = { version = "0.49.9", default-features = false, features = ["arbitrary-precision"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+time = { version = "0.3", default-features = false }
+deepseek-recipe = { path = "../../third_party/deepseek-recipe/deepseek-recipe" }
+deepseek-recipe-encoding = { path = "../../third_party/deepseek-recipe/deepseek-recipe-encoding" }
+tokenizers = { version = "=0.23.2", default-features = false, features = ["unstable_wasm"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+minijinja = { version = "3.0.3", default-features = false, features = ["builtins", "serde", "fuel"] }
 
 [dev-dependencies]
 proptest = "1"

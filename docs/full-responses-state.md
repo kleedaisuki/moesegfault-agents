@@ -307,3 +307,77 @@ source dispatch fence/reply. The initialized child releases it only after its ow
 current-workspace reference and imported Session pointer are durable. Abandoned
 admission attempts are intermediate state: only their transfer leases expire;
 response, current-workspace and saved-version references never use that TTL.
+
+
+## Next integration: Conversation execution admission
+
+The authority admission receipt is the immutable acceptance boundary, not a copy
+of the current Conversation on every retry. The public request hash must remain
+based on the caller's original request; injecting newly changed Conversation
+history before hashing would turn a legitimate retry into an idempotency conflict.
+Only the newly supplied input and new output are appended on terminal commit,
+never the prepended historical items.
+
+A matching predecessor Session/agent/pin/adopted-revision hint can use the existing
+warm head and append only new input. A changed visible item set or different
+agent selects an independent execution lane seeded from the accepted receipt.
+The public `previous_response_id` stays null for Conversation-backed requests;
+an internal accepted-context binding expresses the predecessor without mixing
+the two public history authorities. Source execution journals remain immutable.
+
+A pending edge admission must not strand a Conversation after the edge dies, but
+an executing long task must not lose its writer ownership to a timeout. Use a
+pending admission phase with a generation/fence and an explicit canonical Session
+activation compare-and-set before paid execution. Only never-activated pending
+candidates may expire. A delayed old Session cannot activate a replaced admission.
+Activated work clears ownership only through canonical terminal/rejection recovery,
+not user inactivity. The current foundation's explicit writer gate has no timeout;
+this activation/recovery coupling is not yet implemented.
+
+Automatic terminal appends should retain per-item origin (source Response/Session
+provider binding) for opaque native continuation items. A latest-agent hint alone
+is insufficient in a Conversation that has changed models: encrypted reasoning
+from an earlier route must not be blindly forwarded through an unrelated provider.
+Caller-supplied opaque input and server-retained provider-origin output are distinct
+provenance cases. Portable visible items remain ordinary Conversation data.
+
+
+## Coherent integration checkpoint: implemented versus remaining
+
+The next source checkpoint now includes actual Conversation-to-Response coupling,
+not only CRUD. Accepted Conversation snapshots seed new execution lanes once;
+matching pin/session/revision hints reuse the warm head. Canonical queued runs
+activate the authority before model funding, terminal appends occur before the
+financial cutoff, and a durable cleanup outbox releases the retained response
+funding/authority fence before healthy terminal publication. Public Conversation
+reads and mutations have funded exact D1/DO operation observations.
+
+The same checkpoint includes private connection-parent authority for no-store
+WebSocket continuations, transient archive anchors, source read-only context DTOs,
+accepted steering source-range exclusions, prompt-version inheritance under a
+queue-bound deterministic successor proof, and the finite runtime profile model.
+`Session4G` delegates the same Session harness and daemon; trusted persisted profile
+selects its namespace. Basic legacy pins/prices remain unchanged. Standard4g uses
+the approved allocation tariff, not an invented exact active-CPU measurement.
+
+The following are real remaining work, not exclusions from the full objective:
+
+- Fresh Conversation lanes must inherit an immutable latest-workspace anchor
+  independently of the warm-context hint. Item edits and agent changes invalidate
+  context reuse but must not erase files. The current text-only integration does
+  not yet provide this separate ancestry reference; do not claim workspace-
+  Conversation acceptance or promote paid user flows until it is implemented.
+- Generate-false warmup must retain an unchanged existing trusted workspace
+  archive without starting compute. A legacy/unfunded mutable manifest remains
+  explicitly unsealed; it must never be labeled an empty workspace.
+- Owner-sealed canonical item resolution must cover unowned opaque/reference
+  inputs; the conservative native provenance adapter does not pretend that raw
+  ciphertext is trusted platform state.
+- Conversation retained logical-byte capacity is an independent budget from
+  physical Space/R2 bytes and monetary resource fees. The quota helper and SQL
+  proposal are intentionally unregistered until the authority publication and
+  ambiguous-result recovery hooks are integrated.
+
+Once Standard4g data exists, profile-aware routing is a service rollback floor.
+Older profile-unaware binaries cannot serve those Sessions; their immutable D1
+profile guards prevent silent relabeling, not a transparent service downgrade.

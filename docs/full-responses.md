@@ -73,3 +73,96 @@ introduced surfaces. A source-only review or prior narrow baseline is not full
 acceptance. Required end state includes real SDK/lane/fork/steering/tool journeys,
 state and financial recovery, measured performance/storage results, exact tested
 deployment artifacts, native clients, and production/public-release clearance.
+
+## Integration checkpoint: 2026-10-25
+
+The captain owns the index; no delegated lease is active. Foundation commits
+`34ab493` (supervised interpreter) and `e4bf137` (protocol/state foundations)
+are on the feature branch. Normal CI `40190532245` passed tooling/dashboard
+but exposed a pure wire-module import error, daemon Clippy failures, and a
+real-container Matplotlib display failure. These are not acceptance evidence.
+
+Hotfix `e9b73a5` removes the runtime credential dependency from pure attachment
+validation, normalizes bounded MIME whitespace before strict base64 validation,
+and retires killed interpreter contexts without discarding unpublished artifacts.
+The latter closes independently reviewed eight-reset resource exhaustion. Ten
+bridge tests passed locally; normal CI `40191551856` is the compiled/container
+gate. It contains only completed hotfix files, not concurrent feature work.
+
+Next integration ownership is explicit:
+
+- State lead: Conversation admission-to-Response coupling and terminal append.
+- Native context lead: rich canonical output/events and general pending tools.
+- Hosted-tools lead: secret-free preflight bindings, runtime execution, artifacts,
+  and sole manifest/lock ownership.
+- Auxiliary lead: public count/compact context preparation and route dispatch.
+- WebSocket lead: authenticated public upgrade and the shared-harness executor.
+- Pricing/tokenizer workers: versioned direct-DeepSeek tariffs and the official
+  offline prompt encoder/tokenizer. Existing receipt and pinned-prefix bytes
+  must remain stable. In particular, upstream `serde_json/preserve_order` cannot
+  unify into the platform dependency; any ordered JSON dependency is isolated.
+- Release operations: current/legacy SDK acceptance, pre-paid routing guards,
+  and an operator-only single-attempt usage-capability probe. No paid execution
+  or deployment is authorized by source readiness alone.
+
+The next meaningful milestone is a coherent compiled slice with real route
+journeys, not a count of independently completed modules. Production promotion
+and public release remain root decisions.
+## Incremental verification policy
+
+The user's subsequent instruction replaces the default full-regression gate:
+reuse previously passing behavior unless there is concrete failure evidence.
+Every checkpoint must select new/changed behavior and targeted regressions for
+actual failures. Compilation, type checks and artifact builds still establish
+that the changed artifact is usable; skipped old tests are never described as
+passing at the new SHA.
+
+The incremental-CI owner records deterministic selectors, the exact candidate,
+and reused baseline/component-dependency fingerprints. Release operations uses
+the same evidence distinction for staged journeys: do not repay for old core
+journeys merely to aggregate newly collected tool evidence. New Responses
+state, rich items, SDK schemas, WebSocket, auxiliary routes, hosted execution,
+pricing and tokenizer paths remain unaccepted until their own meaningful
+incremental checks execute.
+
+The in-flight `40191955285` run is allowed to finish under its original plan.
+Subsequent gates use the incremental plan. The preceding `40191551856` run
+passed Rust, real-container, tooling and dashboard checks; its Worker test build
+revealed two missing compatibility-fixture fields, repaired by exact two-line
+commit `b1edf97` without including concurrent runtime work.
+## Accepted interfaces before the next compiler checkpoint
+
+Foundation `b1edf97746d3902373dbb05e224799f03d9a3a10`, run `40191955285`,
+built the native Worker and passed 363 library tests. Its real Worker suite had
+55 passing checks and three failing leaf cases (five including parent suites).
+The independently passing workspace-blob and historical/concurrent-branch
+selectors are reusable evidence; the failed aggregate is not a release gate.
+
+Two fixture defects were diagnosed at the actual boundary: the installed Node
+SDK did not send `Idempotency-Key` for its convenience option, and its parsed
+object augmentation was compared with raw HTTP output. Repairs explicitly send
+the header and compare complete raw snapshots before/after forks. A real
+compatibility regression was also repaired: tool-choice availability is checked
+after injecting the actual server registry, rather than against only client tools.
+Only these documented failures and new behavior are selected in the next gate.
+
+Independent review found and drove repairs for steering prompt reapplication,
+non-atomic source-end/exclusion sampling, operation-independent compact item IDs,
+and omitted effective template instructions. Source-level closure is distinct
+from the upcoming compiled journeys.
+
+The approved physical runtime profiles are legacy `basic` (1 GiB) and a new
+`Session4G` thin Durable Object wrapper using the exact same Session engine in a
+separate `standard-1` Container application. Binding `SESSION_4G` and migration
+`0018` carry trusted persisted routing. Append-only Cloudflare migration
+`v3-runtime-profiles` must not rewrite `v2-full-responses`. Both applications use
+the same immutable daemon image. Existing basic pins, live leases and tariff
+bytes remain unchanged. New 4 GiB allocation is published at 21 microUSD per
+container-second (`2026-10-25-platform-standard4g-v1`), a platform reserved-capacity
+rate, not a claim about actual active-CPU vendor invoices.
+
+Two later safeguards have separate owners and must close before their relevant
+paid staging gates: independent retained-Conversation logical quota (initial cap
+uses existing plan storage-capacity values, never merges Space physical storage),
+and migration `0019` separating trusted local-execution capacity from unknown
+financial holds. Healthy long operations do not expire from elapsed lease time.

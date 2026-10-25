@@ -17,6 +17,16 @@ pub(crate) struct RouteContext<'a> {
     trace: &'a TraceContext,
 }
 
+impl<'a> RouteContext<'a> {
+    pub(crate) fn new(env: &'a Env, trace: &'a TraceContext) -> Self {
+        Self { env, trace }
+    }
+
+    pub(crate) fn trace(&self) -> &TraceContext {
+        self.trace
+    }
+}
+
 impl std::ops::Deref for RouteContext<'_> {
     type Target = Env;
     fn deref(&self) -> &Env {
@@ -447,6 +457,9 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         return auth::handle_account(req, env, &principal).await;
     }
     let owner = &principal.account_id;
+    if segments.as_slice() == ["v1", "responses"] && req.method() == Method::Get {
+        return crate::response_websocket_executor::connect(req, env, &principal).await;
+    }
     match segments.as_slice() {
         ["v1", "space", "workspace-versions", tail @ ..] => {
             crate::workspace_versions::route(req, env, owner, tail).await
@@ -494,7 +507,11 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
     }
 }
 
-async fn rate_limited(env: &Env, binding: &str, key: String) -> Result<Option<Response>> {
+pub(crate) async fn rate_limited(
+    env: &Env,
+    binding: &str,
+    key: String,
+) -> Result<Option<Response>> {
     if env.rate_limiter(binding)?.limit(key).await?.success {
         return Ok(None);
     }
@@ -630,7 +647,7 @@ fn registered_model(entry: &ModelConfig, provider: Provider, model: &str) -> boo
     entry.provider == provider && entry.model == model
 }
 
-async fn pin(
+pub(crate) async fn pin(
     env: &RouteContext<'_>,
     agent: &AgentConfig,
 ) -> Result<std::result::Result<PinnedContext, &'static str>> {
@@ -865,10 +882,39 @@ pub(crate) async fn response_branch_session(
     session_id: &str,
     pinned: Option<PinnedContext>,
 ) -> Result<std::result::Result<SessionRecord, Response>> {
+    response_branch_session_profile(
+        env,
+        owner,
+        agent_id,
+        session_id,
+        pinned,
+        agents_core::RuntimeProfile::Basic1g,
+    )
+    .await
+}
+
+pub(crate) async fn response_session_profile(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    profile: agents_core::RuntimeProfile,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    response_branch_session_profile(env, owner, agent_id, session_id, None, profile).await
+}
+
+pub(crate) async fn response_branch_session_profile(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    pinned: Option<PinnedContext>,
+    profile: agents_core::RuntimeProfile,
+) -> Result<std::result::Result<SessionRecord, Response>> {
     if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
         return initialize_response_session(env, session).await;
     }
-    match create_session_inner_at_pinned(env, owner, agent_id, session_id, pinned).await {
+    match create_session_inner_at_pinned(env, owner, agent_id, session_id, pinned, profile).await {
         Ok(Ok(session)) => Ok(Ok(session)),
         result => {
             if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
@@ -886,7 +932,15 @@ async fn create_session_inner_at(
     agent_id: &str,
     session_id: &str,
 ) -> Result<std::result::Result<SessionRecord, Response>> {
-    create_session_inner_at_pinned(env, owner, agent_id, session_id, None).await
+    create_session_inner_at_pinned(
+        env,
+        owner,
+        agent_id,
+        session_id,
+        None,
+        agents_core::RuntimeProfile::Basic1g,
+    )
+    .await
 }
 
 async fn create_session_inner_at_pinned(
@@ -895,6 +949,7 @@ async fn create_session_inner_at_pinned(
     agent_id: &str,
     session_id: &str,
     retained_pin: Option<PinnedContext>,
+    runtime_profile: agents_core::RuntimeProfile,
 ) -> Result<std::result::Result<SessionRecord, Response>> {
     let store = Store::new(env);
     let Some(agent) = store.get_agent(owner, agent_id).await? else {
@@ -907,6 +962,7 @@ async fn create_session_inner_at_pinned(
             Err(message) => return Ok(Err(bad_request(message))),
         },
     };
+    crate::runtime_profiles::validate_config(env, runtime_profile)?;
     let now = util::now_ms();
     let session = SessionRecord {
         id: session_id.into(),
@@ -918,8 +974,9 @@ async fn create_session_inner_at_pinned(
         input_revision: 0,
         pinned,
         workspace_snapshot: None,
+        runtime_profile,
     };
-    let namespace = env.durable_object("SESSIONS")?;
+    let namespace = crate::runtime_profiles::namespace(env, &session)?;
     let do_id = namespace
         .id_from_name(&format!("{}:{}", owner, session.id))?
         .to_string();
@@ -1386,7 +1443,7 @@ async fn forward_raw(
     body: Option<Value>,
     etag: Option<&str>,
 ) -> Result<Response> {
-    let namespace = env.durable_object("SESSIONS")?;
+    let namespace = crate::runtime_profiles::namespace(env, session)?;
     let id = namespace.id_from_name(&format!("{}:{}", session.owner_id, session.id))?;
     let stub = id.get_stub()?;
     let mut init = RequestInit::new();

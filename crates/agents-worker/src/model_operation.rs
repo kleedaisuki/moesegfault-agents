@@ -3,11 +3,9 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Duration,
 };
 
 use agents_core::{ModelConfig, ProviderProtocol};
-use futures::future::Either;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -152,7 +150,7 @@ impl DurableObject for ModelOperation {
             receipt = Some(accepted);
         }
         let mut receipt = receipt.ok_or_else(|| failure("operation_missing"))?;
-        if util::now_ms() >= receipt.expires_at_ms || receipt.phase == Phase::Expired {
+        if retention_expired(receipt.phase, receipt.expires_at_ms, util::now_ms()) {
             inner.expire(&mut receipt).await?;
             return terminal(
                 410,
@@ -245,7 +243,7 @@ impl Inner {
         let Some(mut receipt) = self.state.storage().get::<Receipt>(RECEIPT).await? else {
             return Ok(());
         };
-        if util::now_ms() >= receipt.expires_at_ms || receipt.phase == Phase::Expired {
+        if retention_expired(receipt.phase, receipt.expires_at_ms, util::now_ms()) {
             return self.expire(&mut receipt).await;
         }
         if matches!(receipt.phase, Phase::Complete | Phase::Failed) {
@@ -358,14 +356,9 @@ impl Inner {
                 .set_alarm(util::alarm_at(util::now_ms() + 360_000))
                 .await?;
             let started = util::now_ms();
-            let pending =
-                provider::complete_stream_with_options(&config, &messages, &[], &options, |_| {});
-            let pending = std::pin::pin!(pending);
-            let deadline = std::pin::pin!(Delay::from(Duration::from_secs(300)));
-            let result = match futures::future::select(pending, deadline).await {
-                Either::Left((result, _)) => result,
-                Either::Right(_) => Err(failure("compaction_outcome_unknown")),
-            };
+            let result =
+                provider::complete_stream_with_options(&config, &messages, &[], &options, |_| {})
+                    .await;
             let completion = match result {
                 Ok(completion) => completion,
                 Err(_) => {
@@ -406,6 +399,7 @@ impl Inner {
         write_chunks(&self.state.storage(), OUTPUT, &serde_json::to_vec(&output)?).await?;
         self.settle_resources(&receipt).await?;
         receipt.phase = Phase::Complete;
+        receipt.expires_at_ms = terminal_expiry(util::now_ms());
         self.state.storage().put(RECEIPT, &receipt).await?;
         util::emit(
             "compact.complete",
@@ -443,7 +437,7 @@ impl Inner {
         .seal(
             &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
             &receipt.owner,
-            &format!("cmpitem_{}", &receipt.request_hash[..32]),
+            &compaction_item_id(&receipt.operation),
         )?;
         let mut output = input.retained.clone();
         output.push(item);
@@ -461,6 +455,7 @@ impl Inner {
 
     async fn fail(&self, receipt: &mut Receipt, code: &str) -> Result<()> {
         receipt.phase = Phase::Failed;
+        receipt.expires_at_ms = terminal_expiry(util::now_ms());
         receipt.error = Some(code.into());
         self.state.storage().put(RECEIPT, &*receipt).await?;
         util::emit(
@@ -572,8 +567,24 @@ pub(crate) fn operation_id(owner: &str, key: &str) -> String {
     format!("cmp_{:x}", hash.finalize())
 }
 
+fn compaction_item_id(operation: &str) -> String {
+    format!(
+        "cmpitem_{}",
+        operation.strip_prefix("cmp_").unwrap_or(operation)
+    )
+}
+
 fn failure(code: impl Into<String>) -> Error {
     Error::RustError(code.into())
+}
+
+fn terminal_expiry(now_ms: u64) -> u64 {
+    now_ms.saturating_add(RETENTION_MS)
+}
+
+fn retention_expired(phase: Phase, expires_at_ms: u64, now_ms: u64) -> bool {
+    phase == Phase::Expired
+        || (matches!(phase, Phase::Complete | Phase::Failed) && now_ms >= expires_at_ms)
 }
 
 fn can_start(phase: Phase) -> bool {
@@ -609,6 +620,37 @@ mod tests {
         );
         assert_ne!(operation_id("alice", "retry"), operation_id("bob", "retry"));
         assert_ne!(operation_id("a", "bc"), operation_id("ab", "c"));
+        let first = compaction_item_id(&operation_id("owner", "key-a"));
+        assert_eq!(first, compaction_item_id(&operation_id("owner", "key-a")));
+        assert_ne!(first, compaction_item_id(&operation_id("owner", "key-b")));
+        assert_ne!(
+            first,
+            compaction_item_id(&operation_id("other-owner", "key-a"))
+        );
+    }
+
+    #[test]
+    fn healthy_long_execution_does_not_consume_terminal_retention() {
+        let created = 1000;
+        let old_start_based_expiry = terminal_expiry(created);
+        let long_healthy_now = created + RETENTION_MS * 3;
+        for phase in [Phase::Accepted, Phase::InFlight, Phase::Known] {
+            assert!(!retention_expired(
+                phase,
+                old_start_based_expiry,
+                long_healthy_now
+            ));
+        }
+        let completed_expiry = terminal_expiry(long_healthy_now);
+        for phase in [Phase::Complete, Phase::Failed] {
+            assert!(!retention_expired(
+                phase,
+                completed_expiry,
+                completed_expiry - 1
+            ));
+            assert!(retention_expired(phase, completed_expiry, completed_expiry));
+        }
+        assert!(retention_expired(Phase::Expired, completed_expiry, created));
     }
 
     #[test]

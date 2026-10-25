@@ -719,7 +719,7 @@ pub(crate) async fn link_image_blob(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&("image-link", publication_key))?)
     );
-    if let Some(file) = inline_file(env, owner, &inline_key).await? {
+    if let Some(file) = image_link_file(env, owner, &inline_key).await? {
         return finish_image_link(env, owner, file, blob).await;
     }
     let limits = owner_limits(env, owner).await?;
@@ -727,9 +727,9 @@ pub(crate) async fn link_image_blob(
     let id = format!("file-{}", uuid::Uuid::new_v4().simple());
     let object_key = format!("space-links/{}/{id}", owner_key(owner));
     let now = util::now_ms().to_string();
-    env.d1("DB")?.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,blob_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,inline_key,upload_outcome,upload_operations) SELECT ?1,?2,?3,?4,'user_data',?5,?6,?7,CAST(?8 AS INTEGER),?9,'processed',?10,CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),?12,'stored',0 WHERE EXISTS(SELECT 1 FROM workspace_blobs WHERE object_key=?7 AND account_id=?2 AND kind='image' AND status='ready' AND archive_bytes=CAST(?8 AS INTEGER) AND sha256=?9 AND content_type=?5) AND (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?2 GROUP BY object_key))<=CAST(?13 AS INTEGER) AND (SELECT COUNT(*) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))<CAST(?14 AS INTEGER) ON CONFLICT DO NOTHING")
+    env.d1("DB")?.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,blob_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,inline_key,upload_outcome,upload_operations) SELECT ?1,?2,?3,?4,'user_data',?5,?6,?7,CAST(?8 AS INTEGER),?9,'processed',?10,CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),?12,'stored',0 WHERE EXISTS(SELECT 1 FROM workspace_blobs WHERE object_key=?7 AND account_id=?2 AND kind='image' AND status='ready' AND archive_bytes=CAST(?8 AS INTEGER) AND sha256=?9 AND content_type=?5) AND (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?2 GROUP BY object_key))<=CAST(?13 AS INTEGER) AND (SELECT COUNT(*) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))<CAST(?14 AS INTEGER) AND NOT EXISTS(SELECT 1 FROM space_files WHERE account_id=?2 AND inline_key=?12) ON CONFLICT DO NOTHING")
         .bind(&[text(&id),text(owner),text(&space.id),text(filename),text(&blob.content_type),text(&object_key),text(&blob.object_key),text(&blob.bytes.to_string()),text(&blob.sha256),text(&format!("image-link:{inline_key}")),text(&now),text(&inline_key),text(&limits.bytes.to_string()),text(&limits.files.to_string())])?.run().await?;
-    let file = inline_file(env, owner, &inline_key)
+    let file = image_link_file(env, owner, &inline_key)
         .await?
         .ok_or_else(|| fail("space_limit_exceeded"))?;
     finish_image_link(env, owner, file, blob).await
@@ -741,6 +741,9 @@ async fn finish_image_link(
     file: OwnedFile,
     blob: &crate::workspace_blobs::OwnedBlobRef,
 ) -> Result<OwnedFile> {
+    if matches!(file.status.as_str(), "deleting" | "deleted") {
+        return Err(fail("file_publication_deleted"));
+    }
     if file.status != "processed"
         || file.blob_key.as_deref() != Some(blob.object_key.as_str())
         || file.sha256 != blob.sha256
@@ -751,6 +754,11 @@ async fn finish_image_link(
     }
     crate::workspace_blobs::bind_image_file(env, owner, &file.id, blob).await?;
     Ok(file)
+}
+
+async fn image_link_file(env: &Env, owner: &str, key: &str) -> Result<Option<OwnedFile>> {
+    env.d1("DB")?.prepare(format!("SELECT {FILE_COLUMNS} FROM space_files WHERE account_id=? AND inline_key=? ORDER BY created_at_ms,id LIMIT 1"))
+        .bind(&[text(owner),text(key)])?.first(None).await
 }
 
 async fn inline_file(env: &Env, owner: &str, key: &str) -> Result<Option<OwnedFile>> {

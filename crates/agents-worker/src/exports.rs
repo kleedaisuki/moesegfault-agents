@@ -262,6 +262,7 @@ mod tests {
                 input_revision: 1,
                 pinned: PinnedContext::resolve(&agent, vec![], vec![]),
                 workspace_snapshot: None,
+                runtime_profile: agents_core::RuntimeProfile::Basic1g,
             },
             messages: vec![first, Message::tool_result("tool-1", "actual output")],
             pending_messages: vec![Message::text("user", "steering")],

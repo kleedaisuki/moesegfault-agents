@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import OpenAI from 'openai';
-import { createPinnedSession, verifyServingSource } from './paid-route-policy.mjs';
+import { assertAvailableDirectDeepSeek, createPinnedSession, verifyServingSource } from './paid-route-policy.mjs';
 import { assertCompletedResponse, assertStreamEvents } from '../worker/responses-sdk.mjs';
 
 const origin = process.env.MAGENTS_TEST_API_ORIGIN?.replace(/\/$/, '');
@@ -62,9 +62,10 @@ async function main() {
   const health = await request('GET', '/healthz');
   assert.equal(health.build_id, expectedBuild, 'The served source changed before paid execution');
   const routeProof = verifyServingSource(expectedBuild);
+  const registered = assertAvailableDirectDeepSeek(await request('GET', '/v1/models'));
   const agent = await request('POST', '/v1/agents', {
     name: `node-sdk-${randomBytes(6).toString('hex')}`,
-    model: { provider: 'deepseek', model: 'deepseek-flash', max_output_tokens: 1024 },
+    model: { ...registered, max_output_tokens: 1024 },
     instructions: 'Use the time tool for current-time requests. Reply briefly and report its actual result.',
     tools: ['time'],
   }, [201]);

@@ -64,6 +64,10 @@ pub(super) struct CodeRequest {
     pub id: String,
     #[serde(default)]
     pub container_id: Option<String>,
+    #[serde(default)]
+    pub network_policy: Option<crate::interpreter_egress::NetworkPolicy>,
+    #[serde(default)]
+    pub memory_limit: Option<crate::interpreter_limits::MemoryLimit>,
     pub code: String,
     #[serde(default = "timeout")]
     pub timeout_ms: u64,
@@ -78,8 +82,33 @@ fn output_limit() -> usize {
     1024 * 1024
 }
 
+fn kernel_request(request: &CodeRequest) -> serde_json::Result<Vec<u8>> {
+    // This is a credential boundary, not the private supervisor request. Keep
+    // the bridge payload an explicit allowlist when control-plane fields grow.
+    #[derive(Serialize)]
+    struct KernelRequest<'a> {
+        id: &'a str,
+        code: &'a str,
+        timeout_ms: u64,
+        max_output_bytes: usize,
+    }
+    serde_json::to_vec(&KernelRequest {
+        id: &request.id,
+        code: &request.code,
+        timeout_ms: request.timeout_ms,
+        max_output_bytes: request.max_output_bytes,
+    })
+}
+
 impl CodeRequest {
     fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .network_policy
+            .as_ref()
+            .is_some_and(|policy| policy.validate().is_err())
+        {
+            return Err("invalid code network policy");
+        }
         if !opaque_id(&self.id) {
             return Err("invalid code execution id");
         }
@@ -192,6 +221,8 @@ struct ContextState {
     runtime: PathBuf,
     bridge: Option<Bridge>,
     inputs_index: BTreeMap<String, (u64, String)>,
+    network_policy: Option<crate::interpreter_egress::NetworkPolicy>,
+    gateway: Option<crate::interpreter_egress::Gateway>,
 }
 
 pub(super) struct Interpreter {
@@ -275,7 +306,40 @@ impl Interpreter {
             runtime,
             bridge: None,
             inputs_index: BTreeMap::new(),
+            network_policy: None,
+            gateway: None,
         })
+    }
+
+    fn configure_network(
+        &self,
+        context: &mut ContextState,
+        requested: Option<&crate::interpreter_egress::NetworkPolicy>,
+    ) -> anyhow::Result<()> {
+        use crate::interpreter_egress::{self as egress, NetworkPolicy};
+        if let Some(current) = &context.network_policy {
+            ensure!(
+                requested.is_none_or(|policy| policy == current),
+                "code network policy conflict"
+            );
+            return Ok(());
+        }
+        let policy = requested.cloned().unwrap_or_default();
+        if matches!(policy, NetworkPolicy::Allowlist { .. }) {
+            #[cfg(target_os = "linux")]
+            {
+                context.gateway = Some(egress::start(
+                    &context.data.parent().unwrap().join("egress.sock"),
+                    policy.clone(),
+                )?);
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                anyhow::bail!("network policy unsupported");
+            }
+        }
+        context.network_policy = Some(policy);
+        Ok(())
     }
 
     async fn retire(&self, slot: &mut Option<ContextState>) -> anyhow::Result<()> {
@@ -283,6 +347,9 @@ impl Interpreter {
             return Ok(());
         };
         context.expired = true;
+        // Expiry revokes root egress authority even if later process or scratch
+        // cleanup fails and this unusable context must remain as a fence.
+        drop(context.gateway.take());
         // Retain the expired slot if the kill barrier or cleanup fails. No new
         // namespace may share this UID until every previous writer is gone.
         sandbox::stop()?;
@@ -326,7 +393,13 @@ impl Interpreter {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        sandbox::configure(&mut command);
+        if context.gateway.is_some() {
+            command.env(
+                "MAGENTS_EGRESS_SOCKET",
+                context.data.parent().unwrap().join("egress.sock"),
+            );
+        }
+        sandbox::configure(&mut command)?;
         let mut child = command.spawn().context("start Jupyter client")?;
         let input = child.stdin.take().context("code client stdin")?;
         let output = BufReader::new(child.stdout.take().context("code client stdout")?);
@@ -377,6 +450,13 @@ impl Interpreter {
             .is_some_and(|id| id != &context.id)
         {
             result.error = Some("code_container_not_found".into());
+            return result;
+        }
+        if self
+            .configure_network(context, request.network_policy.as_ref())
+            .is_err()
+        {
+            result.error = Some("code_network_policy_conflict".into());
             return result;
         }
         let outcome = self.cell(context, &request, cancel.clone()).await;
@@ -466,7 +546,7 @@ impl Interpreter {
             self.ensure_bridge(context).await?;
             sandbox::resume()?;
             let bridge = context.bridge.as_mut().unwrap();
-            let mut bytes = serde_json::to_vec(request)?;
+            let mut bytes = kernel_request(request)?;
             bytes.push(b'\n');
             bridge.input.write_all(&bytes).await?;
             bridge.input.flush().await?;
@@ -587,6 +667,9 @@ pub(super) async fn execute(
 ) -> Response {
     if let Err(message) = request.validate() {
         return error(StatusCode::BAD_REQUEST, message);
+    }
+    if let Err(message) = crate::interpreter_limits::verify(request.memory_limit) {
+        return error(StatusCode::UNPROCESSABLE_ENTITY, message);
     }
     let Ok(guard) = state.gate.clone().try_lock_owned() else {
         return error(StatusCode::CONFLICT, "workspace busy");
@@ -985,6 +1068,30 @@ mod tests {
         assert!(request.validate().is_ok());
         request.code.push('\0');
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn bridge_ipc_contains_only_user_execution_payload_not_domain_credentials() {
+        let request: CodeRequest = serde_json::from_value(serde_json::json!({
+            "id":"run_credentials","code":"print(42)","memory_limit":"1g",
+            "container_id":"cntr_0123456789abcdef0123456789abcdef",
+            "network_policy":{"type":"allowlist","allowed_domains":["example.com"],
+                "domain_secrets":[{"domain":"example.com","name":"Authorization","value":"private-sentinel"}]}
+        })).unwrap();
+        let bytes = kernel_request(&request).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert_eq!(value["code"], "print(42)");
+        for private in [
+            "private-sentinel",
+            "network_policy",
+            "domain_secrets",
+            "Authorization",
+            "container_id",
+            "memory_limit",
+        ] {
+            assert!(!String::from_utf8_lossy(&bytes).contains(private));
+        }
     }
 
     #[test]

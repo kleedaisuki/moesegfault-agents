@@ -124,3 +124,39 @@ then applies strict base64 validation and the unchanged decoded 16 MiB limit.
 The cheap bridge regression reproduces the upstream encoder, MIME line wrapping,
 and notebook-style string lists. Normal Matplotlib container acceptance remains
 an actual file/image rendering test, not a synthetic replacement.
+
+## Worker transport and publication fence
+
+`workspace_interpreter.rs` is a child module of the existing Rust `Workspace`.
+It uses its physical profile, compute lease/clock restoration, authenticated traced
+container transport and transport deadlines; it does not change a session's Bash
+pin or run a second agent harness. A requested `1g`/`4g` tier must match the actual
+persisted runtime profile before restoration or compute admission. The private
+policy includes typed domain secrets only on the authenticated root-daemon route;
+no secret environment is exposed to Python.
+
+Each stable caller execution ID maps to a daemon-safe SHA-256 ID. The Worker GETs
+that ID before dispatch. A durable dispatch record stores the physical boot and
+request digest, not source or secrets. Once dispatch is recorded, missing status,
+transport loss, reboot or changed arguments never authorize another POST. Poll and
+cancel do not start replacement VMs. Known daemon preadmission rejection releases
+the empty publication fence; uncertain admission remains fenced for reconciliation.
+
+`workspace:python-publication-pending` is a serialized set of hashed execution IDs.
+The Session owner serializes all operations and clears an entry only after the
+canonical Space artifacts and daemon spool acknowledgements commit (including a
+known terminal empty-artifact result). When the final entry clears, the key is
+**deleted**, not replaced with an empty set. Physical destroy refuses this key;
+Bash checkpoints remain allowed. Selected source exports use the same fence with
+a caller-provided stable publication execution ID.
+
+Input imports re-fetch an owner-scoped processed Space row and use its authoritative
+`content_key()`, supporting both direct files and generic immutable blob-backed
+files. The caller retains the ordinary attachment pin/strong reference for the
+operation. R2 GETs use the existing reservation and operation metering, stream at
+most 64 MiB to root-managed readonly imports, and verify daemon length/hash/path
+receipts. Generated artifacts are immutable opaque IDs; Worker downloads verify
+reported length and SHA-256 with a streaming 16 MiB cap. Filenames never form
+transport URLs or R2 keys. Session publishes using the existing idempotent Space
+publisher and original logical container/artifact identity, then acknowledges the
+root spool. Neither side receives the other's provider or R2 credentials.

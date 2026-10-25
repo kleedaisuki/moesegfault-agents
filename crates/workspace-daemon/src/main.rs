@@ -1,6 +1,9 @@
 mod file_import;
 mod interpreter;
+mod interpreter_egress;
 mod interpreter_files;
+mod interpreter_limits;
+mod interpreter_network;
 mod interpreter_process;
 mod process;
 mod snapshot;

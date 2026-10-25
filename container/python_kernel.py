@@ -163,7 +163,11 @@ def main() -> int:
 
     logging.disable(logging.CRITICAL)
     args.runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-    manager: Any = KernelManager(connection_file=str(args.runtime / "connection.json"))
+    manager: Any = KernelManager(
+        connection_file=str(args.runtime / "connection.json"),
+        transport="ipc",
+        ip=str(args.runtime / "kernel"),
+    )
     manager.kernel_spec.argv = [sys.executable, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"]
     manager.start_kernel(
         cwd=str(args.directory),

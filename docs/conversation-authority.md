@@ -138,3 +138,84 @@ for extremely long conversations. A scalable later representation can retain
 immutable revision pages plus tombstone revision boundaries without changing
 the admission API. Do not delete receipt-referenced bodies under ordinary TTL
 cleanup.
+
+## Pending admission versus activated execution
+
+Admission first reserves a **pending** writer for 120 seconds. Same-Response
+admission renews only that pending deadline and reuses its immutable receipt.
+Another writer can replace an expired pending candidate. POST
+`/responses/activate {response_id, session_id, accepted_revision}` validates the
+still-current, nonexpired candidate and its receipt, then durably binds execution
+to that Session. Activation retries from that same Session are idempotent;
+replaced candidates, expired candidates and another Session receive 409.
+The Session integration calls activation after persisting the queued RunState
+and before execution admission/paid work. A stale activation does not authorize
+paid execution. Activated execution has no deadline, even for long jobs. Legacy
+active identities lacking activation/deadline fields retain the old indefinite
+fence rather than inventing an expiry during rolling upgrade.
+
+A terminal commit may pass `defer_release: true`. This requires its matching
+activated Session, publishes content/provenance/hint once, and keeps the active
+fence until the Session canonically clears its run and calls `/responses/release`.
+Commit replay never clears a held fence. This separates content durability from
+financial cutoff and canonical completion without admitting a competing writer
+in the middle of finalization.
+
+`revision` now describes prompt content, not cosmetic metadata. Updating
+metadata does not increment it or invalidate an otherwise exact warm hint.
+Item additions/deletions and container deletion still advance it.
+
+## Private per-item provenance
+
+`ConversationExecutionContext` now includes `defer_release` and an
+`item_provenance` map keyed by newly appended item ID. Its values are
+`ConversationItemProvenance {source_session_id?, response_id?, provider_binding?}`.
+The context derives `Default` to keep call-site extensions simple. Only the
+trusted automatic commit path can publish this map. Public create/items APIs
+cannot submit it and canonical public item JSON does not contain it.
+
+Admission returns a serde-default `item_provenance` map alongside canonical
+items. This lets execution distinguish platform-retained native/provider-bound
+items from caller-provided raw opaque payloads; the absence of provenance is
+not proof of a compatible provider binding. Provenance bodies publish before
+the same item/header commit marker, remain immutable, and are not duplicated
+inside every acceptance receipt.
+
+Additional verification prepared: three pure lease tests cover deadline edges,
+activated long runs, renewal/release and rolling legacy state; the compiled
+Worker journey now exercises activation fencing, deferred commit replay,
+metadata-neutral warm hints, private-versus-raw provenance and accepted late
+completion after deletion. Only syntax/format checks ran locally; actual Worker
+execution awaits the captain's freshly compiled artifact.
+
+
+## Canonical Session coupling
+
+`session_conversations.rs` connects the authority to the existing Session harness.
+The transport's accepted admission is ephemeral: `ResponseRun` persists only the
+Conversation ID, accepted revision and terminal preparation receipt, not another
+copy of all historical item bodies. A compatible warm hint selects the private
+predecessor without changing the public `previous_response_id` field. A fresh
+execution lane prepares its historical source locally and applies it only inside
+the existing Session acceptance fence. Historical media is resolved and pinned
+once for that fresh lane; ordinary warm continuations append only new input.
+
+The queued Session run is durable before authority activation. Activation is
+checked before model/resource run admission, so replacing an expired, never
+activated candidate cannot authorize a delayed old paid execution. Warmup uses
+the same authority activation but does not fabricate model usage.
+
+Terminal preparation appends only the Response's newly accepted input and output,
+with private per-item provider provenance. It occurs before the run's financial
+cutoff. The authority keeps its activated writer fence until the Session's
+terminal state is durably cleared. A release outbox is persisted by that same
+pre-cutoff Session publication; healthy completion drains it before publishing
+terminal followers. Failed release keeps the outbox and a bounded retry deadline,
+including for otherwise closed Sessions, without generating a second response.
+The retained per-Response account cleanup reservation funds release after the
+model/resource reservation has settled.
+
+This coupling does not by itself establish workspace inheritance for a new
+Conversation lane. The edge integration must retain the accepted latest workspace
+archive independently of warm-cache eligibility; a history edit or agent switch
+must never silently substitute an empty workspace.

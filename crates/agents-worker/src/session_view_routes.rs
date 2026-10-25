@@ -89,6 +89,7 @@ mod tests {
             input_revision: 0,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
             workspace_snapshot: None,
+            runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };
         serde_json::from_value(json!({"record":record,"messages":[]})).unwrap()
     }

@@ -1,0 +1,89 @@
+[
+  {
+    "source_sha": "e7d2d05fce5dfe3a1b73cb5a01df3aff8800c5fe",
+    "run_id": "40188347451",
+    "components": [
+      "worker"
+    ]
+  },
+  {
+    "source_sha": "e9b73a5ebd03fc17fd5884db60195a51c0882279",
+    "run_id": "40191551856",
+    "components": [
+      "native",
+      "container",
+      "dashboard",
+      "tooling"
+    ]
+  },
+  {
+    "source_sha": "b1edf97746d3902373dbb05e224799f03d9a3a10",
+    "run_id": "40191955285",
+    "components": [
+      "native",
+      "container",
+      "dashboard",
+      "tooling"
+    ],
+    "status": "verified"
+  },
+  {
+    "source_sha": "b1edf97746d3902373dbb05e224799f03d9a3a10",
+    "run_id": "40191955285",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12598806413,
+    "verified_phases": [
+      "wasm_build",
+      "rust_lib"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Run cargo test --locked -p agents-worker --lib",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "unresolved_checks": [
+      {
+        "id": "regression:conversation-create-idempotency",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/conversations.test.mjs"
+        ],
+        "env": {},
+        "reason": "Documented actual failure in CI 40191955285; current repair proof required",
+        "expected_test": "create needs no model, preserves metadata and normalizes initial messages",
+        "nested_except": "create needs no model, preserves metadata and normalizes initial messages"
+      },
+      {
+        "id": "journey:Responses actual Node SDK streams, recovers and returns local function results",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Responses actual Node SDK streams, recovers and returns local function results"
+        },
+        "reason": "Documented actual failure in CI 40191955285; current repair proof required",
+        "expected_test": "Responses actual Node SDK streams, recovers and returns local function results"
+      },
+      {
+        "id": "journey:Responses caller function selection and final structured output remain enforced across tools",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Responses caller function selection and final structured output remain enforced across tools"
+        },
+        "reason": "Documented actual failure in CI 40191955285; current repair proof required",
+        "expected_test": "Responses caller function selection and final structured output remain enforced across tools"
+      }
+    ]
+  }
+]

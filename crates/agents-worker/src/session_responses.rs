@@ -5,13 +5,19 @@ use std::collections::BTreeMap;
 const RESPONSE_PREFIX: &str = "response:";
 const MAX_RESPONSE_EVENTS: usize = 65_536;
 const MAX_RESPONSE_EVENT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_RESPONSE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_RESPONSE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE_OBSERVERS: usize = 8;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct ResponseRun {
+    #[serde(default)]
+    pub(super) conversation: Option<super::conversations::ConversationBinding>,
     pub(super) id: String,
     pub(super) request: ResponseRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) resolved_prompt: Option<crate::prompt_templates::ResolvedPrompt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) effective_instructions: Option<String>,
     pub(super) created_at: u64,
     pub(super) input_items: Vec<Value>,
     pub(super) output: Vec<Value>,
@@ -21,6 +27,14 @@ pub(super) struct ResponseRun {
     pub(super) incomplete_reason: Option<String>,
     pub(super) cancel_requested: bool,
     pub(super) awaiting_calls: Vec<provider::ToolCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) general_pending_calls: Vec<super::native_output::GeneralPendingCall>,
+    #[serde(default)]
+    pub(super) native_stream: super::native_output::NativeStream,
+    #[serde(default)]
+    pub(super) bound_tools: crate::hosted_bindings::BoundTools,
+    #[serde(default)]
+    pub(super) effective_service_tier: Option<String>,
     pub(super) usage: Usage,
     pub(super) next_sequence: u64,
     #[serde(default)]
@@ -40,6 +54,8 @@ pub(super) struct ResponseRun {
     pub(super) attachments_ready: usize,
     #[serde(default)]
     pub(super) branch_point: Option<super::branch::BranchPoint>,
+    #[serde(default)]
+    pub(super) execution: crate::response_execution::ExecutionContext,
 }
 
 impl ResponseRun {
@@ -50,16 +66,29 @@ impl ResponseRun {
             .saturating_add(MAX_RESPONSE_EVENTS as u64 + 16);
     }
 
-    fn value(&self) -> Value {
-        let mut value = wire::response_value(
+    pub(super) fn value(&self) -> Value {
+        self.value_with_include(&self.request.include)
+    }
+
+    fn value_with_include(&self, include: &[String]) -> Value {
+        let mut value = wire::response_value_with_include(
             &self.request,
             &self.id,
             self.created_at,
             &self.status,
             &self.output,
             Some(&self.usage),
+            include,
         );
         value["completed_at"] = json!(self.completed_at);
+        if let Some(tier) = &self.effective_service_tier {
+            value["service_tier"] = json!(tier);
+        } else if let Some(fields) = value.as_object_mut() {
+            fields.remove("service_tier");
+        }
+        if let (Some(prompt), Some(raw)) = (&self.resolved_prompt, &self.request.prompt) {
+            value["prompt"] = prompt.public_reference(raw);
+        }
         if self.cancel_requested {
             value["agents_cancel_requested"] = json!(true);
         }
@@ -73,13 +102,19 @@ impl ResponseRun {
         value
     }
 
-    fn event(&mut self, kind: &str, mut fields: Value) -> Result<Value> {
+    pub(super) fn event(&mut self, kind: &str, mut fields: Value) -> Result<Value> {
         if self.next_sequence >= self.reserved_sequence_end {
             self.stream_error = Some("response_event_limit".into());
             return Err(Error::RustError("response_event_limit".into()));
         }
         fields["type"] = json!(kind);
         fields["sequence_number"] = json!(self.next_sequence);
+        if let Some(value) = fields.get_mut("response") {
+            value["output"] = json!(self.output);
+        }
+        if let Some(object) = fields.as_object_mut() {
+            object.remove("obfuscation");
+        }
         let bytes = serde_json::to_vec(&fields)?.len();
         if bytes > MAX_RESPONSE_EVENT_BYTES {
             self.stream_error = Some("response_event_limit".into());
@@ -115,12 +150,16 @@ pub(super) struct ResponseObserver {
     id: String,
     transport: ResponseTransport,
     after: Option<u64>,
+    follow_steering: bool,
+    projection: wire::ResponseProjection,
 }
 
 #[derive(Deserialize)]
-struct CreateResponse {
-    response_id: String,
-    request: ResponseRequest,
+pub(super) struct CreateResponse {
+    pub(super) response_id: String,
+    pub(super) request: ResponseRequest,
+    #[serde(default)]
+    pub(super) execution: crate::response_execution::ExecutionContext,
 }
 
 impl SessionInner {
@@ -234,6 +273,9 @@ impl SessionInner {
         let Some(id) = parts.get(1) else {
             return util::json_error(404, "not_found", "Response not found");
         };
+        if req.method() == Method::Post && parts.get(2) == Some(&"steer") {
+            return self.response_steer(id, req).await;
+        }
         let Some(mut response) = self.read_response(id).await? else {
             return util::json_error(404, "not_found", "Response not found");
         };
@@ -241,20 +283,24 @@ impl SessionInner {
             return util::json_error(404, "not_found", "Response not retained");
         }
         match (req.method(), parts.get(2).copied()) {
-            (Method::Get, None) => Response::from_json(&response.value()),
-            (Method::Get, Some("events")) => {
-                let url = req.url()?;
-                let after = url
-                    .query_pairs()
-                    .find(|(key, _)| key == "after")
-                    .map(|(_, v)| v.into_owned());
-                let after = match after.as_deref().map(str::parse::<u64>).transpose() {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return util::json_error(400, "invalid_cursor", "Invalid event cursor");
-                    }
+            (Method::Get, action @ (None | Some("events"))) => {
+                let options = match wire::RetrieveOptions::parse(&req.url()?, action.is_some()) {
+                    Ok(options) => options,
+                    Err(error) => return util::json_error(400, "invalid_request", error),
                 };
-                self.observe_response(&response, true, after).await
+                if action.is_none() && !options.stream {
+                    return Response::from_json(
+                        &response.value_with_include(&options.projection.include),
+                    );
+                }
+                self.observe_response(
+                    &response,
+                    true,
+                    options.after,
+                    false,
+                    Some(options.projection),
+                )
+                .await
             }
             (Method::Get, Some("input_items")) => input_items(&response, &req.url()?),
             (Method::Post, Some("cancel")) => {
@@ -294,8 +340,7 @@ impl SessionInner {
                 {
                     let borrowed = self.data.borrow();
                     let data = borrowed.as_ref().unwrap();
-                    if data.response_head.as_deref() == Some(*id)
-                        && !data.pending_client_tools.is_empty()
+                    if data.response_head.as_deref() == Some(*id) && data.has_pending_client_tools()
                     {
                         return util::json_error(
                             409,
@@ -317,6 +362,8 @@ impl SessionInner {
                 response.deleted = true;
                 response.request.input = Value::Null;
                 response.request.instructions = None;
+                response.request.prompt = None;
+                response.resolved_prompt = None;
                 response.request.tools.clear();
                 response.request.metadata.clear();
                 response.request.text = None;
@@ -357,12 +404,13 @@ impl SessionInner {
             self.persist().await?;
             self.arm_alarm().await?;
         }
-        self.observe_response(&existing, request.stream, None).await
+        self.observe_response(&existing, request.stream, None, false, None)
+            .await
     }
 
-    async fn create_response(
+    pub(super) async fn create_response(
         &self,
-        create: CreateResponse,
+        mut create: CreateResponse,
         traceparent: Option<String>,
     ) -> Result<Response> {
         let request = create.request;
@@ -372,6 +420,8 @@ impl SessionInner {
         if let Some(existing) = self.read_response(&create.response_id).await? {
             return self.existing_response(existing, &request).await;
         }
+        self.prepare_conversation_execution(&request, &create.response_id, &mut create.execution)
+            .await?;
         if self.branch_dispatched(&create.response_id).await? {
             return util::json_error(
                 409,
@@ -379,21 +429,114 @@ impl SessionInner {
                 "This response has an independent child session",
             );
         }
-        let mut input = match crate::response_preflight::validate(&request) {
+        let owner = self.data.borrow().as_ref().unwrap().record.owner_id.clone();
+        let inherited_prompt = match (
+            &create.execution.steering_parent,
+            &create.execution.inherited_prompt,
+        ) {
+            (Some(parent), Some(prompt))
+                if self.validate_steering_parent(
+                    parent,
+                    &create.response_id,
+                    &create.execution,
+                )? =>
+            {
+                Some(prompt.for_successor())
+            }
+            (_, Some(_)) => {
+                return util::json_error(
+                    400,
+                    "invalid_steering_parent",
+                    "Prompt inheritance requires an accepted steering queue",
+                );
+            }
+            _ => None,
+        };
+        let resolved_prompt = if inherited_prompt.is_some() {
+            inherited_prompt
+        } else {
+            match crate::prompt_templates::resolve(&self.env, &owner, &request) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    return util::json_error(
+                        error.status,
+                        error.code,
+                        "Prompt could not be resolved",
+                    );
+                }
+            }
+        };
+        let mut effective_request = match &resolved_prompt {
+            Some(prompt) => match prompt.apply(&request) {
+                Ok(effective) => effective,
+                Err(error) => {
+                    return util::json_error(
+                        error.status,
+                        error.code,
+                        "Prompt variables are not valid",
+                    );
+                }
+            },
+            None => request.clone(),
+        };
+        effective_request.input =
+            self.response_steering_input(&effective_request, &create.execution)?;
+        let mut input = match crate::response_preflight::validate(&effective_request) {
             Ok(input) => input,
             Err(error) => {
                 return util::json_error(400, error.code, &error.message);
             }
         };
-        let data = self.snapshot()?;
-        if request.previous_response_id.is_some()
-            && (request.previous_response_id != data.response_head
+        let mut data = self.snapshot()?;
+        let conversation_seed = match self
+            .prepare_conversation_seed(
+                &request,
+                create.execution.conversation.as_ref(),
+                &create.response_id,
+            )
+            .await
+        {
+            Ok(seed) => seed,
+            Err(Error::RustError(code)) if code == "conversation_context_changed" => {
+                return util::json_error(
+                    409,
+                    "conversation_context_changed",
+                    "Conversation execution context changed; use an independent execution lane",
+                );
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(seed) = &conversation_seed {
+            seed.apply(&mut data);
+        }
+        let previous_response_id =
+            super::conversations::previous(&request, create.execution.conversation.as_ref());
+        let requested_profile = match crate::runtime_profiles::requested_tools(&request.tools) {
+            Ok(profile) => profile,
+            Err(_) => {
+                return util::json_error(
+                    400,
+                    "unsupported_runtime_profile",
+                    "Requested Container memory is not supported",
+                );
+            }
+        };
+        if previous_response_id.is_some()
+            && (requested_profile.is_some_and(|profile| profile != data.record.runtime_profile)
+                || previous_response_id != data.response_head
                 || request.model != data.record.agent_id
                 || data.run.is_some()
                 || self.closing.get()
                 || data.archive_preparing
                 || data.archive_pending)
         {
+            if create.execution.conversation.is_some() {
+                return util::json_error(
+                    409,
+                    "conversation_context_changed",
+                    "Conversation execution lane is not available",
+                );
+            }
             return util::json_error(
                 409,
                 "response_branch_required",
@@ -418,14 +561,24 @@ impl SessionInner {
                 "Response model must be the session agent",
             );
         }
-        if request.previous_response_id != data.response_head {
+        if previous_response_id != data.response_head {
+            if create.execution.conversation.is_some() {
+                return util::json_error(
+                    409,
+                    "conversation_context_changed",
+                    "Conversation execution context changed",
+                );
+            }
             return util::json_error(
                 409,
                 "response_branch_required",
                 "Continue from an independent child session",
             );
         }
-        if let Some(parent) = request.previous_response_id.as_deref() {
+        if let Some(parent) = previous_response_id
+            .as_deref()
+            .filter(|_| create.execution.conversation.is_none())
+        {
             let imported = data
                 .imported_parent
                 .as_ref()
@@ -434,15 +587,30 @@ impl SessionInner {
                 let Some(parent) = self.read_response(parent).await? else {
                     return util::json_error(404, "not_found", "Previous response not retained");
                 };
-                if parent.deleted || !parent.request.store {
+                let queued = self.validate_steering_parent(
+                    &parent.id,
+                    &create.response_id,
+                    &create.execution,
+                )?;
+                let leased = match &create.execution.parent_lease {
+                    Some(lease) => self.validate_parent_grant(&parent.id, lease).await?,
+                    None => false,
+                };
+                if parent.deleted || (!parent.request.store && !queued && !leased) {
                     return util::json_error(404, "not_found", "Previous response not retained");
                 }
             }
         }
-        if request.previous_response_id.is_some() {
-            if let Err(code) =
+        if previous_response_id.is_some() || create.execution.conversation.is_some() {
+            let result = if data.pending_general_tools.is_empty() {
                 validate_tool_outputs(&data.pending_client_tools, &input.tool_outputs)
-            {
+            } else {
+                super::native_output::validate_returns(
+                    &data.pending_general_tools,
+                    &input.native_items,
+                )
+            };
+            if let Err(code) = result {
                 return util::json_error(
                     400,
                     code,
@@ -451,13 +619,52 @@ impl SessionInner {
             }
         }
         let mut definitions = tool_definitions(&data.record);
-        let local = request.tool_definitions().map_err(Error::RustError)?;
+        if request.tools.iter().any(|tool| {
+            matches!(tool.kind.as_str(), "function" | "custom")
+                && definitions
+                    .iter()
+                    .any(|definition| definition.function.name == tool.name)
+        }) {
+            return util::json_error(
+                400,
+                "tool_name_reserved",
+                "Caller tool names must not shadow pinned harness tools",
+            );
+        }
+        let bound_tools = match self.resolve_hosted_bindings(&request, &data.record).await {
+            Ok(bindings) => bindings,
+            Err(error) => return util::json_error(400, "invalid_hosted_tool", &error.to_string()),
+        };
+        let local = request.function_definitions().map_err(Error::RustError)?;
         definitions.extend(local);
+        definitions.extend(bound_tools.definitions()?);
+        if let Err(error) = request.validate_resolved_tool_choice(&definitions) {
+            return util::json_error(400, "invalid_tool_choice", &error);
+        }
         let mut config = self.provider_config(&data.record).await?;
-        let mut options = request.generation_options();
-        if let Err(error) =
-            Self::validate_native_generation(&config, &request, &definitions, &mut options)
+        if config.protocol != agents_core::ProviderProtocol::Responses
+            && request
+                .tools
+                .iter()
+                .any(|tool| matches!(tool.kind.as_str(), "custom" | "namespace"))
         {
+            return util::json_error(
+                400,
+                "unsupported_native_request",
+                "Custom and namespace tools require a native Responses provider",
+            );
+        }
+        let mut options = request.generation_options();
+        if let Some(choice) = options.tool_choice.take() {
+            options.tool_choice = Some(bound_tools.rewrite_choice(choice)?);
+        }
+        if let Err(error) = Self::validate_native_generation(
+            &config,
+            &request,
+            &bound_tools,
+            &definitions,
+            &mut options,
+        ) {
             return util::json_error(400, "unsupported_native_request", &error.to_string());
         }
         if let Err(error) = options.validate_for_config(&config, &definitions) {
@@ -505,16 +712,69 @@ impl SessionInner {
             );
         }
         let original_items = wire::identified_input_items(&input.input_items, &create.response_id);
-        let resolved = crate::responses_attachments::resolve(
+        let mut resolved = crate::responses_attachments::resolve(
             &self.env,
             &data.record.owner_id,
             &create.response_id,
-            &request.input,
+            &effective_request.input,
             data.record.pinned.workspace,
         )
         .await?;
-        let mut execution_request = request.clone();
+        if let Some(seed) = &conversation_seed {
+            let mut seen = resolved
+                .attachments
+                .iter()
+                .map(|file| file.id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            resolved.attachments.extend(
+                seed.attachments
+                    .iter()
+                    .filter(|file| seen.insert(file.id.clone()))
+                    .cloned(),
+            );
+        }
+        let mut execution_request = effective_request.clone();
         execution_request.input = resolved.input;
+        let incoming = execution_request
+            .native_input_items()
+            .map_err(Error::RustError)?;
+        let unsealed = incoming
+            .iter()
+            .filter(|item| item["type"] != "compaction")
+            .cloned()
+            .collect::<Vec<_>>();
+        if native::unresolved_input(&unsealed) {
+            return util::json_error(
+                400,
+                "unresolved_native_item",
+                "Referenced or opaque input must resolve to this owner's provider context",
+            );
+        }
+        let expanded = match crate::responses_auxiliary::expand_for_prefix(
+            &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
+            &data.record.owner_id,
+            &data.record.agent_id,
+            &data.record.pinned.prefix_hash(),
+            &incoming,
+            &system_prefix(&data.record),
+        ) {
+            Ok(expanded) => expanded,
+            Err(_) => {
+                return util::json_error(
+                    400,
+                    "invalid_compaction",
+                    "Compaction belongs to a different owner or pinned context",
+                );
+            }
+        };
+        execution_request.input = Value::Array(expanded.items);
+        let effective_instructions = execution_request
+            .instructions
+            .clone()
+            .or(expanded.instructions);
+        if execution_request.instructions.is_none() {
+            execution_request.instructions = effective_instructions.clone();
+        }
         input = execution_request.normalize().map_err(Error::RustError)?;
         let current = self.snapshot()?;
         if current.archive_preparing || current.archive_pending || self.closing.get() {
@@ -657,6 +917,36 @@ impl SessionInner {
                 "Session changed while pinning attachments",
             );
         }
+        if let Some(lease) = &create.execution.connection_lease {
+            self.record_connection_grant(&create.response_id, lease)
+                .await?;
+            let unchanged = {
+                let current = self.data.borrow();
+                current.as_ref().is_some_and(|current| {
+                    current.run.is_none()
+                        && current.record.input_revision == data.record.input_revision
+                        && current.response_head == data.response_head
+                        && current.record.status == SessionStatus::Idle
+                        && !current.archive_pending
+                        && !current.archive_preparing
+                        && !self.closing.get()
+                })
+            };
+            if !unchanged {
+                crate::space::release_response_files(
+                    &self.env,
+                    &data.record.owner_id,
+                    &data.record.id,
+                    &create.response_id,
+                )
+                .await?;
+                return util::json_error(
+                    409,
+                    "session_busy",
+                    "Session changed while preparing its connection cache",
+                );
+            }
+        }
         // No await separates this domain preflight from acceptance mutations.
         // Exhausted revisions and non-idle records cannot partially consume tools.
         let mut admission = current.record.clone();
@@ -670,6 +960,9 @@ impl SessionInner {
         {
             let mut borrowed = self.data.borrow_mut();
             let current = borrowed.as_mut().unwrap();
+            if let Some(seed) = &conversation_seed {
+                seed.apply(current);
+            }
             current
                 .history_instructions
                 .extend(input.history_instructions.iter().cloned());
@@ -678,21 +971,30 @@ impl SessionInner {
                 .extend(input.history_instructions.iter().cloned());
             current.messages[0] = Message::text("system", prefix);
             current.pending_client_tools.clear();
+            current.pending_general_tools.clear();
         }
-        self.append(input.messages)?;
+        self.append_response_input(
+            &create.response_id,
+            &request,
+            &create.execution,
+            input.messages,
+        )?;
         {
             let mut borrowed = self.data.borrow_mut();
             let current = borrowed.as_mut().unwrap();
             project_response_input(
                 &mut current.messages,
                 &mut current.pending,
-                !data.pending_client_tools.is_empty(),
+                data.has_pending_client_tools(),
             );
         }
         self.start_run_with_id(create.response_id.clone())?;
         let mut response = ResponseRun {
+            conversation: super::conversations::binding(create.execution.conversation.as_ref()),
             id: create.response_id.clone(),
             request: request.clone(),
+            resolved_prompt,
+            effective_instructions,
             created_at: util::now_ms() / 1000,
             input_items: original_items,
             output: vec![],
@@ -702,6 +1004,10 @@ impl SessionInner {
             incomplete_reason: None,
             cancel_requested: false,
             awaiting_calls: vec![],
+            general_pending_calls: vec![],
+            native_stream: super::native_output::NativeStream::default(),
+            bound_tools: bound_tools.clone(),
+            effective_service_tier: None,
             usage: Usage::default(),
             next_sequence: 0,
             reserved_sequence_end: MAX_RESPONSE_EVENTS as u64 + 16,
@@ -713,6 +1019,7 @@ impl SessionInner {
             attachments: resolved.attachments,
             attachments_ready: 0,
             branch_point: None,
+            execution: create.execution.persisted(),
         };
         response.event("response.created", json!({"response":response.value()}))?;
         {
@@ -725,7 +1032,7 @@ impl SessionInner {
             run.response = Some(response.clone());
             if let Some(items) = native_input {
                 run.native_input = Some(native::NativeInputBatch {
-                    items,
+                    items: native::ordered_input(items, data.has_pending_client_tools()),
                     message_begin: data.messages.len(),
                     message_end: current.messages.len(),
                     history_begin: data.history_instructions.len(),
@@ -738,11 +1045,28 @@ impl SessionInner {
         }
         drop(acceptance);
         self.persist().await?;
-        self.arm_alarm().await?;
+        if let Some(parent) = create.execution.steering_parent.as_deref() {
+            self.forward_steering_successor(parent, Some(&response), &[]);
+        }
+        if create.execution.warmup {
+            self.complete_response_warmup().await?;
+        } else {
+            self.arm_alarm().await?;
+        }
+        if create.execution.suppress_observer {
+            return Response::from_json(&response.value());
+        }
         if request.background && !request.stream {
             return Response::from_json(&response.value());
         }
-        self.observe_response(&response, request.stream, None).await
+        self.observe_response(
+            &response,
+            request.stream,
+            None,
+            create.execution.connection_lease.is_some(),
+            None,
+        )
+        .await
     }
 
     async fn observe_response(
@@ -750,11 +1074,15 @@ impl SessionInner {
         response: &ResponseRun,
         stream: bool,
         after: Option<u64>,
+        follow_steering: bool,
+        projection: Option<wire::ResponseProjection>,
     ) -> Result<Response> {
         // An alarm can complete while create waits for its storage acknowledgement.
         // Attach to the current run, never to a stale queued clone.
         let fresh = self.read_response(&response.id).await?;
         let response = fresh.as_ref().unwrap_or(response);
+        let projection =
+            projection.unwrap_or_else(|| wire::ResponseProjection::for_request(&response.request));
         if stream {
             if let Some(first) = response
                 .events
@@ -783,13 +1111,15 @@ impl SessionInner {
                 .filter(|event| {
                     after.is_none_or(|n| event["sequence_number"].as_u64().is_some_and(|s| s > n))
                 })
-                .map(|event| Ok(wire::event_frame(event)))
+                .map(|event| Ok(projected_response_frame(event, &projection)))
                 .collect::<Vec<_>>();
             if !terminal_status(&response.status) {
                 self.response_observers.borrow_mut().push(ResponseObserver {
                     id: response.id.clone(),
                     transport: ResponseTransport::Stream(tx),
                     after,
+                    follow_steering,
+                    projection,
                 });
             }
             use futures::StreamExt;
@@ -815,6 +1145,8 @@ impl SessionInner {
             id: response.id.clone(),
             transport: ResponseTransport::Json(tx),
             after: None,
+            follow_steering: false,
+            projection,
         });
         Ok(output)
     }
@@ -846,7 +1178,7 @@ impl SessionInner {
         .await
     }
 
-    fn response_event(&self, kind: &str, fields: Value) -> Result<()> {
+    pub(super) fn response_event(&self, kind: &str, fields: Value) -> Result<()> {
         let mut borrowed = self.data.borrow_mut();
         let Some(response) = borrowed
             .as_mut()
@@ -855,23 +1187,33 @@ impl SessionInner {
         else {
             return Ok(());
         };
-        let mut fields = fields;
-        if kind.ends_with(".delta")
-            && response
-                .request
-                .stream_options
-                .as_ref()
-                .and_then(|options| options.get("include_obfuscation"))
-                .and_then(Value::as_bool)
-                .unwrap_or(true)
-        {
-            let random = uuid::Uuid::new_v4();
-            let padding = random.simple().to_string();
-            fields["obfuscation"] = json!(&padding[..16 + usize::from(random.as_bytes()[0] % 17)]);
-        }
         let event = response.event(kind, fields)?;
         let id = response.id.clone();
         drop(borrowed);
+        self.publish_committed_response_event(&id, &event);
+        Ok(())
+    }
+
+    pub(super) fn publish_committed_response_event(&self, id: &str, event: &Value) {
+        let mut barrier = self.response_publication_barrier.borrow_mut();
+        if barrier.hold(id, event) {
+            if barrier.exceeded() {
+                if let Some(response) = self
+                    .data
+                    .borrow_mut()
+                    .as_mut()
+                    .and_then(|data| data.run.as_mut())
+                    .and_then(|run| run.response.as_mut())
+                {
+                    response.stream_error = Some("response_event_limit".into());
+                }
+                self.response_observers
+                    .borrow_mut()
+                    .retain(|observer| observer.id != id);
+            }
+            return;
+        }
+        drop(barrier);
         self.response_observers.borrow_mut().retain_mut(|observer| {
             if observer.id != id {
                 return true;
@@ -884,11 +1226,12 @@ impl SessionInner {
                 return true;
             }
             match &mut observer.transport {
-                ResponseTransport::Stream(sender) => send_response_event(sender, &event),
+                ResponseTransport::Stream(sender) => {
+                    send_response_event(sender, event, &observer.projection)
+                }
                 ResponseTransport::Json(_) => true,
             }
         });
-        Ok(())
     }
 
     pub(super) fn reserve_response_events(&self) {
@@ -970,6 +1313,9 @@ impl SessionInner {
             return Err(Error::RustError("response_output_limit".into()));
         }
         Self::validate_response_output(completion, &response.request, run.round == 1)?;
+        if self.project_native_output(completion).await? {
+            return Ok(());
+        }
 
         let index = response.output.len();
         let item_id = format!("msg_{}_{}", run.id, run.round.saturating_sub(1));
@@ -1162,6 +1508,9 @@ impl SessionInner {
         request: &ResponseRequest,
         first_round: bool,
     ) -> Result<()> {
+        if completion.native.is_some() {
+            return super::native_output::validate_policy(completion, request, first_round);
+        }
         let calls = &completion.message.tool_calls;
         let refusal = completion
             .message
@@ -1303,7 +1652,10 @@ impl SessionInner {
             .as_ref()
             .and_then(|d| d.run.as_ref())
             .and_then(|r| r.response.as_ref())
-            .is_some_and(|r| r.request.tools.iter().any(|t| t.name == name))
+            .is_some_and(|r| {
+                r.general_pending_calls.iter().any(|call| call.name == name)
+                    || r.request.tools.iter().any(|t| t.name == name)
+            })
     }
 
     pub(super) fn response_terminal_value(&self, run: &RunState) -> Option<Value> {
@@ -1352,44 +1704,129 @@ impl SessionInner {
             let kind = format!("response.{}", response.status);
             response.event(&kind, json!({"response":value}))?;
         }
+        self.terminal_steering_events(&mut response)?;
         self.seal_branch_point(&mut response).await?;
         response.branch_point.as_mut().unwrap().pending_calls = response.awaiting_calls.clone();
+        response
+            .branch_point
+            .as_mut()
+            .unwrap()
+            .general_pending_calls = response.general_pending_calls.clone();
         self.write_response(&response).await?;
         Ok(Some(response))
     }
 
     pub(super) fn publish_response(&self, response: ResponseRun) {
-        let last = response.events.last().unwrap();
-        let value = response.value();
+        let begin = response
+            .events
+            .iter()
+            .rposition(|event| {
+                matches!(
+                    event["type"].as_str(),
+                    Some(
+                        "response.completed" | "response.incomplete" | "response.failed" | "error"
+                    )
+                )
+            })
+            .unwrap_or(response.events.len());
+        let follow = self.automatic_steering(&response);
         let observers = self.response_observers.take();
         let mut remaining = vec![];
-        for observer in observers {
+        for mut observer in observers {
             if observer.id != response.id {
                 remaining.push(observer);
                 continue;
             }
-            if observer.after.is_some_and(|after| {
-                last["sequence_number"]
-                    .as_u64()
-                    .is_some_and(|sequence| sequence <= after)
-            }) {
-                continue;
-            }
-            match observer.transport {
-                ResponseTransport::Stream(mut sender) => {
-                    send_response_event(&mut sender, last);
+            match &mut observer.transport {
+                ResponseTransport::Stream(sender) => {
+                    let sent = response.events[begin..]
+                        .iter()
+                        .filter(|event| {
+                            observer.after.is_none_or(|after| {
+                                event["sequence_number"]
+                                    .as_u64()
+                                    .is_some_and(|sequence| sequence > after)
+                            })
+                        })
+                        .all(|event| send_response_event(sender, event, &observer.projection));
+                    if sent && observer.follow_steering && follow {
+                        remaining.push(observer);
+                    }
                 }
                 ResponseTransport::Json(sender) => {
-                    crate::observer_transport::publish(sender, 200, value.clone());
+                    crate::observer_transport::publish(
+                        sender.clone(),
+                        200,
+                        response.value_with_include(&observer.projection.include),
+                    );
                 }
             }
         }
         *self.response_observers.borrow_mut() = remaining;
     }
+
+    pub(super) fn forward_steering_successor(
+        &self,
+        parent: &str,
+        successor: Option<&ResponseRun>,
+        events: &[Value],
+    ) {
+        self.response_observers.borrow_mut().retain_mut(|observer| {
+            if observer.id != parent || !observer.follow_steering {
+                return true;
+            }
+            let ResponseTransport::Stream(sender) = &mut observer.transport else {
+                return false;
+            };
+            if !events
+                .iter()
+                .all(|event| send_response_event(sender, event, &observer.projection))
+            {
+                return false;
+            }
+            let Some(successor) = successor else {
+                return false;
+            };
+            if !successor
+                .events
+                .iter()
+                .all(|event| send_response_event(sender, event, &observer.projection))
+            {
+                return false;
+            }
+            observer.id = successor.id.clone();
+            observer.after = None;
+            true
+        });
+    }
 }
 
-fn send_response_event(sender: &mut mpsc::Sender<Result<Vec<u8>>>, event: &Value) -> bool {
-    sender.try_send(Ok(wire::event_frame(event))).is_ok()
+fn projected_response_frame(event: &Value, projection: &wire::ResponseProjection) -> Vec<u8> {
+    let mut event = event.clone();
+    wire::project_output_event(&mut event, &projection.include);
+    if let Some(object) = event.as_object_mut() {
+        object.remove("obfuscation");
+    }
+    if projection.include_obfuscation
+        && event["type"]
+            .as_str()
+            .is_some_and(|kind| kind.ends_with(".delta"))
+    {
+        let random = uuid::Uuid::new_v4();
+        let padding = random.simple().to_string();
+        event["obfuscation"] = json!(&padding[..16 + usize::from(random.as_bytes()[0] % 17)]);
+    }
+    wire::event_frame(&event)
+}
+
+fn send_response_event(
+    sender: &mut mpsc::Sender<Result<Vec<u8>>>,
+    event: &Value,
+    projection: &wire::ResponseProjection,
+) -> bool {
+    sender
+        .try_send(Ok(projected_response_frame(event, projection)))
+        .is_ok()
 }
 
 fn terminal_status(status: &str) -> bool {
@@ -1517,8 +1954,11 @@ mod tests {
 
     fn response() -> ResponseRun {
         ResponseRun {
+            conversation: None,
             id: "resp_test".into(),
             request: serde_json::from_value(json!({"model":"agent_test","input":"hello"})).unwrap(),
+            resolved_prompt: None,
+            effective_instructions: None,
             created_at: 10,
             input_items: vec![],
             output: vec![],
@@ -1528,6 +1968,10 @@ mod tests {
             incomplete_reason: None,
             cancel_requested: false,
             awaiting_calls: vec![],
+            general_pending_calls: vec![],
+            native_stream: super::native_output::NativeStream::default(),
+            bound_tools: crate::hosted_bindings::BoundTools::default(),
+            effective_service_tier: None,
             usage: Usage::default(),
             next_sequence: 0,
             reserved_sequence_end: MAX_RESPONSE_EVENTS as u64 + 16,
@@ -1539,6 +1983,7 @@ mod tests {
             attachments: vec![],
             attachments_ready: 0,
             branch_point: None,
+            execution: crate::response_execution::ExecutionContext::default(),
         }
     }
 
@@ -1551,6 +1996,76 @@ mod tests {
                 arguments: "{}".into(),
             },
         }
+    }
+
+    #[test]
+    fn observer_projection_is_per_request_and_keeps_private_replay_complete() {
+        let mut run = response();
+        run.output = vec![
+            json!({"type":"code_interpreter_call","id":"ci_1","outputs":[{"type":"logs","logs":"private-result"}]}),
+        ];
+        let public = run.value();
+        assert!(public["output"][0]["outputs"].is_null());
+        let event = run
+            .event("response.completed", json!({"response":public}))
+            .unwrap();
+        assert_eq!(
+            event["response"]["output"][0]["outputs"][0]["logs"],
+            "private-result"
+        );
+        let plain = wire::ResponseProjection {
+            include: vec![],
+            include_obfuscation: false,
+        };
+        let expanded = wire::ResponseProjection {
+            include: vec!["code_interpreter_call.outputs".into()],
+            include_obfuscation: false,
+        };
+        let plain = String::from_utf8(projected_response_frame(&event, &plain)).unwrap();
+        let expanded = String::from_utf8(projected_response_frame(&event, &expanded)).unwrap();
+        assert!(!plain.contains("private-result"));
+        assert!(expanded.contains("private-result"));
+        assert_eq!(run.events[0], event);
+        assert_eq!(
+            run.value_with_include(&["code_interpreter_call.outputs".into()])["output"][0]["outputs"]
+                [0]["logs"],
+            "private-result"
+        );
+    }
+
+    #[test]
+    fn observer_obfuscation_does_not_change_replay_identity_or_other_observers() {
+        let event = json!({"type":"response.output_text.delta","sequence_number":7,"delta":"hello","logprobs":[{"token":"hello"}],"obfuscation":"old-padding"});
+        let plain = wire::ResponseProjection {
+            include: vec![],
+            include_obfuscation: false,
+        };
+        let rich = wire::ResponseProjection {
+            include: vec!["message.output_text.logprobs".into()],
+            include_obfuscation: true,
+        };
+        let decode = |bytes: Vec<u8>| -> Value {
+            let frame = String::from_utf8(bytes).unwrap();
+            serde_json::from_str(
+                frame
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let projected = decode(projected_response_frame(&event, &plain));
+        assert!(projected.get("obfuscation").is_none());
+        assert_eq!(projected["logprobs"], json!([]));
+        assert_eq!(projected["sequence_number"], 7);
+        let projected = decode(projected_response_frame(&event, &rich));
+        assert!(
+            projected["obfuscation"]
+                .as_str()
+                .is_some_and(|padding| (16..=32).contains(&padding.len()))
+        );
+        assert_eq!(projected["logprobs"], event["logprobs"]);
+        assert_eq!(event["obfuscation"], "old-padding");
     }
 
     #[test]

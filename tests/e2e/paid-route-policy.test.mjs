@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertDirectDeepSeekModel, assertDirectDeepSeekPin, verifyDeepSeekResolver, createPinnedSession, assertAvailableDirectDeepSeek } from './paid-route-policy.mjs';
+import { assertDirectDeepSeekModel, assertDirectDeepSeekPin, verifyDeepSeekResolver, createPinnedSession, assertAvailableDirectDeepSeek, assertDirectDeepSeekBounds } from './paid-route-policy.mjs';
 
-const direct = () => ({ provider: 'deepseek', model: 'deepseek-flash', protocol: 'responses' });
+const direct = () => ({ provider: 'deepseek', model: 'deepseek-flash', protocol: 'responses', context_window: 1000000, max_output_tokens: 8192 });
 const source = 'match model.provider { Provider::DeepSeek => (ProviderProtocol::Openai, "https://api.deepseek.com".into(), env.secret("DEEPSEEK_API_KEY")?.to_string(),), }';
 test('explicit pin plus static source proof keeps origin claim precise', () => {
   assert.equal(assertDirectDeepSeekPin({ id: 'session', agent_id: 'agent', pinned: { model: direct() } }, 'agent').provider, 'deepseek');
@@ -49,4 +49,9 @@ test('wrong resolved pin leaves zero model calls and retains cleanup identity', 
 test('missing, unpriced or duplicate registry model prevents admission', () => {
   assertAvailableDirectDeepSeek({ available_platform_models: [direct()] });
   for (const catalog of [{ available_models: [direct()] }, { available_platform_models: [] }, { available_platform_models: [direct(), direct()] }]) assert.throws(() => assertAvailableDirectDeepSeek(catalog));
+});
+
+test('native output budget may shrink without changing payer route', () => {
+  assertDirectDeepSeekBounds({ ...direct(), max_output_tokens: 512 }, direct());
+  for (const patch of [{ context_window: 1048576 }, { max_output_tokens: 8193 }, { max_output_tokens: 0 }, { max_output_tokens: true }]) assert.throws(() => assertDirectDeepSeekBounds({ ...direct(), ...patch }, direct()));
 });

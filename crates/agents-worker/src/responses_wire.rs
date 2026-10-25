@@ -22,6 +22,9 @@ const MAX_IMAGES: usize = 8;
 
 #[path = "responses_controls.rs"]
 mod controls;
+#[path = "responses_retrieval.rs"]
+mod retrieval;
+pub use retrieval::{ResponseProjection, RetrieveOptions};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResponseRequest {
@@ -195,7 +198,59 @@ impl ResponseTool {
             fields.remove("authorization");
             fields.remove("headers");
         }
+        let policy_path = match self.kind.as_str() {
+            "code_interpreter" => "/container/network_policy",
+            "shell" => "/environment/network_policy",
+            _ => return value,
+        };
+        if let Some(policy) = value
+            .pointer_mut(policy_path)
+            .and_then(Value::as_object_mut)
+        {
+            // The optional secret declarations are execution input, never a
+            // public tool descriptor (including on rejected or resumed runs).
+            policy.remove("domain_secrets");
+        }
         value
+    }
+
+    pub fn code_network_policy(&self) -> Result<Option<CodeNetworkPolicy>, String> {
+        if self.kind != "code_interpreter" {
+            return Ok(None);
+        }
+        self.options
+            .get("container")
+            .and_then(|container| container.get("network_policy"))
+            .map(|policy| {
+                serde_json::from_value(policy.clone())
+                    .map_err(|_| "Invalid code interpreter network_policy".to_owned())
+            })
+            .transpose()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CodeNetworkPolicy {
+    Disabled {},
+    Allowlist {
+        allowed_domains: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        domain_secrets: Vec<DomainSecret>,
+    },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DomainSecret {
+    pub domain: String,
+    pub name: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for DomainSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("DomainSecret { .. }")
     }
 }
 
@@ -265,6 +320,16 @@ fn bounded_text(value: &str, limit: usize, label: &str) -> Result<(), String> {
 }
 
 impl ResponseRequest {
+    pub fn validate_resolved_tool_choice(
+        &self,
+        definitions: &[ToolDefinition],
+    ) -> Result<(), String> {
+        if let Some(choice) = &self.tool_choice {
+            controls::resolved_tool_choice(choice, &self.tools, definitions)?;
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         identifier(&self.model, "model")?;
         if let Some(id) = &self.previous_response_id {
@@ -427,10 +492,15 @@ impl ResponseRequest {
     }
 
     pub fn tool_definitions(&self) -> Result<Vec<ToolDefinition>, String> {
-        self.validate_tools(&mut crate::responses_schema::SchemaBudget::default())?;
         if self.tools.iter().any(|tool| tool.kind != "function") {
             return Err("Non-function tools require resolved native or hosted bindings".into());
         }
+        self.function_definitions()
+    }
+
+    /// Function projection for callers which separately resolve all typed tools.
+    pub fn function_definitions(&self) -> Result<Vec<ToolDefinition>, String> {
+        self.validate_tools(&mut crate::responses_schema::SchemaBudget::default())?;
         self.tools
             .iter()
             .filter(|tool| tool.kind == "function")
@@ -1437,6 +1507,26 @@ pub fn response_value(
     output: &[Value],
     usage: Option<&Usage>,
 ) -> Value {
+    response_value_with_include(
+        request,
+        id,
+        created_at,
+        status,
+        output,
+        usage,
+        &request.include,
+    )
+}
+
+pub fn response_value_with_include(
+    request: &ResponseRequest,
+    id: &str,
+    created_at: u64,
+    status: &str,
+    output: &[Value],
+    usage: Option<&Usage>,
+    include: &[String],
+) -> Value {
     let reported = usage.filter(|usage| usage.reported);
     let usage_value = reported.map(|usage| json!({
         "input_tokens":usage.prompt_tokens,
@@ -1464,6 +1554,11 @@ pub fn response_value(
         "user":request.user,"moderation":request.moderation,
         "usage":null,
     });
+    if let Some(items) = value["output"].as_array_mut() {
+        for item in items {
+            project_output_item(item, include);
+        }
+    }
     if let (Some(usage), Some(mut usage_value)) = (reported, usage_value) {
         if usage.reasoning_tokens.is_some() {
             value["usage"] = usage_value;
@@ -1477,6 +1572,98 @@ pub fn response_value(
         }
     }
     value
+}
+
+/// Project only a public copy; canonical items retain their private continuation.
+pub fn project_output_item(item: &mut Value, include: &[String]) {
+    let included = |name: &str| include.iter().any(|value| value == name);
+    match item.get("type").and_then(Value::as_str) {
+        Some("reasoning") if !included("reasoning.encrypted_content") => {
+            remove_field(item, "encrypted_content");
+        }
+        Some("file_search_call") if !included("file_search_call.results") => {
+            remove_field(item, "results");
+        }
+        Some("code_interpreter_call") if !included("code_interpreter_call.outputs") => {
+            item["outputs"] = Value::Null;
+        }
+        Some("web_search_call") => {
+            if !included("web_search_call.results") {
+                remove_field(item, "results");
+            }
+            if !included("web_search_call.action.sources")
+                && let Some(action) = item.get_mut("action")
+            {
+                remove_field(action, "sources");
+            }
+        }
+        Some("message") => {
+            if let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) {
+                for part in parts {
+                    project_content_part(part, include);
+                }
+            }
+        }
+        Some("computer_call_output") if !included("computer_call_output.output.image_url") => {
+            if let Some(output) = item.get_mut("output") {
+                remove_field(output, "image_url");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn project_content_part(part: &mut Value, include: &[String]) {
+    match part.get("type").and_then(Value::as_str) {
+        Some("output_text")
+            if !include
+                .iter()
+                .any(|name| name == "message.output_text.logprobs") =>
+        {
+            if part.get("logprobs").is_some() {
+                part["logprobs"] = json!([]);
+            }
+        }
+        Some("input_image")
+            if !include
+                .iter()
+                .any(|name| name == "message.input_image.image_url") =>
+        {
+            remove_field(part, "image_url");
+        }
+        _ => {}
+    }
+}
+
+fn remove_field(value: &mut Value, field: &str) {
+    if let Some(object) = value.as_object_mut() {
+        object.remove(field);
+    }
+}
+
+/// Apply the same include boundary to canonical-ID SSE copies before fanout.
+pub fn project_output_event(event: &mut Value, include: &[String]) {
+    if let Some(output) = event
+        .pointer_mut("/response/output")
+        .and_then(Value::as_array_mut)
+    {
+        for item in output {
+            project_output_item(item, include);
+        }
+    }
+    if let Some(item) = event.get_mut("item") {
+        project_output_item(item, include);
+    }
+    if let Some(part) = event.get_mut("part") {
+        project_content_part(part, include);
+    }
+    if event.get("logprobs").is_some()
+        && !include
+            .iter()
+            .any(|name| name == "message.output_text.logprobs")
+    {
+        event["logprobs"] = json!([]);
+    }
 }
 
 /// Event order is durable state, so reconnects can use the same sequence numbers.
@@ -1653,6 +1840,198 @@ mod tests {
     }
 
     #[test]
+    fn tool_choice_resolves_against_server_registry_after_pure_validation() {
+        let definitions: Vec<ToolDefinition> = serde_json::from_value(json!([
+            {"type":"function","function":{"name":"time","description":"Current time","parameters":{"type":"object","properties":{}}}},
+            {"type":"function","function":{"name":"bash","description":"Workspace shell","parameters":{"type":"object","properties":{}}}}
+        ])).unwrap();
+        for choice in [
+            json!("required"),
+            json!({"type":"function","name":"time"}),
+            json!({"type":"function","name":"bash"}),
+            json!({"type":"allowed_tools","mode":"required","tools":[{"type":"function","name":"time"}]}),
+        ] {
+            let mut request = request(json!("hello"));
+            request.tool_choice = Some(choice);
+            request.validate().unwrap();
+            assert!(request.validate_resolved_tool_choice(&[]).is_err());
+            request.validate_resolved_tool_choice(&definitions).unwrap();
+        }
+        let mut request = request(json!("hello"));
+        request.tool_choice = Some(json!({"type":"function","name":"unregistered"}));
+        request.validate().unwrap();
+        assert!(request.validate_resolved_tool_choice(&definitions).is_err());
+        request.tool_choice =
+            Some(json!({"type":"function","name":"time","namespace":"unregistered"}));
+        request.validate().unwrap();
+        assert!(request.validate_resolved_tool_choice(&definitions).is_err());
+        request.tool_choice = Some(json!({"type":"function","name":"__agents_code_interpreter"}));
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn include_projection_is_explicit_idempotent_and_preserves_canonical_items() {
+        let original = vec![
+            json!({"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque"}),
+            json!({"type":"compaction","id":"cmp_1","encrypted_content":"required-state"}),
+            json!({"type":"file_search_call","id":"fs_1","results":[{"text":"private-evidence"}]}),
+            json!({"type":"code_interpreter_call","id":"ci_1","outputs":[{"type":"logs","logs":"private-output"}]}),
+            json!({"type":"web_search_call","id":"ws_1","results":[{}],"action":{"type":"search","query":"hello","sources":[{}]}}),
+            json!({"type":"message","id":"msg_1","content":[{"type":"output_text","text":"answer","annotations":[],"logprobs":[{"token":"answer"}]},{"type":"input_image","image_url":"https://example.com/private.png"}]}),
+            json!({"type":"computer_call_output","id":"co_1","output":{"type":"computer_screenshot","image_url":"https://example.com/screenshot.png"}}),
+        ];
+        let mut public = original.clone();
+        for item in &mut public {
+            project_output_item(item, &[]);
+        }
+        assert!(public[0].get("encrypted_content").is_none());
+        assert_eq!(public[1], original[1]);
+        assert!(public[2].get("results").is_none());
+        assert!(public[3]["outputs"].is_null());
+        assert!(public[4].get("results").is_none());
+        assert!(public[4]["action"].get("sources").is_none());
+        assert_eq!(public[5]["content"][0]["logprobs"], json!([]));
+        assert!(public[5]["content"][1].get("image_url").is_none());
+        assert!(public[6]["output"].get("image_url").is_none());
+        let first_projection = public.clone();
+        for item in &mut public {
+            project_output_item(item, &[]);
+        }
+        assert_eq!(public, first_projection);
+        assert_eq!(original[0]["encrypted_content"], "opaque");
+
+        let includes = [
+            "reasoning.encrypted_content",
+            "file_search_call.results",
+            "code_interpreter_call.outputs",
+            "web_search_call.results",
+            "web_search_call.action.sources",
+            "message.output_text.logprobs",
+            "message.input_image.image_url",
+            "computer_call_output.output.image_url",
+        ]
+        .map(str::to_owned);
+        let mut included = original.clone();
+        for item in &mut included {
+            project_output_item(item, &includes);
+        }
+        assert_eq!(included, original);
+        let mut request = request(json!("hello"));
+        let response = response_value(&request, "resp_test", 1, "completed", &original, None);
+        assert_eq!(response["output"], json!(first_projection));
+        request.include = includes.to_vec();
+        let response = response_value(&request, "resp_test", 1, "completed", &original, None);
+        assert_eq!(response["output"], json!(original));
+    }
+
+    #[test]
+    fn include_projection_matches_item_part_and_delta_events() {
+        let mut event = json!({"type":"response.output_item.done","sequence_number":7,
+            "item":{"type":"reasoning","id":"rs_1","encrypted_content":"opaque","summary":[]}});
+        project_output_event(&mut event, &[]);
+        assert!(event["item"].get("encrypted_content").is_none());
+        assert_eq!(event["sequence_number"], 7);
+        let mut event = json!({"type":"response.content_part.done","part":{
+            "type":"output_text","text":"hello","annotations":[],"logprobs":[{}]}});
+        project_output_event(&mut event, &[]);
+        assert_eq!(event["part"]["logprobs"], json!([]));
+        let mut event =
+            json!({"type":"response.output_text.delta","delta":"hello","logprobs":[{}]});
+        let original = event.clone();
+        project_output_event(&mut event, &["message.output_text.logprobs".into()]);
+        assert_eq!(event, original);
+        project_output_event(&mut event, &[]);
+        assert_eq!(event["logprobs"], json!([]));
+    }
+
+    #[test]
+    fn code_network_secrets_remain_private_execution_input() {
+        let secret = "domain-super-secret-value";
+        let raw = json!({"type":"code_interpreter","container":{
+            "type":"auto","memory_limit":"4g","network_policy":{
+                "type":"allowlist","allowed_domains":["api.example.com"],
+                "domain_secrets":[{"domain":"api.example.com","name":"API_TOKEN","value":secret}]
+            }
+        }});
+        let tool: ResponseTool = serde_json::from_value(raw.clone()).unwrap();
+        let mut request = request(json!("hello"));
+        request.tools.push(tool.clone());
+        request.validate().unwrap();
+        assert_eq!(tool.to_wire_value(), raw);
+        assert_eq!(serde_json::to_value(&tool).unwrap(), raw);
+        let policy = tool.code_network_policy().unwrap().unwrap();
+        assert!(!format!("{policy:?}").contains(secret));
+        assert!(!format!("{request:?}").contains(secret));
+        assert_eq!(
+            serde_json::to_value(policy).unwrap(),
+            raw["container"]["network_policy"]
+        );
+        let public = tool.public_value();
+        assert!(
+            public
+                .pointer("/container/network_policy/domain_secrets")
+                .is_none()
+        );
+        assert_eq!(
+            public["container"]["network_policy"]["allowed_domains"],
+            json!(["api.example.com"])
+        );
+        let response = response_value(&request, "resp_test", 1, "completed", &[], None);
+        assert!(!response.to_string().contains(secret));
+
+        let shell: ResponseTool = serde_json::from_value(json!({"type":"shell","environment":{
+            "type":"container_auto","network_policy":raw["container"]["network_policy"]
+        }}))
+        .unwrap();
+        assert!(
+            shell
+                .public_value()
+                .pointer("/environment/network_policy/domain_secrets")
+                .is_none()
+        );
+        assert!(!format!("{shell:?}").contains(secret));
+    }
+
+    #[test]
+    fn code_network_policy_schema_errors_do_not_render_secrets() {
+        let secret = "secret-invalid-input";
+        for container in [
+            json!({"type":"auto","network_policy":{"type":"disabled","domain_secrets":[{"domain":"api.example.com","name":"API_TOKEN","value":secret}]}}),
+            json!({"type":"auto","network_policy":{"type":"allowlist","allowed_domains":["api.example.com"],"domain_secrets":[{"domain":"api.example.com","name":"API_TOKEN","value":42}]}}),
+            json!({"type":"auto","network_policy":{"type":"allowlist","allowed_domains":["https://api.example.com"],"domain_secrets":[{"domain":"api.example.com","name":"API_TOKEN","value":secret}]}}),
+            json!({"type":"auto","network_policy":{"type":"allowlist","allowed_domains":[] ,"domain_secrets":[{"domain":"api.example.com","name":"API_TOKEN","value":secret,"unknown":true}]}}),
+            json!({"type":"auto","memory_limit":"2g"}),
+            json!({"type":"unknown"}),
+        ] {
+            let mut request = request(json!("hello"));
+            request.tools.push(
+                serde_json::from_value(json!({"type":"code_interpreter","container":container}))
+                    .unwrap(),
+            );
+            let error = request.validate().unwrap_err();
+            assert!(!error.contains(secret));
+        }
+    }
+
+    #[test]
+    fn code_network_disabled_and_large_memory_are_valid_syntax_not_capabilities() {
+        for memory in ["1g", "4g", "16g", "64g"] {
+            let mut request = request(json!("hello"));
+            request.tools.push(
+                serde_json::from_value(json!({"type":"code_interpreter","container":{
+                    "type":"auto","memory_limit":memory,"network_policy":{"type":"disabled"}
+                }}))
+                .unwrap(),
+            );
+            request.validate().unwrap();
+            assert!(matches!(
+                request.tools[0].code_network_policy().unwrap(),
+                Some(super::CodeNetworkPolicy::Disabled {})
+            ));
+        }
+    }
+
+    #[test]
     fn tool_variants_round_trip_without_fake_function_fields_or_secrets() {
         for value in [
             json!({"type":"code_interpreter","container":{"type":"auto","memory_limit":"1g"}}),
@@ -1665,6 +2044,8 @@ mod tests {
             let mut request = request(json!("hello"));
             request.tools.push(tool.clone());
             request.validate().unwrap();
+            assert!(request.function_definitions().unwrap().is_empty());
+            assert!(request.tool_definitions().is_err());
             assert_eq!(tool.to_wire_value(), value);
             if !matches!(tool.kind(), "namespace" | "custom") {
                 assert!(tool.to_wire_value().get("name").is_none());
