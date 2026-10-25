@@ -336,7 +336,7 @@ impl Api {
         if stream {
             response_stream(response, raw_events).await
         } else {
-            print_response_object(response).await
+            print_created_response(response).await
         }
     }
 
@@ -354,6 +354,19 @@ impl Api {
         let response = self.request("GET", path, None, None).await?;
         response_stream(response, raw_events).await
     }
+}
+
+async fn print_created_response(response: Response) -> Result<()> {
+    let value = response_json(response, MAX_RESPONSE_JSON_BYTES).await?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    if let Some(status @ ("failed" | "incomplete" | "cancelled")) =
+        value.get("status").and_then(Value::as_str)
+    {
+        bail!(
+            "Response execution {status}; inspect the response ID in the JSON result before retrying"
+        );
+    }
+    Ok(())
 }
 
 async fn print_response_object(response: Response) -> Result<()> {

@@ -232,5 +232,9 @@
   "Keep this operation ID. Checking again will not repeat a completed workspace action.": "Keep this operation ID. Checking again will not repeat a completed workspace action.",
   "Check operation": "Check operation",
   "Response cancelled": "Response cancelled",
-  "response_cancelled": "Response cancelled"
+  "response_cancelled": "Response cancelled",
+  "This file is used by an active response. Wait or cancel it before deleting.": "This file is used by an active response. Wait or cancel it before deleting.",
+  "This file exceeds the upload size limit.": "This file exceeds the upload size limit.",
+  "Reduce the attachment size or attach fewer files.": "Reduce the attachment size or attach fewer files.",
+  "Use a workspace-enabled agent for binary or large file attachments.": "Use a workspace-enabled agent for binary or large file attachments."
 }

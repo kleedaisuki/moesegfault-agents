@@ -232,5 +232,9 @@
   "Keep this operation ID. Checking again will not repeat a completed workspace action.": "请保留此操作编号。再次查询不会重复执行已完成的工作区操作。",
   "Check operation": "查询操作结果",
   "Response cancelled": "响应已取消",
-  "response_cancelled": "响应已取消"
+  "response_cancelled": "响应已取消",
+  "This file is used by an active response. Wait or cancel it before deleting.": "此文件正被执行中的响应使用，请等待响应结束或取消响应后再删除。",
+  "This file exceeds the upload size limit.": "此文件超出上传大小限制。",
+  "Reduce the attachment size or attach fewer files.": "请减小附件大小或减少附件数量。",
+  "Use a workspace-enabled agent for binary or large file attachments.": "请使用已启用工作区的智能体处理二进制或较大的附件。"
 }

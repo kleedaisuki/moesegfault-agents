@@ -226,6 +226,43 @@ describe("space user journeys", () => {
       calls.filter((call) => call.path === "/v1/space").length,
     ).toBeGreaterThan(1);
   });
+  it.each(["en", "zh-CN"])(
+    "explains an active-response file pin after deletion is refused in %s",
+    async (language) => {
+      i18n.changeLanguage(language);
+      mount((path, init) =>
+        path === "/v1/space/files/file%20one" && init.method === "DELETE"
+          ? new Response(
+              JSON.stringify({
+                error: {
+                  code: "file_in_use",
+                  message: "private dependency detail",
+                },
+              }),
+              { status: 409 },
+            )
+          : undefined,
+      );
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", {
+          name: i18n.t("Delete {{name}}", { name: file.filename }),
+        }),
+      );
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(
+        language === "en"
+          ? "This file is used by an active response. Wait or cancel it before deleting."
+          : "此文件正被执行中的响应使用，请等待响应结束或取消响应后再删除。",
+      );
+      expect(alert).not.toHaveTextContent("private dependency detail");
+      expect(screen.getByText(file.filename)).toBeInTheDocument();
+      expect(
+        calls.filter((call) => call.init.method === "DELETE"),
+      ).toHaveLength(1);
+    },
+  );
   it("lazily loads read-only versions and supports keyboard tab navigation", async () => {
     mount();
     await screen.findByText("notes.md");

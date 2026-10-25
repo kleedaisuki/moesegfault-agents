@@ -503,6 +503,68 @@ fn responses_background_retrieval_cancellation_and_input_paging_are_discoverable
     }
 }
 
+#[test]
+fn synchronous_response_failure_exits_nonzero_and_preserves_full_json_result() {
+    let temp = directory();
+    let path = temp.path().join("request.json");
+    std::fs::write(&path, br#"{"model":"a_1","input":"hello"}"#).unwrap();
+    for status in ["failed", "incomplete", "cancelled"] {
+        let result = json!({"id":"resp_failed","status":status,"output":[],"error":{"message":"private-provider-detail"}});
+        for args in [
+            vec!["responses", "run", "a_1", "hello"],
+            vec!["responses", "create", path.to_str().unwrap()],
+        ] {
+            let (output, raw) = request(
+                &args,
+                &serde_json::to_vec(&result).unwrap(),
+                "Content-Type: application/json\r\n",
+            );
+            assert!(!output.status.success());
+            assert!(headers(&raw).starts_with("POST /v1/responses HTTP/1.1"));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                result
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(&format!("Response execution {status}")));
+            assert!(!stderr.contains("private-provider-detail"));
+        }
+    }
+}
+
+#[test]
+fn background_response_submission_exits_zero_without_claiming_completion() {
+    for status in ["queued", "in_progress"] {
+        let result = json!({"id":"resp_pending","status":status,"output":[]});
+        let (output, _) = request(
+            &["responses", "run", "a_1", "hello", "--background"],
+            &serde_json::to_vec(&result).unwrap(),
+            "Content-Type: application/json\r\n",
+        );
+        success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+    }
+}
+
+#[test]
+fn response_failure_inspection_exits_zero_for_a_valid_http_object() {
+    let result = json!({"id":"resp_failed","status":"failed","output":[],"error":{"message":"private-provider-detail"}});
+    let (output, raw) = request(
+        &["responses", "show", "resp_failed"],
+        &serde_json::to_vec(&result).unwrap(),
+        "Content-Type: application/json\r\n",
+    );
+    success(&output);
+    assert!(headers(&raw).starts_with("GET /v1/responses/resp_failed HTTP/1.1"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+}
+
 fn response_events(terminal: &str) -> Vec<u8> {
     format!(
         "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_1\",\"status\":\"in_progress\"}}}}\n\n\

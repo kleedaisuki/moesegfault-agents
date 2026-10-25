@@ -104,7 +104,13 @@ forks are not supported.
 `--background` returns the accepted response without waiting for its final answer;
 exit 0 with `queued` or `in_progress` JSON means successful submission, not
 successful execution. It can also be combined with `--stream`, which follows the
-response and requires its successful terminal event. A disconnected observer never implies
+response and requires its successful terminal event. Non-streaming `responses run`
+and `create` print the full bounded JSON result, including its recovery ID, but exit
+nonzero for `failed`, `incomplete` or `cancelled` status even when HTTP is 200.
+Completed local-function handoffs remain successful. Inspection commands such as
+`show`, `cancel`, `delete` and `inputs` retain exit 0 for valid successful HTTP
+objects; reading a failed response is not another execution attempt.
+A disconnected observer never implies
 cancellation. Read the saved response, or resume its event stream instead of
 resubmitting the original input:
 

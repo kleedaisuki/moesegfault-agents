@@ -157,9 +157,28 @@ export function apiBaseUrl(
   return `${url.origin}/v1`;
 }
 
+const apiErrorMessages = new Map([
+  ["response_cancelled", "Response cancelled"],
+  [
+    "file_in_use",
+    "This file is used by an active response. Wait or cancel it before deleting.",
+  ],
+  ["file_too_large", "This file exceeds the upload size limit."],
+  [
+    "attachments_too_large",
+    "Reduce the attachment size or attach fewer files.",
+  ],
+  [
+    "file_requires_workspace",
+    "Use a workspace-enabled agent for binary or large file attachments.",
+  ],
+]);
+
 export function localizedError(error: unknown): string {
-  if (error instanceof ApiError && error.code === "response_cancelled")
-    return i18n.t("Response cancelled");
+  if (error instanceof ApiError) {
+    const message = apiErrorMessages.get(error.code ?? "");
+    if (message) return i18n.t(message);
+  }
   const message =
     error instanceof Error
       ? error.message
