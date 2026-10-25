@@ -1187,6 +1187,17 @@ async fn run(
             failure.response()?
         }
     };
+    let response = if stream {
+        crate::chat_relay::wrap(
+            env.env.clone(),
+            session.clone(),
+            env.trace.clone(),
+            response,
+        )
+        .await?
+    } else {
+        response
+    };
     let mut response = own_headers(response);
     response
         .headers_mut()
@@ -1252,6 +1263,23 @@ pub(crate) async fn forward(
     body: Option<Value>,
 ) -> Result<Response> {
     forward_inner(env, session, method, path, body, None).await
+}
+
+pub(crate) async fn read_chat_run(
+    env: &Env,
+    session: &SessionRecord,
+    trace: &TraceContext,
+    run: &str,
+) -> Result<Response> {
+    let context = RouteContext { env, trace };
+    forward(
+        &context,
+        session,
+        Method::Get,
+        &format!("/chat-runs/{run}"),
+        None,
+    )
+    .await
 }
 
 async fn forward_conditional(

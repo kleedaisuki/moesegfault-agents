@@ -20,6 +20,8 @@ use worker::*;
 mod admission;
 #[path = "responses_budget.rs"]
 mod budget;
+#[path = "session_chat_receipts.rs"]
+mod chat_receipts;
 #[path = "session_file_pins.rs"]
 mod file_pins;
 #[path = "session_observer.rs"]
@@ -42,6 +44,8 @@ type EventSender = mpsc::UnboundedSender<Result<Vec<u8>>>;
 #[derive(Clone, Serialize, Deserialize)]
 struct RunState {
     id: String,
+    #[serde(default)]
+    source_begin: Option<usize>,
     round: u64,
     admitted: bool,
     total: Usage,
@@ -257,6 +261,12 @@ impl DurableObject for Session {
         let inner = &self.inner;
         if req.path() == "/responses" || req.path().starts_with("/responses/") {
             return match inner.response_route(req).await {
+                Ok(response) => Ok(response),
+                Err(error) => crate::routes::error_response(&error),
+            };
+        }
+        if req.path().starts_with("/chat-runs/") {
+            return match inner.chat_run_receipt(req).await {
                 Ok(response) => Ok(response),
                 Err(error) => crate::routes::error_response(&error),
             };
@@ -829,6 +839,7 @@ impl SessionInner {
         data.last_error = None;
         data.run = Some(RunState {
             id: id.clone(),
+            source_begin: Some(data.journal.len()),
             round: 0,
             admitted: false,
             total: Usage::default(),
@@ -1514,6 +1525,7 @@ impl SessionInner {
             result.as_ref().err().cloned(),
             &generation,
         )?;
+        self.prepare_chat_receipt(run, &result, &committed).await?;
         // Keep the live terminal run busy until this authoritative commit succeeds.
         save_state(&self.state.storage(), &committed).await?;
         self.data
@@ -2773,6 +2785,7 @@ mod tests {
         let result = json!({"id":"run_x","choices":[{"message":{"role":"assistant","content":"complete"}}],"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}});
         let run = RunState {
             id: "run_x".into(),
+            source_begin: None,
             round: 1,
             admitted: true,
             total: Usage::default(),

@@ -210,6 +210,7 @@ fn event_name(event: &str) -> &str {
         "request.completed"
         | "request.failed"
         | "observer.completed"
+        | "observer.recovery"
         | "run.started"
         | "run.completed"
         | "run.failed"
@@ -587,6 +588,7 @@ mod tests {
     #[test]
     fn unknown_or_freeform_fields_never_enter_logs() {
         assert_eq!(event_name("observer.completed"), "observer.completed");
+        assert_eq!(event_name("observer.recovery"), "observer.recovery");
         assert_eq!(
             event_name("session.projection_pending"),
             "session.projection_pending"

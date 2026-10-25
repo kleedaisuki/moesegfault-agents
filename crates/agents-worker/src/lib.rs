@@ -1,5 +1,6 @@
 mod allowances;
 mod auth;
+mod chat_relay;
 mod checkpoint_gc;
 mod cleanup;
 mod exports;

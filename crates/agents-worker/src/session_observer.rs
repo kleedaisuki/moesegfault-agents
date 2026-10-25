@@ -63,7 +63,7 @@ impl Observer {
                 observer_transport::publish(sender, status, body)
             }
             Transport::Stream(sender) => {
-                let value = terminal_frame(&self.run_id, outcome, model, usage);
+                let value = terminal_frame(&self.run_id, &outcome, model, usage);
                 let terminal = sender
                     .unbounded_send(Ok(format!("data: {value}\n\n").into_bytes()))
                     .is_ok();
@@ -76,7 +76,12 @@ impl Observer {
     }
 }
 
-fn terminal_frame(run_id: &str, outcome: CompletionResult, model: &str, usage: &Usage) -> Value {
+pub(super) fn terminal_frame(
+    run_id: &str,
+    outcome: &CompletionResult,
+    model: &str,
+    usage: &Usage,
+) -> Value {
     match outcome {
         Ok(value) => {
             // Reuse the durable completion's timestamp, so terminal replay does

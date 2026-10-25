@@ -97,7 +97,7 @@ async function waitUntil(predicate, milliseconds = 8000) {
 }
 
 async function fixture({ mf, db, encryptionKey, request, providers, diagnostic }, name, actions, options = {}) {
-  const { context_window = 8192, ...agentOptions } = options;
+  const { context_window = 8192, validate_response_schema = true, ...agentOptions } = options;
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: `responses-${name}-owner` });
   const state = providers.register(name, actions);
   const credential = await principal.browser('POST', '/v1/provider-keys', {
@@ -169,7 +169,7 @@ async function fixture({ mf, db, encryptionKey, request, providers, diagnostic }
     assert.ok(held.results.every(row => row.amount === '0'), 'BYOK unknown receipts cannot manufacture a platform model charge');
     await request('DELETE', `/v1/agents/${agent.id}`, undefined, 200, principal.apiKey);
     await principal.browser('DELETE', `/v1/provider-keys/${credential.id}`);
-    checkSchema();
+    if (validate_response_schema) checkSchema();
   }
   async function finish() {
     const errors = [...new Set([primaryFailure, state.failure].filter(Boolean))];

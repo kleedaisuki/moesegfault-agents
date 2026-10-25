@@ -20,6 +20,7 @@ import { runResponsesPolicyJourney } from './responses-policy-journey.mjs';
 import { createCoalescingProviderFixture, runResponsesCoalescingJourney } from './responses-coalescing-journey.mjs';
 import { runSpaceJourney } from './space-journey.mjs';
 import { runJsonObserverJourney } from './json-observer-journey.mjs';
+import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -40,6 +41,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const observerProvider = createObserverProviderFixture();
   const responsesProvider = createResponsesProviderFixture();
   const coalescingProviders = createCoalescingProviderFixture();
+  const chatRecoveryControl = createChatRecoveryControl();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -57,7 +59,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const mfOptions = convertV4MiniflareOptions({
     modulesRoot: build,
     modules: [
-      { type: 'ESModule', path: path.join(build, 'worker/shim.mjs') },
+      { type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
+        contents: await readFile(new URL('./chat-recovery-shim.mjs', import.meta.url), 'utf8') },
       { type: 'ESModule', path: path.join(build, 'index.js') },
       { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') },
     ],
@@ -90,6 +93,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
     },
     outboundService: async request => {
+      const chatRecoveryResponse = await chatRecoveryControl.handle(request);
+      if (chatRecoveryResponse !== undefined) return chatRecoveryResponse;
       const coalescingResponse = await coalescingProviders.handle(request);
       if (coalescingResponse !== undefined) return coalescingResponse;
       const responsesResponse = await responsesProvider.handle(request);
@@ -497,6 +502,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
+  await selected(t, 'Chat internal observation loss recovers original durable text and terminal without replay', { timeout: 40000 }, () =>
+    runChatRecoveryJourney({ ...responseContext(), chatRecoveryControl }));
   await selected(t, 'JSON observers keep internal heartbeats private and preserve terminal success, errors and detached runs', { timeout: 40000 }, () =>
     runJsonObserverJourney(responseContext()));
   await selected(t, 'Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>

@@ -64,6 +64,7 @@ The implemented provenance chain uses the following sources:
 | `tool.completed` / `tool.failed` | `session_id`, `run_id`, `trace_id`, `round`, `tool_call_id`, `tool_name`; failure also has a stable error code/outcome | Active completion/tool dispatch; run plus round disambiguates provider IDs reused by later completions |
 | `session.checkpoint` | `session_id`, optional `run_id`, `snapshot_id`, `workspace_revision`, `snapshot_bytes` | Observed change in committed snapshot metadata after a tool or archive checkpoint; archive maintenance has no active run |
 | `session.archived` | `session_id`, `agent_id`, `build_id` | Completed session archival and current Worker deployment |
+| `observer.recovery` | `session_id`, `run_id`, `trace_id`, `attempt`, `duration_ms`, `success`, fixed `outcome`/`error_code` | Rare Chat canonical-tail reconstruction or explicit observation failure; not proof of network delivery |
 
 `prefix_hash` is the existing SHA-256 of canonical serialized `PinnedContext`: it
 covers pinned model/budgets, instructions, resolved tools/skills, agent revision,
