@@ -506,7 +506,7 @@ mod tests {
                 progress.accept("run", "agent", &data).unwrap();
             }
             let tail=progress.suffix(&text).unwrap();
-            prop_assert_eq!(format!("{}{}",parts[..sent].concat(),tail),text);
+            prop_assert_eq!(format!("{}{}",parts[..sent].concat(),tail),text.as_str());
             if progress.bytes > 0 {
                 let changed=format!("{}{text}",if text.starts_with('x') {'y'} else {'x'});
                 prop_assert_eq!(progress.suffix(&changed),Err(Failure::Mismatch));
