@@ -59,6 +59,14 @@ jobs:
       - run: cargo test --locked --workspace --exclude agents-worker
       - run: python3 -m unittest discover -s tests -p 'test_*sql.py' -v
       - run: cargo clippy --locked --workspace --exclude agents-worker --all-targets -- -D warnings
+      - name: Retain native performance measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: performance-native-v3
+          path: .cache/perf/v3/*.json
+          if-no-files-found: warn
+          retention-days: 7
 
   dashboard:
     needs: changes
