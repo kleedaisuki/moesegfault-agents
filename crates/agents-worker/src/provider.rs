@@ -1284,6 +1284,7 @@ mod tests {
                 json!({"type":"json_schema","name":"result","schema":{"type":"object"},"strict":true}),
             ),
             reasoning: Some(json!({"effort":"low"})),
+            native: None,
         };
         options.validate(config.protocol, &tools).unwrap();
         let body = openai_body_with_options(&config, &[], &tools, true, &options).unwrap();

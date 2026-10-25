@@ -1583,6 +1583,7 @@ mod tests {
             context_window: 65_536,
             max_output_tokens: 4096,
             credential_id: Some("owned-credential".into()),
+            protocol: None,
         };
         assert!(valid_byok_model(&model));
         for name in ["", " padded", "line\nbreak"] {
