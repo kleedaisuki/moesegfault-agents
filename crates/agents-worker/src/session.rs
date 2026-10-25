@@ -31,6 +31,9 @@ mod responses;
 #[path = "session_sse.rs"]
 pub(crate) mod sse;
 use crate::session_views as views;
+#[cfg(test)]
+#[path = "session_persistence_perf.rs"]
+mod persistence_perf;
 #[path = "session_view_routes.rs"]
 mod view_routes;
 use observer::{CompletionResult, Observer};
@@ -721,7 +724,7 @@ impl SessionInner {
                 .unwrap()
                 .projection_generation = data.projection_generation.clone();
         }
-        save_state(&self.state.storage(), &data).await?;
+        save_state(&self.state.storage(), &mut data).await?;
         let observe = include_ending_run
             || data
                 .run
@@ -788,10 +791,10 @@ impl SessionInner {
             .as_mut()
             .unwrap()
             .projection_generation = data.projection_generation.clone();
-        save_state(&self.state.storage(), &data).await?;
+        save_state(&self.state.storage(), &mut data).await?;
         if self.project(&data, false).await.is_err() {
             data.projection_attempts = data.projection_attempts.saturating_add(1);
-            save_state(&self.state.storage(), &data).await?;
+            save_state(&self.state.storage(), &mut data).await?;
             self.data.borrow_mut().as_mut().unwrap().projection_attempts = data.projection_attempts;
             return Ok(false);
         }
@@ -800,7 +803,14 @@ impl SessionInner {
     }
 
     async fn arm_alarm(&self) -> Result<()> {
-        match alarm_deadline(&self.snapshot()?, util::now_ms()) {
+        let deadline = {
+            let borrowed = self.data.borrow();
+            let data = borrowed
+                .as_ref()
+                .ok_or_else(|| Error::RustError("Session is not initialized".into()))?;
+            alarm_deadline(data, util::now_ms())
+        };
+        match deadline {
             Some(deadline) => {
                 self.state
                     .storage()
@@ -1527,7 +1537,7 @@ impl SessionInner {
         )?;
         self.prepare_chat_receipt(run, &result, &committed).await?;
         // Keep the live terminal run busy until this authoritative commit succeeds.
-        save_state(&self.state.storage(), &committed).await?;
+        save_state(&self.state.storage(), &mut committed).await?;
         self.data
             .borrow_mut()
             .as_mut()
@@ -1962,7 +1972,7 @@ impl SessionInner {
 
 // DO values have a 2 MiB limit. Chunking bounds individual writes without
 // treating large conversations as a storage exception. Index publication is last.
-async fn save_state(storage: &Storage, data: &PersistedSession) -> Result<()> {
+async fn save_state(storage: &Storage, data: &mut PersistedSession) -> Result<()> {
     let saved = storage.get::<usize>("journal:count").await?.unwrap_or(0);
     for (n, message) in data.journal.iter().enumerate().skip(saved) {
         write_chunks(
@@ -1972,10 +1982,16 @@ async fn save_state(storage: &Storage, data: &PersistedSession) -> Result<()> {
         )
         .await?;
     }
-    let mut state = data.clone();
-    state.journal_count = state.journal.len();
-    write_chunks(storage, STATE_KEY, &serde_json::to_vec(&state)?).await?;
-    storage.put("journal:count", data.journal.len()).await
+    write_chunks(storage, STATE_KEY, &encode_state(data)?).await?;
+    if saved != data.journal_count {
+        storage.put("journal:count", data.journal_count).await?;
+    }
+    Ok(())
+}
+
+fn encode_state(data: &mut PersistedSession) -> Result<Vec<u8>> {
+    data.journal_count = data.journal.len();
+    Ok(serde_json::to_vec(data)?)
 }
 
 async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
@@ -2459,7 +2475,7 @@ mod tests {
         }
     }
 
-    fn state() -> PersistedSession {
+    pub(super) fn state() -> PersistedSession {
         let agent = serde_json::from_value::<agents_core::CreateAgent>(json!({"name":"test"}))
             .unwrap()
             .into_config("agent".into(), "owner".into(), 0);
