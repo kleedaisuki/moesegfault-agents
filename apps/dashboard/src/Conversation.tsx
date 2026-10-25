@@ -14,6 +14,7 @@ import {
 import { Attachments, type Attachment } from "./Attachments";
 import { streamResponse } from "./responses-stream";
 import { MessageContent } from "./MessageContent";
+import { JournalMessages } from "./JournalMessages";
 export function Conversation({
   agent,
   back,
@@ -340,12 +341,7 @@ export function Conversation({
               </div>
             )}
             {journal.data?.data.length ? (
-              journal.data.data.map(({ message: m, sequence }) => (
-                <article className={`message ${m.role}`} key={sequence}>
-                  <span>{t(m.role)}</span>
-                  <MessageContent content={m.content} />
-                </article>
-              ))
+              <JournalMessages entries={journal.data.data} />
             ) : (
               <p className="hint">
                 {t(
