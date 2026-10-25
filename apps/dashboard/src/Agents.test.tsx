@@ -294,10 +294,10 @@ describe("metadata-driven model selection", () => {
       body: {
         name: "Notebook updated",
         instructions: "Pinned directions updated",
-        model: { provider: "openrouter", model: "openai/example" },
       },
     });
-    expect(writes[0].body.model).not.toHaveProperty("platform_available");
+    expect(writes[0].body).not.toHaveProperty("model");
+    expect({ ...existing, ...writes[0].body }.model).toEqual(existing.model);
   });
   it("preserves an existing BYOK model while its saved key metadata loads", async () => {
     let resolve!: (data: ProviderKey[]) => void;
@@ -329,7 +329,7 @@ describe("metadata-driven model selection", () => {
     await user.type(dialog.getByLabelText("Name"), " updated");
     resolve(keys);
     await waitFor(() =>
-      expect(dialog.getByRole("button", { name: "Save agent" })).toBeEnabled(),
+      expect(dialog.getByRole("combobox", { name: "Model" })).toBeEnabled(),
     );
     expect(dialog.getByRole("combobox", { name: "Model" })).toHaveValue(
       "deepseek-flash",
@@ -337,13 +337,7 @@ describe("metadata-driven model selection", () => {
     expect(options()).toEqual(["deepseek-flash"]);
     await user.click(dialog.getByRole("button", { name: "Save agent" }));
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0].body.model).toEqual({
-      provider: "byok",
-      model: "deepseek-flash",
-      context_window: 1000000,
-      max_output_tokens: 16384,
-      credential_id: "cred-deepseek",
-    });
+    expect(writes[0].body).not.toHaveProperty("model");
   });
   it("publishes a generic Anthropic connection with explicit custom model limits", async () => {
     mount(
@@ -416,6 +410,7 @@ describe("metadata-driven model selection", () => {
     await user.type(dialog.getByLabelText("Instructions"), " updated");
     await user.click(dialog.getByRole("button", { name: "Save agent" }));
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0].body.model).toEqual(model);
+    expect(writes[0].body).not.toHaveProperty("model");
+    expect({ ...existing, model, ...writes[0].body }.model).toEqual(model);
   });
 });

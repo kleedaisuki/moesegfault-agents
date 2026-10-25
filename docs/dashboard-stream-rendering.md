@@ -86,3 +86,13 @@ Conversation path, exact visible source and live text, one POST, and no repeated
 history work. Additional tests cover prepend/append/replacement and unchanged-entry
 language switching. Full final-source Actions/browser acceptance remains the
 delivery owner's gate; local fixture measurements do not replace it.
+
+## Integrated checkpoint
+
+The optimization was committed as `bacb866`. The integrated performance checkpoint
+at `1c2620161419b6ad7f6c1aeb55db689315202c59` passed
+[GitHub Actions run 40186260916](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40186260916),
+including the dashboard's 91 tests, production build and browser journeys.
+The development A/B measurements above remain a source-rendering CPU result, not
+a deployed latency or mobile-device SLO. Later additive API compatibility changes
+have their own focused acceptance; this checkpoint is not evidence for those.

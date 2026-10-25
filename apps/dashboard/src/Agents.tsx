@@ -17,9 +17,11 @@ import {
   type ModelRegistry,
   type ProviderKey,
   type Skill,
+  type ToolServices,
 } from "./api";
 import { ErrorNotice, Empty, Modal } from "./ui";
 import { Conversation } from "./Conversation";
+import { ToolServicesEditor } from "./ToolServicesEditor";
 const workspaceTools = [
   "bash",
   "workspace_commit",
@@ -169,6 +171,7 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   );
   const [name, setName] = useState(agent?.name ?? "");
   const [model, setModel] = useState(agent?.model.model ?? "");
+  const [modelEdited, setModelEdited] = useState(!agent);
   const [provider, setProvider] = useState(agent?.model.provider ?? "");
   const [contextWindow, setContextWindow] = useState(
     agent?.model.context_window ?? 131072,
@@ -190,9 +193,20 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   const [credentialId, setCredentialId] = useState(
     agent?.model.credential_id ?? "",
   );
+  const [protocol, setProtocol] = useState<
+    NonNullable<Agent["model"]["protocol"]> | ""
+  >(agent?.model.protocol ?? "");
+  const [protocolExplicit, setProtocolExplicit] = useState(
+    agent?.model.protocol !== undefined,
+  );
+  const [toolServices, setToolServices] = useState<ToolServices>(
+    agent?.tool_services ?? {},
+  );
+  const [servicesEdited, setServicesEdited] = useState(false);
   const credentials = useQuery({
     queryKey: ["provider-keys"],
     enabled: provider === "byok",
+    staleTime: 300_000,
     queryFn: () => request<{ data: ProviderKey[] }>("/v1/provider-keys"),
   });
   const platformModels =
@@ -206,6 +220,8 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   const selectedKey = credentials.data?.data.find(
     (key) => key.id === credentialId,
   );
+  const anthropicKey =
+    selectedProvider === "byok" && selectedKey?.protocol === "anthropic";
   function modelsFor(nextProvider: string, nextCredentialId: string) {
     const providerModels =
       nextProvider === "byok"
@@ -220,19 +236,24 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
   }
   const selectableModels = modelsFor(selectedProvider, credentialId);
   function changeProvider(nextProvider: string) {
+    if (nextProvider === selectedProvider) return;
+    setModelEdited(true);
     setProvider(nextProvider);
     const metadata = modelsFor(nextProvider, credentialId).find(
       (option) => option.model === model,
     );
+    applyModelTransport(metadata);
     if (!metadata) setModel("");
     else if (nextProvider === "byok") applyModelLimits(metadata);
   }
   function changeCredential(nextCredentialId: string) {
     if (nextCredentialId === credentialId) return;
+    setModelEdited(true);
     setCredentialId(nextCredentialId);
     const metadata = modelsFor(selectedProvider, nextCredentialId).find(
       (option) => option.model === model,
     );
+    applyModelTransport(metadata);
     if (!metadata) setModel("");
     applyModelLimits(
       metadata ?? { context_window: 131072, max_output_tokens: 8192 },
@@ -245,56 +266,71 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
     setContextWindow(metadata.context_window);
     setMaxOutputTokens(metadata.max_output_tokens);
   }
+  function applyModelTransport(metadata?: {
+    protocol?: Agent["model"]["protocol"];
+  }) {
+    if (metadata && !protocolExplicit) setProtocol(metadata.protocol ?? "");
+  }
   function changeModel(nextModel: string) {
+    if (nextModel === model) return;
+    setModelEdited(true);
     setModel(nextModel);
     const metadata = selectableModels.find(
       (option) => option.model === nextModel,
     );
+    applyModelTransport(metadata);
     if (metadata && selectedProvider === "byok") {
       applyModelLimits(metadata);
     }
   }
+  function modelPatch(): Partial<Pick<Agent, "model">> {
+    if (!modelEdited) return {};
+    if (selectedProvider === "byok" && !selectedKey)
+      throw new Error("Select an API key from Access first.");
+    if (protocol && (protocol === "anthropic") !== Boolean(anthropicKey))
+      throw new Error(
+        "The model transport must match the saved key’s authentication family.",
+      );
+    const metadata =
+      selectedProvider === "byok"
+        ? {
+            model: model.trim(),
+            context_window: contextWindow,
+            max_output_tokens: maxOutputTokens,
+          }
+        : selectableModels.find((option) => option.model === model);
+    if (!metadata)
+      throw new Error(
+        "Choose a registered model with available context metadata.",
+      );
+    if (
+      selectedProvider === "byok" &&
+      (!metadata.model ||
+        !Number.isSafeInteger(contextWindow) ||
+        !Number.isSafeInteger(maxOutputTokens) ||
+        contextWindow < 2 ||
+        maxOutputTokens < 1 ||
+        maxOutputTokens >= contextWindow)
+    )
+      throw new Error("Output tokens must be smaller than the context window.");
+    return {
+      model: {
+        provider: selectedProvider,
+        model: metadata.model,
+        context_window: metadata.context_window,
+        max_output_tokens: metadata.max_output_tokens,
+        ...(protocol ? { protocol } : {}),
+        ...(selectedProvider === "byok" ? { credential_id: credentialId } : {}),
+      },
+    };
+  }
   const save = useMutation({
-    mutationFn: () => {
-      if (selectedProvider === "byok" && !selectedKey)
-        throw new Error("Select an API key from Access first.");
-      const metadata =
-        selectedProvider === "byok"
-          ? {
-              model: model.trim(),
-              context_window: contextWindow,
-              max_output_tokens: maxOutputTokens,
-            }
-          : selectableModels.find((option) => option.model === model);
-      if (!metadata)
-        throw new Error(
-          "Choose a registered model with available context metadata.",
-        );
-      if (
-        selectedProvider === "byok" &&
-        (!metadata.model ||
-          !Number.isSafeInteger(contextWindow) ||
-          !Number.isSafeInteger(maxOutputTokens) ||
-          contextWindow < 2 ||
-          maxOutputTokens < 1 ||
-          maxOutputTokens >= contextWindow)
-      )
-        throw new Error(
-          "Output tokens must be smaller than the context window.",
-        );
-      return request(
+    mutationFn: () =>
+      request(
         agent ? `/v1/agents/${encodeURIComponent(agent.id)}` : "/v1/agents",
         json(agent ? "PATCH" : "POST", {
           name,
-          model: {
-            provider: selectedProvider,
-            model: metadata.model,
-            context_window: metadata.context_window,
-            max_output_tokens: metadata.max_output_tokens,
-            ...(selectedProvider === "byok"
-              ? { credential_id: credentialId }
-              : {}),
-          },
+          ...modelPatch(),
           instructions,
           compaction_percent: percent,
           workspace,
@@ -302,9 +338,9 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
             (tool) => workspace || !workspaceTools.includes(tool),
           ),
           skills: selectedSkills,
+          ...(servicesEdited ? { tool_services: toolServices } : {}),
         }),
-      );
-    },
+      ),
     onSuccess: () => {
       cache.invalidateQueries({ queryKey: ["agents"] });
       close();
@@ -390,7 +426,7 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
           <label>
             {t("Saved API key")}
             <select
-              required
+              required={modelEdited}
               value={credentialId}
               onChange={(e) => changeCredential(e.target.value)}
             >
@@ -408,6 +444,34 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
             <ErrorNotice error={credentials.error} />
           </label>
         )}
+        <details className="model-limits">
+          <summary>{t("Model transport")}</summary>
+          <label>
+            {t("API transport")}
+            <select
+              value={protocol}
+              onChange={(event) => {
+                setModelEdited(true);
+                setProtocolExplicit(true);
+                setProtocol(
+                  event.target.value as
+                    NonNullable<Agent["model"]["protocol"]> | "",
+                );
+              }}
+            >
+              <option value="">{t("Provider default")}</option>
+              <option value="openai" disabled={anthropicKey}>
+                {t("Chat Completions")}
+              </option>
+              <option value="responses" disabled={anthropicKey}>
+                Responses
+              </option>
+              <option value="anthropic" disabled={!anthropicKey}>
+                Anthropic Messages
+              </option>
+            </select>
+          </label>
+        </details>
         {selectedProvider === "byok" && (
           <details className="model-limits">
             <summary>{t("Model limits")}</summary>
@@ -421,7 +485,10 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
                   step={1}
                   required
                   value={contextWindow}
-                  onChange={(e) => setContextWindow(Number(e.target.value))}
+                  onChange={(e) => {
+                    setModelEdited(true);
+                    setContextWindow(Number(e.target.value));
+                  }}
                 />
               </label>
               <label>
@@ -433,7 +500,10 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
                   step={1}
                   required
                   value={maxOutputTokens}
-                  onChange={(e) => setMaxOutputTokens(Number(e.target.value))}
+                  onChange={(e) => {
+                    setModelEdited(true);
+                    setMaxOutputTokens(Number(e.target.value));
+                  }}
                 />
               </label>
             </div>
@@ -508,6 +578,13 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
               </label>
             ))}
         </details>
+        <ToolServicesEditor
+          value={toolServices}
+          onChange={(next) => {
+            setToolServices(next);
+            setServicesEdited(true);
+          }}
+        />
         <fieldset className="skill-selection">
           <legend>{t("Skills")}</legend>
           <ErrorNotice error={skills.error} />
@@ -539,9 +616,10 @@ function AgentEditor({ agent, close }: { agent?: Agent; close: () => void }) {
             className="primary"
             disabled={
               save.isPending ||
-              (selectedProvider === "byok"
-                ? credentials.isPending
-                : models.isPending)
+              (modelEdited &&
+                (selectedProvider === "byok"
+                  ? credentials.isPending
+                  : models.isPending))
             }
           >
             {save.isPending ? t("Saving…") : t("Save agent")}

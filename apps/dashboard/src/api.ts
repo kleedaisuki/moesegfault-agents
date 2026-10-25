@@ -9,18 +9,38 @@ export type Agent = {
     context_window: number;
     max_output_tokens: number;
     credential_id?: string;
+    protocol?: "openai" | "responses" | "anthropic";
   };
   instructions: string;
   compaction_percent: number;
   workspace: boolean;
   tools?: string[];
   skills: string[];
+  tool_services?: ToolServices;
+};
+export type ImageService = {
+  provider?: "platform" | "openai_images" | "openrouter_images";
+  credential_id?: string;
+  model?: string;
+  asset_hosts?: string[];
+};
+export type SearchService = {
+  provider?: "platform_deepseek" | "deepseek_search" | "openai_responses";
+  credential_id?: string;
+  model?: string;
+  max_output_tokens?: number;
+  max_tool_calls?: number;
+};
+export type ToolServices = {
+  image_generation?: ImageService;
+  web_search?: SearchService;
 };
 export type Model = {
   provider: string;
   model: string;
   context_window: number;
   max_output_tokens: number;
+  protocol?: Agent["model"]["protocol"];
 };
 export type ModelRegistry = {
   data: { id: string }[];
