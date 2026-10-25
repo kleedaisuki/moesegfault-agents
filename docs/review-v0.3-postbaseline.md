@@ -151,3 +151,56 @@ The prior compiled artifact completing a controlled 130-second upstream delay
 rules out a universal local 120-second timeout, but does not establish production
 platform behavior. Exact-source compiled checks and correlated staging transport
 acceptance remain required before production promotion.
+
+## Objective coverage audit at `d8903e6` (2026-10-25)
+
+No additional substantive functional omission or source defect was found in this
+bounded completion review. The scope remains Responses plus preserved Chat,
+caller-local functions, protected instructions through compaction, one owned
+Space with managed uploads, immutable owner-wide workspace versions and safe
+restore, followed by measured data-flow optimization. Historical and workspace
+forks remain intentionally excluded; native hosted OpenAI products are not
+implied by the compatibility claim.
+
+Independently queried full CI `40166629110`: its exact SHA is
+`d8903e6b642ea9be3eccde9ddc093d3b98eb45e9`, all six normal jobs succeeded and
+only diagnostics skipped. The retained Worker log shows 242 library tests and
+42 actual-Worker checks, including repeated instruction-preserving compaction
+and the expanded Space receipt journey. The native candidate receipt for
+`40166650805` identifies that same source and both platforms, but explicitly
+does not claim public publication.
+
+Source inspection confirmed the functional persistence-tool vocabulary and
+compact result projection, owner-filtered version lookup and immutable public
+representation, caller-local output admission, the separate request instruction
+layer, and compaction preserving the complete first instruction message. The
+real version journey checks forbidden mutation, safety-version contents and
+cross-session restoration of both original and changed bytes after upload
+deletion. The UI/CLI acceptance report is tied to `944ac9b`; the intervening
+production diff is limited to the shared JSON wait, with no UI/CLI behavior
+change. This is evidence continuity, not a claim that an old executable is the
+new public asset.
+
+Completion is still unproven. The remaining release checklist is concrete:
+
+1. Inspect the terminal result and complete Python **and** subsequent Node SDK
+   acceptance in staging `40166966406` at the candidate SHA. It was live during
+   this review; the previous failed gate cannot substitute for it.
+2. Promote the identical accepted CI artifacts through the existing exact-source
+   gate; verify both production health/source and immutable container identity.
+   Preserve the pin/account-resource-aware v0.3 service rollback floor after the
+   forward migrations; old-client compatibility is not old-service rollback.
+3. Publish `v0.3.0` without changing existing tags/assets, then inspect the actual
+   public archives, checksums, build metadata and native execution receipts.
+   Branch candidate downloads do not satisfy this requirement.
+4. Execute the prepared, ordinary-account production compatibility journey with
+   the final public binary: original 12-message journal, closed-state input clock,
+   378-byte archive/digest and file bytes, without model/container work or new
+   user resources.
+5. Reconcile the final acceptance/delivery ledger and public README/skill index
+   with the accepted release. README currently advertises the still-public
+   v0.2.0, correctly pending release rather than falsely claiming v0.3 production.
+
+No production request, paid model call, credential access, new build or deployment
+was performed for this review. No gate was weakened and no release completion is
+asserted.
