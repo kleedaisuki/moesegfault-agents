@@ -85,5 +85,30 @@
         "expected_test": "Responses caller function selection and final structured output remain enforced across tools"
       }
     ]
+  },
+  {
+    "source_sha": "c44febcf1cdbcc85b92c76f1d9d6df388478e2e2",
+    "run_id": "40194830348",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "verified_phases": [
+      "changed_native_checks",
+      "changed_native_typecheck"
+    ],
+    "verified_steps": [
+      "Run node scripts/incremental-checks.mjs run rust",
+      "Run node scripts/incremental-checks.mjs check-native"
+    ],
+    "evidence": {
+      "artifact_name": "verification-rust",
+      "receipt_paths": [
+        "rust.json",
+        "native-build.json"
+      ],
+      "passed_checks": 15,
+      "executed_tests": 34
+    }
   }
 ]

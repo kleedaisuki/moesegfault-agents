@@ -153,33 +153,62 @@ def execute(client: Any, request: dict[str, Any], directory: Path) -> dict[str, 
         return {"id": execution_id, "error": "kernel_connection_lost", "outputs": outputs.values}
 
 
+def startup_kind(error: Exception) -> str:
+    if isinstance(error, PermissionError):
+        return "permission_denied"
+    if isinstance(error, ImportError):
+        return "dependency_unavailable"
+    if isinstance(error, OSError):
+        return "os_error"
+    if isinstance(error, RuntimeError):
+        return "runtime_error"
+    return "initialization_error"
+
+
+def start(args: argparse.Namespace) -> tuple[Any, Any]:
+    stage: str = "import"
+    try:
+        from jupyter_client import KernelManager
+
+        stage = "construct"
+        manager: Any = KernelManager(
+            connection_file=str(args.runtime / "connection.json"),
+            transport="ipc",
+            ip=str(args.runtime / "kernel"),
+            cache_ports=False,
+        )
+        manager.kernel_spec.argv = [sys.executable, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"]
+        stage = "launch"
+        manager.start_kernel(
+            cwd=str(args.directory),
+            env=dict(os.environ),
+            stdin=open(os.devnull, "rb"),
+            stdout=open(os.devnull, "wb"),
+            stderr=open(os.devnull, "wb"),
+        )
+        stage = "channels"
+        client: Any = manager.blocking_client()
+        client.start_channels()
+        stage = "ready"
+        client.wait_for_ready(timeout=25)
+        return manager, client
+    except Exception as error:
+        # Startup happens before user execution. Only bounded machine labels,
+        # never dependency exception text, paths or environment, cross the pipe.
+        send({"type": "startup_error", "stage": stage, "kind": startup_kind(error)})
+        raise SystemExit(1) from None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--runtime", required=True, type=Path)
     parser.add_argument("--container-id", required=True)
     args = parser.parse_args()
-    from jupyter_client import KernelManager
-
     logging.disable(logging.CRITICAL)
     args.runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-    manager: Any = KernelManager(
-        connection_file=str(args.runtime / "connection.json"),
-        transport="ipc",
-        ip=str(args.runtime / "kernel"),
-    )
-    manager.kernel_spec.argv = [sys.executable, "-I", "-m", "ipykernel_launcher", "-f", "{connection_file}"]
-    manager.start_kernel(
-        cwd=str(args.directory),
-        env=dict(os.environ),
-        stdin=open(os.devnull, "rb"),
-        stdout=open(os.devnull, "wb"),
-        stderr=open(os.devnull, "wb"),
-    )
-    client: Any = manager.blocking_client()
-    client.start_channels()
+    manager, client = start(args)
     try:
-        client.wait_for_ready(timeout=25)
         send({"type": "ready", "container_id": args.container_id})
         for line in sys.stdin:
             request: Any = json.loads(line)

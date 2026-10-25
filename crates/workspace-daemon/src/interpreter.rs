@@ -38,6 +38,45 @@ const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug)]
+struct StartupFailure(String);
+
+impl std::fmt::Display for StartupFailure {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str(&self.0)
+    }
+}
+impl std::error::Error for StartupFailure {}
+
+fn startup_failure(value: &Value) -> Option<StartupFailure> {
+    if value["type"] != "startup_error" {
+        return None;
+    }
+    let stage = value["stage"]
+        .as_str()
+        .filter(|stage| {
+            matches!(
+                *stage,
+                "import" | "construct" | "launch" | "channels" | "ready"
+            )
+        })
+        .unwrap_or("unknown");
+    let kind = value["kind"]
+        .as_str()
+        .filter(|kind| {
+            matches!(
+                *kind,
+                "permission_denied"
+                    | "dependency_unavailable"
+                    | "os_error"
+                    | "runtime_error"
+                    | "initialization_error"
+            )
+        })
+        .unwrap_or("unknown");
+    Some(StartupFailure(format!("code_kernel_{stage}_{kind}")))
+}
+
+#[derive(Debug)]
 enum InputFailure {
     Integrity,
     Conflict,
@@ -399,8 +438,18 @@ impl Interpreter {
                 context.data.parent().unwrap().join("egress.sock"),
             );
         }
-        sandbox::configure(&mut command)?;
-        let mut child = command.spawn().context("start Jupyter client")?;
+        sandbox::configure(&mut command)
+            .map_err(|_| StartupFailure("code_kernel_process_configuration_failed".into()))?;
+        let mut child = command.spawn().map_err(|error| {
+            StartupFailure(
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    "code_kernel_process_permission_denied"
+                } else {
+                    "code_kernel_process_os_error"
+                }
+                .into(),
+            )
+        })?;
         let input = child.stdin.take().context("code client stdin")?;
         let output = BufReader::new(child.stdout.take().context("code client stdout")?);
         let mut bridge = Bridge {
@@ -409,8 +458,13 @@ impl Interpreter {
             output,
         };
         let ready: Value = serde_json::from_slice(
-            &tokio::time::timeout(Duration::from_secs(30), bridge.read()).await??,
+            &tokio::time::timeout(Duration::from_secs(30), bridge.read())
+                .await?
+                .map_err(|_| StartupFailure("code_kernel_handshake_process_exit".into()))?,
         )?;
+        if let Some(error) = startup_failure(&ready) {
+            return Err(error.into());
+        }
         ensure!(
             ready["type"] == "ready" && ready["container_id"] == context.id,
             "invalid code kernel readiness"
@@ -513,20 +567,24 @@ impl Interpreter {
                     }
                 }
             }
-            Err(_) => {
+            Err(error) => {
                 result.cancelled = cancel.is_cancelled();
                 result.timed_out = !result.cancelled
                     && started.elapsed() >= Duration::from_millis(request.timeout_ms);
-                result.error = Some(
-                    if result.cancelled {
-                        "code_cancelled"
-                    } else if result.timed_out {
-                        "code_timeout"
-                    } else {
-                        "code_outcome_unknown"
-                    }
-                    .into(),
-                );
+                result.error = if let Some(startup) = error.downcast_ref::<StartupFailure>() {
+                    Some(startup.0.clone())
+                } else {
+                    Some(
+                        if result.cancelled {
+                            "code_cancelled"
+                        } else if result.timed_out {
+                            "code_timeout"
+                        } else {
+                            "code_outcome_unknown"
+                        }
+                        .into(),
+                    )
+                };
             }
         }
         if result.error.is_some() {
@@ -1025,6 +1083,15 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_diagnostics_accept_only_fixed_machine_labels() {
+        let error=startup_failure(&serde_json::json!({"type":"startup_error","stage":"launch","kind":"permission_denied"})).unwrap();
+        assert_eq!(error.0, "code_kernel_launch_permission_denied");
+        let error=startup_failure(&serde_json::json!({"type":"startup_error","stage":"private-path-sentinel","kind":"private-secret-sentinel"})).unwrap();
+        assert_eq!(error.0, "code_kernel_unknown_unknown");
+        assert!(startup_failure(&serde_json::json!({"type":"ready"})).is_none());
+    }
 
     #[test]
     fn retirement_removes_only_context_scratch_and_preserves_spool() {

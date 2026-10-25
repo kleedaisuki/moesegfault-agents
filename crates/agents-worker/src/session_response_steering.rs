@@ -595,12 +595,13 @@ impl SessionInner {
                 .incomplete_reason
                 .as_deref()
                 .is_some_and(|reason| reason != "steered");
+        let response_id = response.id.clone();
         let mut borrowed = self.data.borrow_mut();
         let data = borrowed.as_mut().unwrap();
         for steer in data
             .steering_queue
             .iter_mut()
-            .filter(|steer| steer.parent == response.id && steer.applied_to.is_none())
+            .filter(|steer| steer.parent == response_id && steer.applied_to.is_none())
         {
             if failed {
                 response.event("response.steer.failed", json!({"error":{"code":"successor_creation_failed","type":"invalid_request_error","message":"The response could not continue; the accepted input is returned"},"steer":{"id":steer.id,"previous_response_id":steer.parent,"input":steer.input}}))?;

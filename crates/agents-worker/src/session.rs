@@ -3232,10 +3232,10 @@ impl DurableObject for Session4G {
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
-        self.session.fetch(req).await
+        <Session as DurableObject>::fetch(&self.session, req).await
     }
 
     async fn alarm(&self) -> Result<Response> {
-        self.session.alarm().await
+        <Session as DurableObject>::alarm(&self.session).await
     }
 }

@@ -6,6 +6,12 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      container_scope:
+        description: Container increment, or one non-promoting startup diagnostic
+        type: choice
+        options: [incremental, startup-1g]
+        required: false
+        default: incremental
       diagnostic_run:
         description: Reuse a retained Worker for diagnostics only (empty runs incremental CI)
         type: string
@@ -43,6 +49,8 @@ jobs:
         with:
           fetch-depth: 0
       - id: paths
+        env:
+          CONTAINER_SCOPE: ${{ inputs.container_scope || 'incremental' }}
         run: node scripts/incremental-checks.mjs plan
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -294,6 +302,7 @@ jobs:
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
           node scripts/incremental-checks.mjs run tooling
       - name: Verify current SDK HTTP and WebSocket contracts separately from legacy clients
+        if: ${{ !cancelled() }}
         run: |
           python3 -m venv .cache/e2e-current-venv
           .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock

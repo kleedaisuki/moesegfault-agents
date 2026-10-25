@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import argparse
 from collections.abc import Callable
 import importlib.util
 from pathlib import Path
 import queue
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+import sys
 from typing import Any
 
 import pytest
@@ -22,6 +24,42 @@ def bridge() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("failed_stage", ["construct", "launch", "channels", "ready"])
+def test_startup_failure_exposes_only_fixed_stage_not_private_exception(
+    bridge: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], failed_stage: str,
+) -> None:
+    class Manager:
+        def __init__(self, **options: Any) -> None:
+            assert options["transport"] == "ipc" and options["cache_ports"] is False
+            self.kernel_spec: Any = SimpleNamespace(argv=[])
+            if failed_stage == "construct":
+                raise PermissionError("private-path-or-secret-sentinel")
+
+        def start_kernel(self, **options: Any) -> None:
+            if failed_stage == "launch":
+                raise PermissionError("private-path-or-secret-sentinel")
+
+        def blocking_client(self) -> Manager:
+            return self
+
+        def start_channels(self) -> None:
+            if failed_stage == "channels":
+                raise PermissionError("private-path-or-secret-sentinel")
+
+        def wait_for_ready(self, timeout: int) -> None:
+            if failed_stage == "ready":
+                raise PermissionError("private-path-or-secret-sentinel")
+
+    monkeypatch.setitem(sys.modules,"jupyter_client",SimpleNamespace(KernelManager=Manager))
+    with pytest.raises(SystemExit):
+        bridge.start(argparse.Namespace(runtime=tmp_path,directory=tmp_path))
+    output: str = capsys.readouterr().out
+    assert "private-path-or-secret-sentinel" not in output
+    assert '"stage":"' + failed_stage + '"' in output
+    assert '"kind":"permission_denied"' in output
 
 
 def test_unicode_logs_obey_one_combined_byte_budget(bridge: ModuleType, tmp_path: Path) -> None:

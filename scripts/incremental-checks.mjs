@@ -61,7 +61,14 @@ export function changedRustTests(content, ranges) {
     .map(test => test.name);
 }
 
-const command = (id, argv, reason, env = {}) => ({ id, argv: argv[0] === 'node' && argv[1] === '--test' ? [argv[0], argv[1], '--test-reporter=tap', ...argv.slice(2)] : argv, env, reason });
+function command(id, argv, reason, env = {}) {
+  if (argv[0] === 'node' && argv[1] === '--test') argv = [argv[0], argv[1], '--test-reporter=tap', ...argv.slice(2)];
+  if (argv.includes('pytest')) {
+    const temporary = createHash('sha256').update(id).digest('hex').slice(0, 16);
+    argv = [...argv, '--basetemp=.temp/pytest-increment-' + temporary, '-o', 'cache_dir=.cache/pytest'];
+  }
+  return { id, argv, env, reason };
+}
 const python = (...args) => ['.cache/e2e-venv/bin/python', ...args];
 
 export function selections(source, base, files) {
@@ -89,11 +96,9 @@ export function selections(source, base, files) {
     if (/^tests\/worker\/.*\.test\.mjs$/.test(file) && !file.endsWith('/http.test.mjs')) checks.worker.push(command(`node:${file}`, ['node', '--test', file], `Changed real Worker/SDK contract ${file}`));
   }
   const journeys = [
-    [/workspace[-_]blob|workspace_archives|0016/, 'Workspace shared owner archive historical fork and immutable download retain one physical copy'],
-    [/responses-journey|responses-branch|session_branch/, 'Responses concurrent children admit independent background executions'],
-    [/responses-sdk|session_branch/, 'Responses actual Node SDK streams, recovers and returns local function results'],
     [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
+    [/context_management/, 'Responses request context management emits sealed item and continues'],
     [/auxiliary|context_prefix/, 'Responses auxiliary compact and count'],
     [/deepseek[_-]tokenizer/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
   ];
@@ -131,7 +136,22 @@ function remediation(source, check) {
   return selected;
 }
 
-export function plan(source, baselines) {
+export function containerSelection(checks, scope) {
+  if (scope === 'incremental') return { checks, validation_scope: 'incremental', deferred_checks: [] };
+  if (scope !== 'startup-1g') throw Error('Invalid finite container verification scope');
+  const file = 'tests/e2e/test_workspace_interpreter_memory.py';
+  const test = `${file}::test_physical_memory_guard_precedes_kernel_and_execution_id_acceptance`;
+  return {
+    checks: [command('diagnostic:container-startup-1g', python('-m', 'pytest', `${test}[1g]`, '-ra', '-rP'), 'One documented startup failure; diagnostic only, not capability acceptance')],
+    validation_scope: 'diagnostic_startup_only',
+    deferred_checks: [
+      ...['4g', 'None'].map(memory => command(`pytest:${file}:${memory}`, python('-m', 'pytest', `${test}[${memory}]`, '-ra', '-rP'), 'Previously failed memory capability; not covered by 1g startup diagnosis')),
+      ...checks.filter(check => !check.id.includes('test_workspace_interpreter_memory.py')),
+    ],
+  };
+}
+
+export function plan(source, baselines, containerScope = 'incremental') {
   if (!SHA.test(source)) throw Error('Invalid source SHA');
   const components = {};
   const checks = { rust: [], worker: [], dashboard: [], container: [], tooling: [], current_sdk: [] };
@@ -159,18 +179,21 @@ export function plan(source, baselines) {
       artifact: ARTIFACTS[component] ? { name: ARTIFACTS[component], artifact_id: build ? null : baseline.artifact_id ?? null, run_id: build ? process.env.GITHUB_RUN_ID ?? null : baseline.run_id, source_sha: build ? source : baseline.source_sha } : null };
   }
   for (const job of Object.keys(checks)) checks[job] = [...new Map(checks[job].map(check => [check.id, check])).values()];
+  const container = containerSelection(checks.container, containerScope);
+  checks.container = container.checks;
+  components.container.validation_scope = container.validation_scope;
+  components.container.deferred_checks = container.deferred_checks;
   const requiredJobs = ['changes', ...Object.entries(components).filter(([component, details]) => details.action === 'build' || checks[JOBS[component]].length > 0 || (component === 'tooling' && checks.current_sdk.length > 0)).map(([component]) => JOBS[component])];
-  return { schema_version: 1, source_sha: source, policy: 'incremental-only', planned_checks_are_not_results: true,
+  return { schema_version: 1, source_sha: source, policy: 'incremental-only', diagnostic_only_components: containerScope === 'startup-1g' ? ['container'] : [], planned_checks_are_not_results: true,
     required_jobs: requiredJobs, required_remediations: [...new Set(Object.values(components).flatMap(component => (component.baseline.unresolved_checks ?? []).map(check => check.id)))], receipt_paths: { rust: ['rust.json', 'native-build.json'], worker: ['worker-rust.json', 'worker-journeys.json'], dashboard: ['dashboard.json'], container: ['container.json'], tooling: ['tooling.json', 'current_sdk.json'] },
     changed_files: [...changedFiles].sort(), native_packages: nativePackages, components, checks };
 }
 
 export function executedTests(argv, output) {
-  if (argv[0] === 'cargo') return [...output.matchAll(/test result: ok\. (\d+) passed;/g)].reduce((sum, match) => sum + Number(match[1]), 0);
+  if (argv[0] === 'cargo') return [...output.matchAll(/test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed;/g)].reduce((sum, match) => sum + Number(match[1]) + Number(match[2]), 0);
   if (argv.includes('unittest')) return Number(/Ran (\d+) tests? in/.exec(output)?.[1] ?? 0);
-  if (argv.includes('pytest')) return Number(/(?:^|[ ,=])(\d+) passed(?:[ ,=]|$)/m.exec(output)?.[1] ?? 0);
-  if (argv[0] === 'node' && argv.includes('--test')) return Number(/^# pass (\d+)$/m.exec(output)?.[1] ?? 0);
-  // Vitest's narrow UI file invocation reports its passed test count.
+  if (argv.includes('pytest')) return ['passed', 'failed'].reduce((sum, kind) => sum + Number(new RegExp('(?:^|[ ,=])(\\d+) ' + kind + '(?:[ ,=]|$)', 'm').exec(output)?.[1] ?? 0), 0);
+  if (argv[0] === 'node' && argv.includes('--test')) return ['pass', 'fail'].reduce((sum, kind) => sum + Number(new RegExp('^# ' + kind + ' (\\d+)$', 'm').exec(output)?.[1] ?? 0), 0);
   if (argv[0] === 'npm') return Number(/Tests\s+(\d+) passed/.exec(output.replace(/\u001b\[[0-9;]*m/g, ''))?.[1] ?? 0);
   throw Error('Unknown selected test runner');
 }
@@ -180,6 +203,7 @@ export function runChecks(receipt, job, execute = spawnSync, directory = OUTPUT)
   if (!Object.hasOwn(receipt.checks, sourceJob)) throw Error('Unknown check job');
   const selected = receipt.checks[sourceJob].filter(check => job === 'worker-rust' ? check.argv[0] === 'cargo' : job === 'worker-journeys' ? check.argv[0] !== 'cargo' : true);
   const results = [];
+  const failures = [];
   mkdirSync(directory, { recursive: true });
   for (const check of selected) {
     if (check.env.MAGENTS_WORKER_CASE && !readFileSync('tests/worker/http.test.mjs', 'utf8').includes(check.env.MAGENTS_WORKER_CASE)) {
@@ -196,8 +220,14 @@ export function runChecks(receipt, job, execute = spawnSync, directory = OUTPUT)
     console.log('::endgroup::');
     results.push({ id: check.id, argv: check.argv, env: check.env, status: passed ? 'passed_current' : 'failed_current', executed_tests: tests, duration_ms: Date.now() - started });
     writeFileSync(`${directory}/${job}.json`, JSON.stringify({ schema_version: 1, source_sha: receipt.source_sha, job, results }, null, 2) + '\n');
-    if (!passed) throw Error(`Incremental check failed or selected zero tests: ${check.id}`);
+    if (!passed) {
+      failures.push(check.id);
+      if (check.argv[0] === 'cargo' && /could not compile|error\[E\d+\]|failed to (?:run custom build|resolve|get )/.test(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
+        throw Error(`Compilation failed; remaining checks of the same crate are not recompiled: ${check.id}`);
+      }
+    }
   }
+  if (failures.length) throw Error(`Incremental checks failed or selected zero tests: ${failures.join(', ')}`);
   if (!results.length) writeFileSync(`${directory}/${job}.json`, JSON.stringify({ schema_version: 1, source_sha: receipt.source_sha, job, results: [], status: 'no_selected_tests' }, null, 2) + '\n');
 }
 
@@ -205,7 +235,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [mode, job] = process.argv.slice(2);
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
-    const receipt = plan(git('rev-parse', 'HEAD'), baselines);
+    const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental');
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     for (const [component, details] of Object.entries(receipt.components)) {

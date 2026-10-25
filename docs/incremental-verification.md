@@ -96,3 +96,22 @@ node scripts/incremental-checks.mjs plan
 The second command only inspects Git/source; it does not run a model, deploy, or
 execute the planned tests. Inspect `required_jobs`, `checks`, fingerprints and
 `required_remediations` before dispatching the next increment.
+
+## Bounded startup diagnostics
+
+Manual dispatch may set `container_scope=startup-1g` to run exactly the known
+failing 1g allocation/startup case while investigating the common interpreter
+startup failure. This is not a capability acceptance run: the plan marks the
+container `validation_scope=diagnostic_startup_only`, sets
+`diagnostic_only_components=["container"]`, and records the deferred 4g,
+unlimited and new network checks explicitly. Deployment must reject that
+component until its remaining required checks have been executed or validly
+sealed. Default dispatch remains `incremental`.
+
+Independent selected Node/Python checks collect their own results even if an
+unrelated selected check fails; the job fails after collection. A compiler
+failure stops immediately rather than recompiling the same broken crate for
+each Rust test filter. Current SDK checks remain independent of a failed legacy
+offline check. Pytest temporary data is always beneath the project's `.temp`,
+including operator-probe test receipts; its production safety guard is not
+relaxed to accommodate system temporary directories.
