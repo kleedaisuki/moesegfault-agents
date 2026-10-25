@@ -194,7 +194,7 @@ def test_sdk_same_name_files_have_distinct_identity_and_bounded_pages(
 
 
 def test_sdk_zero_byte_file_and_unicode_filename(
-    space_client: OpenAI, space_uploads: list[str],
+    deployed: Http, space_client: OpenAI, space_uploads: list[str],
 ) -> None:
     filename = "空文件-" + uuid.uuid4().hex + ".txt"
     uploaded = space_client.files.create(file=(filename, b"", "text/plain"), purpose="user_data")
@@ -208,7 +208,9 @@ def test_sdk_zero_byte_file_and_unicode_filename(
     assert code == 416 and headers["Content-Range"] == "bytes */0"
 
 
-def test_raw_checksum_rejection_releases_upload_quota_and_reservation(deployed: Http) -> None:
+def test_raw_checksum_rejection_releases_upload_quota_and_reservation(
+    deployed: Http, space_uploads: list[str],
+) -> None:
     before = deployed.json("GET", "/v1/space")["usage"]
     reserved_before = int(deployed.json("GET", "/v1/usage")["wallet"]["reserved_microusd"])
     filename = "rejected-digest-" + uuid.uuid4().hex + ".bin"
@@ -227,7 +229,19 @@ def test_raw_checksum_rejection_releases_upload_quota_and_reservation(deployed: 
         assert time.monotonic() < deadline, "rejected bytes left a quota allocation or new financial hold behind"
         time.sleep(0.25)
     listing = deployed.json("GET", "/v1/files?limit=100")
-    assert all(item["filename"] != filename for item in listing["data"])
+    failed = [item for item in listing["data"] if item["filename"] == filename]
+    space_uploads.extend(item["id"] for item in failed)
+    assert len(failed) == 1, "a known failed transfer must retain one discoverable owner receipt"
+    receipt = failed[0]
+    assert receipt["status"] == "error"
+    assert receipt["diagnostics"]["upload_status"] == "failed"
+    assert isinstance(receipt["diagnostics"]["operation_id"], str) and receipt["diagnostics"]["operation_id"]
+    assert deployed.json("GET", "/v1/files/" + receipt["id"]) == receipt
+    assert deployed.request("GET", "/v1/files/" + receipt["id"] + "/content")[0] == 404
+    removed = deployed.json("DELETE", "/v1/files/" + receipt["id"])
+    assert removed == {"id": receipt["id"], "object": "file", "deleted": True}
+    assert deployed.request("GET", "/v1/files/" + receipt["id"])[0] == 404
+    assert all(item["id"] != receipt["id"] for item in deployed.json("GET", "/v1/files?limit=100")["data"])
 
 
 def test_space_is_singleton_renameable_and_uploads_are_owner_isolated(

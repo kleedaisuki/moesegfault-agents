@@ -98,7 +98,7 @@ def test_responses_sdk_lifecycle_stream_recovery_and_no_forks(
 
     input_items = responses_sdk.responses.input_items.list(first.id, limit=1, order="asc")
     assert input_items.data, "the response must retain its own input-item boundary"
-    assert any(initial_input in str(item.model_dump()) for item in input_items.auto_paging_iter())
+    assert any(initial_input in str(item.model_dump()) for item in input_items)
 
     with responses_sdk.responses.create(
         model=agent["id"], previous_response_id=first.id,
@@ -198,8 +198,11 @@ def test_responses_background_and_owner_isolation(
     ]:
         assert other.request(method, "/v1/responses/" + accepted.id + suffix, data)[0] == 404
     assert checked_response(responses_sdk.responses.retrieve(accepted.id)).model_dump() == final.model_dump()
-    deleted = responses_sdk.responses.delete(accepted.id)
-    assert deleted.id == accepted.id and deleted.deleted is True
+    deleted = responses_sdk.responses.with_raw_response.delete(accepted.id)
+    assert deleted.status_code == 200
+    assert deleted.http_response.json() == {
+        "id": accepted.id, "object": "response.deleted", "deleted": True,
+    }
     with pytest.raises(APIStatusError) as missing:
         responses_sdk.responses.retrieve(accepted.id)
     assert missing.value.status_code == 404

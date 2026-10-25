@@ -1,8 +1,11 @@
 """SDK harness checks against canonical wire fixtures, not server acceptance evidence."""
 
+import hashlib
 import json
+import uuid
 from collections.abc import Iterator
 from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -10,7 +13,10 @@ from openai import APIStatusError, OpenAI
 from openai.types.responses import Response, ResponseStreamEvent
 from pydantic import TypeAdapter, ValidationError
 
+from conftest import Http
 from response_checks import checked_response, checked_stream
+import test_responses as response_journeys
+import test_space as space_journeys
 
 
 def response_fixture(
@@ -107,6 +113,200 @@ def test_sdk_responses_output_text_and_raw_session_header(
     assert response.output_text == "Hello, 雪."
     assert requests[0].url.path == "/v1/responses"
     assert json.loads(requests[0].content) == {"model": "agent-fixture", "input": "hello"}
+
+
+def test_sdk_input_item_iteration_fetches_subsequent_cursor_pages() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/v1/responses/resp-fixture-1/input_items"
+        assert request.url.params["limit"] == "1" and request.url.params["order"] == "asc"
+        after = request.url.params.get("after")
+        assert after in (None, "input-first")
+        item_id = "input-first" if after is None else "input-last"
+        return httpx.Response(200, json={
+            "object": "list", "data": [{
+                "id": item_id, "type": "message", "role": "user", "status": "completed",
+                "content": [{"type": "input_text", "text": item_id}],
+            }], "first_id": item_id, "last_id": item_id, "has_more": after is None,
+        })
+
+    with OpenAI(api_key="fixture-only", base_url="https://fixture.invalid/v1", max_retries=0,
+                http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
+        page = client.responses.input_items.list("resp-fixture-1", limit=1, order="asc")
+        assert [item.id for item in page] == ["input-first", "input-last"]
+    assert len(requests) == 2
+
+
+def test_sdk_response_delete_preserves_raw_receipt_despite_void_parsed_return() -> None:
+    requests: list[httpx.Request] = []
+    receipt = {"id": "resp-fixture-1", "object": "response.deleted", "deleted": True}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == "/v1/responses/resp-fixture-1"
+        if request.method == "DELETE":
+            return httpx.Response(200, json=receipt)
+        assert request.method == "GET"
+        return httpx.Response(404, json={"error": {"code": "not_found", "message": "Response not found"}})
+
+    with OpenAI(api_key="fixture-only", base_url="https://fixture.invalid/v1", max_retries=0,
+                http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
+        raw = client.responses.with_raw_response.delete("resp-fixture-1")
+        assert raw.status_code == 200 and raw.http_response.json() == receipt
+        assert raw.parse() is None
+        with pytest.raises(APIStatusError) as missing:
+            client.responses.retrieve("resp-fixture-1")
+        assert missing.value.status_code == 404
+    assert [request.method for request in requests] == ["DELETE", "GET"]
+
+
+def test_full_responses_lifecycle_journey_uses_pinned_sdk_contract() -> None:
+    requests: list[httpx.Request] = []
+    responses: dict[str, dict[str, Any]] = {}
+    accepted_body: dict[str, Any] | None = None
+    revision = 0
+    events: list[dict[str, Any]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal accepted_body, revision, events
+        requests.append(request)
+        if request.method == "POST":
+            body = json.loads(request.content)
+            if request.headers.get("Idempotency-Key") and accepted_body is not None:
+                if body == accepted_body:
+                    return httpx.Response(200, json=responses["resp-fixture-1"])
+                return httpx.Response(409, json={"error": {"code": "conflict", "message": "Key conflict"}})
+            if body.get("previous_response_id") and revision == 2:
+                return httpx.Response(409, json={"error": {"code": "conflict", "message": "Stale parent"}})
+            revision += 1
+            if revision == 1:
+                accepted_body = body
+                value = response_fixture()
+                value["instructions"] = body["instructions"]
+                value["metadata"] = body["metadata"]
+                responses[value["id"]] = value
+                return httpx.Response(200, headers={"x-agents-session": "session-fixture"}, json=value)
+            assert revision == 2 and body["stream"] is True
+            events = event_fixture()
+            for event in events:
+                if "response" in event:
+                    event["response"]["id"] = "resp-fixture-2"
+                    event["response"]["previous_response_id"] = "resp-fixture-1"
+            responses["resp-fixture-2"] = events[-1]["response"]
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=event_wire(events))
+        assert request.method == "GET"
+        if request.url.path.endswith("/input_items"):
+            assert accepted_body is not None
+            return httpx.Response(200, json={
+                "object": "list", "data": [{
+                    "id": "input-first", "type": "message", "role": "user", "status": "completed",
+                    "content": [{"type": "input_text", "text": accepted_body["input"]}],
+                }], "first_id": "input-first", "last_id": "input-first", "has_more": False,
+            })
+        if request.url.params.get("stream") == "true":
+            after = int(request.url.params["starting_after"])
+            suffix = [event for event in events if event["sequence_number"] > after]
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=event_wire(suffix))
+        return httpx.Response(200, json=responses[request.url.path.rsplit("/", 1)[-1]])
+
+    def session_state(method: str, path: str) -> dict[str, Any]:
+        assert method == "GET" and path == "/v1/sessions/session-fixture"
+        return {"input_revision": revision, "messages": [{"tool_calls": [{"function": {"name": "time"}}]}]}
+
+    deployed = MagicMock(spec=Http)
+    deployed.json.side_effect = session_state
+    sessions: list[str] = []
+    with OpenAI(api_key="fixture-only", base_url="https://fixture.invalid/v1", max_retries=0,
+                http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
+        response_journeys.test_responses_sdk_lifecycle_stream_recovery_and_no_forks(
+            deployed, client, ({"id": "agent-fixture"}, sessions),
+        )
+    assert sessions == ["session-fixture"] and revision == 2
+    assert len(requests) == 8
+
+
+def test_full_background_delete_journey_uses_raw_sdk_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[httpx.Request] = []
+    deleted = False
+    final = {**response_fixture(), "background": True}
+    receipt = {"id": final["id"], "object": "response.deleted", "deleted": True}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal deleted
+        requests.append(request)
+        if request.method == "POST":
+            assert json.loads(request.content)["background"] is True
+            return httpx.Response(200, headers={"x-agents-session": "session-fixture"}, json={
+                **response_fixture(status="queued"), "background": True,
+            })
+        if request.method == "DELETE":
+            deleted = True
+            return httpx.Response(200, json=receipt)
+        assert request.method == "GET"
+        if deleted:
+            return httpx.Response(404, json={"error": {"code": "not_found", "message": "Response not found"}})
+        return httpx.Response(200, json=final)
+
+    other = MagicMock(spec=Http)
+    other.request.return_value = (404, {}, b"")
+
+    def other_account(origin: str, token: str) -> Http:
+        assert origin == "https://fixture.invalid" and token == "other-fixture-only"
+        return other
+
+    monkeypatch.setenv("MAGENTS_TEST_OTHER_API_KEY", "other-fixture-only")
+    monkeypatch.setattr(response_journeys, "Http", other_account)
+    deployed = MagicMock(spec=Http)
+    deployed.origin = "https://fixture.invalid"
+    sessions: list[str] = []
+    with OpenAI(api_key="fixture-only", base_url=deployed.origin + "/v1", max_retries=0,
+                http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
+        response_journeys.test_responses_background_and_owner_isolation(
+            deployed, client, ({"id": "agent-fixture"}, sessions),
+        )
+    assert sessions == ["session-fixture"] and other.request.call_count == 5
+    assert [request.method for request in requests] == ["POST", "GET", "GET", "DELETE", "GET"]
+
+
+def test_zero_byte_journey_uses_its_declared_http_fixture(monkeypatch: pytest.MonkeyPatch) -> None:
+    def identifier() -> uuid.UUID:
+        return uuid.UUID("01234567-89ab-cdef-0123-456789abcdef")
+
+    monkeypatch.setattr(space_journeys.uuid, "uuid4", identifier)
+    filename = "空文件-" + identifier().hex + ".txt"
+    file_id = "file-empty-fixture"
+    metadata = {
+        "id": file_id, "object": "file", "bytes": 0, "created_at": 1_792_860_000,
+        "filename": filename, "purpose": "user_data", "status": "processed",
+        "sha256": hashlib.sha256(b"").hexdigest(),
+    }
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            assert request.url.path == "/v1/files"
+            assert filename.encode() in request.content
+            return httpx.Response(200, json=metadata)
+        assert request.method == "GET"
+        if request.url.path == f"/v1/files/{file_id}/content":
+            return httpx.Response(200, content=b"")
+        assert request.url.path == f"/v1/files/{file_id}"
+        return httpx.Response(200, json=metadata)
+
+    deployed = MagicMock(spec=Http)
+    deployed.request.return_value = (416, {"Content-Range": "bytes */0"}, b"")
+    uploads: list[str] = []
+    with OpenAI(api_key="fixture-only", base_url="https://fixture.invalid/v1", max_retries=0,
+                http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
+        space_journeys.test_sdk_zero_byte_file_and_unicode_filename(deployed, client, uploads)
+    assert uploads == [file_id] and len(requests) == 3
+    deployed.request.assert_called_once_with(
+        "GET", f"/v1/files/{file_id}/content", headers={"Range": "bytes=0-0"},
+    )
 
 
 def test_sdk_typed_stream_ignores_heartbeats_and_validates_final_output(

@@ -258,7 +258,14 @@ export async function runSpaceJourney({ mf, db, encryptionKey, request }) {
   const failedFiles = (await request('GET', '/v1/files?limit=100', undefined, 200, owner.apiKey)).data.filter(file => file.filename === 'bad-digest.bin');
   assert.equal(failedFiles.length, 1, 'Known failed uploads retain discoverable owner diagnostics until deleted');
   assert.equal(failedFiles[0].status, 'error');
+  assert.equal(failedFiles[0].diagnostics.upload_status, 'failed');
+  assert.equal(typeof failedFiles[0].diagnostics.operation_id, 'string');
+  assert.ok(failedFiles[0].diagnostics.operation_id);
+  assert.deepEqual(await request('GET', `/v1/files/${failedFiles[0].id}`, undefined, 200, owner.apiKey), failedFiles[0]);
+  await dispatch(mf, owner.apiKey, 'GET', `/v1/files/${failedFiles[0].id}/content`, { expected: 404 });
+  await request('GET', `/v1/files/${failedFiles[0].id}`, undefined, 404, foreign.apiKey);
   await request('DELETE', `/v1/files/${failedFiles[0].id}`, undefined, 200, owner.apiKey);
+  await request('GET', `/v1/files/${failedFiles[0].id}`, undefined, 404, owner.apiKey);
 
   for (const file of generated) {
     const deleted = await request('DELETE', `/v1/files/${file.id}`, undefined, 200, owner.apiKey);
