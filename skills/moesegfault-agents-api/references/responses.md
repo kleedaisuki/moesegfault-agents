@@ -64,22 +64,25 @@ Usage is authoritative, not estimated from output text. If upstream totals exist
 response_id: str | None = None
 last_sequence: int | None = None
 completed = False
-with client.responses.create(
+accepted = client.responses.with_raw_response.create(
     model=agent_id,
     input="Summarize the project status.",
     stream=True,
-) as events:
+)
+response_id = accepted.headers["x-agents-response"]
+with accepted.parse() as events:
     for event in events:
-        last_sequence = event.sequence_number
         if event.type == "response.created":
-            response_id = event.response.id
-            print(f"Persist response ID: {response_id}", flush=True)
+            assert event.response.id == response_id
         elif event.type == "response.output_text.delta":
             print(event.delta, end="", flush=True)
         elif event.type == "response.completed":
             completed = True
         elif event.type in {"response.failed", "response.incomplete", "error"}:
             raise RuntimeError(f"Inspect the original response: {response_id}")
+        last_sequence = event.sequence_number
+        if completed:
+            break
 if not completed:
     raise RuntimeError(f"Stream ended without success; inspect {response_id}")
 ```
@@ -89,6 +92,22 @@ These are typed Responses events, not Chat chunks. Preserve stable item/call IDs
 Recover by retrieving the original response ID. Do not automatically replay create, user input, local outputs, or side-effecting commands. When a create observer fails, preserve `X-Agents-Response` and `X-Agents-Session` if available. Persist IDs as soon as disclosed; a background submission is preferable when the frontend may disconnect. Keep SDK `max_retries=0` even when using a durable request key: request admission deduplication does not make arbitrary local function execution exactly once.
 
 Create accepts an owner-scoped `Idempotency-Key` (1–256 visible ASCII characters), passed through SDK `extra_headers`. Preserve it alongside the exact request and session binding. Same key plus identical request returns the original response identity; a different body/binding conflicts. Do not toggle `stream` or `background` and reuse the key as a recovery mechanism. Observation uses `client.responses.retrieve(response_id)`; event recovery can use `client.responses.retrieve(response_id, stream=True, starting_after=last_sequence)` when a last sequence exists. This observes the same durable events, not a fresh execution.
+
+Capture the acceptance header before consuming events so a disconnect before
+`response.created` still has a recovery ID. With no processed event, replay the
+same ID with `stream=True` and omit `starting_after`; never send `-1`. Advance a
+checkpoint only after processing succeeds. Resumed events must be strictly newer
+than it; gaps are valid durable allocation fences, while duplicate/backward
+sequences are errors. Stop at an authentic terminal rather than waiting for a
+clean TCP EOF after semantic completion.
+
+For complete-history verification, retain the authentic prefix and append only the
+authentic replay suffix: require one terminal, exact delta text and canonical GET
+equality. A snapshot cannot stand in for missing events. Bound GET reconnects and
+timeouts; propagate schema/identity failures, caller cancellation, deleted/no-store
+404, expired-cursor 410 and semantic failed/incomplete outcomes instead of retrying
+them. A local-tool side effect still needs its own call/result identity; a saved
+event cursor is not an exactly-once guarantee for external effects.
 
 ## Background execution
 

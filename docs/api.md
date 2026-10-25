@@ -354,16 +354,24 @@ event or mislabel canonical cancelled state as failed.
 
 ```python
 completed = False
-with client.responses.create(model=agent_id, input="Summarize the project.", stream=True) as events:
+last_sequence: int | None = None
+accepted = client.responses.with_raw_response.create(
+    model=agent_id, input="Summarize the project.", stream=True,
+)
+response_id = accepted.headers["x-agents-response"]
+with accepted.parse() as events:
     for event in events:
         if event.type == "response.created":
-            print(event.response.id)  # Persist the recovery identity.
+            assert event.response.id == response_id
         elif event.type == "response.output_text.delta":
             print(event.delta, end="", flush=True)
         elif event.type == "response.completed":
             completed = True
         elif event.type in {"response.failed", "response.incomplete", "error"}:
             raise RuntimeError("Retrieve the original response; do not replay input")
+        last_sequence = event.sequence_number
+        if completed:
+            break
 if not completed:
     raise RuntimeError("Missing successful terminal event; inspect the original response")
 ```
@@ -384,6 +392,53 @@ Do not change `stream` or `background` and reuse the key to recover an observer.
 This is request admission identity, not permission to
 replay uncertain provider work or local effects. The older Chat endpoint's reserved
 idempotency header remains unchanged.
+
+### Resume an accepted stream
+
+Keep the accepted ID before reading the first event: a connection can close before
+`response.created` arrives. Save the last sequence only after processing that event
+succeeds. After transport loss, observe the same response; do not call create again.
+
+| Saved state | Read-only recovery |
+| --- | --- |
+| ID and processed sequence | Retrieve with `stream=True, starting_after=last_sequence` |
+| ID, but no processed event | Retrieve with `stream=True`, omitting the cursor |
+| Missing identity, deleted/unstored response, or expired cursor | Stop and reconcile; do not invent events or repeat input |
+
+```python
+replay = (
+    client.responses.retrieve(response_id, stream=True)
+    if last_sequence is None
+    else client.responses.retrieve(response_id, stream=True, starting_after=last_sequence)
+)
+completed = False
+with replay as events:
+    for event in events:
+        if last_sequence is not None and event.sequence_number <= last_sequence:
+            raise RuntimeError("Duplicate or backward replay event")
+        if event.type == "response.output_text.delta":
+            print(event.delta, end="", flush=True)
+        elif event.type == "response.completed":
+            assert event.response.id == response_id
+            completed = True
+        elif event.type in {"response.failed", "response.incomplete", "error"}:
+            raise RuntimeError("Inspect the original response outcome")
+        last_sequence = event.sequence_number
+        if completed:
+            break
+if not completed:
+    raise EOFError("Observation remains incomplete; keep the same ID and checkpoint")
+```
+
+Sequence gaps are valid durable allocation fences, not missing-event evidence;
+duplicate or backward sequences are invalid. An application needing complete-stream
+verification retains the authentic prefix and appends the authentic replay suffix,
+then checks exactly one terminal, exact delta text, and equality with canonical GET.
+An ordinary snapshot can be rendered separately but cannot replace missing events.
+Bound reconnect attempts and SDK timeouts; do not retry schema/identity failures,
+caller cancellation, or semantic failure/incomplete outcomes. The original
+`max_retries=0` setting still applies. Checkpointed observation does not make
+arbitrary local tool effects exactly once.
 
 ## Files, account Space, and workspace versions
 

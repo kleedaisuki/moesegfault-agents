@@ -13,8 +13,9 @@ from openai import OpenAI
 
 from conftest import Http, cleanup_deployed_agent, correlation_headers
 from stream_usage import reported_stream_usage
-from response_checks import checked_stream
+from response_checks import checked_response
 from inference_diagnostics import diagnostic_client
+from responses_observation import observe_response
 
 
 @pytest.fixture
@@ -262,12 +263,18 @@ def test_real_provider_compaction_preserves_pin_and_source_journal(
     # One costly prefill covers legacy Chat input and Responses continuation.
     # The custom instruction is absent from user text and must remain a separate
     # exact layer when the real provider compacts this session before tool use.
-    with inference.responses.create(
+    continued = inference.responses.with_raw_response.create(
         model=agent["id"], input="Call the time tool now and briefly report the current UTC time.",
         instructions=f"Include {custom_marker} in your final answer in addition to fixed agent instructions.",
         extra_headers={"x-agents-session": session_id}, stream=True,
-    ) as continued:
-        final, _ = checked_stream(continued)
+    )
+    observation = observe_response(inference, continued.parse(), continued.headers["x-agents-response"])
+    final = observation.response
+    if not observation.resumptions:
+        canonical = checked_response(inference.responses.retrieve(final.id))
+        assert canonical.model_dump(by_alias=True) == final.model_dump(by_alias=True)
+    print(json.dumps({"event": "sdk.observation_completed", "response_id": final.id,
+                      "resumptions": observation.resumptions, "last_sequence": observation.events[-1].sequence_number}), flush=True)
     assert fixed_marker in final.output_text and custom_marker in final.output_text
     after = deployed.json("GET", "/v1/sessions/" + session_id)
     assert after["compact_count"] >= 1

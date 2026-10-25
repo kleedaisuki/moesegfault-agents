@@ -208,7 +208,7 @@ jobs:
       - run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
-          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_sdk_contract.py tests/e2e/test_responses_contract.py tests/e2e/test_daemon_harness.py tests/e2e/test_cleanup.py scripts/perf/test_measure.py -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest
+          .cache/e2e-venv/bin/python -m pytest tests/e2e/test_sdk_contract.py tests/e2e/test_responses_contract.py tests/e2e/test_responses_observation.py tests/e2e/test_daemon_harness.py tests/e2e/test_cleanup.py scripts/perf/test_measure.py -ra -o cache_dir=.cache/pytest --basetemp=.temp/pytest
           .cache/e2e-venv/bin/python -m pytest tests/e2e/test_deployed.py tests/e2e/test_responses.py tests/e2e/test_space.py --collect-only -q -o cache_dir=.cache/pytest
 
   # Fixture revisions may target a retained older binary; this is never release CI.
