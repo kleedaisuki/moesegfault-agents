@@ -461,7 +461,7 @@ impl SessionInner {
             &self.env,
             &record.owner_id,
             &binding.id,
-            &run.id,
+            &run.response.as_ref().unwrap().id,
             &record.id,
             binding.accepted_revision,
             generation,
@@ -499,7 +499,7 @@ impl SessionInner {
                 &self.env,
                 &data.record.owner_id,
                 &binding.id,
-                &run.id,
+                &response.id,
                 generation,
             )
             .await?;
@@ -515,15 +515,19 @@ impl SessionInner {
             let operation = if run.admitted {
                 ConversationOperation::session(&run.id, &data.record.id)?
             } else {
-                ConversationOperation::response_actor(&self.env, &data.record.owner_id, &run.id)
-                    .await?
+                ConversationOperation::response_actor(
+                    &self.env,
+                    &data.record.owner_id,
+                    &response.id,
+                )
+                .await?
             };
             let provider_binding = self
                 .native_branch_ref()?
                 .map(|history| history.provider_binding);
             let output_provenance = Some(conversation_routes::ConversationItemProvenance {
                 source_session_id: Some(data.record.id.clone()),
-                response_id: Some(run.id.clone()),
+                response_id: Some(response.id.clone()),
                 provider_binding,
             });
             let context = conversation_routes::ConversationExecutionContext {
@@ -543,7 +547,7 @@ impl SessionInner {
                 &self.env,
                 &data.record.owner_id,
                 &binding.id,
-                &run.id,
+                &response.id,
                 &items,
                 Some(&context),
                 &operation,
@@ -562,7 +566,7 @@ impl SessionInner {
                     &self.env,
                     &data.record.owner_id,
                     &binding.id,
-                    &run.id,
+                    &response.id,
                     generation,
                 )
                 .await?;
@@ -597,11 +601,11 @@ impl SessionInner {
         if !current
             .conversation_releases
             .iter()
-            .any(|release| release.response_id == run.id)
+            .any(|release| release.response_id == response.id)
         {
             current.conversation_releases.push(ConversationRelease {
                 id: binding.id.clone(),
-                response_id: run.id.clone(),
+                response_id: response.id.clone(),
             });
         }
         Ok(publication_error)
@@ -625,7 +629,14 @@ impl SessionInner {
             if data
                 .run
                 .as_ref()
-                .is_some_and(|run| run.id == release.response_id)
+                .and_then(|run| run.response.as_ref())
+                .is_some_and(|response| {
+                    response.id == release.response_id
+                        && response.status != "completed"
+                        && response.status != "failed"
+                        && response.status != "incomplete"
+                        && response.status != "cancelled"
+                })
             {
                 continue;
             }

@@ -102,6 +102,8 @@ struct RunState {
     worker_attached: bool,
     #[serde(default)]
     worker_duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worker_segment_started_at_ms: Option<u64>,
     #[serde(default)]
     step: u64,
     #[serde(default)]
@@ -127,6 +129,34 @@ struct RunState {
 }
 
 impl RunState {
+    fn worker_wall_ms(&self, end: u64) -> u64 {
+        match (self.worker_attached, self.worker_segment_started_at_ms) {
+            (true, Some(start)) => self
+                .worker_duration_ms
+                .saturating_add(end.saturating_sub(start)),
+            (true, None) => end.saturating_sub(self.started_at_ms),
+            (false, _) => self.worker_duration_ms,
+        }
+    }
+
+    fn close_worker_segment(&mut self, now: u64) {
+        self.worker_duration_ms = self.worker_wall_ms(now);
+        self.worker_attached = false;
+        self.worker_segment_started_at_ms = None;
+    }
+    fn completion_event(&self) -> String {
+        match self.response.as_ref().and_then(|response| {
+            response
+                .model_round_base
+                .map(|base| (response.id.as_str(), base))
+        }) {
+            Some((response, base)) => format!(
+                "response:{response}:round:{}",
+                self.round.saturating_sub(base)
+            ),
+            None => format!("round:{}", self.round),
+        }
+    }
     fn accumulate_usage(&mut self, usage: &Usage) {
         let prior = self.usage_samples > 0
             || self.round > 0
@@ -315,6 +345,7 @@ struct SessionInner {
     code_metadata: futures::lock::Mutex<()>,
     code_operation: futures::lock::Mutex<()>,
     code_deadline: Cell<Option<u64>>,
+    programmatic_active: RefCell<Option<String>>,
 }
 
 #[durable_object]
@@ -344,6 +375,7 @@ impl Session {
             code_metadata: futures::lock::Mutex::new(()),
             code_operation: futures::lock::Mutex::new(()),
             code_deadline: Cell::new(None),
+            programmatic_active: RefCell::new(None),
         });
         let loaded = inner.clone();
         let _init = inner.state.block_concurrency_while(async move {
@@ -813,6 +845,26 @@ impl DurableObject for Session {
                 .await?;
             return Response::ok("maintenance");
         }
+        if !inner.running.get() && inner.programmatic_active.borrow().is_none() {
+            if let Some(pause) = inner
+                .snapshot()?
+                .run
+                .and_then(|run| run.response)
+                .filter(|response| response.status == "completed")
+                .and_then(|response| response.programmatic)
+            {
+                inner
+                    .state
+                    .storage()
+                    .set_alarm(util::alarm_at(
+                        pause
+                            .expires_at_ms
+                            .max(util::now_ms().saturating_add(30_000)),
+                    ))
+                    .await?;
+                return Response::ok("program waiting for input");
+            }
+        }
         if inner.running.replace(true) {
             inner.arm_alarm().await?;
             return Response::ok("busy");
@@ -1059,6 +1111,7 @@ impl SessionInner {
             started_at_ms: util::now_ms(),
             worker_attached: false,
             worker_duration_ms: 0,
+            worker_segment_started_at_ms: None,
             step: 0,
             traceparent: None,
             provider_in_flight: false,
@@ -1274,7 +1327,7 @@ impl SessionInner {
             return Err(Error::RustError("compaction_outcome_unknown".into()));
         }
         if let Some(completion) = &run.pending_completion {
-            let event = format!("round:{}", run.round);
+            let event = run.completion_event();
             store
                 .record_completion(
                     &record.owner_id,
@@ -1508,7 +1561,7 @@ impl SessionInner {
         let mut config = self.provider_config(record).await?;
         if let Some(response) = &run.response {
             if let Some(limit) = response.request.max_output_tokens {
-                let used = run.total.completion_tokens;
+                let used = response.usage_since_start(&run.total).completion_tokens;
                 if used >= u64::from(limit) {
                     self.data
                         .borrow_mut()
@@ -1604,7 +1657,7 @@ impl SessionInner {
             }
         }
         let messages = self.snapshot()?.messages;
-        let event = format!("round:{}", run.round);
+        let event = run.completion_event();
         store
             .reserve_completion(
                 &record.owner_id,
@@ -1808,17 +1861,12 @@ impl SessionInner {
                 &data.record.id,
                 &run.id,
             )?;
-            let worker_end = if run.worker_attached {
-                run.ended_at_ms.unwrap()
-            } else {
-                run.started_at_ms + run.worker_duration_ms
-            };
             if meter
-                .record_wall_time(
+                .record_observation(
                     "worker.wall",
                     Resource::Worker,
-                    run.started_at_ms,
-                    worker_end,
+                    "wall_ms",
+                    run.worker_wall_ms(run.ended_at_ms.unwrap()),
                 )
                 .await
                 .is_err()
@@ -3246,6 +3294,7 @@ mod tests {
             started_at_ms: 1,
             worker_attached: true,
             worker_duration_ms: 0,
+            worker_segment_started_at_ms: None,
             step: 3,
             traceparent: None,
             provider_in_flight: false,

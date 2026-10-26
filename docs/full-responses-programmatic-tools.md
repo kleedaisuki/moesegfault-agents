@@ -163,6 +163,48 @@ replayed, and no second JavaScript agent harness exists. Independent accepted
 operations get fresh opaque contexts. Cancellation interrupts the pending native
 read without allocating another request or granting a later nested effect.
 
+## Warm client continuation increment
+
+The follow-up implementation keeps the original `dispatch_programmatic` future,
+native fetch and stream writer/reader alive. It does not start a background pump,
+another JavaScript harness, a new funded execution Run or a second Loader fetch.
+A completed public Response is a client handoff, not the end of that execution.
+Its immutable canonical items and reported usage are stored before observers
+close. The private provider program call remains unanswered until JavaScript
+actually completes.
+
+`ProgramPause` is a private durable mailbox tied to the funded Run, current public
+Response and accepted operation. It is not a JavaScript snapshot or an incoming
+caller-provided capability. The ordinary Responses admission pipeline still
+performs prompt expansion, owner/media lookup, byte limits, pending-result
+validation, attachment retention and Conversation capacity reservation. Only a
+matching paused epoch may retain the existing Run at final acceptance; racing
+or same-key callbacks cannot apply a mailbox twice. The original future polls
+its own timer and consumes committed inputs after Conversation activation, so
+native I/O objects never migrate into the callback's request context.
+
+Public Responses have usage and model-round baselines. Model ledger events bind
+the child Response segment while retaining the original reserved funding Run;
+parent usage is never rewritten. The original observed Durable Object step
+continues across the wait. Router Worker wall usage sums attached observation
+segments, excluding the gap between public HTTP requests. The child JavaScript
+capacity remains its single original configured CPU allocation, never await wall
+time or one allocation per callback.
+
+Native history closes the original private program call before appending any
+deferred new user input. Caller results enter the program journal, not unmatched
+provider function-output IDs. Historical branches may not clone a live program;
+loss of the original future produces an incomplete continuation instead of
+rerunning arbitrary source. Closed/cancelled execution cannot acquire new tool
+authority.
+
+This increment is under compiled-Worker verification. The new `client` journey
+crosses function and custom handoffs through three public Responses, checks a
+native heap nonce, original caller/schema checks, immutable parent snapshots,
+one funded Run and one creation/request/CPU allocation. MCP approval suspension
+and additional hosted adapters remain the next implementation increment, not a
+claim covered by the initial accepted server-only evidence below.
+
 ## Verification boundary
 
 The earlier workerd/Miniflare component proof passed eight isolation/duplex checks;
