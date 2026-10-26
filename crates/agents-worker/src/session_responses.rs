@@ -47,6 +47,21 @@ pub(super) struct ResponseRun {
     pub(super) native_stream: super::native_output::NativeStream,
     #[serde(default)]
     pub(super) bound_tools: crate::hosted_bindings::BoundTools,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::mcp_runtime::McpBindings::is_empty"
+    )]
+    pub(super) mcp_bindings: crate::mcp_runtime::McpBindings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) mcp_request_proof: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) mcp_approvals: Vec<crate::mcp_runtime::ApprovedCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) mcp_operation_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) mcp_lists_published: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) discovery: Option<crate::tool_discovery::ToolRegistry>,
     #[serde(default)]
     pub(super) effective_service_tier: Option<String>,
     pub(super) usage: Usage,
@@ -452,7 +467,11 @@ impl SessionInner {
                 response.request.instructions = None;
                 response.request.prompt = None;
                 response.resolved_prompt = None;
+                response.discovery = None;
+                self.erase_mcp_response(&response).await?;
                 response.request.tools.clear();
+                response.mcp_bindings = crate::mcp_runtime::McpBindings::default();
+                response.mcp_approvals.clear();
                 response.request.metadata.clear();
                 response.request.text = None;
                 response.request.reasoning = None;
@@ -484,7 +503,19 @@ impl SessionInner {
         if existing.deleted || (!existing.request.store && terminal_status(&existing.status)) {
             return util::json_error(404, "not_found", "Response has been deleted");
         }
-        if serde_json::to_value(&existing.request)? != serde_json::to_value(&request)? {
+        let same_request = if let Some(proof) = existing.mcp_request_proof.as_deref() {
+            let owner = self.data.borrow().as_ref().unwrap().record.owner_id.clone();
+            let observed = crate::mcp_runtime::McpBindings::request_proof(
+                &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
+                &owner,
+                &existing.id,
+                request,
+            )?;
+            agents_auth::constant_eq(proof, &observed)
+        } else {
+            serde_json::to_value(&existing.request)? == serde_json::to_value(&request)?
+        };
+        if !same_request {
             return util::json_error(
                 409,
                 "idempotency_conflict",
@@ -501,7 +532,7 @@ impl SessionInner {
             .await
     }
 
-    pub(super) async fn create_response(
+    pub(super) async fn create_response_inner(
         &self,
         mut create: CreateResponse,
         traceparent: Option<String>,
@@ -715,6 +746,47 @@ impl SessionInner {
             }
         }
         let mut definitions = tool_definitions(&data.record);
+        let mut discovery = match self
+            .initialize_discovery(&data, &effective_request, &input.native_items)
+            .await
+        {
+            Ok(registry) => registry,
+            Err(error) => {
+                return util::json_error(400, "invalid_tool_discovery", &error.to_string());
+            }
+        };
+        let inherited_mcp = match create.execution.steering_parent.as_deref() {
+            Some(parent)
+                if self.validate_steering_parent(
+                    parent,
+                    &create.response_id,
+                    &create.execution,
+                )? =>
+            {
+                Some(parent)
+            }
+            Some(_) => {
+                return util::json_error(
+                    400,
+                    "invalid_steering_parent",
+                    "MCP inheritance requires an accepted steering queue",
+                );
+            }
+            None => None,
+        };
+        let mcp_bindings = self
+            .resolve_mcp_bindings(
+                &effective_request,
+                &data.record,
+                &create.response_id,
+                inherited_mcp,
+            )
+            .await?;
+        if let Some(registry) = discovery.as_mut() {
+            if let Err(error) = registry.register_mcp(&mcp_bindings) {
+                return util::json_error(400, "unsupported_tool_discovery", &error);
+            }
+        }
         if request.tools.iter().any(|tool| {
             matches!(tool.kind.as_str(), "function" | "custom")
                 && definitions
@@ -738,6 +810,7 @@ impl SessionInner {
         let local = request.function_definitions().map_err(Error::RustError)?;
         definitions.extend(local);
         definitions.extend(bound_tools.definitions()?);
+        definitions.extend(mcp_bindings.definitions(false));
         if let Err(error) = request.validate_resolved_tool_choice(&definitions) {
             return util::json_error(400, "invalid_tool_choice", &error);
         }
@@ -756,19 +829,26 @@ impl SessionInner {
         }
         let mut options = request.generation_options();
         if let Some(choice) = options.tool_choice.take() {
-            options.tool_choice = Some(bound_tools.rewrite_choice(choice)?);
+            options.tool_choice =
+                Some(mcp_bindings.rewrite_choice(bound_tools.rewrite_choice(choice)?)?);
         }
-        if let Err(error) = Self::validate_native_generation(
-            &config,
-            &request,
-            &bound_tools,
-            &definitions,
-            &mut options,
-        ) {
-            return util::json_error(400, "unsupported_native_request", &error.to_string());
-        }
-        if let Err(error) = options.validate_for_config(&config, &definitions) {
-            return util::json_error(400, "unsupported_generation_option", &error.to_string());
+        if discovery.is_none() || config.protocol != agents_core::ProviderProtocol::Responses {
+            if let Err(error) = Self::validate_native_generation(
+                &config,
+                &request,
+                &crate::tool_rendering::ToolBindings {
+                    hosted: &bound_tools,
+                    mcp: &mcp_bindings,
+                    discovery: discovery.as_ref(),
+                },
+                &definitions,
+                &mut options,
+            ) {
+                return util::json_error(400, "unsupported_native_request", &error.to_string());
+            }
+            if let Err(error) = options.validate_for_config(&config, &definitions) {
+                return util::json_error(400, "unsupported_generation_option", &error.to_string());
+            }
         }
         if let Some(limit) = request.max_output_tokens {
             if limit > data.record.pinned.model.max_output_tokens {
@@ -886,6 +966,37 @@ impl SessionInner {
             execution_request.instructions = effective_instructions.clone();
         }
         input = execution_request.normalize().map_err(Error::RustError)?;
+        if previous_response_id.is_some() || create.execution.conversation.is_some() {
+            let result = if data.pending_general_tools.is_empty() {
+                validate_tool_outputs(&data.pending_client_tools, &input.tool_outputs)
+            } else {
+                super::native_output::validate_returns(&data.pending_general_tools, &expanded.items)
+            };
+            if let Err(code) = result {
+                return util::json_error(
+                    400,
+                    code,
+                    "Provide each outstanding tool result exactly once before continuing",
+                );
+            }
+        }
+        if create.execution.warmup
+            && expanded
+                .items
+                .iter()
+                .any(|item| item["type"] == "mcp_approval_response")
+        {
+            return Err(Error::RustError("mcp_approval_requires_execution".into()));
+        }
+        let mcp_approvals = self
+            .prepare_mcp_approvals(
+                &data.record.owner_id,
+                &create.response_id,
+                &data.pending_general_tools,
+                &expanded.items,
+                &mcp_bindings,
+            )
+            .await?;
         let current = self.snapshot()?;
         if current.archive_preparing || current.archive_pending || self.closing.get() {
             return util::json_error(409, "session_busy", "Session archival is still in progress");
@@ -905,7 +1016,58 @@ impl SessionInner {
             return util::json_error(409, "session_busy", "Session changed while resolving input");
         }
         let native_input = if config.protocol == agents_core::ProviderProtocol::Responses {
-            Some(expanded.items)
+            let mut execution_items = expanded.items;
+            if discovery.is_none() {
+                discovery = self
+                    .initialize_discovery(&data, &effective_request, &execution_items)
+                    .await?;
+            }
+            if let Some(registry) = discovery.as_mut() {
+                if let Err(error) = registry.register_mcp(&mcp_bindings) {
+                    return util::json_error(400, "unsupported_tool_discovery", &error);
+                }
+                execution_items = match registry.encode_input(
+                    &execution_items,
+                    true,
+                    request.tool_choice.as_ref(),
+                ) {
+                    Ok(items) => items,
+                    Err(error) => return util::json_error(400, "invalid_tool_discovery", &error),
+                };
+                registry.select_choice(request.tool_choice.as_ref());
+                if let Err(error) = request.validate_discovered_tool_choice(
+                    &definitions,
+                    &registry.validation_declarations(),
+                ) {
+                    return util::json_error(400, "invalid_tool_choice", &error);
+                }
+                options = request.generation_options();
+                if let Err(error) = Self::validate_native_generation(
+                    &config,
+                    &request,
+                    &crate::tool_rendering::ToolBindings {
+                        hosted: &bound_tools,
+                        mcp: &mcp_bindings,
+                        discovery: Some(registry),
+                    },
+                    &definitions,
+                    &mut options,
+                ) {
+                    return util::json_error(400, "unsupported_native_request", &error.to_string());
+                }
+                if let Err(error) = options.validate_for_config(&config, &definitions) {
+                    return util::json_error(
+                        400,
+                        "unsupported_generation_option",
+                        &error.to_string(),
+                    );
+                }
+            } else if provider::is_deepseek(&config) {
+                execution_items = crate::tool_discovery::ToolRegistry::default()
+                    .encode_input(&execution_items, true, request.tool_choice.as_ref())
+                    .map_err(Error::RustError)?;
+            }
+            Some(execution_items)
         } else {
             if input.native_only {
                 return util::json_error(
@@ -1136,13 +1298,28 @@ impl SessionInner {
             );
         }
         self.start_run_with_id(create.response_id.clone())?;
+        let mcp_request_proof = request
+            .tools
+            .iter()
+            .any(|tool| tool.kind == "mcp")
+            .then(|| {
+                crate::mcp_runtime::McpBindings::request_proof(
+                    &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
+                    &data.record.owner_id,
+                    &create.response_id,
+                    &request,
+                )
+            })
+            .transpose()?;
+        let mut stored_request = request.clone();
+        crate::mcp_runtime::McpBindings::sanitize_request(&mut stored_request);
         let mut response = ResponseRun {
             conversation: super::conversations::binding(
                 create.execution.conversation.as_ref(),
                 capacity_generation,
             ),
             id: create.response_id.clone(),
-            request: request.clone(),
+            request: stored_request,
             resolved_prompt,
             effective_instructions,
             compaction_source_end: None,
@@ -1161,6 +1338,12 @@ impl SessionInner {
             general_pending_calls: vec![],
             native_stream: super::native_output::NativeStream::default(),
             bound_tools: bound_tools.clone(),
+            mcp_bindings,
+            mcp_request_proof,
+            mcp_approvals,
+            mcp_operation_keys: vec![],
+            mcp_lists_published: false,
+            discovery,
             effective_service_tier: None,
             usage: Usage::default(),
             next_sequence: 0,
@@ -1423,11 +1606,23 @@ impl SessionInner {
         }
         read_chunks(&self.state.storage(), &format!("{RESPONSE_PREFIX}{id}"))
             .await?
-            .map(|bytes| crate::session_storage::decode_json(&bytes))
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(Error::from))
             .transpose()
     }
 
     pub(super) async fn write_response(&self, response: &ResponseRun) -> Result<()> {
+        let mut archived;
+        let response = if terminal_status(&response.status) {
+            archived = response.clone();
+            archived.mcp_bindings.clear_credentials();
+            archived.mcp_bindings.discovery_funding = None;
+            for action in &mut archived.mcp_approvals {
+                action.intent.server.clear_credentials();
+            }
+            &archived
+        } else {
+            response
+        };
         write_chunks(
             &self.state.storage(),
             &format!("{RESPONSE_PREFIX}{}", response.id),
@@ -1595,6 +1790,14 @@ impl SessionInner {
         if let Some(error) = &response.stream_error {
             return Err(Error::RustError(error.clone()));
         }
+        if completion.native.as_ref().is_some_and(|turn| {
+            turn.output.iter().any(|item| {
+                item["type"] == "tool_search_output"
+                    && (response.discovery.is_none() || item["execution"] != "server")
+            })
+        }) {
+            return Err(Error::RustError("untrusted_tool_search_output".into()));
+        }
         let text = completion.message.content.as_str().unwrap_or("");
         let projected_bytes = serde_json::to_vec(&response.output)?
             .len()
@@ -1602,7 +1805,20 @@ impl SessionInner {
         if projected_bytes > MAX_RESPONSE_OUTPUT_BYTES {
             return Err(Error::RustError("response_output_limit".into()));
         }
-        Self::validate_response_output(completion, &response.request, run.round == 1)?;
+        if completion.native.is_some() {
+            let calls = self.discovery_policy_calls(completion, run.round == 1)?;
+            super::native_output::validate_policy_routes(
+                completion,
+                &response.request,
+                run.round == 1,
+                &calls,
+                &self.discovery_validation_declarations()?,
+                &self.native_server_choices(completion)?,
+            )?;
+        } else {
+            Self::validate_response_output(completion, &response.request, run.round == 1)?;
+        }
+        self.validate_mcp_calls(completion)?;
         self.register_native_output(completion, false).await?;
         if self.project_native_output(completion).await? {
             self.register_native_output(completion, true).await?;
@@ -1799,6 +2015,7 @@ impl SessionInner {
             else {
                 continue;
             };
+            super::native_output::require_direct_permission(tool.options.get("allowed_callers"))?;
             let arguments: Value = serde_json::from_str(&call.function.arguments)
                 .map_err(|_| Error::RustError("invalid_function_arguments".into()))?;
             if tool.strict == Some(true) {
@@ -1880,6 +2097,13 @@ impl SessionInner {
     }
 
     pub(super) fn local_tool_pending(&self, name: &str) -> bool {
+        if self.discovery_client_alias(name) {
+            let data = self.data.borrow();
+            let is_mcp = data.as_ref().and_then(|data| data.messages.iter().rev().find(|message| message.role == "assistant")).is_some_and(|message| message.tool_calls.iter().any(|call| call.function.name == name && self.mcp_native_call(&json!({"type":"function_call","name":name,"arguments":call.function.arguments,"call_id":call.id})).unwrap_or(false)));
+            if !is_mcp {
+                return true;
+            }
+        }
         self.data
             .borrow()
             .as_ref()
@@ -1940,6 +2164,7 @@ impl SessionInner {
         self.terminal_steering_events(&mut response)?;
         self.seal_branch_point(&mut response).await?;
         response.branch_point.as_mut().unwrap().pending_calls = response.awaiting_calls.clone();
+        response.branch_point.as_mut().unwrap().discovery = response.discovery.clone();
         response
             .branch_point
             .as_mut()
@@ -2388,6 +2613,12 @@ mod tests {
             general_pending_calls: vec![],
             native_stream: super::native_output::NativeStream::default(),
             bound_tools: crate::hosted_bindings::BoundTools::default(),
+            mcp_bindings: crate::mcp_runtime::McpBindings::default(),
+            mcp_request_proof: None,
+            mcp_approvals: vec![],
+            mcp_operation_keys: vec![],
+            mcp_lists_published: false,
+            discovery: None,
             effective_service_tier: None,
             usage: Usage::default(),
             next_sequence: 0,

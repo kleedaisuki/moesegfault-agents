@@ -8,6 +8,10 @@ use super::*;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ResponseContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<crate::tool_discovery::ToolRegistry>,
+    #[serde(default)]
+    pub general_pending_calls: Vec<super::native_output::GeneralPendingCall>,
     pub record: SessionRecord,
     pub response_id: String,
     pub instructions: String,
@@ -185,6 +189,8 @@ impl SessionInner {
         };
         let native_provider_binding = view.native.map(|reference| reference.provider_binding);
         Response::from_json(&ResponseContext {
+            discovery: response.discovery.clone(),
+            general_pending_calls: response.general_pending_calls.clone(),
             instructions: system_prefix(&record),
             record,
             response_id: response.id,
@@ -228,6 +234,7 @@ mod tests {
             general_pending_calls: vec![],
             workspace: branch::WorkspaceSeed::Empty,
             native: None,
+            discovery: None,
         });
         response
     }

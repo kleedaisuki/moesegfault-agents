@@ -71,8 +71,13 @@ use responses::{ResponseObserver, ResponseRun};
 mod hosted;
 #[path = "session_hosted_publication.rs"]
 mod hosted_publication;
+use hosted_publication as hosted_dispatch;
+#[path = "session_mcp.rs"]
+mod mcp;
 #[path = "session_tool_budget.rs"]
 mod tool_budget;
+#[path = "session_tool_discovery.rs"]
+mod tool_discovery;
 
 const STATE_KEY: &str = "session.v1";
 const PROJECTION_ACK_KEY: &str = "session.projection-ack";
@@ -189,6 +194,8 @@ struct PersistedSession {
     pending_client_tools: Vec<provider::ToolCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending_general_tools: Vec<native_output::GeneralPendingCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inherited_discovery: Option<crate::tool_discovery::ToolRegistry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     steering_queue: Vec<response_steering::SteeringSubmission>,
     #[serde(default)]
@@ -201,6 +208,8 @@ struct PersistedSession {
     connection_cleanup_at: Option<u64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     code_resources_seen: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mcp_cleanup_at: Option<u64>,
     #[serde(default)]
     response_archive_releases: Vec<String>,
     #[serde(default)]
@@ -294,6 +303,7 @@ struct SessionInner {
     running: Cell<bool>,
     closing: Cell<bool>,
     observer: RefCell<Option<Observer>>,
+    mcp_preparing: RefCell<std::collections::BTreeMap<String, usize>>,
     response_observers: RefCell<Vec<ResponseObserver>>,
     image_observations: image_observation::ImageObservations,
     response_publication_barrier: RefCell<response_steering::PublicationBarrier>,
@@ -319,6 +329,7 @@ impl Session {
             running: Cell::new(false),
             closing: Cell::new(false),
             observer: RefCell::new(None),
+            mcp_preparing: RefCell::new(std::collections::BTreeMap::new()),
             response_observers: RefCell::new(vec![]),
             image_observations: image_observation::ImageObservations::default(),
             response_publication_barrier: RefCell::new(
@@ -378,6 +389,7 @@ impl Session {
             if initialized {
                 loaded.restore_code_resources().await?;
                 loaded.restore_connection_cleanup().await?;
+                loaded.restore_mcp_cleanup().await?;
             }
             Ok(())
         });
@@ -482,12 +494,14 @@ impl DurableObject for Session {
                     response_head: None,
                     pending_client_tools: vec![],
                     pending_general_tools: vec![],
+                    inherited_discovery: None,
                     steering_queue: vec![],
                     history_instructions: vec![],
                     imported_parent: None,
                     inherited_source_exclusions: vec![],
                     connection_cleanup_at: None,
                     code_resources_seen: false,
+                    mcp_cleanup_at: None,
                     response_archive_releases: vec![],
                     response_archive_retry_at: 0,
                     response_archive_retry_attempts: 0,
@@ -501,6 +515,7 @@ impl DurableObject for Session {
                 inner.arm_alarm().await?;
                 Response::from_json(&inner.snapshot()?.record)
             }
+            (Method::Post, "/mcp-approval") => inner.mcp_approval_route(req).await,
             (Method::Post, "/response-context") => inner.response_context(req).await,
             (Method::Post, "/native-item") => inner.native_item_route(req).await,
             (Method::Post, "/response-retained") => inner.response_retained_route(req).await,
@@ -782,6 +797,7 @@ impl DurableObject for Session {
             util::emit("code.cleanup_pending", json!({"retry_after_ms":10_000}));
         }
         inner.cleanup_connection_grants().await?;
+        inner.reconcile_mcp_cleanup().await?;
         inner.reconcile_image_handoffs().await?;
         inner.reconcile_conversation_releases().await?;
         inner.reconcile_response_archives().await?;
@@ -1313,6 +1329,7 @@ impl SessionInner {
                 return Err(Error::RustError(code.into()));
             }
             self.response_completion(completion).await?;
+            self.classify_mcp_approvals(completion).await?;
             let policy_terminal = self
                 .data
                 .borrow()
@@ -1370,6 +1387,10 @@ impl SessionInner {
                 self.persist().await?;
                 return Ok(None);
             }
+        }
+        self.publish_mcp_lists().await?;
+        if self.advance_mcp_approvals(record).await? {
+            return Ok(None);
         }
         if let Some(call) = next_tool(&data.messages, run.response.as_ref()) {
             if self.local_tool_pending(&call.function.name) {
@@ -1814,6 +1835,12 @@ impl SessionInner {
             self.arm_alarm().await?;
             return Ok(());
         }
+        if run.response.as_ref().is_some_and(|response| {
+            !response.mcp_bindings.is_empty() || !response.mcp_operation_keys.is_empty()
+        }) && self.finalize_mcp_response(&run.id).await.is_err()
+        {
+            self.defer_mcp_cleanup().await?;
+        }
         if !self.snapshot()?.projection_pending
             && (self.snapshot()?.pending.is_empty() || self.snapshot()?.has_pending_client_tools())
             && self.snapshot()?.record.idle_action(util::now_ms()) == IdleAction::Archive
@@ -1839,6 +1866,7 @@ impl SessionInner {
         if let Some(response) = &response {
             committed.pending_client_tools = response.awaiting_calls.clone();
             committed.pending_general_tools = response.general_pending_calls.clone();
+            committed.inherited_discovery = response.discovery.clone();
         }
         let generation = util::id("projection");
         committed.complete_run_commit(
@@ -1863,6 +1891,8 @@ impl SessionInner {
         self.handoff_images_locked().await?;
         self.release_conversations_locked().await?;
         if let Some(response) = response {
+            self.data.borrow_mut().as_mut().unwrap().inherited_discovery =
+                response.discovery.clone();
             let has_attachments = !response.attachments.is_empty();
             let response_id = response.id.clone();
             self.data
@@ -1939,10 +1969,17 @@ impl SessionInner {
                 .and_then(|r| r.traceparent.as_deref()),
         );
         let _span = crate::telemetry::NativeSpan::start("session.tool", Some(&trace));
-        if !self.admit_tool_dispatch(record, execution_id, name).await? {
+        let dispatch_name = self.resolved_mcp_call(call)?.function.name;
+        if !self
+            .admit_tool_dispatch(record, execution_id, &dispatch_name)
+            .await?
+        {
             return Ok(hosted_publication::HostedDispatch::Ready(
                 tool_budget::exhausted_result().into(),
             ));
+        }
+        if let Some(output) = self.dispatch_mcp_tool(record, execution_id, call).await? {
+            return Ok(output);
         }
         if let Some(result) = self.dispatch_code_tool(record, execution_id, call).await? {
             return Ok(result);
@@ -2397,7 +2434,7 @@ fn next_tool(messages: &[Message], response: Option<&ResponseRun>) -> Option<pro
             !response.is_some_and(|r| {
                 r.general_pending_calls
                     .iter()
-                    .any(|pending| pending.call_id == call.id)
+                    .any(|pending| pending.native_call_id() == call.id)
                     || r.request.tools.iter().any(|t| t.name == call.function.name)
             })
         })
@@ -2696,6 +2733,7 @@ fn alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
     let mut normal = primary_alarm_deadline(data, now);
     for deadline in [
         data.connection_cleanup_at,
+        data.mcp_cleanup_at,
         conversations::cleanup_deadline(data, now),
         image_lifecycle::cleanup_deadline(data, now),
     ]
@@ -2875,12 +2913,14 @@ mod tests {
             response_head: None,
             pending_client_tools: vec![],
             pending_general_tools: vec![],
+            inherited_discovery: None,
             steering_queue: vec![],
             history_instructions: vec![],
             imported_parent: None,
             inherited_source_exclusions: vec![],
             connection_cleanup_at: None,
             code_resources_seen: false,
+            mcp_cleanup_at: None,
             response_archive_releases: vec![],
             response_archive_retry_at: 0,
             response_archive_retry_attempts: 0,

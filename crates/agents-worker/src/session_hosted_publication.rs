@@ -16,17 +16,24 @@ pub(super) enum HostedDispatch {
     Pending,
 }
 
-pub(super) struct ToolOutput(String);
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) enum ToolOutput {
+    Text(String),
+    Mcp(crate::mcp_transport::ModelContent),
+}
 
 impl From<String> for ToolOutput {
     fn from(value: String) -> Self {
-        Self(value)
+        Self::Text(value)
     }
 }
 
 impl From<ToolOutput> for Value {
     fn from(value: ToolOutput) -> Self {
-        Self::String(value.0)
+        match value {
+            ToolOutput::Text(text) => Self::String(text),
+            ToolOutput::Mcp(parts) => parts.into_value(),
+        }
     }
 }
 
@@ -150,6 +157,9 @@ impl SessionInner {
         execution: &str,
         call: &provider::ToolCall,
     ) -> Result<Option<HostedDispatch>> {
+        if let Some(result) = self.dispatch_tool_discovery(execution, call).await? {
+            return Ok(Some(result));
+        }
         let kind = crate::hosted_tools::Kind::from_alias(&call.function.name);
         if !matches!(
             kind,

@@ -61,7 +61,20 @@ impl SessionInner {
                     .lookup(name)
                     .is_some_and(|binding| binding.allows(crate::hosted_bindings::Caller::Direct))
             });
-            if !hosted && !record.pinned.tools.iter().any(|tool| tool.name == name) {
+            let resolved_server = run.response.as_ref().is_some_and(|response| {
+                response
+                    .mcp_bindings
+                    .lookup(name)
+                    .is_some_and(|(server, _)| server.direct)
+                    || response
+                        .discovery
+                        .as_ref()
+                        .is_some_and(|registry| registry.is_server_search(name))
+            });
+            if !hosted
+                && !resolved_server
+                && !record.pinned.tools.iter().any(|tool| tool.name == name)
+            {
                 return Ok(true);
             }
             let limit = run
