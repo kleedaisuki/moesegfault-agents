@@ -107,6 +107,94 @@ export async function runNativeWindowRejectionJourney(context) {
     unfit, model_ledger_rows: 0, external_network_calls: 0 };
 }
 
+export async function runContextCapacityJourney(context) {
+  const custom = 'CURRENT-RESPONSE-INSTRUCTIONS-KEEP';
+  const original = 'ORIGINAL-CONTEXT-CAPACITY-INPUT';
+  const summaryText = 'COMPACTED-CONTEXT-CAPACITY-GOAL';
+  const capacityAtGeneration = [];
+  let scenario;
+  const usage = async body => {
+    const escrow = await context.db.prepare(`SELECT state,remaining_bytes FROM conversation_response_capacity
+      WHERE account_id=? AND conversation_id=?`).bind(scenario.principal.owner, conversation.id).first();
+    assert.equal(escrow.state, 'reserved', 'Capacity is held before each paid summary/generation');
+    assert.ok(escrow.remaining_bytes > 0);
+    capacityAtGeneration.push(escrow.remaining_bytes);
+    return windowFixtureUsage(body);
+  };
+  scenario = await createNativeSemanticsScenario(context, 'context-capacity', [
+    { output: [{ ...answer('summary'), content: [{ type: 'output_text', text: summaryText, annotations: [], logprobs: [] }] }], usage,
+      check: body => {
+        assert.ok(JSON.stringify(body.input).includes(original));
+        assert.equal(mentions(body, policyMarker), 1);
+      } },
+    { output: [answer('after-context')], usage, check: body => {
+      assert.equal(mentions(body, fixedMarker), 1);
+      assert.equal(mentions(body, custom), 1);
+      assert.equal(mentions(body, policyMarker), 1);
+      assert.equal(mentions(body, summaryText), 1);
+      assert.equal(mentions(body, original), 0, 'Generation uses the compacted working view, not the original source');
+    } },
+  ]);
+  scenario.state.count = windowFixtureCount;
+  const conversation = await scenario.client.conversations.create();
+  const result = await scenario.invoke({ conversation: conversation.id, instructions: custom,
+    context_management: [{ type: 'compaction', compact_threshold: 1 }],
+    input: [{ role: 'developer', content: policyMarker }, { role: 'user', content: original }], stream: true });
+  const wire = await result.text();
+  const events = wire.split(/\r?\n/).filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trim()).filter(line => line && line !== '[DONE]').map(line => JSON.parse(line));
+  const response = events.find(event => event.type === 'response.completed')?.response;
+  assert.ok(response, JSON.stringify(events.at(-1)));
+  assert.equal(scenario.state.calls, 2, 'Exactly one summary and one generation, no replay');
+  const compacted = response.output.find(item => item.type === 'compaction');
+  assert.ok(compacted?.encrypted_content.startsWith('mcmp1.'));
+  for (const type of ['response.output_item.added', 'response.output_item.done']) {
+    assert.equal(events.filter(event => event.type === type && event.item.id === compacted.id).length, 1);
+  }
+  const escrow = await context.db.prepare(`SELECT state,remaining_bytes FROM conversation_response_capacity
+    WHERE account_id=? AND conversation_id=?`).bind(scenario.principal.owner, conversation.id).first();
+  assert.deepEqual(escrow, { state: 'converted', remaining_bytes: 0 });
+  const counters = () => context.db.prepare('SELECT reserved_bytes,retained_bytes FROM conversation_capacity_accounts WHERE account_id=?')
+    .bind(scenario.principal.owner).first();
+  const retained = await counters();
+  assert.equal(retained.reserved_bytes, 0);
+  assert.ok(retained.retained_bytes > 4096 && retained.retained_bytes < capacityAtGeneration[0],
+    'Only actual published bytes remain; unused pre-generation envelope is refunded');
+  const items = (await scenario.client.conversations.items.list(conversation.id, { order: 'asc' })).data;
+  assert.ok(items.some(item => JSON.stringify(item).includes(original)));
+  const savedResponse = await scenario.read(response.id);
+  const savedInput = (await scenario.client.responses.inputItems.list(response.id)).data;
+  await scenario.client.conversations.delete(conversation.id);
+  assert.deepEqual((await scenario.client.conversations.items.list(conversation.id, { order: 'asc' })).data, items,
+    'Standard metadata DELETE preserves items');
+  assert.deepEqual(await counters(), retained, 'Metadata deletion is not a capacity refund');
+  const purge = () => context.mf.dispatchFetch('https://agents.test/v1/conversations/' + conversation.id + '/purge', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + scenario.principal.apiKey },
+  });
+  assert.equal((await purge()).status, 200);
+  const purged = await counters();
+  assert.equal(purged.reserved_bytes, 0);
+  assert.ok(purged.retained_bytes >= 4096 && purged.retained_bytes < retained.retained_bytes);
+  await assert.rejects(scenario.client.conversations.items.list(conversation.id), error => error.status === 404);
+  const sessionId = result.headers.get('x-agents-session');
+  await context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sessionId}` });
+  assert.deepEqual(await scenario.read(response.id), savedResponse, 'Conversation purge cannot invalidate independently retained Responses');
+  assert.deepEqual((await scenario.client.responses.inputItems.list(response.id)).data, savedInput);
+  await scenario.client.responses.inputTokens.count({ model: scenario.agent.id, previous_response_id: response.id, input: 'POST-PURGE-READ-ONLY-COUNT' });
+  assert.equal(scenario.state.calls, 2, 'Cold historical count cannot buy another model call');
+  assert.equal((await purge()).status, 200);
+  assert.deepEqual(await counters(), purged);
+  const ledger = (await context.db.prepare(`SELECT r.state,CAST(l.quantity AS TEXT) AS quantity,l.price_version
+    FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id
+    WHERE r.account_id=? AND l.resource='model' ORDER BY r.idempotency_key`).bind(scenario.principal.owner).all()).results;
+  assert.equal(ledger.length, 2);
+  assert.ok(ledger.every(row => row.state === 'settled' && row.price_version === 'byok' && Number(row.quantity) > 0));
+  return { provider_calls: 2, capacity_held_before_both_calls: true, actual_conversion_and_unused_release: true,
+    protected_server_custom_developer_instructions: true, compaction_item_streamed_once: true,
+    metadata_delete_preserves_items: true, explicit_purge_removes_bodies: true, cold_response_survives_purge: true,
+    model_ledger_rows: ledger.length, external_network_calls: 0 };
+}
+
 export async function runNativeWindowJourney(context) {
   const checks = [expectInput({ old: true, latest: false }), expectInput({ old: false, latest: true }),
     expectInput({ old: false, latest: true, additional: 'SAME-HEAD-SHORT-INPUT' }),
