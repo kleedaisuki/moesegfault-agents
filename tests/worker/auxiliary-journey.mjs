@@ -25,14 +25,16 @@ export function createAuxiliaryProviderFixture() {
     assert.equal(input.store, false);
     state.calls.push(input);
     if (state.pause) await state.pause;
-    const terminal = 'completed';
+    const failedSummary = JSON.stringify(input.input[0]).includes('Summarize this agent session for continuation')
+      && JSON.stringify(input.input).includes('FAIL_CONTEXT_COMPACTION');
+    const terminal = failedSummary ? 'failed' : 'completed';
     const usage = { input_tokens: 12, output_tokens: 3, total_tokens: 15,
       input_tokens_details: { cached_tokens: 2, ...(state.missingDetail ? {} : { cache_write_tokens: 0 }) },
       output_tokens_details: { reasoning_tokens: 1 } };
     const response = { id: `upstream-aux-${state.calls.length}`, object: 'response', model: input.model,
-      status: terminal, error: null,
+      status: terminal, error: failedSummary ? { code: 'server_error', message: 'Synthetic failed summary with known usage' } : null,
       output: [{ id: 'upstream-message', type: 'message', role: 'assistant', status: 'completed',
-        content: [{ type: 'output_text', text: 'Preserved goal and evidence 雪.', annotations: [] }] }], usage: state.omitUsage ? undefined : usage };
+        content: [{ type: 'output_text', text: failedSummary ? 'UNUSABLE_PARTIAL_SUMMARY' : 'Preserved goal and evidence 雪.', annotations: [] }] }], usage: state.omitUsage ? undefined : usage };
     const created = { ...response, status: 'in_progress', output: [], usage: null, error: null };
     return new Response(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', sequence_number: 0, response: created })}\n\n`
       + `event: response.${terminal}\ndata: ${JSON.stringify({ type: `response.${terminal}`, sequence_number: 1, response })}\n\n`,
@@ -124,4 +126,48 @@ export async function runAuxiliaryJourney({ mf, db, encryptionKey, request, prov
       body: JSON.stringify({ model: agent.id, input: 'hello', unknown: true }) });
     assert.equal(invalid.status, 400);
   }
+}
+
+export async function runContextManagementJourney({ mf, db, encryptionKey, request, provider }) {
+  const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'context-management-owner' });
+  const credential = await principal.browser('POST', '/v1/provider-keys', {
+    protocol: 'openai', base_url: 'https://auxiliary-provider.example.com/v1', api_key: 'synthetic-auxiliary-owned-key' }, 201);
+  const agent = await request('POST', '/v1/agents', { name: 'Context policy native agent',
+    model: { provider: 'byok', credential_id: credential.id, protocol: 'responses', model: 'fixture-native-model',
+      context_window: 8192, max_output_tokens: 64 }, instructions: 'Protected context policy.', tools: ['time'], workspace: false }, 201, principal.apiKey);
+  const sdk = new OpenAI({ apiKey: principal.apiKey, baseURL: 'https://agents.test/v1', timeout: 15000, maxRetries: 0,
+    fetch: (input, init) => mf.dispatchFetch(input, init) });
+  const before = provider.state.calls.length;
+  const original = await sdk.responses.create({ model: agent.id, input: 'ORIGINAL_SOURCE_BOUNDARY',
+    instructions: 'Current response scope.', context_management: [{ type: 'compaction', compact_threshold: 43 }] });
+  assert.equal(provider.state.calls.length, before + 1, 'Rendered count below threshold never buys a summary');
+  assert.ok(original.output.every(item => item.type !== 'compaction'));
+  const originalItems = (await sdk.responses.inputItems.list(original.id)).data;
+  const stream = await sdk.responses.create({ model: agent.id, previous_response_id: original.id, input: 'New goal after the retained boundary.',
+    context_management: [{ type: 'compaction', compact_threshold: 41 }], stream: true });
+  const events = [];
+  for await (const event of stream) events.push(event);
+  const completed = events.find(event => event.type === 'response.completed')?.response;
+  assert.ok(completed, 'Compaction continues inference in the same response');
+  const compacted = completed.output.find(item => item.type === 'compaction');
+  assert.ok(compacted);
+  assert.match(compacted.encrypted_content, /^mcmp1\./);
+  assert.equal(provider.state.calls.length, before + 3, 'One summary and one completion; tiny thresholds cannot repeat summaries on unchanged source');
+  assert.equal(events.filter(event => event.type === 'response.output_item.added' && event.item.id === compacted.id).length, 1);
+  assert.equal(events.filter(event => event.type === 'response.output_item.done' && event.item.id === compacted.id).length, 1);
+  assert.ok(JSON.stringify(provider.state.calls.at(-1).input).includes('Earlier session context (summary)'));
+  assert.ok(!JSON.stringify(provider.state.calls.at(-1).input).includes('ORIGINAL_SOURCE_BOUNDARY'),
+    'The next inference consumes the replaced native window');
+  assert.deepEqual((await sdk.responses.inputItems.list(original.id)).data, originalItems,
+    'Compaction cannot rewrite a retained prior Response input boundary');
+  assert.deepEqual(await sdk.responses.inputTokens.count({ model: agent.id, input: completed.output }),
+    { object: 'response.input_tokens', input_tokens: 42 }, 'An emitted server compaction item is reusable as explicit input');
+  const failed = await sdk.responses.create({ model: agent.id, previous_response_id: completed.id,
+    input: 'FAIL_CONTEXT_COMPACTION', context_management: [{ type: 'compaction', compact_threshold: 41 }] });
+  assert.equal(failed.status, 'failed', 'A failed native summary with partial text is not a successful context replacement');
+  assert.ok(failed.output.every(item => item.type !== 'compaction'));
+  assert.equal(failed.usage.output_tokens, 3, 'Known failed-summary usage remains visible and billed');
+  assert.equal(provider.state.calls.length, before + 4, 'Failed summary cannot repair or retry the model call');
+  assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='model'")
+    .bind(principal.owner).first('n'), 4);
 }

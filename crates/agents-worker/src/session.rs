@@ -32,6 +32,8 @@ mod code_resources;
 mod connection;
 #[path = "session_context.rs"]
 pub(crate) mod context;
+#[path = "session_context_management.rs"]
+mod context_management;
 #[path = "session_conversations.rs"]
 mod conversations;
 #[path = "session_file_pins.rs"]
@@ -115,6 +117,30 @@ struct RunState {
     native_input: Option<native::NativeInputBatch>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     tool_dispatches: std::collections::BTreeSet<String>,
+}
+
+impl RunState {
+    fn accumulate_usage(&mut self, usage: &Usage) {
+        let prior = self.usage_samples > 0
+            || self.round > 0
+            || self.total.reported
+            || self.total.total_tokens > 0
+            || self.total.prompt_tokens > 0
+            || self.total.completion_tokens > 0;
+        self.total.prompt_tokens += usage.prompt_tokens;
+        self.total.completion_tokens += usage.completion_tokens;
+        self.total.total_tokens += usage.total_tokens;
+        self.total.cached_tokens += usage.cached_tokens;
+        self.total.reasoning_tokens =
+            aggregate_reasoning(self.total.reasoning_tokens, usage.reasoning_tokens, prior);
+        self.total.cache_write_tokens = aggregate_reasoning(
+            self.total.cache_write_tokens,
+            usage.cache_write_tokens,
+            prior,
+        );
+        self.total.reported |= usage.reported;
+        self.usage_samples = self.usage_samples.saturating_add(1);
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1208,12 +1234,32 @@ impl SessionInner {
                     &record.pinned.model.model,
                 )
                 .await?;
-            let text = summary
-                .message
-                .content
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| Error::RustError("empty_compaction".into()))?;
+            let projection = (|| {
+                if let Some(code) = native::completion_failure(summary) {
+                    return Err(Error::RustError(code.into()));
+                }
+                let text = summary
+                    .message
+                    .content
+                    .as_str()
+                    .filter(|text| !text.is_empty())
+                    .ok_or_else(|| Error::RustError("empty_compaction".into()))?;
+                self.compaction_item(&data, summary)
+                    .map(|item| (text, item))
+            })();
+            {
+                let mut current = self.data.borrow_mut();
+                let run = current.as_mut().unwrap().run.as_mut().unwrap();
+                run.accumulate_usage(&summary.usage);
+                run.pending_compaction = None;
+            }
+            let (text, compacted_item) = match projection {
+                Ok(projected) => projected,
+                Err(error) => {
+                    self.persist().await?;
+                    return Err(error);
+                }
+            };
             {
                 let mut current = self.data.borrow_mut();
                 let current = current.as_mut().unwrap();
@@ -1227,32 +1273,11 @@ impl SessionInner {
                 current.input_tokens = 0;
                 current.measured_messages = 0;
                 current.compact_count += 1;
-                let r = current.run.as_mut().unwrap();
-                r.pending_compaction = None;
-                let prior_usage = r.usage_samples > 0
-                    || r.round > 0
-                    || r.total.reported
-                    || r.total.total_tokens > 0
-                    || r.total.prompt_tokens > 0
-                    || r.total.completion_tokens > 0;
-                r.total.prompt_tokens += summary.usage.prompt_tokens;
-                r.total.completion_tokens += summary.usage.completion_tokens;
-                r.total.total_tokens += summary.usage.total_tokens;
-                r.total.cached_tokens += summary.usage.cached_tokens;
-                r.total.reasoning_tokens = aggregate_reasoning(
-                    r.total.reasoning_tokens,
-                    summary.usage.reasoning_tokens,
-                    r.total.reported,
-                );
-                r.total.cache_write_tokens = aggregate_reasoning(
-                    r.total.cache_write_tokens,
-                    summary.usage.cache_write_tokens,
-                    prior_usage,
-                );
-                r.usage_samples = r.usage_samples.saturating_add(1);
-                r.total.reported |= summary.usage.reported;
             }
             self.replace_native_after_compaction(&run).await?;
+            if let Some(item) = compacted_item {
+                self.append_compaction_item(item)?;
+            }
             return Ok(None);
         }
         if run.compaction_in_flight {
@@ -1520,6 +1545,7 @@ impl SessionInner {
                 );
             }
         }
+        let explicit_compaction = context_management::policy(&data)?.emits_item();
         let native_view = config.protocol == agents_core::ProviderProtocol::Responses
             && (self
                 .native_branch_ref()?
@@ -1527,7 +1553,7 @@ impl SessionInner {
                 || run.response.as_ref().is_some_and(|response| {
                     response.request.truncation.as_deref() == Some("auto")
                 }));
-        if !native_view && self.compact_if_needed(&config).await? {
+        if !explicit_compaction && !native_view && self.compact_if_needed(&config, None).await? {
             return Ok(None);
         }
         if config.protocol != agents_core::ProviderProtocol::Responses {
@@ -1563,8 +1589,15 @@ impl SessionInner {
         tool_budget::filter_exhausted_tools(&run, record, &mut definitions);
         self.prepare_native_generation(&config, &definitions, &mut options)
             .await?;
-        if native_view && self.compact_if_needed(&config).await? {
-            return Ok(None);
+        if explicit_compaction || native_view {
+            let measured = if native_view {
+                self.snapshot()?.input_tokens
+            } else {
+                self.exact_compaction_tokens(&config, &options).await?
+            };
+            if self.compact_if_needed(&config, Some(measured)).await? {
+                return Ok(None);
+            }
         }
         let messages = self.snapshot()?.messages;
         let event = format!("round:{}", run.round);
@@ -2006,19 +2039,15 @@ impl SessionInner {
         }
     }
 
-    async fn compact_if_needed(&self, config: &ProviderConfig) -> Result<bool> {
+    async fn compact_if_needed(
+        &self,
+        config: &ProviderConfig,
+        measured: Option<u64>,
+    ) -> Result<bool> {
         let data = self.snapshot()?;
-        let appended = &data.messages[data.measured_messages.min(data.messages.len())..];
-        let new_bytes = budget::working_tokens(appended)?;
-        let tokens = if data.input_tokens == 0 {
-            budget::working_tokens(&data.messages)?
-        } else {
-            data.input_tokens.saturating_add(new_bytes)
-        };
-        if !data.record.pinned.compaction_percent.should_compact(
-            tokens.min(u32::MAX as u64) as u32,
-            &data.record.pinned.model,
-        ) || data.messages.len() < 5
+        let explicit = context_management::policy(&data)?.emits_item();
+        if !context_management::triggered(&data, measured)?
+            || data.messages.len() < if explicit { 2 } else { 5 }
         {
             return Ok(false);
         }
@@ -2040,14 +2069,14 @@ impl SessionInner {
         let native_summary = self
             .native_compaction_request(config, &summary_input[0])
             .await?;
-        self.data
-            .borrow_mut()
-            .as_mut()
-            .unwrap()
-            .run
-            .as_mut()
-            .unwrap()
-            .compaction_in_flight = true;
+        {
+            let mut current = self.data.borrow_mut();
+            let run = current.as_mut().unwrap().run.as_mut().unwrap();
+            run.compaction_in_flight = true;
+            if explicit {
+                run.response.as_mut().unwrap().compaction_source_end = Some(data.journal.len());
+            }
+        }
         self.persist().await?;
         self.state
             .storage()
@@ -2488,6 +2517,8 @@ fn safe_error_code(error: &Error) -> String {
         "provider_protocol_error",
         "provider_key_not_found",
         "invalid_provider_model",
+        "invalid_context_management",
+        "context_management_exact_count_unavailable",
         "provider_cost_missing",
         "openrouter_cost_missing",
         "completion_reservation_mismatch",

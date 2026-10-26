@@ -24,6 +24,8 @@ pub(super) struct ResponseRun {
     pub(super) resolved_prompt: Option<crate::prompt_templates::ResolvedPrompt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) effective_instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) compaction_source_end: Option<usize>,
     pub(super) created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) obfuscation_seed: Option<Seed>,
@@ -1066,6 +1068,7 @@ impl SessionInner {
             request: request.clone(),
             resolved_prompt,
             effective_instructions,
+            compaction_source_end: None,
             created_at: util::now_ms() / 1000,
             obfuscation_seed: Some(Seed::generate()),
             input_items: original_items,
@@ -2292,6 +2295,7 @@ mod tests {
             request: serde_json::from_value(json!({"model":"agent_test","input":"hello"})).unwrap(),
             resolved_prompt: None,
             effective_instructions: None,
+            compaction_source_end: None,
             created_at: 10,
             obfuscation_seed: Some(Seed::generate()),
             input_items: vec![],
