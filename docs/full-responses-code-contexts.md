@@ -391,8 +391,9 @@ Origins are immutable and redirects are rejected. Decrypted keys are neither
 serialized nor logged.
 
 The authenticated capability contract reports actual accepted memory limits and
-an atomic prepare boot header. The reference daemon currently validates exact
-1g/4g cgroups; the executor-level memory domain also expresses16g/64g without
+an atomic prepare boot header. External reference executors validate exact
+1g/4g cgroups; the separately attested managed Cloudflare VM boundary is described
+in `full-responses-interpreter-memory.md`. The executor memory domain also expresses16g/64g without
 pretending those are available Cloudflare SKUs. Provider selection precedes CF
 physical-profile selection. `source_profile` routes the original actor only;
 `executor_kind` and `memory_limit` describe its actual Code resource. An external
@@ -447,8 +448,11 @@ verified daemon provenance rather than the old disabled-runtime exception.
 `tests/e2e/hosted-code-sdk.mjs --memory 1g|4g` is the tracked narrow live driver.
 Each selected profile permits one new direct-DeepSeek Response and one Python
 cell, with an 8192-token context and 512-token output bound. The cell prints 42,
-publishes the exact nine-byte CSV and reads the kernel's `memory.max`; a metadata
-memory label alone cannot satisfy the expected 1073741824/4294967296-byte cap.
+publishes the exact nine-byte CSV and reads actual kernel `MemTotal`. The original
+live failures established that Cloudflare's process cgroup is unbounded, not a
+finite 1g/4g cgroup. Owned container metadata must therefore supply matching
+`cloudflare_vm` allocation/class/image evidence, with separate nominal allocation
+and observed guest bytes; the actual cell observation must equal that guest value.
 It then archives the harness, observes the independent CID still running, deletes
 the CID, requires 404, and reads the unchanged ordinary File. A fresh receipt
 fences intent before submission; ambiguous accepted operations must be reconciled,

@@ -17,7 +17,7 @@ const digest = value => hash(JSON.stringify(value));
 export function codeRequest(agent, filename, memory = '1g') {
   assert.match(filename, /^code-[a-f0-9-]+\.csv$/);
   assert.ok(['1g', '4g'].includes(memory), 'actual_CF_memory_profile_required');
-  return { model: agent, input: `Use Code Interpreter exactly once. With Python pathlib, write /mnt/data/${filename} with precisely the nine bytes b'value\\n42\\n', then print(42). In that same Python cell print('cgroup_memory_max=' + Path('/sys/fs/cgroup/memory.max').read_text().strip()). Do not use the network. After execution, reply briefly with the artifact link.`,
+  return { model: agent, input: `Use Code Interpreter exactly once. With Python pathlib, write /mnt/data/${filename} with precisely the nine bytes b'value\\n42\\n', then print(42). In that same cell read MemTotal from /proc/meminfo and print 'guest_physical_bytes=' followed by its integer KiB value multiplied by 1024. Do not use the network. After execution, reply briefly with the artifact link.`,
     tools: [{ type: 'code_interpreter', container: { type: 'auto', memory_limit: memory } }],
     include: ['code_interpreter_call.outputs'], max_tool_calls: 1,
     max_output_tokens: 512, reasoning: { effort: 'none' } };
@@ -35,7 +35,10 @@ export function summarizeCode(response, events, memory = '1g') {
   assert.match(logs, /(?:^|\n)42\s*(?:\n|$)/, 'real_python_print_result_missing');
   const expectedMemoryBytes = { '1g': 1073741824, '4g': 4294967296 }[memory];
   assert.ok(expectedMemoryBytes, 'actual_CF_memory_profile_required');
-  assert.ok(logs.split('\n').some(line => line.trim() === `cgroup_memory_max=${expectedMemoryBytes}`), 'actual_cgroup_memory_cap_proof_required');
+  const physical = logs.split('\n').map(line => /^guest_physical_bytes=([0-9]+)$/.exec(line.trim())).filter(Boolean);
+  assert.equal(physical.length, 1, 'one_actual_guest_memory_observation_required');
+  const guestPhysicalBytes = Number(physical[0][1]);
+  assert.ok(Number.isSafeInteger(guestPhysicalBytes) && guestPhysicalBytes >= expectedMemoryBytes && guestPhysicalBytes <= expectedMemoryBytes + 256 * 1024 * 1024, 'actual_guest_does_not_match_the_selected_VM_allocation');
   const phases = events.filter(event => event.item_id === item.id).map(event => event.type);
   const expected = ['response.code_interpreter_call.in_progress', 'response.code_interpreter_call_code.delta',
     'response.code_interpreter_call_code.done', 'response.code_interpreter_call.interpreting', 'response.code_interpreter_call.completed'];
@@ -45,7 +48,18 @@ export function summarizeCode(response, events, memory = '1g') {
     assert.ok(index > prior, `hosted_code_phase_missing_or_unordered:${phase}`);
     prior = index;
   }
-  return { itemId: item.id, containerId: item.container_id, codeSha256: hash(item.code), logsSha256: hash(logs), actualCgroupMemoryBytes: expectedMemoryBytes, phases };
+  return { itemId: item.id, containerId: item.container_id, codeSha256: hash(item.code), logsSha256: hash(logs), allocationBytes: expectedMemoryBytes, guestPhysicalBytes, phases };
+}
+
+export function verifyCapacity(container, code, memory, imageSource) {
+  const capacity = container.agents_capacity;
+  assert.equal(capacity?.capacity_source, 'cloudflare_vm', 'actual_VM_capacity_evidence_required_not_a_memory_label');
+  assert.equal(capacity.allocation_bytes, code.allocationBytes);
+  assert.equal(capacity.guest_physical_bytes, code.guestPhysicalBytes);
+  assert.equal(capacity.allocation.memory_limit, memory);
+  assert.equal(capacity.allocation.application_class, memory === '4g' ? 'Session4G' : 'Session');
+  assert.equal(capacity.allocation.image_source, imageSource, 'actual_capacity_image_must_match_verified_daemon');
+  return capacity;
 }
 
 function options(argv, environment, root) {
@@ -198,7 +212,8 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     const container = await client.containers.retrieve(cid);
     assert.equal(container.id, cid); assert.equal(container.status, 'running'); assert.equal(container.memory_limit, config.memory);
     assert.deepEqual(container.expires_after, { anchor: 'last_active_at', minutes: 20 });
-    receipt.checks.container = { id: cid, status: container.status, memory: container.memory_limit, expiresAfter: container.expires_after };
+    receipt.checks.container = { id: cid, status: container.status, memory: container.memory_limit, expiresAfter: container.expires_after,
+      capacity: verifyCapacity(container, receipt.checks.code, config.memory, provenance.component_sources.container) };
     receipt.checks.artifact = await verifyArtifact(client, filename);
     receipt.resources.files.push(receipt.checks.artifact.fileId); save();
     const typed = JSON.parse(execFileSync(config.python, [path.join(root, 'tests/e2e/current_responses_sdk.py'), 'response-wire', '--input', '-'], {
