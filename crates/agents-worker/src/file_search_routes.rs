@@ -56,7 +56,7 @@ async fn query(
 }
 
 pub(crate) async fn handle(req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
-    if let Some(response) = cancel_unfunded(&req, env, owner).await? {
+    if let Some(response) = paused_control(&req, env, owner).await? {
         return Ok(response);
     }
     let operation = ConversationOperation::account(env, owner).await?;
@@ -95,8 +95,8 @@ pub(crate) async fn handle(req: Request, env: &RouteContext<'_>, owner: &str) ->
     operation.finish_result(env, owner, result, false).await
 }
 
-async fn cancel_unfunded(req: &Request, env: &Env, owner: &str) -> Result<Option<Response>> {
-    if req.method() != Method::Delete {
+async fn paused_control(req: &Request, env: &Env, owner: &str) -> Result<Option<Response>> {
+    if !matches!(req.method(), Method::Get | Method::Delete) {
         return Ok(None);
     }
     let path = req.path();
@@ -104,6 +104,15 @@ async fn cancel_unfunded(req: &Request, env: &Env, owner: &str) -> Result<Option
     let ["v1", "vector_stores", store, "files", file] = parts.as_slice() else {
         return Ok(None);
     };
+    if req.method() == Method::Get {
+        // The standard SDK must be able to observe terminal admission failure
+        // even when it cannot fund another ordinary management operation.
+        let row=env.d1("DB")?.prepare("SELECT vf.*,sf.filename FROM vector_store_public_files vf JOIN space_files sf ON sf.id=vf.file_id AND sf.account_id=vf.account_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.funding_blocked=1 AND vf.status='in_progress' AND vf.removed_at IS NULL")
+            .bind(&[owner.into(),(*store).into(),(*file).into()])?.first::<Value>(None).await?;
+        return row
+            .map(|row| file_public(&row).and_then(|body| Response::from_json(&body)))
+            .transpose();
+    }
     // Stopping an already unfunded job cannot require more credit. This bounded,
     // authenticated control-plane tombstone is platform overhead; physical GC
     // remains separately funded and unknown provider holds are never released.
@@ -579,7 +588,7 @@ async fn list_members(
             return Err(fail("invalid_vector_store_status_filter"));
         }
         bindings.push(json!(status));
-        filter = format!("vf.status=?{}", bindings.len());
+        filter = format!("vf.public_status=?{}", bindings.len());
     }
     if let Some(batch) = batch {
         bindings.push(json!(batch));
@@ -587,7 +596,7 @@ async fn list_members(
     }
     bindings.push(json!(limit + 1));
     let sql = format!(
-        "SELECT vf.*,sf.filename FROM vector_store_files vf JOIN space_files sf ON sf.id=vf.file_id AND sf.account_id=vf.account_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.removed_at IS NULL AND ({cursor}) AND ({filter}) ORDER BY vf.created_at {},vf.file_id {} LIMIT ?{}",
+        "SELECT vf.*,sf.filename FROM vector_store_public_files vf JOIN space_files sf ON sf.id=vf.file_id AND sf.account_id=vf.account_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.removed_at IS NULL AND ({cursor}) AND ({filter}) ORDER BY vf.created_at {},vf.file_id {} LIMIT ?{}",
         page.order(),
         page.order(),
         bindings.len()
@@ -602,10 +611,10 @@ async fn file_response(
     id: &str,
     meter: &ResourceMeter<'_>,
 ) -> Result<Response> {
-    let row=query(env,meter,"SELECT vf.*,sf.filename FROM vector_store_files vf JOIN space_files sf ON sf.id=vf.file_id AND sf.account_id=vf.account_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.removed_at IS NULL",&[json!(owner),json!(store),json!(id)]).await?.results::<Value>()?.into_iter().next();
+    let row=query(env,meter,"SELECT vf.*,sf.filename FROM vector_store_public_files vf JOIN space_files sf ON sf.id=vf.file_id AND sf.account_id=vf.account_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.removed_at IS NULL",&[json!(owner),json!(store),json!(id)]).await?.results::<Value>()?.into_iter().next();
     match row {
         Some(row) => {
-            if row["status"] == "in_progress" {
+            if row["public_status"] == "in_progress" {
                 wake(env, owner, store, Some(id));
             }
             Response::from_json(&file_public(&row)?)
@@ -627,7 +636,7 @@ fn file_public(row: &Value) -> Result<Value> {
         .transpose()?
         .unwrap_or(Value::Null);
     Ok(
-        json!({"id":row["file_id"],"object":"vector_store.file","vector_store_id":row["vector_store_id"],"created_at":row["created_at"].as_u64().unwrap_or(0)/1000,"usage_bytes":row["usage_bytes"],"status":row["status"],"last_error":error,"attributes":attributes,"chunking_strategy":chunking}),
+        json!({"id":row["file_id"],"object":"vector_store.file","vector_store_id":row["vector_store_id"],"created_at":row["created_at"].as_u64().unwrap_or(0)/1000,"usage_bytes":row["usage_bytes"],"status":row.get("public_status").unwrap_or(&row["status"]),"last_error":error,"attributes":attributes,"chunking_strategy":chunking}),
     )
 }
 
@@ -722,7 +731,7 @@ async fn batch_response(
     batch: &str,
     meter: &ResourceMeter<'_>,
 ) -> Result<Response> {
-    let rows=query(env,meter,"SELECT b.id,b.created_at,b.status,COALESCE(SUM(vf.status='in_progress'),0) AS in_progress,COALESCE(SUM(vf.status='completed'),0) AS completed,COALESCE(SUM(vf.status='failed'),0) AS failed,COALESCE(SUM(vf.status='cancelled'),0) AS cancelled,COUNT(vf.file_id) AS total FROM vector_store_file_batches b LEFT JOIN vector_store_files vf ON vf.batch_id=b.id AND vf.account_id=b.account_id AND vf.vector_store_id=b.vector_store_id WHERE b.id=?1 AND b.account_id=?2 AND b.vector_store_id=?3 GROUP BY b.id",&[json!(batch),json!(owner),json!(store)]).await?.results::<Value>()?;
+    let rows=query(env,meter,"SELECT b.id,b.created_at,b.status,COALESCE(SUM(vf.public_status='in_progress'),0) AS in_progress,COALESCE(SUM(vf.public_status='completed'),0) AS completed,COALESCE(SUM(vf.public_status='failed'),0) AS failed,COALESCE(SUM(vf.public_status='cancelled'),0) AS cancelled,COUNT(vf.file_id) AS total FROM vector_store_file_batches b LEFT JOIN vector_store_public_files vf ON vf.batch_id=b.id AND vf.account_id=b.account_id AND vf.vector_store_id=b.vector_store_id WHERE b.id=?1 AND b.account_id=?2 AND b.vector_store_id=?3 GROUP BY b.id",&[json!(batch),json!(owner),json!(store)]).await?.results::<Value>()?;
     let Some(row) = rows.first() else {
         return missing();
     };

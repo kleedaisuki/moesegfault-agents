@@ -109,6 +109,18 @@ class BatchFundingTests(unittest.TestCase):
         self.db.execute(release, ("a","store","file","generation","foreign","2"))
         self.assertEqual(self.db.execute("SELECT lease_id FROM vector_store_files").fetchone(), ("lease",))
 
+    def test_public_failed_admission_preserves_internal_generation_and_standard_counts(self) -> None:
+        self.pause()
+        self.assertEqual(self.db.execute("SELECT status,public_status FROM vector_store_public_files").fetchone(), ("in_progress","failed"))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM file_search_cleanup_jobs").fetchone(), (0,))
+        stores: str = (ROOT / "crates/agents-worker/src/vector_store_routes.rs").read_text(encoding="utf-8")
+        self.db.row_factory = sqlite3.Row
+        row: sqlite3.Row = self.db.execute(sql(stores,"SELECT vs.id,vs.name")+" WHERE vs.account_id='a' GROUP BY vs.id").fetchone()
+        self.assertEqual((row["in_progress"],row["failed"]), (0,1))
+        self.db.row_factory = None
+        self.retry()
+        self.assertEqual(self.db.execute("SELECT public_status FROM vector_store_public_files").fetchone(), ("in_progress",))
+
     def test_unknown_observation_cannot_race_with_unused_reservation_release(self) -> None:
         self.db.execute("INSERT INTO usage_reservations VALUES('fund','a','reserved',0)")
         release: str = sql(FUND, "UPDATE usage_reservations SET state='released'")

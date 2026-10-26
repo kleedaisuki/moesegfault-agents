@@ -23,3 +23,7 @@ CREATE TRIGGER file_search_funding_immutable BEFORE UPDATE ON file_search_fundin
 CREATE TRIGGER file_search_new_generation_funding AFTER UPDATE OF generation ON vector_store_files WHEN OLD.generation!=NEW.generation BEGIN
  UPDATE vector_store_files SET funding_blocked=0,funding_required_microusd=0,staged_chunks=0 WHERE vector_store_id=NEW.vector_store_id AND file_id=NEW.file_id;
 END;
+
+-- A paused attempt is terminal to standard SDK polling while its internal
+-- generation, paid receipts and source cursor remain resumable, not retired.
+CREATE VIEW vector_store_public_files AS SELECT vf.*,CASE WHEN vf.status='in_progress' AND vf.funding_blocked=1 THEN 'failed' ELSE vf.status END AS public_status FROM vector_store_files vf;
