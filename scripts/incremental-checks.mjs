@@ -196,13 +196,13 @@ export function checkInputPaths(source, check, runGit = git) {
       [/^(?:store|model_|auxiliary|context_prefix)/, /\/(?:store[^/]*|model_[^/]*|auxiliary[^/]*|responses_auxiliary|context_prefix|metering|resources)\.rs$/],
       [/^(?:hosted|image|search|file|tool|vector)/, /\/(?:hosted[^/]*|image[^/]*|search[^/]*|file[^/]*|tool[^/]*|vector[^/]*|workspace_blobs|space|metering|resources)\.rs$/],
       [/^(?:responses_|response_preflight|prompt_templates|context_management)/, /\/(?:responses_[^/]*|response_preflight|context_prefix|prompt_templates|context_management|tools|hosted_bindings|skills)\.rs$/],
-      [/^deepseek_tokenizer/, /\/(?:deepseek_tokenizer|provider_responses|provider_config)\.rs$/],
+      [/^deepseek_tokenizer/, /\/(?:deepseek_tokenizer|deepseek_image_tokens|input_image_metadata|provider_responses|provider_config)\.rs$/],
     ];
     const pattern = groups.find(([match]) => match.test(base))?.[1];
     const key = `${source}:worker-files`;
     if (!checkFiles.has(key)) checkFiles.set(key, runGit('ls-tree', '-r', '--name-only', source, '--', 'crates/agents-worker/src').split('\n').filter(Boolean));
     const files = pattern ? checkFiles.get(key).filter(file => pattern.test(file)) : checkFiles.get(key);
-    return [...new Set([...CHECK_COMMON, own, ...files, ...(base.startsWith('deepseek_tokenizer') ? ['third_party/deepseek-recipe'] : [])])].sort();
+    return [...new Set([...CHECK_COMMON, own, ...files, ...(base.startsWith('deepseek_tokenizer') ? ['third_party/deepseek-recipe', 'tests/fixtures/deepseek-token-count.json', 'tests/fixtures/deepseek-image-count.json'] : [])])].sort();
   }
   if (direct?.startsWith('apps/dashboard/')) return [...COMPONENTS.dashboard, 'package.json', 'package-lock.json'];
   if (direct?.startsWith('tests/worker/')) return [...COMPONENTS.worker, 'migrations', 'tests/worker', 'tests/e2e/response_checks.py', 'tests/e2e/validate_responses_wire.py', 'tests/e2e/requirements.lock'];
