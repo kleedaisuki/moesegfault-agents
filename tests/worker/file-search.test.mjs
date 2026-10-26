@@ -9,6 +9,7 @@ import OpenAI, { toFile } from 'openai';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createBrowserPrincipal } from './browser-principal.mjs';
 import { createIdentityFixture } from './auth-journey.mjs';
+import { dispatchSDKFetch } from './sdk-miniflare-fetch.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -117,7 +118,7 @@ test('compiled Rust Worker: owned file upload indexing query citation and deleti
   let originalEvents;
   const clientFor = key => new OpenAI({ apiKey: key, baseURL: 'https://agents.test/v1', maxRetries: 0,
     async fetch(input, init) {
-      const response = await mf.dispatchFetch(input, init);
+      const response = await dispatchSDKFetch(mf, input, init);
       if (new URL(input).pathname === '/v1/responses' && init?.method === 'POST' && JSON.parse(init.body).stream) {
         originalEvents = response.clone().text().then(parseEvents);
       }
@@ -144,7 +145,10 @@ test('compiled Rust Worker: owned file upload indexing query citation and deleti
     await new Promise(resolve => setTimeout(resolve, 2100));
     membership = await sdk.vectorStores.files.retrieve(source.id, { vector_store_id: store.id });
   } while (membership.status === 'in_progress' && Date.now() < published);
-  assert.equal(membership.status, 'completed');
+  assert.equal(membership.status, 'completed', JSON.stringify({ services: retrieval.state,
+    job: await db.prepare('SELECT status,lease_id,lease_until,retry_at,source_staged,chunk_count,last_error_json FROM vector_store_files WHERE vector_store_id=?').bind(store.id).all(),
+    chunks: await db.prepare('SELECT vector_status,vector_mutation_id FROM file_search_chunks WHERE vector_store_id=?').bind(store.id).all(),
+    observations: await db.prepare("SELECT status,unit,quantity FROM resource_observations WHERE account_id=? AND status='pending'").bind(principal.owner).all() }));
   const result = await sdk.vectorStores.search(store.id, { query: 'What is the recovery code?', filters: { type: 'eq', key: 'kind', value: 'owned' } });
   assert.ok(result.data.some(hit => hit.file_id === source.id && hit.content.some(part => part.text.includes('violet-orbit-742'))));
   await assert.rejects(clientFor(other.apiKey).vectorStores.retrieve(store.id), error => error.status === 404);

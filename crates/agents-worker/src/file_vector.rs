@@ -160,7 +160,10 @@ async fn invoke(env: &Env, binding: &str, method: &str, args: &[Value]) -> Resul
         .map_err(|_| fail("file_search_vector_method_missing"))?;
     let arguments = js_sys::Array::new();
     for argument in args {
-        arguments.push(&argument.serialize(&serde_wasm_bindgen::Serializer::json_compatible())?);
+        // serde_json's arbitrary_precision feature represents Number as a private
+        // struct to generic serializers. This is a JSON service boundary: preserve
+        // actual JS numbers instead of leaking that private representation.
+        arguments.push(&js_sys::JSON::parse(&serde_json::to_string(argument)?)?);
     }
     let promise = function
         .apply(&service, &arguments)
