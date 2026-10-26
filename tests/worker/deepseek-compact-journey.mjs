@@ -67,9 +67,11 @@ function strictCompaction(value) {
 
 export async function runDeepseekCompactJourney({ mf, encryptionKey, request, provider, configure, budgetOnly = false }) {
   const contextWindow = budgetOnly ? 1_000_000 : 8192;
-  const registry = [{ provider: 'deepseek', protocol: 'responses', model: 'deepseek-flash', context_window: contextWindow, max_output_tokens: 64 }];
+  const registry = ['deepseek-flash', ...(budgetOnly ? ['deepseek-v4-pro'] : [])].map(model =>
+    ({ provider: 'deepseek', protocol: 'responses', model, context_window: contextWindow, max_output_tokens: 64 }));
   const prices = { 'deepseek/deepseek-flash': { input_microusd_per_million: 150000,
     cached_input_microusd_per_million: 3000, output_microusd_per_million: 600000, revision: 'compaction-fixture' } };
+  if (budgetOnly) prices['deepseek/deepseek-v4-pro'] = prices['deepseek/deepseek-flash'];
   const db = await configure({ MODEL_REGISTRY_JSON: JSON.stringify(registry), MODEL_PRICING_JSON: JSON.stringify(prices), DEEPSEEK_API_KEY: key });
   provider.state.enabled = true;
   try {
@@ -92,8 +94,13 @@ export async function runDeepseekCompactJourney({ mf, encryptionKey, request, pr
       const reserved = await db.prepare("SELECT MAX(reserved_microusd) AS amount FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'completion:%'").bind(principal.owner).first('amount');
       assert.ok(reserved > 0 && reserved < 5000, 'A small prompt must not reserve the entire one-million-token model window');
       const calls = provider.state.compactions.length;
+      // Flash images are now implemented. A still-unavailable media shape must
+      // remain a prepared pre-dispatch error, not buy a doomed inference.
+      const pro = await request('POST', '/v1/agents', { name: 'No visual Pro placeholder',
+        model: { provider: 'deepseek', protocol: 'responses', model: 'deepseek-v4-pro', context_window: contextWindow, max_output_tokens: 64 },
+        tools: [], workspace: false }, 201, principal.apiKey);
       const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
-      await assert.rejects(sdk.responses.compact({ model: agent.id, input: [{ role: 'user', content: [{ type: 'input_image', image_url: png }] }] },
+      await assert.rejects(sdk.responses.compact({ model: pro.id, input: [{ role: 'user', content: [{ type: 'input_image', image_url: png }] }] },
         { headers: { 'Idempotency-Key': 'compact-unsubmitted-media' } }), error => error.status === 422);
       assert.equal(provider.state.compactions.length, calls, 'Unsupported prepared media must not buy inference');
       assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND state='reserved'").bind(principal.owner).first('n'), 0);

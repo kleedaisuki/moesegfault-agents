@@ -116,6 +116,7 @@ export function selections(source, base, files) {
     [/^tests\/worker\/auxiliary-journey\.mjs$/, 'Responses auxiliary compact and count'],
     [/^tests\/worker\/deepseek-compact-journey\.mjs$/, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage'],
     [/^tests\/worker\/deepseek-compact-journey\.mjs$/, 'DeepSeek compact reserves the exact rendered input rather than the full model window'],
+    [/^tests\/worker\/deepseek-compact-media-journey\.mjs$/, 'DeepSeek compact keeps frozen images and files through a complete continuation window'],
     [/^tests\/worker\/deepseek-tokenizer-journey\.mjs$/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
     [/^tests\/worker\/deepseek-vision-count-journey\.mjs$/, 'DeepSeek vision exact count shares frozen PNG GIF owned files and native media slots'],
   ];

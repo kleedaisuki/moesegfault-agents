@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 
 use super::{Completion, GenerationOptions, Message, ProviderConfig};
 
+#[path = "provider_compaction_source.rs"]
+mod source;
+
 pub(crate) fn prepare_deepseek(
     config: &mut ProviderConfig,
     source: &[Value],
@@ -22,16 +25,12 @@ pub(crate) fn prepare_deepseek(
         super::controls::HarnessControlEffects::default(),
     )
     .map_err(|_| "compaction_control_unsupported")?;
-    for item in source {
-        require_text_item(item)?;
-    }
     // A summary consumes the complete native record as data, not its lossy Chat
     // projection or executable tool calls. Protected instructions remain sealed
     // separately by the existing compaction-state writer.
-    let document = serde_json::to_string(source).map_err(|_| "invalid_compaction_context")?;
     let messages = vec![
         Message::text("system", guide),
-        Message::text("user", format!("Source context (JSON data):\n{document}")),
+        source::message(config, source)?,
     ];
     config.protocol = ProviderProtocol::Anthropic;
     config.base_url = "https://api.deepseek.com/anthropic/v1".into();
@@ -55,34 +54,6 @@ pub(crate) fn prepare_deepseek(
         return Err("compaction_context_too_large".into());
     }
     Ok((messages, options, count.input_tokens))
-}
-
-fn require_text_item(item: &Value) -> Result<(), String> {
-    if item
-        .get("encrypted_content")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Err("compaction_opaque_transport_unsupported".into());
-    }
-    for field in ["content", "output"] {
-        let mut parts = item
-            .get(field)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten();
-        if parts.any(|part| {
-            matches!(
-                part["type"].as_str(),
-                Some("input_image" | "input_file" | "image_url")
-            )
-        }) {
-            return Err("compaction_media_transport_unsupported".into());
-        }
-    }
-    if item["type"] == "computer_call_output" || item["type"] == "image_generation_call" {
-        return Err("compaction_media_transport_unsupported".into());
-    }
-    Ok(())
 }
 
 pub(crate) fn attest_nonthinking(completion: &mut Completion) {
