@@ -215,7 +215,7 @@ impl PreparedRpc {
             return Ok(failed(
                 "mcp_http_error",
                 Some(status),
-                self.side_effect && status >= 500,
+                self.side_effect,
                 started,
             ));
         }
