@@ -325,11 +325,17 @@ async function codeJourney(t, lifecycle) {
     }
 
   }
+  const publishedArtifactPaths = order.filter(value => value.startsWith('GET /v1/python/artifacts/')).map(value => value.slice(4));
+  const acknowledgedArtifactPaths = order.filter(value => value.startsWith('DELETE /v1/python/artifacts/')).map(value => value.slice(7));
+  assert.ok(publishedArtifactPaths.length > 0);
+  assert.deepEqual(acknowledgedArtifactPaths, publishedArtifactPaths, 'every real artifact must be published before its single ACK');
+  assert.equal(new Set(acknowledgedArtifactPaths).size, acknowledgedArtifactPaths.length, 'one immutable artifact spool cannot be ACKed twice');
+  const acknowledgedBeforeReplay = acknowledgements;
   const replayEvents = [];
   for await (const event of await client.responses.create({ ...input, stream: true }, { headers: { 'Idempotency-Key': 'known-code-auto' } })) replayEvents.push(event);
   assert.equal(replayEvents.find(event => event.type === 'response.completed')?.response.id, response.id);
   assert.deepEqual(replayEvents, events);
-  assert.equal(posts, borrowed ? 2 : 1); assert.equal(preparations, 1); assert.equal(acknowledgements, 1); assert.equal(model.calls, 2);
+  assert.equal(posts, borrowed ? 2 : 1); assert.equal(preparations, 1); assert.equal(acknowledgements, acknowledgedBeforeReplay); assert.equal(model.calls, 2);
   const getAt = order.findIndex(value=>value.startsWith('GET /v1/python/artifacts/')), ackAt = order.findIndex(value=>value.startsWith('DELETE /v1/python/artifacts/'));
   assert.ok(getAt >= 0 && ackAt > getAt);
   if (process.env.MAGENTS_CURRENT_SCHEMA_PYTHON) {
