@@ -2136,5 +2136,39 @@
         "executed_tests": 1
       }
     ]
+  },
+  {
+    "source_sha": "52ffad87f8dba5bddf5b37393647aba7c5c2d897",
+    "run_id": "40275460627",
+    "components": [
+      "native",
+      "tooling"
+    ],
+    "status": "verified",
+    "evidence": {
+      "worker_job": "failed_typecheck_two_integration_errors",
+      "native_job": "success",
+      "tooling_job": "success"
+    }
+  },
+  {
+    "source_sha": "52ffad87f8dba5bddf5b37393647aba7c5c2d897",
+    "run_id": "40275460627",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12629853953,
+    "receipt_artifact": "verification-container",
+    "receipt_artifact_id": 12630530352,
+    "verified_checks": [
+      {
+        "id": "pytest:tests/e2e/test_workspace_interpreter.py",
+        "status": "passed_current",
+        "input_fingerprint": "bc8b802bb174423cba6ec63de6341b045a44927c32bd74afe0ea1aa1d4a22f90",
+        "receipt_path": "container.json",
+        "executed_tests": 2
+      }
+    ]
   }
 ]

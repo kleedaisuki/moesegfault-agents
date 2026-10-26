@@ -33,7 +33,7 @@ impl PublicationBarrier {
         self.bytes += bytes;
         true
     }
-    fn begin(&mut self, id: &str, event: &Value) -> Result<()> {
+    pub(super) fn begin(&mut self, id: &str, event: &Value) -> Result<()> {
         if self.id.as_deref().is_some_and(|active| active != id) {
             return Err(Error::RustError("response_publication_conflict".into()));
         }

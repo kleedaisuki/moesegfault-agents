@@ -1370,7 +1370,7 @@ impl SessionInner {
     pub(super) async fn response_completion(&self, completion: &Completion) -> Result<()> {
         let data = self.snapshot()?;
         let Some(run) = data.run else { return Ok(()) };
-        let Some(response) = run.response else {
+        let Some(ref response) = run.response else {
             return Ok(());
         };
         if let Some(error) = &response.stream_error {
@@ -1400,7 +1400,7 @@ impl SessionInner {
                 .unwrap()
                 .plan_output()?
         };
-        let (has_message, changes) = legacy_completion_plan(&response, &run, completion, plan)?;
+        let (has_message, changes) = legacy_completion_plan(response, &run, completion, plan)?;
         let mut changes = changes.into_iter();
         if has_message {
             if response.stream_item.is_none() {
