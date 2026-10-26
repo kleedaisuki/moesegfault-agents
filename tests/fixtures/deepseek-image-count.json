@@ -51,6 +51,7 @@
       "name": "user_png_original",
       "asset": "small_png",
       "image_tokens": 184,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -81,6 +82,7 @@
       "name": "user_gif_auto",
       "asset": "small_gif",
       "image_tokens": 184,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -110,6 +112,7 @@
       "name": "developer_png_original",
       "asset": "small_png",
       "image_tokens": 184,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -126,19 +129,24 @@
                 "detail": "original"
               }
             ]
+          },
+          {
+            "role": "user",
+            "content": "Continue."
           }
         ],
         "reasoning": {
           "effort": "none"
         }
       },
-      "input_tokens": 188,
-      "public_input_tokens": 219
+      "input_tokens": 193,
+      "public_input_tokens": 222
     },
     {
       "name": "system_png_original",
       "asset": "small_png",
       "image_tokens": 184,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -155,19 +163,24 @@
                 "detail": "original"
               }
             ]
+          },
+          {
+            "role": "user",
+            "content": "Continue."
           }
         ],
         "reasoning": {
           "effort": "none"
         }
       },
-      "input_tokens": 188,
-      "public_input_tokens": 219
+      "input_tokens": 193,
+      "public_input_tokens": 222
     },
     {
       "name": "assistant_png_original",
       "asset": "small_png",
       "image_tokens": 184,
+      "count_supported": false,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -184,19 +197,24 @@
                 "detail": "original"
               }
             ]
+          },
+          {
+            "role": "user",
+            "content": "Continue."
           }
         ],
         "reasoning": {
           "effort": "none"
         }
       },
-      "input_tokens": 188,
-      "public_input_tokens": 217
+      "input_tokens": 193,
+      "public_input_tokens": 222
     },
     {
       "name": "user_jpeg_original",
       "asset": "small_jpeg",
       "image_tokens": 184,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -226,6 +244,7 @@
       "name": "user_webp_auto",
       "asset": "small_webp",
       "image_tokens": 184,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -255,6 +274,7 @@
       "name": "user_png_low",
       "asset": "square_png",
       "image_tokens": 184,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -284,6 +304,7 @@
       "name": "user_png_high",
       "asset": "square_png",
       "image_tokens": 652,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -313,6 +334,7 @@
       "name": "user_png_large_header_only",
       "asset": "large_png",
       "image_tokens": 994,
+      "count_supported": true,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -342,6 +364,147 @@
       "name": "function_output_png",
       "asset": "small_png",
       "image_tokens": 184,
+      "count_supported": true,
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "user",
+            "content": "Inspect the image."
+          },
+          {
+            "type": "function_call",
+            "name": "local_image",
+            "call_id": "call_vision",
+            "arguments": "{}"
+          },
+          {
+            "type": "function_call_output",
+            "call_id": "call_vision",
+            "output": [
+              {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOor68HAAL+AX66JXAlAAAAAElFTkSuQmCC",
+                "detail": "original"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "Continue."
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "input_tokens": 228,
+      "public_input_tokens": 257
+    },
+    {
+      "name": "custom_output_png",
+      "asset": "small_png",
+      "image_tokens": 184,
+      "count_supported": true,
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "user",
+            "content": "Inspect the image."
+          },
+          {
+            "type": "custom_tool_call",
+            "name": "apply_patch",
+            "call_id": "call_vision",
+            "input": "fixture patch"
+          },
+          {
+            "type": "custom_tool_call_output",
+            "call_id": "call_vision",
+            "output": [
+              {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOor68HAAL+AX66JXAlAAAAAElFTkSuQmCC",
+                "detail": "original"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "Continue."
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "input_tokens": 247,
+      "public_input_tokens": 276
+    }
+  ],
+  "counterexamples": [
+    {
+      "name": "terminal_system_without_user",
+      "asset": "small_png",
+      "image_tokens": 184,
+      "count_supported": false,
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "system",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Hello!"
+              },
+              {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOor68HAAL+AX66JXAlAAAAAElFTkSuQmCC",
+                "detail": "original"
+              }
+            ]
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      }
+    },
+    {
+      "name": "terminal_developer_without_user",
+      "asset": "small_png",
+      "image_tokens": 184,
+      "count_supported": false,
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "developer",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Hello!"
+              },
+              {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOor68HAAL+AX66JXAlAAAAAElFTkSuQmCC",
+                "detail": "original"
+              }
+            ]
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      }
+    },
+    {
+      "name": "tool_history_without_initial_user",
+      "asset": "small_png",
+      "image_tokens": 184,
+      "count_supported": false,
       "body": {
         "model": "deepseek-flash",
         "input": [
@@ -370,45 +533,7 @@
         "reasoning": {
           "effort": "none"
         }
-      },
-      "input_tokens": 220,
-      "public_input_tokens": 248
-    },
-    {
-      "name": "custom_output_png",
-      "asset": "small_png",
-      "image_tokens": 184,
-      "body": {
-        "model": "deepseek-flash",
-        "input": [
-          {
-            "type": "custom_tool_call",
-            "name": "apply_patch",
-            "call_id": "call_vision",
-            "input": "fixture patch"
-          },
-          {
-            "type": "custom_tool_call_output",
-            "call_id": "call_vision",
-            "output": [
-              {
-                "type": "input_image",
-                "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGOor68HAAL+AX66JXAlAAAAAElFTkSuQmCC",
-                "detail": "original"
-              }
-            ]
-          },
-          {
-            "role": "user",
-            "content": "Continue."
-          }
-        ],
-        "reasoning": {
-          "effort": "none"
-        }
-      },
-      "input_tokens": 239,
-      "public_input_tokens": 267
+      }
     }
   ]
 }

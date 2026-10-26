@@ -260,9 +260,32 @@ binary workspace alias is introduced.
 and tokenizer SHA256 before regenerating the 12-case synthetic corpus. It covers
 all four roles, both native tool output families, PNG/GIF/JPEG/WebP, low/high/auto/
 original detail and an 8192-square compressed PNG (header inspection only).
+The independent reference uses user-led turns: system/developer media is history
+followed by a user continuation; tool results answer calls after an initial user.
+The pinned Rust recipe and official Python differ outside that normal turn
+shape, and the recipe core cannot represent assistant image sources. Therefore
+this DeepSeek exact-count capability returns 422 for assistant images, image
+conversations without a user, or assistant/tool-call history before the first
+user. Three explicit terminal/leading-turn counterexamples are retained, without
+invented token totals. These restrictions do not alter generic Responses roles,
+drop media, or restrict create preparation; broader exact counting remains open.
 The dedicated Worker/SDK case adds owned-file/HTTPS equivalence, one fetch per
 preparation, private/redirect/oversize refusals, no count Sessions/model ledger,
 and one controlled create observing the same frozen GIF payload. All provider
 traffic in that fixture is synthetic; its usage equality is not hosted vision
 usage parity. No paid model probe is required. Compiled execution is pending
 the new-source incremental CI, not implied by the offline corpus.
+
+The first actual compiled runtime is `b2dddb6848bf1e257e2d68e932c9c713ae013b52`,
+CI 40325451814, Worker artifact 12650154454 (Wasm SHA256
+`1d13732aeb2769b9d6c016b12cf1495f537e4c76796e74543dcd66053322c114`).
+Seven new Rust contracts passed; the initial corpus contract exposed the turn
+shape mismatch above. Reusing that exact Wasm after correcting the independent
+reference shapes, the Worker/Node SDK journey passed 13 exact public counts,
+owned-file/frozen-HTTPS equality, refusals and one controlled native create.
+Current Python SDK 3.37 strict JSON validation also passed. The fixture reports
+known input 219 while cache creation remains unknown: standard `usage` stays
+null and authoritative input is retained in `agents_usage`, not fabricated as
+zero. This is a controlled protocol test, not a hosted vision usage probe.
+The added fail-closed turn-capability guard and repaired Rust corpus assertion
+still require the subsequent new-source CI.

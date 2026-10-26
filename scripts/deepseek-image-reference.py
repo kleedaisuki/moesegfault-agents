@@ -84,11 +84,16 @@ def main() -> None:
             native = [{'role': role, 'content': [{'type': 'input_text', 'text': 'Hello!'}, image]}]
             # Official Responses converter maps developer to V4.1 system.
             messages = [{'role': 'system' if role == 'developer' else role, 'content': [{'type': 'text', 'text': 'Hello!'}, reference_image]}]
+            if role != 'user':
+                native.append({'role': 'user', 'content': 'Continue.'})
+                messages.append({'role': 'user', 'content': 'Continue.'})
         else:
             tool_name: str = 'local_image' if role == 'function' else 'apply_patch'
             arguments: str = '{}' if role == 'function' else json.dumps({'input': 'fixture patch'})
             native = [{'type': 'function_call', 'name': tool_name, 'call_id': 'call_vision', 'arguments': arguments} if role == 'function' else {'type': 'custom_tool_call', 'name': tool_name, 'call_id': 'call_vision', 'input': 'fixture patch'}, {'type': 'function_call_output' if role == 'function' else 'custom_tool_call_output', 'call_id': 'call_vision', 'output': [image]}, {'role': 'user', 'content': 'Continue.'}]
             messages = [{'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'call_vision', 'type': 'function', 'function': {'name': tool_name, 'arguments': arguments}}]}, {'role': 'tool', 'tool_call_id': 'call_vision', 'content': [reference_image]}, {'role': 'user', 'content': 'Continue.'}]
+            native.insert(0, {'role': 'user', 'content': 'Inspect the image.'})
+            messages.insert(0, {'role': 'user', 'content': 'Inspect the image.'})
         counts: list[int] = []
         for reference in [messages, [{'role': 'system', 'content': prefix}, *messages]]:
             prompt: str
@@ -97,9 +102,26 @@ def main() -> None:
             assert len(images) == 1
             counts.append(len(tokenizer.encode(prompt, add_special_tokens=False).ids) + image_tokens - 1)
         fixtures.append({'name': name, 'asset': asset_name, 'image_tokens': image_tokens,
+                         'count_supported': role != 'assistant',
                          'body': {'model': 'deepseek-flash', 'input': native, 'reasoning': {'effort': 'none'}},
                          'input_tokens': counts[0], 'public_input_tokens': counts[1]})
-    output: dict[str, Any] = {'renderer_sha256': hashlib.sha256(encoding).hexdigest(), 'recipe_revision': '935817c66f5d6e64838f419692545f06787e485f', 'api_calls': 0, 'assets': assets, 'fixtures': fixtures}
+    counterexamples: list[dict[str, Any]] = []
+    for role in ['system', 'developer']:
+        terminal: dict[str, Any] = json.loads(json.dumps(next(case for case in fixtures if case['name'] == f'{role}_png_original')))
+        terminal['name'] = f'terminal_{role}_without_user'
+        terminal['body']['input'].pop()
+        for key in ['input_tokens', 'public_input_tokens']:
+            terminal.pop(key)
+        terminal['count_supported'] = False
+        counterexamples.append(terminal)
+    leading_tool: dict[str, Any] = json.loads(json.dumps(next(case for case in fixtures if case['name'] == 'function_output_png')))
+    leading_tool['name'] = 'tool_history_without_initial_user'
+    leading_tool['body']['input'].pop(0)
+    for key in ['input_tokens', 'public_input_tokens']:
+        leading_tool.pop(key)
+    leading_tool['count_supported'] = False
+    counterexamples.append(leading_tool)
+    output: dict[str, Any] = {'renderer_sha256': hashlib.sha256(encoding).hexdigest(), 'recipe_revision': '935817c66f5d6e64838f419692545f06787e485f', 'api_calls': 0, 'assets': assets, 'fixtures': fixtures, 'counterexamples': counterexamples}
     args.output.write_text(json.dumps(output, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({item['name']: [item['input_tokens'], item['public_input_tokens']] for item in fixtures}))
 
