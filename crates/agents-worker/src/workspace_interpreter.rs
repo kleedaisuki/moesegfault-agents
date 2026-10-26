@@ -180,7 +180,7 @@ impl PythonArtifact {
     }
 }
 
-async fn bytes(mut response: TimedResponse, maximum: usize) -> Result<Vec<u8>> {
+async fn bytes(response: TimedResponse, maximum: usize) -> Result<Vec<u8>> {
     if response.status_code() != 200 {
         return Err(fail(if response.status_code() == 404 {
             "code_container_not_found"
@@ -188,6 +188,10 @@ async fn bytes(mut response: TimedResponse, maximum: usize) -> Result<Vec<u8>> {
             "code_transport_error"
         }));
     }
+    reply_bytes(response, maximum).await
+}
+
+async fn reply_bytes(mut response: TimedResponse, maximum: usize) -> Result<Vec<u8>> {
     let mut stream = response.response.stream()?;
     response
         .deadline
@@ -207,6 +211,11 @@ async fn bytes(mut response: TimedResponse, maximum: usize) -> Result<Vec<u8>> {
 
 async fn decode<T: DeserializeOwned>(response: TimedResponse) -> Result<T> {
     serde_json::from_slice(&bytes(response, REPLY_LIMIT).await?)
+        .map_err(|_| fail("code_protocol_error"))
+}
+
+async fn rejection(response: TimedResponse) -> Result<Value> {
+    serde_json::from_slice(&reply_bytes(response, 4096).await?)
         .map_err(|_| fail("code_protocol_error"))
 }
 
@@ -240,7 +249,7 @@ impl Workspace<'_> {
             return Err(fail("code_container_not_found"));
         }
         if response.status_code() == 422 {
-            let rejection: Value = decode(response).await?;
+            let rejection = rejection(response).await?;
             let code = match rejection["error"].as_str() {
                 Some("code_memory_profile_mismatch") => "code_memory_profile_mismatch",
                 _ => "code_memory_profile_unavailable",
@@ -252,7 +261,7 @@ impl Workspace<'_> {
             return Err(fail(code));
         }
         if response.status_code() == 409 {
-            let error: Value = decode(response).await?;
+            let error = rejection(response).await?;
             return Err(fail(if error["error"] == "code_network_policy_conflict" {
                 "code_network_policy_conflict"
             } else {
