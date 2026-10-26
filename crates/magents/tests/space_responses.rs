@@ -10,7 +10,7 @@ use std::{
 };
 
 fn directory() -> tempfile::TempDir {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/cli-tests");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp/cli-tests");
     std::fs::create_dir_all(&root).unwrap();
     tempfile::tempdir_in(root).unwrap()
 }
