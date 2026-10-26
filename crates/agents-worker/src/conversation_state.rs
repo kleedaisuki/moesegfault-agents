@@ -1,6 +1,7 @@
 //! Model-independent, owner-scoped conversation authority. The outer API authenticates
 //! the caller; this object verifies the resulting owner binding on every operation.
 use crate::{
+    conversation_meter::ConversationOperation,
     conversation_routes::ConversationItemProvenance,
     session_storage::{read_chunks, read_many, write_chunks},
     util,
@@ -10,6 +11,8 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use worker::*;
 
+const IMAGE_CANDIDATES: &str = "conversation.image-candidates";
+const IMAGE_DELETE: &str = "conversation.image-delete";
 const HEAD: &str = "conversation.v1";
 const MAX_ITEMS: usize = 20;
 const MAX_BODY: usize = 16 * 1024 * 1024;
@@ -39,6 +42,8 @@ struct ConversationRecord {
     pending_expires_at_ms: Option<u64>,
     #[serde(default)]
     execution_hint: Option<ExecutionHint>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    image_cleanup_pending: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -108,7 +113,8 @@ impl DurableObject for ConversationState {
         self.state
             .block_concurrency_while(async move {
                 crate::conversation_meter::actor(&env, &owner, &headers, async {
-                    match handle(req, &storage).await {
+                    let operation = ConversationOperation::actor_scope(&headers)?;
+                    match handle(req, &storage, &env, &operation).await {
                         Err(Error::RustError(code)) if code == "conversation_item_conflict" => {
                             util::json_error(
                                 409,
@@ -132,6 +138,126 @@ impl DurableObject for ConversationState {
             })
             .await
     }
+}
+
+async fn reconcile_images(
+    storage: &Storage,
+    env: &Env,
+    operation: &ConversationOperation,
+    owner: &str,
+    record: Option<&mut ConversationRecord>,
+) -> Result<()> {
+    let Some(record) = record else {
+        return Ok(());
+    };
+    if !record.image_cleanup_pending {
+        return Ok(());
+    }
+    let deleting = storage
+        .get::<Vec<String>>(IMAGE_DELETE)
+        .await?
+        .unwrap_or_default();
+    for id in deleting {
+        if record.tombstones.contains(&id) {
+            operation
+                .external_d1(
+                    env,
+                    owner,
+                    "conversation-image-delete",
+                    2,
+                    crate::workspace_blobs::release_conversation_image(env, owner, &record.id, &id),
+                )
+                .await?;
+        }
+    }
+    storage.delete(IMAGE_DELETE).await?;
+    let candidates = storage
+        .get::<Vec<String>>(IMAGE_CANDIDATES)
+        .await?
+        .unwrap_or_default();
+    for id in candidates {
+        if !record.items.contains(&id) {
+            operation
+                .external_d1(
+                    env,
+                    owner,
+                    "conversation-image-discard",
+                    1,
+                    crate::workspace_blobs::discard_unpublished_conversation_image(
+                        env, owner, &record.id, &id,
+                    ),
+                )
+                .await?;
+        }
+    }
+    storage.delete(IMAGE_CANDIDATES).await?;
+    record.image_cleanup_pending = false;
+    save(storage, record).await?;
+    Ok(())
+}
+
+async fn stage_images(
+    storage: &Storage,
+    env: &Env,
+    operation: &ConversationOperation,
+    record: &mut ConversationRecord,
+    items: &[Value],
+    body: &Value,
+) -> Result<()> {
+    let images: BTreeMap<String, crate::workspace_blobs::OwnedBlobRef> = body
+        .get("image_assets")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()?
+        .unwrap_or_default();
+    if images.len() > crate::response_image_projection::MAX_ASSETS {
+        return Err(Error::RustError(
+            "conversation_execution_context_invalid".into(),
+        ));
+    }
+    for (id, blob) in &images {
+        blob.validate(&record.owner)?;
+        if record.items.contains(id)
+            || !items.iter().any(|item| {
+                item["id"].as_str() == Some(id.as_str())
+                    && item["type"] == "image_generation_call"
+                    && item["status"] == "completed"
+                    && item["result"].is_null()
+            })
+        {
+            return Err(Error::RustError(
+                "conversation_execution_context_invalid".into(),
+            ));
+        }
+    }
+    if images.is_empty() {
+        return Ok(());
+    }
+    // A durable candidate list permits cleanup only after the header proves
+    // that publication never committed. The existing registry remains sole GC.
+    storage
+        .put(IMAGE_CANDIDATES, images.keys().cloned().collect::<Vec<_>>())
+        .await?;
+    record.image_cleanup_pending = true;
+    save(storage, record).await?;
+    for (id, blob) in &images {
+        operation
+            .external_d1(
+                env,
+                &record.owner,
+                "conversation-image-bind",
+                1,
+                crate::workspace_blobs::bind_conversation_image(
+                    env,
+                    &record.owner,
+                    &record.id,
+                    id,
+                    blob,
+                ),
+            )
+            .await?;
+        write_chunks(storage, &format!("image:{id}"), &serde_json::to_vec(blob)?).await?;
+    }
+    Ok(())
 }
 
 async fn load(storage: &Storage) -> Result<Option<ConversationRecord>> {
@@ -589,7 +715,12 @@ async fn append(
     Ok(items)
 }
 
-async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
+async fn handle(
+    mut req: Request,
+    storage: &Storage,
+    env: &Env,
+    operation: &ConversationOperation,
+) -> Result<Response> {
     let owner = req.headers().get("X-Agents-Owner")?.unwrap_or_default();
     if owner.is_empty() {
         return util::json_error(403, "forbidden", "Owner binding required");
@@ -600,6 +731,7 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
     if record.as_ref().is_some_and(|record| record.owner != owner) {
         return util::json_error(404, "not_found", "Conversation not found");
     }
+    reconcile_images(storage, env, operation, &owner, record.as_mut()).await?;
     if path == "/init" && method == Method::Post {
         if let Some(record) = record {
             if record.deleted {
@@ -637,6 +769,7 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
             active_activated: false,
             pending_expires_at_ms: None,
             execution_hint: None,
+            image_cleanup_pending: false,
         };
         append(storage, &mut record, items, None).await?;
         return Response::from_json(&record.public());
@@ -749,6 +882,7 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
                 },
                 None => BTreeMap::new(),
             };
+            stage_images(storage, env, operation, &mut record, &items, &body).await?;
             // Publish the receipt with the same header that exposes its items:
             // an interrupted transport can retry without duplicating model work.
             record
@@ -768,7 +902,7 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
                 &json!({"id":record.id,"revision":record.revision,"response_id":response_id}),
             )
         }
-        (Method::Get, "/items") => list(req, storage, &record).await,
+        (Method::Get, "/items") => list(req, storage, env, &record).await,
         (Method::Post, "/items") => {
             if record.deleted {
                 return util::json_error(404, "not_found", "Conversation not found");
@@ -801,18 +935,64 @@ async fn handle(mut req: Request, storage: &Storage) -> Result<Response> {
                 return util::json_error(404, "not_found", "Conversation item not found");
             }
             if req.method() == Method::Get {
-                return Response::from_json(&project(item(storage, id).await?, &includes(&req)?));
+                let value = project(item(storage, id).await?, &includes(&req)?);
+                return Response::from_json(&public_value(storage, env, &owner, value).await?);
+            }
+            if read_chunks(storage, &format!("image:{id}"))
+                .await?
+                .is_some()
+            {
+                storage.put(IMAGE_DELETE, vec![id.to_owned()]).await?;
+                record.image_cleanup_pending = true;
             }
             record.tombstones.insert(id.into());
             record.revision += 1;
             save(storage, &record).await?;
+            reconcile_images(storage, env, operation, &owner, Some(&mut record)).await?;
             Response::from_json(&record.public())
         }
         _ => util::json_error(404, "not_found", "Unknown conversation operation"),
     }
 }
 
-async fn list(req: Request, storage: &Storage, record: &ConversationRecord) -> Result<Response> {
+async fn public_value(
+    storage: &Storage,
+    env: &Env,
+    owner: &str,
+    mut value: Value,
+) -> Result<Value> {
+    let items = value
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![&value]);
+    let mut images = crate::response_image_projection::ResponseImages::default();
+    for item in items {
+        if item["type"] != "image_generation_call"
+            || item["status"] != "completed"
+            || !item["result"].is_null()
+        {
+            continue;
+        }
+        let id = item["id"]
+            .as_str()
+            .ok_or_else(|| Error::RustError("invalid_image_projection".into()))?;
+        if let Some(bytes) = read_chunks(storage, &format!("image:{id}")).await? {
+            images.insert_final(owner, id, serde_json::from_slice(&bytes)?)?;
+        }
+    }
+    // Validate the complete page envelope before the first separately funded
+    // read, rather than independently allowing a maximum-size image per item.
+    images.hydrate(env, owner, &mut value).await?;
+    Ok(value)
+}
+
+async fn list(
+    req: Request,
+    storage: &Storage,
+    env: &Env,
+    record: &ConversationRecord,
+) -> Result<Response> {
     let include = includes(&req)?;
     let url = req.url()?;
     let query = url.query_pairs().collect::<BTreeMap<_, _>>();
@@ -855,7 +1035,8 @@ async fn list(req: Request, storage: &Storage, record: &ConversationRecord) -> R
         .into_iter()
         .map(|item| project(item, &include))
         .collect();
-    Response::from_json(&page(items, selected.next().is_some()))
+    let value = page(items, selected.next().is_some());
+    Response::from_json(&public_value(storage, env, &record.owner, value).await?)
 }
 
 #[cfg(test)]

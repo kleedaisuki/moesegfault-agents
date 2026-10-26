@@ -44,6 +44,8 @@ pub(crate) struct ConversationExecutionContext {
     pub accepted_revision: u64,
     pub defer_release: bool,
     pub item_provenance: std::collections::BTreeMap<String, ConversationItemProvenance>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub image_assets: std::collections::BTreeMap<String, crate::workspace_blobs::OwnedBlobRef>,
 }
 
 #[derive(Deserialize)]

@@ -34,6 +34,10 @@ pub(crate) mod context;
 mod conversations;
 #[path = "session_file_pins.rs"]
 mod file_pins;
+#[path = "session_image_lifecycle.rs"]
+mod image_lifecycle;
+#[path = "session_image_observation.rs"]
+pub(crate) mod image_observation;
 #[path = "session_native.rs"]
 mod native;
 #[path = "session_native_output.rs"]
@@ -177,6 +181,10 @@ struct PersistedSession {
     conversation_releases: Vec<conversations::ConversationRelease>,
     #[serde(default)]
     conversation_retry_at: u64,
+    #[serde(default)]
+    image_handoffs: Vec<image_lifecycle::ImageHandoff>,
+    #[serde(default)]
+    image_handoff_retry_at: u64,
 }
 
 impl PersistedSession {
@@ -255,6 +263,7 @@ struct SessionInner {
     closing: Cell<bool>,
     observer: RefCell<Option<Observer>>,
     response_observers: RefCell<Vec<ResponseObserver>>,
+    image_observations: image_observation::ImageObservations,
     response_publication_barrier: RefCell<response_steering::PublicationBarrier>,
     terminal_followers: crate::observation_registry::TerminalFollowers,
     persistence: futures::lock::Mutex<()>,
@@ -279,6 +288,7 @@ impl Session {
             closing: Cell::new(false),
             observer: RefCell::new(None),
             response_observers: RefCell::new(vec![]),
+            image_observations: image_observation::ImageObservations::default(),
             response_publication_barrier: RefCell::new(
                 response_steering::PublicationBarrier::default(),
             ),
@@ -350,6 +360,9 @@ impl DurableObject for Session {
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let inner = &self.inner;
+        if req.method() == Method::Post && req.path().starts_with("/image-observations/") {
+            return inner.image_observation_close_route(req).await;
+        }
         if req.method() == Method::Post && req.path().starts_with("/code-resources/") {
             return inner.code_resource_route(req).await;
         }
@@ -443,6 +456,8 @@ impl DurableObject for Session {
                     native_context: None,
                     conversation_releases: vec![],
                     conversation_retry_at: 0,
+                    image_handoffs: vec![],
+                    image_handoff_retry_at: 0,
                 });
                 inner.persist().await?;
                 inner.arm_alarm().await?;
@@ -750,6 +765,7 @@ impl DurableObject for Session {
             util::emit("code.cleanup_pending", json!({"retry_after_ms":10_000}));
         }
         inner.cleanup_connection_grants().await?;
+        inner.reconcile_image_handoffs().await?;
         inner.reconcile_conversation_releases().await?;
         inner.reconcile_response_archives().await?;
         if inner.closing.get() {
@@ -1693,6 +1709,7 @@ impl SessionInner {
         }
         self.prepare_response_branch().await?;
         self.prepare_conversation_commit().await?;
+        self.prepare_image_terminal().await?;
         self.reserve_response_events();
         let needs_end = saved.run.as_ref().unwrap().ended_at_ms.is_none();
         if needs_end {
@@ -1805,6 +1822,7 @@ impl SessionInner {
                 result.as_ref().err().cloned(),
                 &generation,
             )?;
+        self.handoff_images_locked().await?;
         self.release_conversations_locked().await?;
         if let Some(response) = response {
             let has_attachments = !response.attachments.is_empty();
@@ -1819,7 +1837,8 @@ impl SessionInner {
                 .as_mut()
                 .unwrap()
                 .pending_client_tools = response.awaiting_calls.clone();
-            self.publish_response(response);
+            self.publish_response(response).await;
+            self.handoff_images_locked().await?;
             if has_attachments
                 && crate::space::release_response_files(
                     &self.env,
@@ -2638,6 +2657,7 @@ fn alarm_deadline(data: &PersistedSession, now: u64) -> Option<u64> {
     for deadline in [
         data.connection_cleanup_at,
         conversations::cleanup_deadline(data, now),
+        image_lifecycle::cleanup_deadline(data, now),
     ]
     .into_iter()
     .flatten()
@@ -2827,6 +2847,8 @@ mod tests {
             native_context: None,
             conversation_releases: vec![],
             conversation_retry_at: 0,
+            image_handoffs: vec![],
+            image_handoff_retry_at: 0,
         }
     }
 

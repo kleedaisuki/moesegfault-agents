@@ -168,6 +168,23 @@ impl ConversationOperation {
         })
     }
 
+    /// Use only inside actor's funding-validated work. The enclosing caller owns
+    /// this reservation and parent interval, whether account- or Session-scoped.
+    pub(crate) fn actor_scope(headers: &Headers) -> Result<Self> {
+        let raw = headers
+            .get(HEADER)?
+            .ok_or_else(|| fail("conversation_meter_grant_required"))?;
+        let grant = Grant::parse(&raw)?;
+        Ok(Self {
+            run_id: grant.run_id,
+            session_id: grant.session_id,
+            parent_event: None,
+            parent_resource: Resource::DurableObject,
+            scope: Scope::Session,
+            started_at_ms: 0,
+        })
+    }
+
     fn meter<'a>(&'a self, env: &'a Env, owner: &'a str) -> Result<ResourceMeter<'a>> {
         match self.session_id.as_deref() {
             Some(session) => ResourceMeter::new(env, owner, session, &self.run_id),
@@ -218,6 +235,36 @@ impl ConversationOperation {
 
     /// Never reuse a grant after an ambiguous transport failure. A retry gets a
     /// new observation while the old uncertain observation keeps its budget hold.
+    /// A fixed registry batch preserves exact measurements in this actor scope.
+    pub(crate) async fn external_d1<F>(
+        &self,
+        env: &Env,
+        owner: &str,
+        label: &str,
+        count: usize,
+        work: F,
+    ) -> Result<Vec<D1Result>>
+    where
+        F: Future<Output = Result<Vec<D1Result>>>,
+    {
+        self.require_open()?;
+        let meter = self.meter(env, owner)?;
+        let mut events = vec![];
+        for _ in 0..count {
+            let event = event(label)?;
+            meter.require_d1(&event).await?;
+            events.push(event);
+        }
+        let results = work.await?;
+        if results.len() != events.len() {
+            return Err(fail("conversation_d1_measurement_missing"));
+        }
+        for (event, result) in events.iter().zip(&results) {
+            meter.record_d1(event, result).await?;
+        }
+        Ok(results)
+    }
+
     pub(crate) async fn actor_headers(
         &self,
         env: &Env,

@@ -10,9 +10,9 @@ use crate::{session::sse, util};
 
 const HEADER: &str = "x-agents-internal-observer";
 const EVENT: &str = "agents.json";
-// Responses output is capped at 4 MiB; Chat provider bodies at 16 MiB. Leave
-// room for JSON framing/escaping without accepting an unbounded internal body.
-const MAX_BYTES: usize = 32 * 1024 * 1024;
+// Canonical Responses metadata stays small; image projections may expand at the
+// observation boundary. Admission uses this same terminal-envelope byte limit.
+pub(crate) const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_WIRE_BYTES: usize = MAX_BYTES + 64 * 1024;
 
 pub(crate) type Sender = mpsc::UnboundedSender<Result<Vec<u8>>>;

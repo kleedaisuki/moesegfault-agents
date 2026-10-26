@@ -5,6 +5,14 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::JsValue;
 use worker::{Env, Error, Result};
 
+#[path = "workspace_image_execution.rs"]
+mod image_execution;
+pub(crate) use image_execution::{
+    ImageDelivery, ImageExecutionAsset, ImageTransfer, bind_conversation_image,
+    bind_image_execution, discard_unpublished_conversation_image, release_conversation_image,
+    transfer_image_execution,
+};
+
 const LEASE_MS: u64 = 86_400_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -343,8 +351,9 @@ pub(crate) async fn bind_image_response(
     if find_image_key(env, owner, &blob.object_key).await?.as_ref() != Some(blob) {
         return Err(fail("workspace_blob_identity_conflict"));
     }
+    let id = image_ref_id(response, artifact)?;
     env.d1("DB")?.prepare("INSERT INTO workspace_blob_refs(account_id,kind,ref_id,object_key,response_id) VALUES(?,'response-artifact',?,?,?) ON CONFLICT(account_id,kind,ref_id) DO UPDATE SET object_key=excluded.object_key")
-        .bind(&[text(owner),text(artifact),text(&blob.object_key),text(response)])?.run().await?;
+        .bind(&[text(owner),text(&id),text(&blob.object_key),text(response)])?.run().await?;
     Ok(())
 }
 
@@ -442,6 +451,7 @@ pub(crate) async fn bind_transfer(
 pub(crate) async fn release_transfer(env: &Env, owner: &str, child_response: &str) -> Result<()> {
     env.d1("DB")?.prepare("DELETE FROM workspace_blob_refs WHERE account_id=? AND kind='fork-transfer' AND ref_id=?")
         .bind(&[text(owner),text(child_response)])?.run().await?;
+    release_image_transfers(env, owner, child_response).await?;
     Ok(())
 }
 
@@ -504,7 +514,11 @@ pub(crate) async fn release_connection(
     response: &str,
 ) -> Result<()> {
     let id = connection_ref_id(connection, response)?;
-    release_transfer(env, owner, &id).await
+    let lower = format!("{id}:image:");
+    let upper = format!("{id}:image;");
+    env.d1("DB")?.prepare("DELETE FROM workspace_blob_refs WHERE account_id=? AND kind='fork-transfer' AND (ref_id=? OR (ref_id>=? AND ref_id<?))")
+        .bind(&[text(owner),text(&id),text(&lower),text(&upper)])?.run().await?;
+    Ok(())
 }
 
 /// Keep both old and candidate archives alive until pointer publication commits.
@@ -544,13 +558,17 @@ pub(crate) async fn reconcile_session(
 /// Call only after the owning DO has durably tombstoned the response. Other
 /// branches retain their own anchors; published user versions are never released.
 pub(crate) async fn release_response(env: &Env, owner: &str, response: &str) -> Result<()> {
-    env.d1("DB")?
-        .prepare(
-            "DELETE FROM workspace_blob_refs WHERE account_id=? AND ((kind='response' AND ref_id=?) OR (kind='response-artifact' AND response_id=?))",
-        )
-        .bind(&[text(owner), text(response), text(response)])?
-        .run()
-        .await?;
+    if response.is_empty() || response.len() > 256 {
+        return Err(fail("invalid_workspace_blob_ref"));
+    }
+    let db = env.d1("DB")?;
+    let mark=db.prepare("INSERT INTO response_blob_tombstones(account_id,response_id) VALUES(?,?) ON CONFLICT(account_id,response_id) DO NOTHING")
+        .bind(&[text(owner),text(response)])?;
+    let remove=db.prepare("DELETE FROM workspace_blob_refs WHERE account_id=? AND ((kind='response' AND ref_id=?) OR (kind='response-artifact' AND response_id=?))")
+        .bind(&[text(owner),text(response),text(response)])?;
+    let deliveries=db.prepare("DELETE FROM workspace_blob_refs WHERE account_id=? AND kind='image-delivery' AND response_id=?")
+        .bind(&[text(owner),text(response)])?;
+    db.batch(vec![mark, remove, deliveries]).await?;
     Ok(())
 }
 pub(crate) async fn referenced(env: &Env, key: &str) -> Result<bool> {
@@ -594,6 +612,8 @@ pub(crate) async fn claim_expired(env: &Env, limit: usize) -> Result<Vec<OwnedAr
     reconcile_file_refs(env, now).await?;
     env.d1("DB")?.prepare("DELETE FROM workspace_blob_refs WHERE rowid IN (SELECT rowid FROM workspace_blob_refs WHERE kind='fork-transfer' AND lease_until_ms<=CAST(? AS INTEGER) ORDER BY lease_until_ms,rowid LIMIT 64)")
         .bind(&[text(&now.to_string())])?.run().await?;
+    env.d1("DB")?.prepare("DELETE FROM workspace_blob_refs WHERE rowid IN (SELECT rowid FROM workspace_blob_refs WHERE kind='image-delivery' AND lease_until_ms<=CAST(? AS INTEGER) ORDER BY lease_until_ms,rowid LIMIT 64)")
+        .bind(&[text(&now.to_string())])?.run().await?;
     env.d1("DB")?.prepare("DELETE FROM owner_blob_capacity_holds WHERE rowid IN (SELECT rowid FROM owner_blob_capacity_holds WHERE expires_at_ms<=CAST(? AS INTEGER) ORDER BY expires_at_ms,rowid LIMIT 64)")
         .bind(&[text(&now.to_string())])?.run().await?;
     let rows=env.d1("DB")?.prepare("SELECT * FROM workspace_blobs WHERE lease_until_ms<=CAST(? AS INTEGER) ORDER BY lease_until_ms,object_key LIMIT ?")
@@ -616,6 +636,89 @@ pub(crate) async fn finish_delete(env: &Env, key: &str) -> Result<()> {
         .bind(&[text(key)])?.run().await?;
     Ok(())
 }
+fn image_ref_id(response: &str, artifact: &str) -> Result<String> {
+    if response.is_empty() || response.len() > 256 || artifact.is_empty() || artifact.len() > 512 {
+        return Err(fail("invalid_image_blob_holder"));
+    }
+    let digest = Sha256::digest(serde_json::to_vec(&(response, artifact))?);
+    Ok(format!("image:{digest:x}"))
+}
+
+fn image_transfer_prefix(response: &str) -> Result<String> {
+    if response.is_empty() || response.len() > 256 {
+        return Err(fail("invalid_image_blob_holder"));
+    }
+    let digest = Sha256::digest(serde_json::to_vec(response)?);
+    Ok(format!("image-transfer:{digest:x}:"))
+}
+
+async fn validate_image_holder(env: &Env, owner: &str, blob: &OwnedBlobRef) -> Result<()> {
+    blob.validate(owner)?;
+    if find_image_key(env, owner, &blob.object_key).await?.as_ref() != Some(blob) {
+        return Err(fail("workspace_blob_identity_conflict"));
+    }
+    Ok(())
+}
+
+pub(crate) async fn bind_image_connection(
+    env: &Env,
+    owner: &str,
+    connection: &str,
+    response: &str,
+    artifact: &str,
+    expires_at_ms: u64,
+    blob: &OwnedBlobRef,
+) -> Result<()> {
+    validate_connection_lease(connection, response, expires_at_ms, crate::util::now_ms())?;
+    validate_image_holder(env, owner, blob).await?;
+    let base = connection_ref_id(connection, response)?;
+    let item = image_ref_id(response, artifact)?;
+    let id = format!("{base}:image:{item}");
+    env.d1("DB")?.prepare("INSERT INTO workspace_blob_refs(account_id,kind,ref_id,object_key,lease_until_ms) VALUES(?,'fork-transfer',?,?,CAST(? AS INTEGER)) ON CONFLICT(account_id,kind,ref_id) DO UPDATE SET object_key=excluded.object_key,lease_until_ms=MIN(workspace_blob_refs.lease_until_ms,excluded.lease_until_ms)")
+        .bind(&[text(owner),text(&id),text(&blob.object_key),text(&expires_at_ms.to_string())])?.run().await?;
+    Ok(())
+}
+
+pub(crate) async fn bind_image_transfer(
+    env: &Env,
+    owner: &str,
+    child_response: &str,
+    artifact: &str,
+    blob: &OwnedBlobRef,
+) -> Result<()> {
+    validate_image_holder(env, owner, blob).await?;
+    let prefix = image_transfer_prefix(child_response)?;
+    let item = image_ref_id(child_response, artifact)?;
+    let id = format!("{prefix}{item}");
+    env.d1("DB")?.prepare("INSERT INTO workspace_blob_refs(account_id,kind,ref_id,object_key,lease_until_ms) VALUES(?,'fork-transfer',?,?,CAST(? AS INTEGER)) ON CONFLICT(account_id,kind,ref_id) DO UPDATE SET object_key=excluded.object_key,lease_until_ms=MAX(workspace_blob_refs.lease_until_ms,excluded.lease_until_ms)")
+        .bind(&[text(owner),text(&id),text(&blob.object_key),text(&crate::util::now_ms().saturating_add(LEASE_MS).to_string())])?.run().await?;
+    Ok(())
+}
+
+pub(crate) async fn release_image_transfers(
+    env: &Env,
+    owner: &str,
+    child_response: &str,
+) -> Result<()> {
+    let prefix = image_transfer_prefix(child_response)?;
+    let upper = format!("{};", prefix.trim_end_matches(':'));
+    env.d1("DB")?.prepare("DELETE FROM workspace_blob_refs WHERE account_id=? AND kind='fork-transfer' AND ref_id>=? AND ref_id<?")
+        .bind(&[text(owner),text(&prefix),text(&upper)])?.run().await?;
+    Ok(())
+}
+
+fn conversation_ref_prefix(conversation: &str) -> Result<String> {
+    if conversation.is_empty()
+        || conversation.len() > 128
+        || !conversation
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+    {
+        return Err(fail("invalid_conversation_workspace_reference"));
+    }
+    Ok(format!("{conversation}:"))
+}
+
 fn values(a: &OwnedArchiveRef, lease: Option<u64>) -> Vec<JsValue> {
     let mut values = vec![
         text(&a.object_key),

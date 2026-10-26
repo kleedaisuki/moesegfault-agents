@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 mod code;
 #[path = "session_hosted_file_search.rs"]
 mod file_search;
+#[path = "session_hosted_image.rs"]
+mod image;
 #[path = "session_hosted_search.rs"]
 mod search;
 
@@ -141,6 +143,7 @@ impl SessionInner {
                 crate::hosted_tools::Kind::CodeInterpreter
                     | crate::hosted_tools::Kind::WebSearch
                     | crate::hosted_tools::Kind::FileSearch
+                    | crate::hosted_tools::Kind::ImageGeneration
             )
         ) {
             return Ok(None);
@@ -155,6 +158,10 @@ impl SessionInner {
             .filter(|binding| binding.allows(crate::hosted_bindings::Caller::Direct))
             .ok_or_else(|| Error::RustError("hosted_tool_not_bound".into()))?;
         match kind {
+            Some(crate::hosted_tools::Kind::ImageGeneration) => self
+                .dispatch_hosted_image(record, execution, call, &binding)
+                .await
+                .map(Some),
             Some(crate::hosted_tools::Kind::FileSearch) => self
                 .dispatch_hosted_file_search(record, execution, call, &binding)
                 .await

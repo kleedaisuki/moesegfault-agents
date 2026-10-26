@@ -1,4 +1,5 @@
 use super::*;
+use crate::response_image_projection::{ResponseFrame, ResponseImages};
 use crate::response_limits::{CanonicalOutput, OutputChange, OutputPlan};
 use crate::responses_wire::{self as wire, ResponseRequest};
 use std::collections::BTreeMap;
@@ -28,6 +29,10 @@ pub(super) struct ResponseRun {
     pub(super) obfuscation_seed: Option<Seed>,
     pub(super) input_items: Vec<Value>,
     pub(super) output: CanonicalOutput,
+    #[serde(default, skip_serializing_if = "ResponseImages::is_empty")]
+    pub(super) images: ResponseImages,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) image_lifecycle: Option<super::image_lifecycle::ImageLifecycle>,
     pub(super) events: Vec<Value>,
     pub(super) status: String,
     pub(super) error: Option<String>,
@@ -180,7 +185,7 @@ impl ResponseRun {
 }
 
 enum ResponseTransport {
-    Stream(mpsc::Sender<Result<Vec<u8>>>),
+    Stream(mpsc::Sender<Result<ResponseFrame>>),
     Json(crate::observer_transport::Sender),
 }
 
@@ -191,6 +196,7 @@ pub(super) struct ResponseObserver {
     follow_steering: bool,
     projection: wire::ResponseProjection,
     obfuscation: Obfuscation,
+    original_image_observer: bool,
 }
 
 #[derive(Deserialize)]
@@ -330,7 +336,9 @@ impl SessionInner {
                 };
                 if action.is_none() && !options.stream {
                     return Response::from_json(
-                        &response.value_with_include(&options.projection.include),
+                        &self
+                            .public_response_value(&response, &options.projection.include)
+                            .await?,
                     );
                 }
                 self.observe_response(
@@ -339,6 +347,7 @@ impl SessionInner {
                     options.after,
                     false,
                     Some(options.projection),
+                    false,
                 )
                 .await
             }
@@ -369,7 +378,11 @@ impl SessionInner {
                     let _ = self.cancel_current_hosted_code(id, &record).await;
                     self.arm_alarm().await?;
                 }
-                Response::from_json(&response.value())
+                Response::from_json(
+                    &self
+                        .public_response_value(&response, &response.request.include)
+                        .await?,
+                )
             }
             (Method::Delete, None) => {
                 if !terminal_status(&response.status) {
@@ -451,7 +464,7 @@ impl SessionInner {
             self.persist().await?;
             self.arm_alarm().await?;
         }
-        self.observe_response(&existing, request.stream, None, false, None)
+        self.observe_response(&existing, request.stream, None, false, None, false)
             .await
     }
 
@@ -780,6 +793,8 @@ impl SessionInner {
                     .cloned(),
             );
         }
+        self.retain_declared_tool_files(&bound_tools, &mut resolved.attachments)
+            .await?;
         let mut execution_request = effective_request.clone();
         execution_request.input = resolved.input;
         let incoming = execution_request
@@ -996,6 +1011,10 @@ impl SessionInner {
         }
         // No await separates this domain preflight from acceptance mutations.
         // Exhausted revisions and non-idle records cannot partially consume tools.
+        let _image_observation = self.begin_original_image_observation(
+            &create.response_id,
+            !create.execution.suppress_observer && (!request.background || request.stream),
+        );
         let mut admission = current.record.clone();
         if admission.append_user_input(util::now_ms()).is_err() || admission.start_run().is_err() {
             return util::json_error(
@@ -1046,6 +1065,8 @@ impl SessionInner {
             obfuscation_seed: Some(Seed::generate()),
             input_items: original_items,
             output: CanonicalOutput::default(),
+            images: ResponseImages::default(),
+            image_lifecycle: None,
             events: vec![],
             status: "queued".into(),
             error: None,
@@ -1102,10 +1123,18 @@ impl SessionInner {
             self.arm_alarm().await?;
         }
         if create.execution.suppress_observer {
-            return Response::from_json(&response.value());
+            return Response::from_json(
+                &self
+                    .public_response_value(&response, &response.request.include)
+                    .await?,
+            );
         }
         if request.background && !request.stream {
-            return Response::from_json(&response.value());
+            return Response::from_json(
+                &self
+                    .public_response_value(&response, &response.request.include)
+                    .await?,
+            );
         }
         self.observe_response(
             &response,
@@ -1113,6 +1142,7 @@ impl SessionInner {
             None,
             create.execution.connection_lease.is_some(),
             None,
+            true,
         )
         .await
     }
@@ -1124,6 +1154,7 @@ impl SessionInner {
         after: Option<u64>,
         follow_steering: bool,
         projection: Option<wire::ResponseProjection>,
+        original: bool,
     ) -> Result<Response> {
         // An alarm can complete while create waits for its storage acknowledgement.
         // Attach to the current run, never to a stale queued clone.
@@ -1132,6 +1163,10 @@ impl SessionInner {
         let projection =
             projection.unwrap_or_else(|| wire::ResponseProjection::for_request(&response.request));
         let obfuscation = self.response_obfuscation(response).await?;
+        let funding = original.then(|| self.original_image_funding(response));
+        if funding.as_ref().is_some_and(|funding| !funding.is_empty()) {
+            self.arm_original_image_observation(&response.id);
+        }
         if stream {
             if let Some(first) = response
                 .events
@@ -1154,13 +1189,26 @@ impl SessionInner {
                 );
             }
             let (tx, rx) = mpsc::channel(32);
-            let replay = response
+            if original {
+                self.attach_original_image_stream(&response.id, &tx);
+            }
+            let callback = if original {
+                self.original_image_callback(&response.id)
+            } else {
+                None
+            };
+            let mut replay = response
                 .events
                 .iter()
                 .filter(|event| {
                     after.is_none_or(|n| event["sequence_number"].as_u64().is_some_and(|s| s > n))
                 })
-                .map(|event| Ok(projected_response_frame(event, &projection, &obfuscation)))
+                .map(|event| {
+                    Ok(
+                        response_frame(event, &projection, &response.images, &obfuscation)
+                            .with_funding_snapshot(funding.as_ref()),
+                    )
+                })
                 .collect::<Vec<_>>();
             if !terminal_status(&response.status) {
                 self.response_observers.borrow_mut().push(ResponseObserver {
@@ -1170,11 +1218,30 @@ impl SessionInner {
                     follow_steering,
                     projection,
                     obfuscation,
+                    original_image_observer: original,
                 });
+            } else if original {
+                if response.image_lifecycle.is_none() {
+                    self.mark_original_image_closed(&response.id);
+                } else if let Some(callback) = self.drain_original_image_observation(&response.id) {
+                    replay.push(Ok(ResponseFrame::Close(callback)));
+                }
             }
             use futures::StreamExt;
-            let source = futures::stream::iter(replay).chain(rx);
-            let mut output = Response::from_stream(sse::keep_alive(source))?;
+            let env = self.env.clone();
+            let owner = self.data.borrow().as_ref().unwrap().record.owner_id.clone();
+            let source = futures::stream::iter(replay).chain(rx).then(move |frame| {
+                let env = env.clone();
+                let owner = owner.clone();
+                async move { frame?.bytes(&env, &owner).await }
+            });
+            let body = super::image_observation::ImageObservationBody::new(
+                Box::pin(source),
+                self.env.clone(),
+                self.state.as_raw().clone().into(),
+                callback,
+            );
+            let mut output = Response::from_stream(sse::keep_alive(body))?;
             output
                 .headers_mut()
                 .set("Content-Type", "text/event-stream")?;
@@ -1185,12 +1252,21 @@ impl SessionInner {
             return Ok(output);
         }
         if terminal_status(&response.status) || response.request.background {
-            return Response::from_json(&response.value());
+            let result = self
+                .public_response_value_with_funding(response, &projection.include, funding.as_ref())
+                .await;
+            if original {
+                self.mark_original_image_closed(&response.id);
+            }
+            return Response::from_json(&result?);
         }
         if self.response_observers.borrow().len() >= MAX_RESPONSE_OBSERVERS {
             return util::json_error(429, "observer_limit", "Too many response observers");
         }
         let (tx, output) = crate::observer_transport::channel("responses")?;
+        if original {
+            self.attach_original_image_json(&response.id, &tx);
+        }
         self.response_observers.borrow_mut().push(ResponseObserver {
             id: response.id.clone(),
             transport: ResponseTransport::Json(tx),
@@ -1198,8 +1274,33 @@ impl SessionInner {
             follow_steering: false,
             projection,
             obfuscation,
+            original_image_observer: original,
         });
         Ok(output)
+    }
+
+    async fn public_response_value(
+        &self,
+        response: &ResponseRun,
+        include: &[String],
+    ) -> Result<Value> {
+        self.public_response_value_with_funding(response, include, None)
+            .await
+    }
+
+    pub(super) async fn public_response_value_with_funding(
+        &self,
+        response: &ResponseRun,
+        include: &[String],
+        funding: Option<&crate::response_image_projection::ImageReadFundingMap>,
+    ) -> Result<Value> {
+        let mut value = response.value_with_include(include);
+        let owner = self.data.borrow().as_ref().unwrap().record.owner_id.clone();
+        response
+            .images
+            .hydrate_with_funding(&self.env, &owner, &mut value, funding)
+            .await?;
+        Ok(value)
     }
 
     async fn response_obfuscation(&self, response: &ResponseRun) -> Result<Obfuscation> {
@@ -1286,6 +1387,27 @@ impl SessionInner {
             return;
         }
         drop(barrier);
+        let funding = self
+            .data
+            .borrow()
+            .as_ref()
+            .and_then(|data| data.run.as_ref())
+            .and_then(|run| run.response.as_ref())
+            .filter(|response| response.id == id)
+            .map(|response| self.original_image_funding(response))
+            .unwrap_or_default();
+        if !funding.is_empty() {
+            self.arm_original_image_observation(id);
+        }
+        let images = self
+            .data
+            .borrow()
+            .as_ref()
+            .and_then(|data| data.run.as_ref())
+            .and_then(|run| run.response.as_ref())
+            .filter(|response| response.id == id)
+            .map(|response| response.images.clone())
+            .unwrap_or_default();
         self.response_observers.borrow_mut().retain_mut(|observer| {
             if observer.id != id {
                 return true;
@@ -1299,7 +1421,18 @@ impl SessionInner {
             }
             match &mut observer.transport {
                 ResponseTransport::Stream(sender) => {
-                    send_response_event(sender, event, &observer.projection, &observer.obfuscation)
+                    let sent = send_response_event(
+                        sender,
+                        event,
+                        &observer.projection,
+                        &images,
+                        &observer.obfuscation,
+                        observer.original_image_observer.then_some(&funding),
+                    );
+                    if !sent && observer.original_image_observer {
+                        let _ = self.drain_original_image_observation(id);
+                    }
+                    sent
                 }
                 ResponseTransport::Json(_) => true,
             }
@@ -1729,7 +1862,7 @@ impl SessionInner {
         Ok(Some(response))
     }
 
-    pub(super) fn publish_response(&self, response: ResponseRun) {
+    pub(super) async fn publish_response(&self, response: ResponseRun) {
         let begin = response
             .events
             .iter()
@@ -1743,6 +1876,10 @@ impl SessionInner {
             })
             .unwrap_or(response.events.len());
         let follow = self.automatic_steering(&response);
+        let funding = self.original_image_funding(&response);
+        if !funding.is_empty() {
+            self.arm_original_image_observation(&response.id);
+        }
         let observers = self.response_observers.take();
         let mut remaining = vec![];
         for mut observer in observers {
@@ -1766,23 +1903,65 @@ impl SessionInner {
                                 sender,
                                 event,
                                 &observer.projection,
+                                &response.images,
                                 &observer.obfuscation,
+                                observer.original_image_observer.then_some(&funding),
                             )
                         });
+                    if observer.original_image_observer {
+                        if response.image_lifecycle.is_none() {
+                            self.mark_original_image_closed(&response.id);
+                        } else if sent
+                            && let Some(callback) =
+                                self.drain_original_image_observation(&response.id)
+                        {
+                            let _ = sender.try_send(Ok(ResponseFrame::Close(callback)));
+                        } else if !sent {
+                            let _ = self.drain_original_image_observation(&response.id);
+                        }
+                    }
                     if sent && observer.follow_steering && follow {
                         remaining.push(observer);
                     }
                 }
                 ResponseTransport::Json(sender) => {
-                    crate::observer_transport::publish(
-                        sender.clone(),
-                        200,
-                        response.value_with_include(&observer.projection.include),
-                    );
+                    if sender.is_closed() {
+                        if observer.original_image_observer {
+                            self.mark_original_image_closed(&response.id);
+                        }
+                        continue;
+                    }
+                    let (status, value) = match self
+                        .public_response_value_with_funding(
+                            &response,
+                            &observer.projection.include,
+                            observer.original_image_observer.then_some(&funding),
+                        )
+                        .await
+                    {
+                        Ok(value) => (200, value),
+                        Err(_) => (
+                            500,
+                            util::error_body(
+                                "image_projection_failed",
+                                "The retained image could not be read; retry retrieval",
+                            ),
+                        ),
+                    };
+                    crate::observer_transport::publish(sender.clone(), status, value);
+                    if observer.original_image_observer {
+                        self.mark_original_image_closed(&response.id);
+                    }
                 }
             }
         }
-        *self.response_observers.borrow_mut() = remaining;
+        // JSON image reads yield. Preserve observers admitted during projection
+        // instead of replacing them with the pre-yield captured collection.
+        self.response_observers.borrow_mut().extend(remaining);
+        if response.image_lifecycle.is_none() {
+            self.mark_original_image_closed(&response.id);
+            self.forget_original_image_observation(&response.id);
+        }
     }
 
     pub(super) fn forward_steering_successor(
@@ -1791,6 +1970,15 @@ impl SessionInner {
         successor: Option<&ResponseRun>,
         events: &[Value],
     ) {
+        let images = self
+            .data
+            .borrow()
+            .as_ref()
+            .and_then(|data| data.run.as_ref())
+            .and_then(|run| run.response.as_ref())
+            .filter(|response| response.id == parent)
+            .map(|response| response.images.clone())
+            .unwrap_or_default();
         self.response_observers.borrow_mut().retain_mut(|observer| {
             if observer.id != parent || !observer.follow_steering {
                 return true;
@@ -1799,7 +1987,14 @@ impl SessionInner {
                 return false;
             };
             if !events.iter().all(|event| {
-                send_response_event(sender, event, &observer.projection, &observer.obfuscation)
+                send_response_event(
+                    sender,
+                    event,
+                    &observer.projection,
+                    &images,
+                    &observer.obfuscation,
+                    None,
+                )
             }) {
                 return false;
             }
@@ -1813,11 +2008,19 @@ impl SessionInner {
             };
             observer.obfuscation = Obfuscation::new(seed.clone(), &successor.id);
             if !successor.events.iter().all(|event| {
-                send_response_event(sender, event, &observer.projection, &observer.obfuscation)
+                send_response_event(
+                    sender,
+                    event,
+                    &observer.projection,
+                    &successor.images,
+                    &observer.obfuscation,
+                    None,
+                )
             }) {
                 return false;
             }
             observer.id = successor.id.clone();
+            observer.original_image_observer = false;
             observer.after = None;
             true
         });
@@ -1836,14 +2039,36 @@ fn projected_response_frame(
 }
 
 fn send_response_event(
-    sender: &mut mpsc::Sender<Result<Vec<u8>>>,
+    sender: &mut mpsc::Sender<Result<ResponseFrame>>,
     event: &Value,
     projection: &wire::ResponseProjection,
+    images: &ResponseImages,
     obfuscation: &Obfuscation,
+    funding: Option<&crate::response_image_projection::ImageReadFundingMap>,
 ) -> bool {
     sender
-        .try_send(Ok(projected_response_frame(event, projection, obfuscation)))
+        .try_send(Ok(
+            response_frame(event, projection, images, obfuscation).with_funding_snapshot(funding)
+        ))
         .is_ok()
+}
+
+fn response_frame(
+    event: &Value,
+    projection: &wire::ResponseProjection,
+    images: &ResponseImages,
+    obfuscation: &Obfuscation,
+) -> ResponseFrame {
+    let event = projected_response_value(event, projection, obfuscation);
+    if images.needs_hydration(&event) {
+        ResponseFrame::Image {
+            event,
+            images: images.clone(),
+            funding: None,
+        }
+    } else {
+        ResponseFrame::Encoded(wire::event_frame(&event))
+    }
 }
 
 fn legacy_completion_plan(
@@ -2038,6 +2263,8 @@ mod tests {
             obfuscation_seed: Some(Seed::generate()),
             input_items: vec![],
             output: CanonicalOutput::default(),
+            images: ResponseImages::default(),
+            image_lifecycle: None,
             events: vec![],
             status: "queued".into(),
             error: None,

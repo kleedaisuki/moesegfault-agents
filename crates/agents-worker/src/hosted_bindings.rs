@@ -13,8 +13,8 @@ use wasm_bindgen::JsValue;
 use worker::{Env, Error, Result};
 
 use crate::{
-    file_search::FileSearchOptions, hosted_tools::Kind, image_generation::ImageOptions,
-    search_byok::SearchOptions, tools::ToolDefinition,
+    file_search::FileSearchOptions, hosted_image::HostedImageProfile, hosted_tools::Kind,
+    image_generation::ImageOptions, search_byok::SearchOptions, tools::ToolDefinition,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +102,8 @@ pub(crate) enum ResolvedTool {
         options: ImageOptions,
         service: ImageService,
         allowed_file_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<HostedImageProfile>,
     },
     Search {
         options: SearchOptions,
@@ -138,14 +140,29 @@ impl ResolvedBinding {
             })
     }
 
-    fn definition(&self) -> ToolDefinition {
+    fn definition(&self) -> Result<ToolDefinition> {
         let limit = match &self.tool {
             ResolvedTool::Search {
                 query_char_limit, ..
             } => *query_char_limit,
             _ => 128,
         };
-        self.kind().definition(limit)
+        let mut definition = self.kind().definition(limit);
+        if let ResolvedTool::Image {
+            options, profile, ..
+        } = &self.tool
+        {
+            let profile = profile
+                .as_ref()
+                .ok_or_else(|| fail("image_generation_profile_unresolved"))?;
+            crate::hosted_image::validate_profile_options(profile, options)?;
+            definition.function.parameters["properties"]["image_file_ids"]["maxItems"] =
+                json!(profile.capabilities.max_references);
+            if profile.capabilities.max_references == 0 {
+                definition.function.description = "Generate one image using the declared image service. Editing and input reference images are not supported by this frozen service profile.".into();
+            }
+        }
+        Ok(definition)
     }
 }
 
@@ -220,13 +237,39 @@ impl BoundTools {
         self.lookup(Kind::CodeInterpreter.alias()).is_some()
     }
 
+    pub(crate) fn retained_file_ids(&self) -> Vec<String> {
+        let mut ids = BTreeSet::new();
+        for binding in &self.0 {
+            match &binding.tool {
+                ResolvedTool::Code { options } => {
+                    ids.extend(options.file_ids().iter().cloned());
+                }
+                ResolvedTool::Image {
+                    options,
+                    allowed_file_ids,
+                    ..
+                } => {
+                    ids.extend(allowed_file_ids.iter().cloned());
+                    if let Some(id) = options
+                        .input_image_mask
+                        .as_ref()
+                        .and_then(|mask| mask.file_id.as_ref())
+                    {
+                        ids.insert(id.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        ids.into_iter().collect()
+    }
+
     pub(crate) fn definitions(&self) -> Result<Vec<ToolDefinition>> {
-        Ok(self
-            .0
+        self.0
             .iter()
             .filter(|binding| binding.allows(Caller::Direct))
             .map(ResolvedBinding::definition)
-            .collect())
+            .collect()
     }
 
     /// Preserve caller custom/namespace tools byte-for-Value; only declared
@@ -244,7 +287,7 @@ impl BoundTools {
             if !binding.allows(Caller::Direct) {
                 continue;
             }
-            let definition = binding.definition().function;
+            let definition = binding.definition()?.function;
             tools.push(json!({"type":"function","name":definition.name,"description":definition.description,
                 "parameters":definition.parameters}));
         }
@@ -266,6 +309,7 @@ impl BoundTools {
             if !binding.allows(Caller::Direct) {
                 return Err(fail("hosted_tool_caller_not_allowed"));
             }
+            binding.definition()?;
             return Ok(json!({"type":"function","name":kind.alias()}));
         }
         if kind == "allowed_tools" {
@@ -282,14 +326,17 @@ impl BoundTools {
 
     /// Read-only ownership checks, also usable by input-token counting. No
     /// Container, index, collection or inference reservation is created here.
+
     pub(crate) async fn validate_owned(&self, env: &Env, owner: &str) -> Result<()> {
         let mut services = ToolServices::default();
         for binding in &self.0 {
+            crate::hosted_tools::require_runtime(env, binding.kind().native_type())?;
             match &binding.tool {
                 ResolvedTool::Image {
                     service,
                     options,
                     allowed_file_ids,
+                    ..
                 } => {
                     services.image_generation = Some(service.clone());
                     for id in allowed_file_ids.iter().chain(
@@ -315,6 +362,33 @@ impl BoundTools {
             }
         }
         crate::tool_service_routes::validate_owned(env, owner, &services).await
+    }
+
+    /// Freeze metadata-only service capabilities before rendering or reserving
+    /// outer inference. A restored profile is revalidated, never replaced with
+    /// today's registry entry. Ownership checks remain a separate read-only step.
+    pub(crate) async fn resolve_owned_profiles(&mut self, env: &Env, owner: &str) -> Result<()> {
+        for binding in &mut self.0 {
+            let needs_profile = match &binding.tool {
+                ResolvedTool::Image { profile, .. } => profile.is_none(),
+                _ => continue,
+            };
+            if needs_profile {
+                let resolved = crate::hosted_image::resolve_profile(env, owner, binding).await?;
+                if let ResolvedTool::Image { profile, .. } = &mut binding.tool {
+                    *profile = Some(resolved);
+                }
+            }
+            if let ResolvedTool::Image {
+                options,
+                profile: Some(profile),
+                ..
+            } = &binding.tool
+            {
+                crate::hosted_image::validate_profile_options(profile, options)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -346,6 +420,7 @@ fn resolve_tool(
                 options,
                 service,
                 allowed_file_ids: allowed_files.to_vec(),
+                profile: None,
             })
         }
         Kind::WebSearch => {
@@ -618,6 +693,34 @@ fn fail(code: &str) -> Error {
 mod tests {
     use super::*;
 
+    fn image_profile() -> HostedImageProfile {
+        HostedImageProfile {
+            api: crate::image_generation::ImageApi::Openai,
+            base_url: "https://images.example.com/v1".into(),
+            model: "owner-image-model".into(),
+            public_model: None,
+            capabilities: crate::image_generation::Capabilities {
+                omit_default_output_format: true,
+                ..Default::default()
+            },
+            router_endpoint: None,
+            asset_hosts: vec![],
+            price_revision: "owner-declared-image-v1".into(),
+            reservation_microusd: 0,
+            platform_funded: false,
+            provenance: crate::hosted_image::ProfileProvenance::OwnerDeclaredMinimal,
+            declared_contract: None,
+        }
+    }
+
+    fn freeze_image(bound: &mut BoundTools, frozen: HostedImageProfile) {
+        for binding in &mut bound.0 {
+            if let ResolvedTool::Image { profile, .. } = &mut binding.tool {
+                *profile = Some(frozen.clone());
+            }
+        }
+    }
+
     fn capabilities() -> HostCapabilities {
         HostCapabilities {
             platform_images: true,
@@ -641,7 +744,8 @@ mod tests {
             json!({"type":"image_generation"}),
             json!({"type":"namespace","name":"client","tools":[{"type":"custom","name":"edit"}]}),
         ];
-        let bound = resolve(&tools).unwrap();
+        let mut bound = resolve(&tools).unwrap();
+        freeze_image(&mut bound, image_profile());
         let rendered = bound.render_native(&tools).unwrap();
         assert_eq!(rendered[0]["name"], Kind::WebSearch.alias());
         assert_eq!(rendered[2], tools[2]);
@@ -869,6 +973,7 @@ mod tests {
                 credential_id: Some("key-owned".into()),
                 model: Some("image-model".into()),
                 asset_hosts: BTreeSet::new(),
+                capabilities: None,
             }),
             ..Default::default()
         };
@@ -885,5 +990,102 @@ mod tests {
         assert!(encoded.contains("file-original"));
         assert!(!encoded.contains("api_key"));
         assert!(!encoded.contains("domain_secrets"));
+    }
+
+    #[test]
+    fn image_profile_freezes_the_same_menu_and_provenance_without_upstream_calls() {
+        let tools = [json!({"type":"image_generation"})];
+        let mut bound = resolve(&tools).unwrap();
+        let legacy = serde_json::to_string(&bound).unwrap();
+        assert!(!legacy.contains("\"profile\""));
+        let old: BoundTools = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(legacy, serde_json::to_string(&old).unwrap());
+        assert!(old.definitions().is_err());
+        assert!(old.render_native(&tools).is_err());
+        assert!(
+            old.rewrite_choice(json!({"type":"image_generation"}))
+                .is_err()
+        );
+
+        freeze_image(&mut bound, image_profile());
+        let definition = bound.definitions().unwrap().remove(0).function;
+        assert_eq!(
+            definition.parameters["properties"]["image_file_ids"]["maxItems"],
+            0
+        );
+        assert!(
+            definition
+                .description
+                .contains("Editing and input reference images are not supported")
+        );
+        let native = bound.render_native(&tools).unwrap();
+        assert_eq!(native[0]["parameters"], definition.parameters);
+        assert_eq!(native[0]["description"], definition.description);
+        let bytes = serde_json::to_vec(&native).unwrap();
+        let restored: BoundTools =
+            serde_json::from_slice(&serde_json::to_vec(&bound).unwrap()).unwrap();
+        assert_eq!(
+            bytes,
+            serde_json::to_vec(&restored.render_native(&tools).unwrap()).unwrap()
+        );
+        let ResolvedTool::Image {
+            profile: Some(profile),
+            ..
+        } = &restored.lookup(Kind::ImageGeneration.alias()).unwrap().tool
+        else {
+            panic!("Expected frozen image profile")
+        };
+        assert!(profile.provenance == crate::hosted_image::ProfileProvenance::OwnerDeclaredMinimal);
+        assert!(!profile.platform_funded);
+    }
+
+    #[test]
+    fn frozen_image_capabilities_reject_advanced_options_before_rendering() {
+        for options in [
+            json!({"action":"edit"}),
+            json!({"quality":"high"}),
+            json!({"partial_images":1}),
+            json!({"background":"transparent"}),
+            json!({"size":"1024x1024"}),
+        ] {
+            let mut declaration = options;
+            declaration["type"] = json!("image_generation");
+            let mut bound = resolve(&[declaration.clone()]).unwrap();
+            freeze_image(&mut bound, image_profile());
+            assert!(bound.definitions().is_err());
+            assert!(bound.render_native(&[declaration]).is_err());
+        }
+        let mut profile = image_profile();
+        profile.capabilities.max_references = 3;
+        profile.provenance = crate::hosted_image::ProfileProvenance::OwnerDeclaredContract;
+        profile.declared_contract = Some(
+            serde_json::from_value(json!({"version":1,"edit":true,"max_references":3})).unwrap(),
+        );
+        let mut bound = resolve(&[json!({"type":"image_generation","action":"edit"})]).unwrap();
+        freeze_image(&mut bound, profile);
+        let definition = bound.definitions().unwrap().remove(0).function;
+        assert_eq!(
+            definition.parameters["properties"]["image_file_ids"]["maxItems"],
+            3
+        );
+        assert!(definition.description.contains("Generate or edit"));
+    }
+
+    #[test]
+    fn declared_code_inputs_and_image_masks_join_response_file_retention() {
+        let bound = BoundTools::resolve(
+            &[
+                json!({"type":"code_interpreter","container":{"type":"auto","memory_limit":"1g","file_ids":["file-code","file-shared"]}}),
+                json!({"type":"image_generation","input_image_mask":{"file_id":"file-mask"}}),
+            ],
+            &ToolServices::default(),
+            &capabilities(),
+            &["file-image".into(), "file-shared".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            bound.retained_file_ids(),
+            ["file-code", "file-image", "file-mask", "file-shared"]
+        );
     }
 }

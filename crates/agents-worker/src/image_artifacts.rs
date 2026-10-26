@@ -66,7 +66,7 @@ pub(crate) struct IoAttempt<'a> {
 }
 
 impl IoAttempt<'_> {
-    fn key(&self, operation: &str) -> Result<String> {
+    pub(crate) fn key(&self, operation: &str) -> Result<String> {
         let key = format!("{}:{}:{operation}", self.event, self.attempt);
         if self.event.is_empty() || key.len() > 256 || self.event.chars().any(char::is_control) {
             return Err(fail("invalid_image_artifact_event"));
@@ -153,6 +153,62 @@ pub(crate) async fn store(
         return Err(fail("image_artifact_checksum_mismatch"));
     }
     blobs::complete_image(env, &candidate.blob).await
+}
+
+/// Recover a persisted candidate after a possibly successful PUT. The caller
+/// advances and durably saves this I/O attempt before each actual HEAD.
+pub(crate) async fn recover_candidate(
+    env: &Env,
+    owner: &str,
+    operation: &str,
+    candidate: &ImageCandidate,
+    meter: &ResourceMeter<'_>,
+    io: &IoAttempt<'_>,
+) -> Result<Option<OwnedBlobRef>> {
+    candidate.blob.validate(owner)?;
+    if let Some(ready) = blobs::find_image(
+        env,
+        owner,
+        &candidate.blob.sha256,
+        candidate.blob.bytes,
+        &candidate.blob.content_type,
+    )
+    .await?
+    {
+        return Ok(Some(ready));
+    }
+    let event = io.key("recover_head")?;
+    meter.require_tariff(&Resource::R2Storage, "byte_ms")?;
+    meter
+        .require_observation(&event, Resource::R2Operation, "class_b")
+        .await?;
+    let headed = env
+        .bucket("WORKSPACES")?
+        .head(&candidate.blob.object_key)
+        .await;
+    meter
+        .record_observation(&event, Resource::R2Operation, "class_b", 1)
+        .await?;
+    let Some(object) = headed? else {
+        return Ok(None);
+    };
+    // Mismatched physical objects retain bytes too; register their actual clock.
+    crate::reconcile::register_account_storage_object(
+        env,
+        owner,
+        &candidate.blob.object_key,
+        object.size(),
+        object.uploaded().as_millis(),
+    )
+    .await?;
+    if object.size() != candidate.blob.bytes
+        || object.checksum().sha256.as_deref()
+            != Some(decode_hash(&candidate.blob.sha256)?.as_slice())
+    {
+        return Err(fail("image_artifact_checksum_mismatch"));
+    }
+    blobs::begin_image_reserved(env, &candidate.blob, operation).await?;
+    blobs::complete_image(env, &candidate.blob).await.map(Some)
 }
 
 /// Call only after authorizing the containing live Response or other strong

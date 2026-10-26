@@ -1,5 +1,157 @@
 # Image generation service boundary
 
+## Session producer
+
+`session_hosted_image.rs` is the single Session harness producer. Its operation
+record retains the original request digest, admitted operator profile, independent
+service hold, dispatch fence, metadata/usage receipt, immutable final/preview
+candidates, per-I/O attempt identities and published tool result. No raster or
+base64 image is serialized into DO state. The final image and each requested
+preview have separate deterministic capacity operation IDs and reserve 16 MiB
+before the provider POST. Partial index identities never alias the final image.
+
+Admission checks the final public projection envelope and R2 tariffs first.
+Unified image-execution admission pins funded run holders before any service
+hold or paid operation, including ordinary HTTP `store: false`. Terminal lifecycle
+transfers them to authorized stored holders or bounded private observation cache;
+private images do not gain public GET/previous-response authority.
+The caller writes the dispatch fence before consuming the prepared secret-bearing
+operation. A cancelled or cold unknown dispatch is never resubmitted. A known
+provider outcome is persisted before financial settlement or asset publication.
+Platform Seedream receipts settle against its independent image hold; BYOK
+receipts use a zero-platform-model `ReportedCost` budget, without waiving resource
+fees. Unknown provider outcomes preserve the independent hold and capacity lease.
+
+Publication follows candidate intent → checksummed R2 storage → actual retained
+storage clock → admitted-run execution holder → `ResponseImages` map → durable
+canonical event. Public journal values contain null image fields; observer
+hydration supplies their exact retained base64 bytes only at the wire boundary.
+The shared publication barrier prevents emitting an uncommitted event. Completion
+releases capacity slots proven unused by a known final result. A Files view is
+optional: deletion does not invalidate canonical images; Files quota/I/O failure
+returns bounded `file_link_pending`, not a failed image or a second generation.
+
+`image_artifacts::recover_candidate` recovers a persisted upload candidate through
+ready CAS lookup or a newly metered checksum/size HEAD, records the physical
+storage clock and promotes the registry. A successful HEAD does not require the
+original bytes. A missing object returns None once and converges to a failed,
+unknown artifact outcome instead of infinitely charging HEAD retries. If the DO
+crashes after persisting an inline candidate but before any R2 PUT, those bytes
+are not recoverable from metadata; the producer never pretends otherwise or
+regenerates the paid image. The provider receipt remains available for accounting.
+
+Four pure producer fixtures cover independent slot IDs, platform/BYOK funding,
+metadata redaction and durable unknown-dispatch fences. The new controlled
+`tests/worker/hosted-image-journey.mjs` scenario drives a compiled Worker with
+synthetic providers: image generation, public base64 hydration, idempotent replay,
+independent Files deletion and exact image ledger charge. It requires suite
+installation of its exported operator profile/provider fixture; syntax checks
+are not evidence that the compiled journey has run.
+
+## Execution, original delivery, and terminal cache
+
+### Conversation publication and public observation
+
+The image integration keeps Conversation images on the same immutable owner-blob
+registry. A private `image:{item_id}` sidecar contains only `OwnedBlobRef` metadata;
+canonical items continue to store a null result. The actor validates the complete
+new image map, persists candidate intent, binds the existing registry reference,
+and writes sidecars before publishing the item header. Recovery discards a
+candidate reference only when that header proves it was never published.
+Deleting an item persists its canonical tombstone before installing the registry
+publication fence and releasing its image reference. Deleting Conversation
+metadata alone still preserves its items and their bytes.
+
+Public single-item and list reads use the same `ResponseImages` hydrator as
+Responses. It recognizes both `output` and `data` envelopes and checks the whole
+page's 32-MiB wire bound before its first physical image read. It does not grant
+one maximum-size image allowance per list item. These authorized later reads
+fund their own actual I/O; they do not reuse original-observer funding or make a
+`store: false` Response publicly retrievable. The pending-cleanup header bit is
+defaulted and omitted when false, so ordinary text-only Conversation reads do
+not poll/delete image recovery keys on every request.
+
+The shared ledger's `created_at`/`updated_at` values are Unix **seconds**. Image
+lifecycle deadlines, physical storage clocks and measured wall intervals remain
+milliseconds. Cleanup reservations convert at that boundary; the image journey
+asserts the shared ledger timestamp contract instead of silently writing
+millisecond values into seconds-based recovery indexes.
+
+The four image-only SQL suites (`test_image_blob_holders_sql.py`,
+`test_image_execution_blob_sql.py`, `test_conversation_image_blob_sql.py`, and
+`test_original_image_read_sql.py`) passed 20 tests against an isolated copy of
+the actual candidate registry queries and tracked migration set plus `0022`.
+That run deliberately excluded the future `0021` Conversation quota schema and
+archive-workspace implementation. It establishes the physical-holder, ownership,
+publication-fence and prepaid-read invariants, not compiled-Worker acceptance.
+Conversation metadata deletion remains a real SDK journey gate rather than a
+synthetic test of an unrelated future archive-deletion query.
+
+`session_image_lifecycle.rs` owns the Session-side lifecycle; the shared immutable
+blob registry remains the sole physical reference/GC boundary. Before each paid
+image operation, the Session persists a planned, tariff-pinned account cleanup
+hold, reserves that exact identity, then persists its funded acknowledgment. Its
+quote covers at most one final plus three previews, bounded original image reads,
+D1 metadata and measured Durable Object wall time. It is neither a new model
+charge nor a new tariff. Cold recovery reads the original scope/price snapshot;
+completion never requires fresh account credit.
+
+The original create observer alone receives a private per-item funding map. JSON
+hydration and stream frame hydration use that already funded hold; independent
+GET/replay continues to fund its own actual read. A new physical GET has a unique
+durable observation before I/O. An atomic count guard includes pending/unknown
+attempts and enforces eight original reads per planned slot; prepaid reads have a
+30-second bound. Unknown read metrics retain funding, never become zero and never
+cause another image generation. The controller's observation nonce and actor
+instance generation are private receipts, not public Response or parent authority.
+
+Terminal preparation persists a compact handoff outbox and private delivery ID.
+The first canonical run-clear acknowledgment stamps the delivery hour; retries do
+not reset it. Execution holders and the prefunded hold remain while original
+hydration can still perform I/O. On known EOF/cancel, the terminal D1 transaction
+transfers exact slots to stored Response, already-published Conversation item,
+and/or bounded `image-delivery` holders, then removes the operation's execution
+holders. The cache expires no later than that terminal acknowledgment plus one
+hour, even if finalization cleanup was delayed. Files links remain independently
+owned and deletable. Public `store: false` retrieval and previous-response rules
+are unchanged: the private delivery ID is not a `ConnectionLease` or an API token.
+
+Known deferred reference checks retain and bill their exact D1 receipts, then
+retry with a distinct attempt. Transport/measurement uncertainty keeps the old
+observation pending. Canonical public/item deletion fences prevent late handoff
+from resurrecting removed publication. Conversation metadata deletion alone does
+not delete its retained image items. This implementation is awaiting the new
+compiled-Worker lifecycle, zero-balance original-delivery, disconnect and fake-clock
+journeys; syntax/format checks are not substitutes for that gate.
+
+## Default Seedream output delivery
+
+The dedicated OpenRouter Image API documents **inline base64 bytes** as its
+buffered response contract (`data[].b64_json`), and inline `b64_json` for native
+image completion events. Its request parameter table does not expose a
+`response_format` selector. See the primary
+[Response Format contract](https://openrouter.ai/docs/guides/overview/multimodal/image-generation#response-format)
+and [request parameters](https://openrouter.ai/docs/guides/overview/multimodal/image-generation#request-parameters),
+checked 2026-10-25. This applies to the dedicated `/api/v1/images` route used for
+the Seedream profile; it is not inferred from a model-specific CDN or the legacy
+chat multimodal response shape.
+
+Consequently the default Seedream operator profile should have `asset_hosts: []`.
+No CDN hostname needs to be guessed before the first generation, and the adapter
+does not invent or globally add `response_format: b64_json` (modern native
+OpenAI GPT Images also does not accept that legacy parameter). The new controlled
+transport fixture builds the pinned Seedream request, parses the documented
+buffered inline response, preserves its exact `usage.cost`, and materializes it
+with an empty asset-host list without an HTTP asset read.
+
+If an upstream violates this inline contract and instead supplies a remote URL,
+the known outcome is still preserved before materialization; an empty host list
+explicitly denies that download. This is a provider compatibility diagnostic,
+not permission to widen the output allowlist or repeat an already-paid POST.
+An eventual paid staging image acceptance test should verify the actual chosen
+endpoint's inline response; the controlled fixture is not evidence of a live
+Seedream generation.
+
 This is the adapter/interface decision for the full Responses workstream. The
 new modules require parent integration and compiled Actions verification; their
 presence is not a claim that the public tool is already deployed.
@@ -150,3 +302,136 @@ Primary sources:
 - [Verified Seedream 5 Flash endpoint](https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints)
 - [Rust image reader](https://docs.rs/image/0.25.10/image/struct.ImageReader.html)
 - [Codec allocation/dimension limits](https://docs.rs/image/0.25.10/image/struct.Limits.html)
+# Hosted preparation interface
+
+`hosted_image.rs` prepares one invocation, without adding a second agent loop.
+`prepare(env, owner, binding, arguments,
+execution_id, trace)` loads the versioned operator registry, resolves only the
+owner's selected credential, and loads only file IDs declared in the original
+request. A mask file must also be declared. Space reads verify ownership, byte
+count and SHA-256; raster validation is shared with the transport. Inline masks
+accept only bounded PNG data URLs. No provider secret reaches the workspace.
+
+`PreparedHostedImage::plan()` exposes a serializable `HostedImageProfile` before
+the caller writes the durable dispatch intent and reserves funds. It contains
+the actual API/base/model, optional native alias, capability snapshot, endpoint
+pin, anonymous asset-host allowlist, price revision, reservation and funding
+kind. It never contains the API key, credential ID, prompt or input images.
+`dispatch(self, partial_sink)` consumes the opaque key-bearing preparation and
+performs one generation POST. Any dispatch error may be uncertain: the caller
+must preserve its fence rather than invoke `prepare` and generate again.
+
+Persist the known `ImageResult` before artifact publication or asset retrieval.
+`fenced_profile.materialize(&known_result)` restores anonymous retrieval from
+that same snapshot without reading today's credential or operator registry.
+Generation admission, durable result storage, reservations, cost settlement,
+strong blob references and public output hydration remain the Session owner’s
+responsibility. This wrapper deliberately does not publish ordinary Space files
+or replace durable image results with deletable file pointers.
+
+## Operator registry
+
+### BYOK self-service contract
+
+An owner can configure a self-hosted, unknown model without global administrator
+JSON. The immutable owner credential's explicit `openai_images` or
+`openrouter_images` service dialect claims the minimal v1 generation contract:
+`model`, `prompt`, one requested image, and a buffered inline PNG `b64_json`
+response. The minimal POST sends only `model`, `prompt`, `n: 1`: it invents no
+`output_format`, `response_format`, size, transparency, edit, provider routing or
+streaming support. Incompatible actual upstream behavior fails honestly; neither
+a model-name prefix nor a compatible credential grants advanced capabilities.
+No platform key is ever a fallback for BYOK.
+
+For a controlled endpoint with advanced capabilities, the owner can declare:
+
+```json
+{
+  "image_generation": {
+    "provider": "openai_images",
+    "credential_id": "owned-image-credential",
+    "model": "my-selfhost-model",
+    "capabilities": {
+      "version": 1,
+      "edit": true,
+      "max_references": 2,
+      "mask": true,
+      "partial_images": 1,
+      "output_formats": ["png", "webp"],
+      "transparent": true,
+      "sizes": ["1024x1024"],
+      "qualities": ["high"]
+    }
+  }
+}
+```
+
+All omitted advanced fields default off/empty; `output_formats` defaults to
+`["png"]`. Additional optional sets are `input_fidelity` (`low`, `high`) and
+`moderation` (`auto`, `low`); `output_compression` defaults false and permits
+0–100 for declared JPEG/WebP. Masks require edit and are unavailable through the
+current OpenRouter dialect. Edits require 1–16 declared reference capacity;
+previews are bounded at 0–3. Size sets contain at most 32 exact pixel dimensions,
+each within the fixed 16384 edge / 64 Mi-pixel envelope. Neither declarations nor
+operator profiles raise the platform's byte, reference, preview or raster limits.
+The default implicit format remains PNG; a JPEG/WebP-only declaration must select
+that format explicitly. None of these fields can carry an API key or credential
+origin override.
+
+The frozen profile records `verified_operator`, `owner_declared_minimal`, or
+`owner_declared_contract` provenance and retains the owner's original contract.
+Verified operator matches take precedence over owner declarations. Metadata-only
+`resolve_profile` and pure `validate_profile_options` are shared by counting and
+generation: they do not decrypt keys, read image files, or access an upstream.
+Unsupported options fail before outer model spend. Generation rechecks the
+owner's immutable credential family/origin, then uses the pinned profile rather
+than silently importing a changed operator registry. Unknown paid outcomes keep
+the normal durable fence and cannot trigger regeneration.
+
+`IMAGE_GENERATION_PROFILE_JSON` is strict JSON with `version: 1` and `profiles`
+(1–64 `HostedImageProfile` records). Profiles are selected by **API + complete
+normalized credential base URL + actual model + funding kind**, never a model
+prefix or an unreviewed provider URL. Multiple matches are an ambiguity error.
+Native aliases must match a selected profile. Operators can install reviewed
+OpenAI Images profiles for actual BYOK origins/models, or reviewed OpenRouter
+endpoint snapshots. A matching verified profile takes precedence; absent one,
+BYOK can use the owner's explicit minimal API dialect or versioned capability
+contract described below. Platform funding still requires a verified profile.
+No native GPT profile is inferred from a compatible credential protocol. Credential family
+must be OpenAI-compatible, including the separately negotiated Responses family.
+There are no per-invocation catalog GETs.
+
+Platform profiles must use `api: openrouter`,
+`base_url: https://openrouter.ai/api/v1`,
+`model: bytedance-seed/seedream-5-0-flash`, endpoint slug/tag `seed`, no provider
+passthrough, and reservation **18000 µUSD** per requested image. The platform
+key is `OPENROUTER_API_KEY`. BYOK profiles must have zero model reservation;
+this does not waive compute/storage fees owned by the caller. Settlement still
+prefers authoritative actual `usage.cost`; a reservation is not an invoice.
+Changing the published model price requires reviewing this explicit policy and
+price revision, not silently reusing a stale number.
+
+`asset_hosts` may be narrowed by the user's service declaration, never widened
+past the selected operator profile. Empty means no remote downloads. Known
+result URLs still undergo the transport's independent public-HTTPS and exact
+host checks at materialization.
+
+## Endpoint fields versus normalized Image API controls
+
+The 2026-10-25 Seedream endpoint snapshot advertises resolution tiers `1K`/`2K`,
+14 references and no native streaming. It does not advertise a `size` key.
+This does **not** mean the API rejects explicit pixels: OpenRouter's
+[primary Image API documentation](https://openrouter.ai/docs/guides/overview/multimodal/image-generation#resolution-and-aspect-ratio)
+separately defines `size` as a normalized convenience shorthand; explicit pixels
+are authoritative, and conflicting resolution/aspect ratio fields fail with
+400. The adapter therefore sends the documented shorthand instead of inventing
+a provider-specific conversion. Native `auto` is omitted. The hosted Seedream
+preparation rejects explicit edges above 2048 rather than treating the generic
+presence descriptor as proof of 4K support. Other non-catalog pixel combinations
+are still subject to provider validation; tests establish the documented square
+1024/2048 path, not arbitrary-resolution support.
+
+Five pure fixtures cover versioning and secret-free snapshots, exact-origin
+BYOK routing, fixed platform model/provider/price, declared file and execution
+IDs, and the bounded size shorthand. They are written for the integration CI;
+local checks only ran rustfmt and diff validation, not a Rust build or paid API.

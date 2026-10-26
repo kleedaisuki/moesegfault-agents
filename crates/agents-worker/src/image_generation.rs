@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 #[path = "image_generation_transport.rs"]
 mod transport;
 
-pub(crate) use transport::{generate, materialize};
+pub(crate) use transport::{fetch_public_image_bytes, generate, materialize};
 
 #[cfg(test)]
 #[path = "image_generation_tests.rs"]
@@ -287,6 +287,9 @@ impl Raster {
     pub(crate) fn encoded(&self) -> &str {
         &self.encoded
     }
+    pub(crate) fn into_encoded(self) -> String {
+        self.encoded
+    }
     pub(crate) fn format(&self) -> Format {
         self.format
     }
@@ -299,7 +302,7 @@ impl Raster {
     pub(crate) fn sha256(&self) -> String {
         format!("{:x}", Sha256::digest(self.bytes()))
     }
-    fn data_url(&self) -> String {
+    pub(crate) fn data_url(&self) -> String {
         format!("data:{};base64,{}", self.format.mime(), self.encoded)
     }
 }
@@ -351,6 +354,8 @@ pub(crate) enum ImageApi {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Capabilities {
     pub streaming: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub omit_default_output_format: bool,
     /// Explicit profile/capability record, never inferred from a model-name prefix.
     pub parameters: BTreeMap<String, Parameter>,
     pub max_references: usize,
@@ -389,6 +394,7 @@ impl Capabilities {
         }
         Ok(Self {
             streaming: endpoint["supports_streaming"].as_bool().unwrap_or(false),
+            omit_default_output_format: false,
             parameters,
             max_references,
             mask: false,
@@ -585,7 +591,7 @@ pub(crate) fn prepare(
     if partials > 0 && !config.capabilities.streaming {
         return Err(invalid("image_generation_streaming_unavailable"));
     }
-    let fields = input.options.fields();
+    let fields = option_fields(&config.capabilities, &input.options);
     validate_capabilities(&config.capabilities, &fields)?;
     match config.api {
         ImageApi::Openrouter => router_request(config, input, &base, fields, partials),
@@ -608,6 +614,39 @@ pub(crate) fn prepare(
             })
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn option_fields(
+    capabilities: &Capabilities,
+    options: &ImageOptions,
+) -> BTreeMap<&'static str, Value> {
+    let mut fields = options.fields();
+    if capabilities.omit_default_output_format && options.output_format.is_none() {
+        fields.remove("output_format");
+    }
+    fields
+}
+
+/// Pure preflight shared by counting and execution before any provider spend.
+pub(crate) fn validate_options(
+    capabilities: &Capabilities,
+    options: &ImageOptions,
+) -> worker::Result<()> {
+    options.validate()?;
+    if options.partial_images.unwrap_or(0) > 0 && !capabilities.streaming {
+        return Err(invalid("image_generation_streaming_unavailable"));
+    }
+    if options.action == Action::Edit && capabilities.max_references == 0 {
+        return Err(invalid("image_generation_edit_unavailable"));
+    }
+    if options.input_image_mask.is_some() && !capabilities.mask {
+        return Err(invalid("image_generation_mask_unavailable"));
+    }
+    validate_capabilities(capabilities, &option_fields(capabilities, options))
 }
 
 fn validate_capabilities(

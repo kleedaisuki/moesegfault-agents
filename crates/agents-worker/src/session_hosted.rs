@@ -9,6 +9,30 @@ use crate::{
 };
 
 impl SessionInner {
+    /// Metadata is merged before the existing atomic attachment-retention step.
+    /// Ownership checks alone are not a lease against a concurrent Files delete.
+    pub(super) async fn retain_declared_tool_files(
+        &self,
+        bindings: &BoundTools,
+        attachments: &mut Vec<crate::space::OwnedFile>,
+    ) -> Result<()> {
+        let owner = self.snapshot()?.record.owner_id;
+        let mut seen = attachments
+            .iter()
+            .map(|file| file.id.clone())
+            .collect::<BTreeSet<_>>();
+        for id in bindings.retained_file_ids() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let file = crate::space::get_owned_file(&self.env, &owner, &id)
+                .await?
+                .ok_or_else(|| Error::RustError("file_not_found".into()))?;
+            attachments.push(file);
+        }
+        Ok(())
+    }
+
     /// Counting uses the same pure binding renderer. This Session additionally
     /// constrains compute to its immutable, already selected runtime profile.
     pub(super) async fn resolve_hosted_bindings(
@@ -34,13 +58,16 @@ impl SessionInner {
         capabilities.container_memory = Some(MemoryTier::from_core(record.runtime_profile));
         let mut image_files = BTreeSet::new();
         collect_image_files(&request.input, &mut image_files);
-        let bindings = BoundTools::resolve(
+        let mut bindings = BoundTools::resolve(
             &declarations,
             &record.pinned.tool_services,
             &capabilities,
             &image_files.into_iter().collect::<Vec<_>>(),
         )?;
         bindings.validate_owned(&self.env, &record.owner_id).await?;
+        bindings
+            .resolve_owned_profiles(&self.env, &record.owner_id)
+            .await?;
         Ok(bindings)
     }
 }

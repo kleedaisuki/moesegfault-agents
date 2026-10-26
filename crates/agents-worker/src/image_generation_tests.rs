@@ -34,6 +34,7 @@ fn config(api: ImageApi) -> ImageConfig {
         api_key: "fixture-key-not-exported".into(),
         capabilities: Capabilities {
             streaming: true,
+            omit_default_output_format: false,
             parameters,
             max_references: 16,
             mask: true,
@@ -72,6 +73,35 @@ fn modern_openai_generation_omits_retired_response_format_and_uses_resolved_mode
             .unwrap()
             .contains("fixture-key")
     );
+}
+
+#[test]
+fn declared_minimal_byok_sends_only_protocol_claimed_model_prompt_and_single_image() {
+    for api in [ImageApi::Openai, ImageApi::Openrouter] {
+        let mut config = config(api);
+        config.model = "unknown-selfhost-model".into();
+        config.base_url = "https://images.owner.example/v1".into();
+        config.capabilities = Capabilities {
+            omit_default_output_format: true,
+            ..Default::default()
+        };
+        let input = input();
+        let request = prepare(&config, &input).unwrap();
+        assert!(
+            request
+                .endpoint
+                .starts_with("https://images.owner.example/v1/images")
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            json!({"model":"unknown-selfhost-model","prompt":input.prompt,"n":1})
+        );
+        assert!(
+            !String::from_utf8(request.body)
+                .unwrap()
+                .contains("fixture-key")
+        );
+    }
 }
 
 #[test]
@@ -211,6 +241,46 @@ fn seedream_default_accepts_native_auto_without_pretending_to_stream() {
     input.options.partial_images = None;
     input.options.quality = Some("high".into());
     assert!(prepare(&config, &input).is_err());
+}
+
+#[test]
+fn seedream_dedicated_api_inline_contract_needs_no_cdn_origin_or_format_selector() {
+    let endpoint = json!({
+        "provider_slug":"seed","provider_tag":"seed",
+        "allowed_passthrough_parameters":[],"supports_streaming":false,
+        "supported_parameters":{
+            "resolution":{"type":"enum","values":["1K","2K"]},
+            "input_references":{"type":"range","min":0,"max":14}
+        }
+    });
+    let mut config = config(ImageApi::Openrouter);
+    config.base_url = "https://openrouter.ai/api/v1".into();
+    config.model = "bytedance-seed/seedream-5-0-flash".into();
+    config.capabilities = Capabilities::from_openrouter_endpoint(&endpoint).unwrap();
+    config.router_endpoint = Some(RouterEndpoint::from_catalog(&endpoint).unwrap());
+    config.asset_hosts.clear();
+    let request = prepare(&config, &input()).unwrap();
+    assert_eq!(request.endpoint, "https://openrouter.ai/api/v1/images");
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["provider"]["only"], json!(["seed"]));
+    assert_eq!(body["output_format"], "png");
+    // The dedicated Image API documents inline bytes as its response contract,
+    // not a response_format parameter inherited from legacy OpenAI DALL-E.
+    assert!(body.get("response_format").is_none());
+    let expected = raster();
+    let known = transport::parse_buffered(
+        json!({
+            "created":123,"data":[{"b64_json":expected.encoded(),"media_type":"image/png"}],
+            "usage":{"cost":0.018}
+        }),
+        Format::Png,
+        None,
+    )
+    .unwrap();
+    assert!(matches!(&known.source, ImageSource::Inline { .. }));
+    let actual = futures::executor::block_on(materialize(&config, &known)).unwrap();
+    assert_eq!(actual.sha256(), expected.sha256());
+    assert_eq!(known.reported_cost().unwrap().to_string(), "0.018");
 }
 
 proptest! {

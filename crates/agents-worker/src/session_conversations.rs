@@ -10,7 +10,7 @@ pub(super) struct ConversationBinding {
     pub(super) id: String,
     pub(super) accepted_revision: u64,
     #[serde(default)]
-    prepared: bool,
+    pub(super) prepared: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -269,6 +269,7 @@ impl SessionInner {
                 })
                 .collect();
             let context = conversation_routes::ConversationExecutionContext {
+                image_assets: self.conversation_image_assets(response),
                 session_id: data.record.id.clone(),
                 agent_id: data.record.agent_id.clone(),
                 pin_hash: data.record.pinned.prefix_hash(),

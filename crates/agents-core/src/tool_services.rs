@@ -49,10 +49,114 @@ pub struct ImageService {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub asset_hosts: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ImageCapabilityContract>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageOutputFormat {
+    Png,
+    Jpeg,
+    Webp,
+}
+
+/// Owner-declared endpoint contract, not a platform verification or a grant of
+/// additional compute, storage, byte, pixel or credential authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageCapabilityContract {
+    pub version: u8,
+    #[serde(default)]
+    pub edit: bool,
+    #[serde(default)]
+    pub max_references: u8,
+    #[serde(default)]
+    pub mask: bool,
+    #[serde(default)]
+    pub partial_images: u8,
+    #[serde(default = "png_output")]
+    pub output_formats: BTreeSet<ImageOutputFormat>,
+    #[serde(default)]
+    pub transparent: bool,
+    #[serde(default)]
+    pub sizes: BTreeSet<String>,
+    #[serde(default)]
+    pub qualities: BTreeSet<String>,
+    #[serde(default)]
+    pub input_fidelity: BTreeSet<String>,
+    #[serde(default)]
+    pub moderation: BTreeSet<String>,
+    #[serde(default)]
+    pub output_compression: bool,
+}
+
+fn png_output() -> BTreeSet<ImageOutputFormat> {
+    BTreeSet::from([ImageOutputFormat::Png])
+}
+
+impl ImageCapabilityContract {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.version != 1
+            || self.max_references > 16
+            || self.partial_images > 3
+            || (!self.edit && (self.max_references > 0 || self.mask))
+            || (self.edit && self.max_references == 0)
+            || self.output_formats.is_empty()
+            || self.sizes.len() > 32
+            || self.qualities.len() > 6
+            || !self.qualities.iter().all(|value| {
+                ["auto", "low", "medium", "high", "xhigh", "max"].contains(&value.as_str())
+            })
+            || !self
+                .input_fidelity
+                .iter()
+                .all(|value| ["low", "high"].contains(&value.as_str()))
+            || !self
+                .moderation
+                .iter()
+                .all(|value| ["auto", "low"].contains(&value.as_str()))
+            || (self.transparent
+                && self
+                    .output_formats
+                    .iter()
+                    .all(|format| *format == ImageOutputFormat::Jpeg))
+            || self.sizes.iter().any(|size| !image_dimensions(size))
+        {
+            return Err("Invalid image capability contract");
+        }
+        Ok(())
+    }
+}
+
+fn image_dimensions(size: &str) -> bool {
+    if size.len() > 16 {
+        return false;
+    }
+    let Some((width, height)) = size.split_once('x') else {
+        return false;
+    };
+    if !width.bytes().all(|b| b.is_ascii_digit()) || !height.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let (Ok(width), Ok(height)) = (width.parse::<u32>(), height.parse::<u32>()) else {
+        return false;
+    };
+    width > 0
+        && height > 0
+        && width <= 16_384
+        && height <= 16_384
+        && u64::from(width) * u64::from(height) <= 64 * 1024 * 1024
 }
 
 impl ImageService {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(contract) = &self.capabilities {
+            if self.provider == ImageServiceProvider::Platform {
+                return Err("Platform image capabilities are operator managed");
+            }
+            contract.validate()?;
+        }
         match (self.provider, self.credential_id.as_deref()) {
             (ImageServiceProvider::Platform, None) => {}
             (ImageServiceProvider::Platform, Some(_)) => {
@@ -166,6 +270,52 @@ mod tests {
         let routes: ToolServices = serde_json::from_value(json!({})).unwrap();
         assert!(routes.is_empty());
         assert_eq!(serde_json::to_value(routes).unwrap(), json!({}));
+    }
+
+    #[test]
+    fn omitted_image_contract_keeps_legacy_route_bytes_unchanged() {
+        let source = json!({"provider":"openai_images","credential_id":"owned","model":"custom"});
+        let service: ImageService = serde_json::from_value(source.clone()).unwrap();
+        service.validate().unwrap();
+        assert_eq!(serde_json::to_value(service).unwrap(), source);
+    }
+
+    #[test]
+    fn owner_image_contract_is_versioned_bounded_and_never_platform_authority() {
+        let mut service: ImageService = serde_json::from_value(json!({"provider":"openai_images",
+            "credential_id":"owned","model":"custom","capabilities":{"version":1,
+                "edit":true,"max_references":2,"partial_images":1,"sizes":["1024x1024"]}}))
+        .unwrap();
+        service.validate().unwrap();
+        service.capabilities.as_mut().unwrap().max_references = 17;
+        assert!(service.validate().is_err());
+        service.capabilities.as_mut().unwrap().max_references = 2;
+        service
+            .capabilities
+            .as_mut()
+            .unwrap()
+            .sizes
+            .insert("16384x16384".into());
+        assert!(service.validate().is_err());
+        service.capabilities.as_mut().unwrap().sizes.clear();
+        service.provider = ImageServiceProvider::Platform;
+        service.credential_id = None;
+        assert!(service.validate().is_err());
+    }
+
+    #[test]
+    fn image_contract_has_no_secret_or_unversioned_escape_hatch() {
+        for value in [
+            json!({"version":2}),
+            json!({"version":1,"api_key":"secret"}),
+            json!({"version":1,"edit":false,"mask":true}),
+            json!({"version":1,"partial_images":4}),
+        ] {
+            match serde_json::from_value::<ImageCapabilityContract>(value) {
+                Ok(contract) => assert!(contract.validate().is_err()),
+                Err(_) => {}
+            }
+        }
     }
 
     #[test]

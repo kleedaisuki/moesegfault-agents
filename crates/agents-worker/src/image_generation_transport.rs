@@ -337,9 +337,56 @@ pub(crate) async fn materialize(
         validate_image(result, image)?;
         return Ok(image.clone());
     };
+    let image = fetch_image_asset(url, &config.asset_hosts, MAX_IMAGE_BYTES).await?;
+    if media_type.as_deref().is_some_and(|mime| {
+        mime != "application/octet-stream" && Format::from_mime(mime) != Some(image.format())
+    }) {
+        return Err(invalid("image_generation_format_mismatch"));
+    }
+    validate_image(result, &image)?;
+    Ok(image)
+}
+
+/// Shared public-Internet reader, with no provider configuration or secrets.
+/// An explicit origin pin remains mandatory even for caller-selected input.
+pub(crate) async fn fetch_image_asset(
+    url: &str,
+    allowed_hosts: &[String],
+    max_bytes: usize,
+) -> worker::Result<Raster> {
+    let fetched = fetch_public_image_bytes(
+        url,
+        allowed_hosts,
+        max_bytes,
+        "image/png,image/jpeg,image/webp",
+    )
+    .await?;
+    let image = Raster::from_bytes(&fetched.bytes)?;
+    if fetched.declared_mime.as_deref().is_some_and(|mime| {
+        mime != "application/octet-stream" && Format::from_mime(mime) != Some(image.format())
+    }) {
+        return Err(invalid("image_generation_format_mismatch"));
+    }
+    Ok(image)
+}
+
+pub(crate) struct FetchedImageBytes {
+    pub bytes: Vec<u8>,
+    pub declared_mime: Option<String>,
+}
+
+/// One credential-free, origin-pinned, redirect-denying reader for all images.
+pub(crate) async fn fetch_public_image_bytes(
+    url: &str,
+    allowed_hosts: &[String],
+    max_bytes: usize,
+    accept: &str,
+) -> worker::Result<FetchedImageBytes> {
+    if max_bytes == 0 || max_bytes > MAX_IMAGE_BYTES {
+        return Err(invalid("invalid_image_generation_asset_limit"));
+    }
     let parsed = public_asset_url(url)?;
-    if !config
-        .asset_hosts
+    if !allowed_hosts
         .iter()
         .any(|host| host.eq_ignore_ascii_case(parsed.host_str().unwrap_or_default()))
     {
@@ -348,7 +395,7 @@ pub(crate) async fn materialize(
     bounded(
         async {
             let headers = Headers::new();
-            headers.set("Accept", "image/png,image/jpeg,image/webp")?;
+            headers.set("Accept", accept)?;
             let mut init = RequestInit::new();
             init.with_method(Method::Get)
                 .with_headers(headers)
@@ -362,7 +409,7 @@ pub(crate) async fn materialize(
                 .headers()
                 .get("content-length")?
                 .and_then(|value| value.parse::<u64>().ok())
-                .is_some_and(|bytes| bytes > MAX_IMAGE_BYTES as u64)
+                .is_some_and(|bytes| bytes > max_bytes as u64)
             {
                 return Err(invalid("image_generation_image_too_large"));
             }
@@ -370,19 +417,10 @@ pub(crate) async fn materialize(
                 .headers()
                 .get("content-type")?
                 .and_then(|value| value.split(';').next().map(str::trim).map(str::to_owned));
-            let image = Raster::from_bytes(&read_bytes(&mut response, MAX_IMAGE_BYTES).await?)?;
-            if [media_type.as_deref(), declared.as_deref()]
-                .into_iter()
-                .flatten()
-                .any(|mime| {
-                    mime != "application/octet-stream"
-                        && Format::from_mime(mime) != Some(image.format())
-                })
-            {
-                return Err(invalid("image_generation_format_mismatch"));
-            }
-            validate_image(result, &image)?;
-            Ok(image)
+            Ok(FetchedImageBytes {
+                bytes: read_bytes(&mut response, max_bytes).await?,
+                declared_mime: declared,
+            })
         },
         30_000,
     )

@@ -203,13 +203,14 @@ pub(crate) async fn prepare(
         )
     }) {
         let capabilities = crate::hosted_tools::capabilities(env)?;
-        let bound = crate::hosted_bindings::BoundTools::resolve(
+        let mut bound = crate::hosted_bindings::BoundTools::resolve(
             &declarations,
             &pinned.tool_services,
             &capabilities,
             &image_file_ids,
         )?;
         bound.validate_owned(env, owner).await?;
+        bound.resolve_owned_profiles(env, owner).await?;
         bound
     } else {
         crate::hosted_bindings::BoundTools::default()
