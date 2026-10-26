@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import OpenAI from 'openai';
-import { archiveCompletedSession, assertCanonicalEvents, assertExecutionWorkspace, assertServingWorkerHealth, countRootWithoutAdmission, nativeAcceptanceModel, requireLiveDeploymentProvenance, tracedFetch, verifyWorkerIdentity } from './full-responses-sdk.mjs';
+import { archiveCompletedSession, assertCanonicalEvents, assertExecutionWorkspace, assertServingWorkerHealth, nativeAcceptanceModel, requireLiveDeploymentProvenance, tracedFetch, verifyWorkerIdentity } from './full-responses-sdk.mjs';
 import * as policy from './paid-route-policy.mjs';
 
 const origin = 'https://agents-staging.moesegfault.dev';
@@ -75,6 +75,17 @@ async function verifyArtifact(client, filename) {
   assert.equal(bytes.length, expectedArtifact.length, 'published_artifact_byte_count');
   assert.equal(hash(bytes), hash(expectedArtifact), 'published_artifact_digest');
   return { fileId: file.id, bytes: bytes.length, sha256: hash(bytes) };
+}
+
+export async function countCodeBeforeAdmission(client, request, agent, body) {
+  const route = `/v1/agents/${agent}/sessions`;
+  const before = await request('GET', route);
+  assert.deepEqual(before.data, [], 'new_Code_agent_must_not_have_a_preselected_profile');
+  const count = await client.responses.inputTokens.count(body);
+  assert.equal(count.object, 'response.input_tokens');
+  assert.ok(Number.isSafeInteger(count.input_tokens) && count.input_tokens > 0);
+  assert.deepEqual(await request('GET', route), before, 'count_must_not_allocate_or_pin_a_Session');
+  return { inputTokens: count.input_tokens, noSessionAdmitted: true, noPhysicalProfilePreselected: true };
 }
 
 export async function verifyCodeResourceLifetime(client, request, receipt, save) {
@@ -152,17 +163,20 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       instructions: 'Use the declared Code Interpreter for the requested computation. Never claim execution without a tool result.',
       workspace: false, tools: [], skills: [], compaction_percent: 80 }, [201]);
     receipt.resources.agent = agent.id; save();
-    const initial = await policy.createPinnedSession(request, agent, { add: id => { receipt.resources.sessions.push(id); save(); } });
+    policy.assertDirectDeepSeekModel(agent.model);
+    policy.assertDirectDeepSeekBounds(agent.model, approved);
     const filename = `code-${receipt.run}.csv`, body = codeRequest(agent.id, filename, config.memory);
     receipt.phase = 'hosted_admission_without_model'; save();
-    receipt.checks.prepaidHostedAdmission = (await countRootWithoutAdmission(client, request, initial.id, body)).evidence;
+    receipt.checks.prepaidHostedAdmission = await countCodeBeforeAdmission(client, request, agent.id, body);
     receipt.phase = 'single_response_intent'; receipt.submissions = 1;
-    receipt.pending = { idempotencyKey: `hosted-code-${receipt.run}`, bodySha256: digest(body), session: initial.id }; save();
+    receipt.pending = { idempotencyKey: `hosted-code-${receipt.run}`, bodySha256: digest(body), session: null }; save();
     const streamed = await client.responses.create({ ...body, stream: true }, { headers: {
-      'X-Agents-Session': initial.id, 'Idempotency-Key': receipt.pending.idempotencyKey } }).withResponse();
+      'Idempotency-Key': receipt.pending.idempotencyKey } }).withResponse();
     const responseId = streamed.response.headers.get('x-agents-response');
     if (responseId) receipt.resources.responses.push(responseId);
-    assert.equal(streamed.response.headers.get('x-agents-session'), initial.id); save();
+    const sessionId = streamed.response.headers.get('x-agents-session');
+    assert.ok(typeof sessionId === 'string' && sessionId.length > 0, 'actual_profile_Session_header_required');
+    receipt.resources.sessions.push(sessionId); receipt.pending.session = sessionId; save();
     const events = [];
     for await (const event of streamed.data) {
       events.push(event);
@@ -179,7 +193,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     if (!receipt.resources.containers.includes(cid)) receipt.resources.containers.push(cid);
     receipt.checks.response = { id: response.id, sha256: digest(response), events: events.length,
       inputTokens: response.usage?.input_tokens ?? null, outputTokens: response.usage?.output_tokens ?? null };
-    policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${initial.id}`), agent.id);
+    policy.assertDirectDeepSeekPin(await request('GET', `/v1/sessions/${sessionId}`), agent.id);
     const container = await client.containers.retrieve(cid);
     assert.equal(container.id, cid); assert.equal(container.status, 'running'); assert.equal(container.memory_limit, config.memory);
     assert.deepEqual(container.expires_after, { anchor: 'last_active_at', minutes: 20 });

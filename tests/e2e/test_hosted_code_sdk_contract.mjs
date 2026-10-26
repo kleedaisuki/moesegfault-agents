@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { codeRequest, main, summarizeCode, verifyCodeResourceLifetime } from './hosted-code-sdk.mjs';
+import { codeRequest, countCodeBeforeAdmission, main, summarizeCode, verifyCodeResourceLifetime } from './hosted-code-sdk.mjs';
 
 const cid = `cntr_${'a'.repeat(32)}`;
 const phases = ['response.code_interpreter_call.in_progress', 'response.code_interpreter_call_code.delta',
@@ -9,6 +9,21 @@ const phases = ['response.code_interpreter_call.in_progress', 'response.code_int
 const events = phases.map(type => ({ type, item_id: 'ci-owned' }));
 const response = { status: 'completed', output: [{ id: 'ci-owned', type: 'code_interpreter_call', status: 'completed',
   container_id: cid, code: 'print(42)', outputs: [{ type: 'logs', logs: '42\ncgroup_memory_max=1073741824\n' }] }] };
+
+test('Code profile admission never prepins a basic Session before selecting the real 4g executor', async () => {
+  const body = codeRequest('owned-agent', 'code-1234-abcd.csv', '4g'), order = [];
+  const client = { responses: { inputTokens: { count: async (...args) => {
+    order.push('count'); assert.deepEqual(args, [body]);
+    return { object: 'response.input_tokens', input_tokens: 200 };
+  } } } };
+  const request = async (method, route) => {
+    order.push(method); assert.equal(method, 'GET'); assert.equal(route, '/v1/agents/owned-agent/sessions');
+    return { object: 'list', data: [] };
+  };
+  const proof = await countCodeBeforeAdmission(client, request, 'owned-agent', body);
+  assert.deepEqual(order, ['GET', 'count', 'GET']);
+  assert.equal(proof.noPhysicalProfilePreselected, true);
+});
 
 test('new Code acceptance bounds one native capability to the explicitly selected real CF profile', () => {
   const body = codeRequest('owned-agent', 'code-1234-abcd.csv');
