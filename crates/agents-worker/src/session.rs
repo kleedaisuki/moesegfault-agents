@@ -1572,7 +1572,7 @@ impl SessionInner {
                 options.tool_choice = Some(
                     crate::programmatic_tools::ProgramPolicy::default()
                         .rewrite_choice(response.bound_tools.rewrite_choice(choice)?)
-                        .map_err(Error::RustError)?,
+                        .map_err(|code| Error::RustError(code.into()))?,
                 );
             }
             if run.round > 0
