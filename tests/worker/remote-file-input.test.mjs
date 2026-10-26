@@ -127,7 +127,7 @@ test('compiled Rust Worker: remote file freeze metadata and prepaid read-only ca
     assert.equal(calls.length,0,'Unsupported provider controls fail before remote image preparation');
     assert.equal(providers.state.counts.length,1,'DeepSeek recipe/count transport is never asked to ignore the marker');
     assert.equal(providers.state.calls.length,0,'No generation is submitted');
-    assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_ledger WHERE account_id=? AND resource='model'").bind(principal.owner).first('n'),0);
+    assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='model'").bind(principal.owner).first('n'),0);
     assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE account_id=? AND status!='closed'").bind(principal.owner).first('n'),0);
     return;
   }
