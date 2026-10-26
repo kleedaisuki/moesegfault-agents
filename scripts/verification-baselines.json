@@ -3901,5 +3901,304 @@
         "reason": "Actual source 2ffa1fb Worker journey failed; the successfully built Wasm is reusable, not full runtime acceptance"
       }
     ]
+  },
+  {
+    "source_sha": "5318612e45c39a8670233c7a416cdd1d114c1000",
+    "run_id": "40311877486",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12644409319,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12645766503,
+    "verified_checks": [
+      {
+        "id": "rust:agents-worker:only_real_context_ids_enter_owned_routing",
+        "status": "passed_current",
+        "input_fingerprint": "a848b48432040dcd51fab5d7a6a62ed2126bb0b95c2af67707198acc00377719",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:vector_shape_finite_and_nonzero_required",
+        "status": "passed_current",
+        "input_fingerprint": "ea9d38578ee016a2480d79143a1ee60c05705cc2b40c6921eace6eb2b7e7bd18",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:static_chunks_use_shared_real_tokens_and_source_byte_offsets",
+        "status": "passed_current",
+        "input_fingerprint": "e39c1156bf92ece04031789ac21dab01726cddc7571a13103774b66fed5f822e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:native_static_chunk_limits_are_not_reinterpreted_as_characters",
+        "status": "passed_current",
+        "input_fingerprint": "08c90d16ef656424fc3adf5c55c94c4d11ca4baf4cf0196bf63b61d4a65d9310",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:ingestion_admission_is_bounded_and_cancellation_releases_it",
+        "status": "passed_current",
+        "input_fingerprint": "6c48c1560317f553b949c130e56c1e294e486543f8634eeb2ca575480cf82e24",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:frequent_observers_preserve_fractional_capacity_without_roundup",
+        "status": "passed_current",
+        "input_fingerprint": "c1ff750d6da19b55c4faea45a1f1903db8df42e0472ac47930a47ba741e6758e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:capacity_intervals_split_at_signed_ledger_limit_without_gaps",
+        "status": "passed_current",
+        "input_fingerprint": "9a138240b6974e0aa8965014e98a52fc1c496890eddb1330996d9262412ce7ae",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:arbitrary_observation_boundaries_charge_only_the_same_final_allocation",
+        "status": "passed_current",
+        "input_fingerprint": "5dc21c187414749add932fb55756f9df7e34a93f66bbac041549f3441ada60b7",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:file_citations_anchor_actual_unicode_text_and_owned_evidence_once",
+        "status": "passed_current",
+        "input_fingerprint": "e621ca771585c211ccdb02bbe0d75f8730c3e5dfa60eae3cbc39ead0d99a88df",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:generation_and_counting_share_aliases_and_choices_without_changing_client_tools",
+        "status": "passed_current",
+        "input_fingerprint": "d7a22fb1548ba8db1d9a6b9e0293c23c14cd7d77cbeff8545eb80e7b795cf743",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:byok_does_not_require_platform_service_and_bindings_remain_secret_free",
+        "status": "passed_current",
+        "input_fingerprint": "d69d596c92712d76b2e6040e4a0cc7c765af20fdc95e1eedffb2e87ddb0611fc",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:image_profile_freezes_the_same_menu_and_provenance_without_upstream_calls",
+        "status": "passed_current",
+        "input_fingerprint": "247d6bdc68dd796a59d86202b5cec9a3592477ae957a8f978b2e38ba4304c2c6",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:frozen_image_capabilities_reject_advanced_options_before_rendering",
+        "status": "passed_current",
+        "input_fingerprint": "48fc10ed0e9be7a41af94919c89972461ce2d026c04b7794adda6fcfa41b7165",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:declared_code_inputs_and_image_masks_join_response_file_retention",
+        "status": "passed_current",
+        "input_fingerprint": "85720763f565243c07238220f0ce4bef1b2e04d4816b9d7b8fd18e1a40ee60f5",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:platform_route_and_price_are_explicit_not_model_prefix_guesses",
+        "status": "passed_current",
+        "input_fingerprint": "bf65097694fcc6c3d5e21a8dd9b163f9001f1d08ab671fef1b42e455e3546297",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:byok_profiles_bind_exact_origin_model_and_funding",
+        "status": "passed_current",
+        "input_fingerprint": "f9a6829b4113f3415319151b4616aa236dbab35daa962a4e6de632149007e7e8",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:profile_registry_version_duplicates_and_secret_free_roundtrip",
+        "status": "passed_current",
+        "input_fingerprint": "dbcf4430c7c670e24fef35acd93def79a28950303924537bd8001a064e38878e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:owned_ids_and_operation_ids_are_not_provider_supplied_capabilities",
+        "status": "passed_current",
+        "input_fingerprint": "6987cf9de6c901581cea51adb710a6de0c73321909f7f462f1c4887fce8e3293",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:seedream_size_shorthand_does_not_grant_unadvertised_4k",
+        "status": "passed_current",
+        "input_fingerprint": "2c06b5a846c8134b804d94cc2fa33bfc3c6d01d8e951f629f96aac0b43e247ee",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:unknown_byok_model_without_operator_registry_has_minimal_declared_contract",
+        "status": "passed_current",
+        "input_fingerprint": "15fc54a19f3b6bbf862aba2ffbde51f005fefae7e00f233c6e5adf990b79e422",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:owner_declared_advanced_profile_and_verified_precedence_are_not_model_guesses",
+        "status": "passed_current",
+        "input_fingerprint": "f66a6ddd04f2bdca187f98cc0e113da5454039d5a12b8a8119ba17a712a69d8a",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:public_item_uses_our_identity_and_actual_native_action_without_private_details",
+        "status": "passed_current",
+        "input_fingerprint": "0dda1d38c0a2fdc45b487d705a4b84c5c74e5e323733ea65c6dfcf50146aa6cb",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:modern_openai_generation_omits_retired_response_format_and_uses_resolved_model",
+        "status": "passed_current",
+        "input_fingerprint": "a8aecaba103a68387c893ebbbbb96c01c8864c05daf5d5d16552a03551b00929",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:declared_minimal_byok_sends_only_protocol_claimed_model_prompt_and_single_image",
+        "status": "passed_current",
+        "input_fingerprint": "f04cb023527a934d9b33fc77cbd63b508d108f8b5831dc37325ac98c96020e47",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:seedream_default_accepts_native_auto_without_pretending_to_stream",
+        "status": "passed_current",
+        "input_fingerprint": "70ab4714196e63cb179323712029db53057fe79a4b52003e7a8e2d0a9bfc2383",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:seedream_dedicated_api_inline_contract_needs_no_cdn_origin_or_format_selector",
+        "status": "passed_current",
+        "input_fingerprint": "3c26e564b4cba23fd57cdaaf64e9e467657828c9f7d13c2197499e27fb7db11f",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:canonical_assets_are_reference_only_and_each_preview_has_its_own_identity",
+        "status": "passed_current",
+        "input_fingerprint": "6158c3e36c82bc2e9934e3b2de38ab8d04b1159c2e0a2a39301810a223bd3c3e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:completed_and_partial_locations_do_not_hydrate_in_progress_or_unrelated_data",
+        "status": "passed_current",
+        "input_fingerprint": "21ebc525f90459a55f7d9b1dc1e129683e8af8fbf0b2303caede669757a767ab",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:paid_generation_admission_accounts_for_base64_expansion_before_dispatch",
+        "status": "passed_current",
+        "input_fingerprint": "c7ab9b199573ad68b410f9eb6fc3069f851ba73070aaa038b225d83b35b13b5a",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:unnamed_store_keeps_the_sdk_required_string_name",
+        "status": "passed_current",
+        "input_fingerprint": "6a03faa953924c90e3ed124417392d42e4c5c7d9a1a3175caf59f666ddfc98fd",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:tests/worker/hosted-code.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "58ea825aa8ddce0703d0315707b702fc0f4155a22152624b79d94a5b3dde529d",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:tests/worker/hosted-search.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "0ff8d89bf2d9f1c746e585c8f1b1fa3eb40f0abb917c7cba194bc825817e52ef",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "journey:Responses auxiliary compact and count",
+        "status": "passed_current",
+        "input_fingerprint": "b8f62b37b3f721d1af767aab15c96bb1459c7ae24878920c7db7b28599cea27d",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "journey:DeepSeek exact count-only tokenizer cold warm and profile replacement",
+        "status": "passed_current",
+        "input_fingerprint": "7c29c7534578403579c396dd25b1929b26a8e341f3a5e6d47aded8ef463666f6",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "node:tests/worker/file-search.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/file-search.test.mjs"
+        ],
+        "env": {},
+        "reason": "Actual Worker journey failed; compiled Wasm is reusable, runtime acceptance remains unresolved"
+      },
+      {
+        "id": "node:tests/worker/hosted-image.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/hosted-image.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_HOSTED_IMAGE_CASE": "stored"
+        },
+        "reason": "Actual Worker journey failed; compiled Wasm is reusable, runtime acceptance remains unresolved"
+      },
+      {
+        "id": "node:tests/worker/image-projection.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/image-projection.test.mjs"
+        ],
+        "env": {},
+        "reason": "Actual Worker journey failed; compiled Wasm is reusable, runtime acceptance remains unresolved"
+      },
+      {
+        "id": "node:tests/worker/vector-storage.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/vector-storage.test.mjs"
+        ],
+        "env": {},
+        "reason": "Actual Worker journey failed; compiled Wasm is reusable, runtime acceptance remains unresolved"
+      }
+    ]
   }
 ]
