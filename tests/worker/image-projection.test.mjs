@@ -62,7 +62,7 @@ async function seedAsset(db, bucket, owner, response, item, partial, payload) {
 }
 
 async function seedFile(db, owner, blob) {
-  const now = Date.now(), space = `space_${sha(owner)}`, id = `file-${randomUUID()}`;
+  const now = Date.now(), space = `space_${sha(owner)}`, id = `file-${randomUUID().replaceAll('-', '')}`;
   await db.prepare("INSERT INTO spaces(id,account_id,name,created_at_ms,updated_at_ms) VALUES(?,?,'Image fixture',?,?) ON CONFLICT(account_id) DO NOTHING")
     .bind(space, owner, now, now).run();
   await db.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,blob_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,upload_outcome,upload_operations) VALUES(?,?,?,'checked.png','user_data','image/png',?,?,?,?,'processed','fixture-image-link',?,?,?,'stored',0)")
