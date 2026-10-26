@@ -2036,5 +2036,56 @@
       "earlier_1g_run": "40214782486",
       "cloudflare_4g_provisioned": false
     }
+  },
+  {
+    "source_sha": "bcaf47958e9f4f923c0d621dda16d118e5d73afb",
+    "run_id": "40273126912",
+    "components": [],
+    "status": "verified",
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12629131668,
+    "verified_checks": [
+      {
+        "id": "journey:Responses auxiliary compact and count",
+        "status": "passed_current",
+        "input_fingerprint": "26d14ab5c302e20fe5e145d1efb92dc3a24caf5e18a2f03d7e7f48896616d6c9",
+        "executed_tests": 2,
+        "receipt_path": "worker-journeys.json"
+      }
+    ]
+  },
+  {
+    "source_sha": "bcaf47958e9f4f923c0d621dda16d118e5d73afb",
+    "run_id": "40273126912",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12628283978,
+    "verified_checks": [
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "641e3982f3fc4788a53a535dd5f170b0c6a30df92991f0947ce89d272cf17508",
+        "executed_tests": 1,
+        "receipt_path": "tooling.json"
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "node:scripts/deploy-workflow.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "^both apps load and publish the artifact original immutable source without rebuilding$",
+          "scripts/deploy-workflow.test.mjs"
+        ],
+        "env": {},
+        "expected_test": "both apps load and publish the artifact original immutable source without rebuilding",
+        "reason": "Actual first staging loader failure: GITHUB_SHA is runner-owned; use explicit verified source argument"
+      }
+    ]
   }
 ]

@@ -36,9 +36,10 @@ test('operator observation persists a global intent artifact before the single P
 });
 
 test('both apps load and publish the artifact original immutable source without rebuilding', () => {
-  assert.ok(workflow.includes('GITHUB_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}'));
+  assert.equal(workflow.includes('GITHUB_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}'), false);
+  assert.ok(workflow.includes('await loadImageArtifact(".temp/container-release", process.env.CONTAINER_SOURCE_SHA)'));
   assert.ok(workflow.includes('CONTAINER_SOURCE_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}'));
-  assert.equal((workflow.match(/node scripts\/container-artifact.mjs load/g) ?? []).length, 1);
+  assert.equal((workflow.match(/await loadImageArtifact\(/g) ?? []).length, 1);
   assert.equal(workflow.includes('docker build'), false);
   assert.equal(workflow.includes('worker-build --release'), false);
 });

@@ -191,8 +191,9 @@ jobs:
           github-token: ${{ github.token }}
       - name: Verify and load the exact tested daemon source and image
         env:
-          GITHUB_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
-        run: node scripts/container-artifact.mjs load .temp/container-release
+          CONTAINER_SOURCE_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
+        # GITHUB_SHA is runner-owned; a verified artifact can originate from another commit.
+        run: node --input-type=module -e 'import { loadImageArtifact } from "./scripts/container-artifact.mjs"; await loadImageArtifact(".temp/container-release", process.env.CONTAINER_SOURCE_SHA)'
       - name: Publish that tested image once for both runtime-profile apps
         env:
           CONTAINER_SOURCE_SHA: ${{ steps.provenance.outputs.container_artifact_sha }}
