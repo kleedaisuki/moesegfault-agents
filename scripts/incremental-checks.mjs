@@ -371,6 +371,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // One non-promoting integration probe: independent topic receipts already
+    // cover the caller families, Code resources, capacity clock and projections.
+    const continuationChecks = new Set([
+      'rust:agents-worker:hosted_results_always_translate_as_native_text',
+      'rust:agents-worker:file_search_private_result_is_json_text_for_native_continuation',
+      'node:tests/worker/hosted-image.test.mjs',
+      'node:tests/worker/file-search.test.mjs',
+    ]);
+    for (const job of Object.keys(receipt.checks)) {
+      receipt.checks[job] = receipt.checks[job].filter(check => continuationChecks.has(check.id));
+    }
+    receipt.non_deployable = true;
+    receipt.diagnostic_only_components = ['worker'];
+    receipt.required_remediations = receipt.checks.worker.map(check => check.id);
+    receipt.required_jobs = ['changes', 'worker'];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
