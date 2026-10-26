@@ -1340,7 +1340,7 @@ impl SessionInner {
         }
         read_chunks(&self.state.storage(), &format!("{RESPONSE_PREFIX}{id}"))
             .await?
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(Error::from))
+            .map(|bytes| crate::session_storage::decode_json(&bytes))
             .transpose()
     }
 
@@ -2322,6 +2322,35 @@ mod tests {
 
     fn test_obfuscation() -> Obfuscation {
         Obfuscation::new(Seed::generate(), "resp_test")
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn persisted_tagged_tools_restore_response_and_cold_session(score in 0.0f64..=1.0) {
+            let mut response = response();
+            response.bound_tools = serde_json::from_value(json!([{
+                "tool":{"kind":"file_search","options":{
+                    "vector_store_ids":["vs_owned"],
+                    "ranking_options":{"score_threshold":score}
+                }}, "allowed_callers":null
+            }])).unwrap();
+            let bytes = serde_json::to_vec(&response).unwrap();
+            let restored: ResponseRun = crate::session_storage::decode_json(&bytes).unwrap();
+            proptest::prop_assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(&response).unwrap());
+
+            let mut state = super::super::tests::state();
+            let mut value = serde_json::to_value(&state).unwrap();
+            value["run"] = json!({"id":"resp_test","round":1,"admitted":true,
+                "total":Usage::default(),"pending_completion":null,"started_at_ms":0,
+                "response":response});
+            state = serde_json::from_value(value).unwrap();
+            let bytes = serde_json::to_vec(&state).unwrap();
+            let restored: PersistedSession = crate::session_storage::decode_json(&bytes).unwrap();
+            proptest::prop_assert_eq!(serde_json::to_value(restored.run.unwrap().response.unwrap().bound_tools).unwrap(),
+                serde_json::to_value(state.run.unwrap().response.unwrap().bound_tools).unwrap());
+            let exact: Value = crate::session_storage::decode_json(br#"{"integer":9007199254740993}"#).unwrap();
+            proptest::prop_assert_eq!(exact["integer"].as_u64(), Some(9_007_199_254_740_993));
+        }
     }
 
     #[test]
