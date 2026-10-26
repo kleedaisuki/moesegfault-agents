@@ -435,3 +435,40 @@ Five pure fixtures cover versioning and secret-free snapshots, exact-origin
 BYOK routing, fixed platform model/provider/price, declared file and execution
 IDs, and the bounded size shorthand. They are written for the integration CI;
 local checks only ran rustfmt and diff validation, not a Rust build or paid API.
+
+## Controlled runtime acceptance (2026-10-26)
+
+All six producer journeys passed with the actual compiled Worker, OpenAI Node
+SDK and strict current Python SDK `3.37.0`. Outbound providers were controlled
+fixtures; this is not a live Seedream or BYOK-provider acceptance receipt.
+
+| Case | Observed boundary |
+| --- | --- |
+| `stored` | One generation POST, two model rounds, actual inline base64, 18000-microUSD image ledger entry, Files deletion independent of cold GET/idempotent SSE, canonical deletion fencing late publication. |
+| `byok` | Independent owner key and unknown model without operator registry; one POST, platform image debit zero; three undeclared advanced controls rejected before additional model/funding effects. |
+| `no_store` | Ordinary HTTP execution holds do not expire as observer caches; terminal cache grants neither public GET nor previous-response authority. |
+| `conversation` | Independent final-image holder; item/list reads survive Files deletion and Conversation metadata deletion; item deletion releases its holder and fences late publication. |
+| `lifecycle` | Separate preview/final bytes, original-observer disconnect, 70-minute fake-clock active protection, terminal-started one-hour expiry. A separate deliberately ambiguous POST remains held at 18000 microUSD and cold observation never resubmits it. |
+| `funded_delivery` | Original JSON delivery reads through its prepaid account hold at zero unreserved balance; a later fresh GET returns 402, not a free read or generic 500. |
+
+The first five use Worker artifact `12645959577`, source
+`4f767153449cb0601a562c2412eee832ffa2e2c1`, CI build `40315096372`, Wasm SHA-256
+`a3fe5ed73ea724f59f7b13d59c0182b254626fad5a9e1d7846fac05987a3bcf1`.
+The final credit-error repair uses artifact `12648952278`, source
+`8c4889aecadf2b04832fe57158d41e0c536f3611`, build `40320354539`, Wasm SHA-256
+`a04b5d9c13a1c20367b01c6c4320616145fe2a692af59cb89832e58d13813bec`.
+The original CI attempts stopped at reporter-argument duplication and then a
+JSON-only fixture incorrectly invoking an SSE validator; repaired fixtures were
+run locally against those exact retained binaries, not a speculative rebuild.
+JSON-only delivery validates its actual Response model without invented events.
+
+Native function-result metadata is JSON **text** (or its normalized singleton
+`input_text` representation), never the structured durable receipt passed as a
+content object. Public image items and durable blob references remain separate.
+The stored canonical record measured 12636 bytes with no inline image payload;
+this is not a peak-memory measurement. Separate retained-projection journeys
+passed a 16-MiB image and distinct previews against artifact `12645045621` after
+correcting seeded file IDs to the existing 32-hex contract. Raw per-case receipts
+and their unchanged-source binding supplement are retained under the topic's
+`.temp/media-results/`; the immutable source/artifact/checksum identities above
+preserve the acceptance context if that scratch directory is cleaned.
