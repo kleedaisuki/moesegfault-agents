@@ -230,7 +230,18 @@ async fn dispatch_create(
     if execution.conversation.is_none() {
         let parsed: ResponseRequest = serde_json::from_value(request.clone())?;
         if let Some(id) = parsed.conversation_id().map_err(worker::Error::RustError)? {
-            let mut accepted = crate::conversation_routes::admit(env, owner, id, &route.id).await?;
+            let mut accepted = match crate::conversation_routes::admit_traced(
+                env,
+                owner,
+                id,
+                &route.id,
+                Some(&env.trace().traceparent()),
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(error) => return with_identity(routes::error_response(&error)?, &route),
+            };
             if accepted.status_code() >= 300 {
                 return with_identity(accepted, &route);
             }

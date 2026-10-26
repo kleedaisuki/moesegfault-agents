@@ -107,6 +107,10 @@ impl TraceContext {
         &self.trace_id
     }
 
+    pub fn span_id(&self) -> &str {
+        &self.span_id
+    }
+
     pub fn traceparent(&self) -> String {
         format!(
             "00-{}-{}-{:02x}",
@@ -143,7 +147,12 @@ pub fn sanitize_fields(fields: Value) -> Value {
     for (key, value) in fields {
         let numeric = matches!(
             key.as_str(),
-            "duration_ms"
+            "lock_wait_ms"
+                | "funding_ms"
+                | "rpc_ms"
+                | "observation_ms"
+                | "pending_deadline_ms"
+                | "duration_ms"
                 | "prompt_tokens"
                 | "completion_tokens"
                 | "cached_tokens"
@@ -162,11 +171,19 @@ pub fn sanitize_fields(fields: Value) -> Value {
         );
         let identifier = matches!(
             key.as_str(),
-            "request_id"
+            "conversation_id"
+                | "operation_id"
+                | "response_id"
+                | "grant_event"
+                | "request_path"
+                | "error_type"
+                | "capacity_generation"
+                | "request_id"
                 | "session_id"
                 | "agent_id"
                 | "run_id"
                 | "trace_id"
+                | "span_id"
                 | "parent_span_id"
                 | "snapshot_id"
                 | "tool_call_id"
@@ -188,7 +205,7 @@ pub fn sanitize_fields(fields: Value) -> Value {
             safe.insert(key.clone(), value.clone());
         } else if matches!(
             key.as_str(),
-            "byok" | "usage_reported" | "restored" | "success"
+            "activated" | "pending" | "byok" | "usage_reported" | "restored" | "success"
         ) && value.is_boolean()
         {
             safe.insert(key.clone(), value.clone());
@@ -225,6 +242,7 @@ fn event_name(event: &str) -> &str {
         | "workspace.checkpoint"
         | "workspace.restored"
         | "diagnostics.accepted" => event,
+        event if event.starts_with("conversation.") && token(event, 96) => event,
         _ => "operation",
     }
 }
