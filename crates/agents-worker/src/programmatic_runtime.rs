@@ -96,7 +96,7 @@ impl RuntimeSpec {
         self.validate()?;
         // No `nodejs_compat`, bindings or tails are inherited. Omitting
         // globalOutbound would inherit Internet access and is forbidden.
-        json!({
+        let code = json!({
             "compatibilityDate":"2026-10-25",
             "compatibilityFlags":["no_nodejs_compat","no_nodejs_compat_v2","allow_eval_during_startup"],
             "mainModule":"program.js",
@@ -105,9 +105,10 @@ impl RuntimeSpec {
             "env":{},
             "tails":[],
             "limits":{"cpuMs":self.cpu_ms,"subRequests":0},
-        })
-        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .map_err(|_| fail("invalid_program_runtime_profile"))
+        });
+        // serde_json's arbitrary-precision Number serializer uses a private map;
+        // the native Loader requires JavaScript integers, not Serde's ABI view.
+        js_sys::JSON::parse(&code.to_string()).map_err(|_| fail("invalid_program_runtime_profile"))
     }
 }
 
