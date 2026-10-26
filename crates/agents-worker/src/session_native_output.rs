@@ -327,6 +327,18 @@ pub(crate) fn validate_returns(
         if item["type"] != required {
             return Err("tool_output_type_mismatch");
         }
+        let caller = call
+            .details
+            .as_ref()
+            .and_then(|details| details.get("caller"));
+        if caller.is_some_and(|caller| item.get("caller") != Some(caller))
+            || (caller.is_none()
+                && item
+                    .get("caller")
+                    .is_some_and(|caller| !caller.is_null() && caller["type"] != "direct"))
+        {
+            return Err("tool_output_caller_mismatch");
+        }
     }
     if expected
         .iter()
