@@ -1229,19 +1229,12 @@ impl SessionInner {
                     &record.pinned.model.model,
                 )
                 .await?;
-            let projection = (|| {
-                if let Some(code) = native::completion_failure(summary) {
-                    return Err(Error::RustError(code.into()));
-                }
-                let text = summary
-                    .message
-                    .content
-                    .as_str()
-                    .filter(|text| !text.is_empty())
-                    .ok_or_else(|| Error::RustError("empty_compaction".into()))?;
-                self.compaction_item(&data, summary)
-                    .map(|item| (text, item))
-            })();
+            let projection = provider::compaction::completed_summary(summary)
+                .map_err(Error::RustError)
+                .and_then(|text| {
+                    self.compaction_item(&data, summary)
+                        .map(|item| (text, item))
+                });
             {
                 let mut current = self.data.borrow_mut();
                 let run = current.as_mut().unwrap().run.as_mut().unwrap();
@@ -2529,6 +2522,9 @@ fn safe_error_code(error: &Error) -> String {
         "model_price_unconfigured",
         "provider_outcome_unknown",
         "compaction_outcome_unknown",
+        "compaction_incomplete",
+        "compaction_unexpected_tool",
+        "empty_compaction",
         "tool_outcome_unknown",
         "provider_usage_missing",
         "provider_protocol_error",

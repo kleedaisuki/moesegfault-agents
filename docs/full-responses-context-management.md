@@ -164,3 +164,14 @@ user clock and the metadata/item-edit distinction. No earlier eight auto-window
 or two compaction/escrow generations were replayed. The live operator compares
 Conversation and predecessor Response counts after compaction without another
 paid generation; that real-provider comparison is prepared, not yet executed.
+
+### Shared known-summary acceptance
+
+The Session now calls the same `provider::compaction::completed_summary` used by
+standalone operations. Native incomplete/failed/cancelled turns, legacy length
+termination and unexpected tool calls cannot replace context merely because
+partial text exists. The existing known-usage settlement/accumulation precedes
+the error path, which clears the known pending summary without publishing a
+compaction item. This reuses the already exercised terminal-policy helper; no
+accepted summary/answer generation is replayed to prove the same predicate.
+The changed Session call site still belongs to the next coherent artifact build.
