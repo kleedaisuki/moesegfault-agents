@@ -413,3 +413,44 @@ executor fees are BYOK; only actually consumed platform infrastructure is charge
 here. Known/ambiguous dispatches retain their original no-replay fence. Exact
 outcomes and ordinary Files publication decisions precede artifact ACK; scratch
 is not a fake durable Python heap.
+
+## Accepted executor increment and actual CF staging boundary
+
+The separate executor implementation is integrated from topic source `1759066`
+with the transport, immutable-identity, cleanup-hold and executor-first admission
+repairs. CI `40330823824` succeeded with the compiled Worker at
+`3828b61b23c43a1a39352ff9ce3ae98f399cc6d5` (Worker artifact `12653224948`,
+receipt artifact `12655312277`). Its actual Docker executor is the image at
+`7c2692092e40d3a5594d57b935552c24e5080c87`, built by the successful
+`native-executor` job in run `40324162172` (image artifact `12650502303`, native
+receipt `12650522161`). That earlier run's Worker job failed; only its successful
+native image/capability evidence is reused.
+
+The new real owned-CID guest journey subsequently passed in run `40335887876`
+at test source `77fc998fc1503bd889582d83bdeb70ff462eeb63`, reusing those exact
+binaries. Receipt artifact `12656223867` records two real cells, one namespace
+prepare, two published/ACKed artifact captures, one explicit release and the
+unchanged nine-byte CSV. The original source harness prints 42, is archived,
+and the isolated guest prints 43 from the same Python heap without a local VM.
+The daemon content-addresses equal artifact bytes, so the two legitimate cell
+captures can have the same artifact ID; ACK fencing is per cell/publication, not
+global content-ID uniqueness. The earlier failed fixture jobs remain failed and
+must not cause another replay of the accepted cells.
+
+These are real Rust Worker plus real Docker executor receipts, not a claim of
+actual Cloudflare managed Code acceptance. Staging previously retained the old
+`b1edf977` daemon with Code and `Session4G` disabled. The explicit deployment
+selector `web_search,file_search,code_interpreter` now retains both `Session/basic`
+and `Session4G/standard-1`, keeps accepted Search services, and requires normal
+verified daemon provenance rather than the old disabled-runtime exception.
+
+`tests/e2e/hosted-code-sdk.mjs --memory 1g|4g` is the tracked narrow live driver.
+Each selected profile permits one new direct-DeepSeek Response and one Python
+cell, with an 8192-token context and 512-token output bound. The cell prints 42,
+publishes the exact nine-byte CSV and reads the kernel's `memory.max`; a metadata
+memory label alone cannot satisfy the expected 1073741824/4294967296-byte cap.
+It then archives the harness, observes the independent CID still running, deletes
+the CID, requires 404, and reads the unchanged ordinary File. A fresh receipt
+fences intent before submission; ambiguous accepted operations must be reconciled,
+not retried. Actual Cloudflare profile runs, application/SKU identity and scoped
+financial closure are still required before claiming managed Code delivery.

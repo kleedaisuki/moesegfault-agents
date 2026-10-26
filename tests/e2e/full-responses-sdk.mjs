@@ -27,7 +27,8 @@ export function assertExecutionWorkspace(root, source, environment) {
     assert.equal(fs.realpathSync(environment.GITHUB_WORKSPACE), canonical, 'actions_cwd_workspace_mismatch');
     return { mode: 'trusted_actions_workspace', source };
   }
-  assert.equal(canonical.replaceAll('\\', '/').toLowerCase(), 'd:/code/moesegfault-agents/.cache/v2-release-worktree', 'explicit_release_worktree_required');
+  assert.ok(['d:/code/moesegfault-agents/.cache/v2-release-worktree', 'd:/code/moesegfault-agents/.temp/worktrees/integration']
+    .includes(canonical.replaceAll('\\', '/').toLowerCase()), 'explicit_release_worktree_required');
   return { mode: 'owned_local_release_worktree', source };
 }
 
