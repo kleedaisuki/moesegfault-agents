@@ -6,6 +6,17 @@ import vm from 'node:vm';
 const workflow = readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
 const before = (first, second) => assert.ok(workflow.indexOf(first) >= 0 && workflow.indexOf(first) < workflow.indexOf(second), `${first} must precede ${second}`);
 
+test('image activation is additive staging configuration, never an automatic provider probe or journey', () => {
+  const code = workflow.match(/<<'REQUEST'\n([\s\S]*?)\n\s+REQUEST/)[1];
+  const run = overrides => vm.runInNewContext(code, { process: { env: { DEPLOY_ENVIRONMENT: 'staging', ACCEPTANCE_PROFILE: 'none',
+    RUNTIME_FEATURES: 'web_search,file_search,code_interpreter,image_generation', SOURCE_RUN: '123', GITHUB_RUN_ATTEMPT: '1', ...overrides } } });
+  assert.doesNotThrow(() => run({}));
+  assert.throws(() => run({ DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
+  assert.throws(() => run({ RUNTIME_FEATURES: 'image_generation' }), /allowlist/);
+  before('Require the selected Seedream image service credential without a paid probe', 'npx wrangler d1 migrations apply');
+  assert.equal(workflow.includes('node tests/e2e/hosted-image-sdk.mjs'), false);
+});
+
 test('native FileSearch workflow accepts an explicit additive Worker allowlist without selecting paid tests', () => {
   const code = workflow.match(/<<'REQUEST'\n([\s\S]*?)\n\s+REQUEST/)[1];
   const run = overrides => vm.runInNewContext(code, { process: { env: { DEPLOY_ENVIRONMENT: 'staging', ACCEPTANCE_PROFILE: 'none', RUNTIME_FEATURES: 'web_search,file_search', SOURCE_RUN: '123', GITHUB_RUN_ATTEMPT: '1', ...overrides } } });
@@ -25,7 +36,7 @@ test('runtime feature workflow flags do not select or replay an acceptance famil
   assert.doesNotThrow(() => run({}));
   assert.throws(() => run({ RUNTIME_FEATURES: 'code_interpreter' }), /allowlist/);
   assert.throws(() => run({ DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
-  assert.ok(workflow.includes("options: [configured, none, web_search, file_search, 'web_search,file_search']"));
+  assert.ok(workflow.includes("'web_search,file_search,code_interpreter,image_generation']"));
   assert.ok(workflow.includes("const accepted=profile==='none'?'not_selected'"));
   assert.equal(workflow.includes('node tests/e2e/hosted-search-sdk.mjs'), false);
   before('Require the existing selected Worker search service credential', 'npx wrangler d1 migrations apply');

@@ -124,8 +124,9 @@ export function verifyReusedChecks({ plan, catalog, source, repository, metadata
 }
 
 export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun, repository, metadata, verification, hash, checkHash, reusedVerification, coreContainer = false, workerRuntimeFeatures = [] }, now = Date.now()) {
-  need(Array.isArray(workerRuntimeFeatures) && new Set(workerRuntimeFeatures).size === workerRuntimeFeatures.length && workerRuntimeFeatures.every(feature => ['web_search', 'file_search', 'code_interpreter'].includes(feature)), 'unverified_runtime_feature');
+  need(Array.isArray(workerRuntimeFeatures) && new Set(workerRuntimeFeatures).size === workerRuntimeFeatures.length && workerRuntimeFeatures.every(feature => ['web_search', 'file_search', 'code_interpreter', 'image_generation'].includes(feature)), 'unverified_runtime_feature');
   need(!workerRuntimeFeatures.includes('code_interpreter') || !coreContainer, 'unverified_runtime_feature:code_requires_verified_container');
+  need(!workerRuntimeFeatures.includes('image_generation') || !coreContainer, 'unverified_runtime_feature:images_require_normal_verified_deployment');
   need(SHA.test(source ?? '') && ID.test(String(sourceRun)) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? ''), 'invalid_candidate_identity');
   requirePromotionScope(plan, coreContainer);
   need(plan?.schema_version === 1 && plan.policy === 'incremental-only' && plan.planned_checks_are_not_results === true && plan.source_sha === source && same(plan, expectedPlan), 'candidate_plan_not_recomputed');
