@@ -70,7 +70,7 @@ impl SessionInner {
                 return Err(fault("hosted_image_operation_conflict"));
             }
             if let Some(result) = &saved.result {
-                return Ok(HostedDispatch::Ready(result.clone()));
+                return Ok(HostedDispatch::Ready(result.to_string().into()));
             }
             if !saved.dispatched && saved.failure.is_some() {
                 return self
@@ -93,7 +93,9 @@ impl SessionInner {
                 self.abort_image_admission(record, &key, saved).await?;
             }
             return Ok(HostedDispatch::Ready(
-                json!({"status":"failed","error":"image_cancelled"}),
+                json!({"status":"failed","error":"image_cancelled"})
+                    .to_string()
+                    .into(),
             ));
         }
         let trace = {
@@ -187,7 +189,9 @@ impl SessionInner {
         if self.image_cancelled() {
             self.abort_image_admission(record, &key, saved).await?;
             return Ok(HostedDispatch::Ready(
-                json!({"status":"failed","error":"image_cancelled"}),
+                json!({"status":"failed","error":"image_cancelled"})
+                    .to_string()
+                    .into(),
             ));
         }
         saved
@@ -213,7 +217,9 @@ impl SessionInner {
             saved.dispatched = false;
             self.abort_image_admission(record, &key, saved).await?;
             return Ok(HostedDispatch::Ready(
-                json!({"status":"failed","error":"image_cancelled"}),
+                json!({"status":"failed","error":"image_cancelled"})
+                    .to_string()
+                    .into(),
             ));
         }
         let shared = Rc::new(RefCell::new(saved.clone()));
@@ -702,7 +708,7 @@ impl SessionInner {
         }
         saved.result = Some(result.clone());
         self.save_image_operation(key, saved).await?;
-        Ok(HostedDispatch::Ready(result))
+        Ok(HostedDispatch::Ready(result.to_string().into()))
     }
 
     fn image_run_id(&self) -> Result<String> {
