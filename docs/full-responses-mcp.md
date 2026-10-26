@@ -89,6 +89,32 @@ all absent. This establishes live protocol/metadata compatibility, not a deploye
 Worker tool-execution receipt. The follow-up must not invoke the model-backed
 `ask_wiki_question` tool.
 
+### Compiled compatibility acceptance
+
+Run [40355372320](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40355372320)
+at `c9c73b0ee0a77228a085664fbad5fdb3631c8e56` passed the new Rust metadata-only
+fallback/method-fence contract, Wasm checking, release linking and bundling. Its
+aggregate is **failed**: the original fixture incorrectly required only one
+initialization across two Responses, after the real approval/tool path completed.
+The established contract requires fresh authorized discovery for each new Response.
+
+Using that exact retained Worker (Wasm SHA-256
+`8f5273c3eda725f7e64d1d12dd3b7ef2ddde32993f2ca906b9a87d44013f41fb`), fixture
+`05f7caefe19c12beb6d6c9c49c5ec208419305cf` passed only `mcp_legacy` locally in
+11.63 seconds. It exercised the original `-32600` / HTTP 400 probe rejection,
+header-free initialization, a 2025-06-18 counter-offer, distinct session IDs and
+refreshed credentials for the approved Response, zero calls before approval and
+one approved RPC. Legacy results omitted `resultType` without losing structured
+content. Raw SDK GET equaled the creation body, strict Python SDK 3.37.0 accepted
+both snapshots, and the read-only tail dispatched nothing. No old MCP cases were
+selected; two controlled provider replies were used, with all unplanned outbound
+traffic denied and no live model service calls.
+
+Reproduction: set `WORKER_BUILD_DIR` to the extracted run's `worker` artifact,
+`MAGENTS_MCP_CASE=mcp_legacy`, `MAGENTS_CURRENT_SCHEMA_PYTHON` to the locked
+current-SDK interpreter, and run `node --test tests/worker/mcp.test.mjs` from the
+fixture source. The original failed aggregate is not relabeled as a green CI run.
+
 References:
 - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility
 - https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation
