@@ -141,3 +141,26 @@ compaction keeps the same owner/provider binding and native transport; it does
 not expose or decode ciphertext. Standalone purpose-transport restrictions remain
 separate. Existing intent files require inspection of original operations, never
 a new paid POST. The operator is prepared, not live-executed at this checkpoint.
+
+## Published Conversation source for exact counting
+
+`auxiliary_source::select` is shared source selection, not a second renderer. An
+owned Conversation snapshot may name a published predecessor. Its retained
+immutable `ResponseContext`/native ref is selected after checking owner, response,
+Session, Agent, pin, requested profile and resolved provider binding. An omitted
+model is inferred only from that authorized predecessor. An unavailable or
+incompatible anchor fails explicitly; a busy/newer Session head never causes a
+fallback to all old public items. Explicit independent Agent input still uses
+the established owned Conversation item translation/resolution contract.
+Metadata-only edits preserve the content revision; real item edits invalidate
+the execution anchor and require an explicit model for independent projection.
+
+Actions `40343457138`, source `577ebf96`, Worker artifact `12659753579`, passed
+only the new `conversation-count` lifecycle: one new Conversation auto-window
+generation, then read-only counts and a zero-generation sibling WebSocket
+warmup. It verified omitted-model inference, no resurrection of dropped history,
+no leakage from the later Session head, cold immutable reads, unchanged source/
+user clock and the metadata/item-edit distinction. No earlier eight auto-window
+or two compaction/escrow generations were replayed. The live operator compares
+Conversation and predecessor Response counts after compaction without another
+paid generation; that real-provider comparison is prepared, not yet executed.

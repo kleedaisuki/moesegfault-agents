@@ -108,6 +108,11 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       timeout: 30000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }));
     assert.equal(typed.passed, true);
     receipt.checks.response = { id: response.id, session, sha256: hash(JSON.stringify(response)), sdk: typed.sdk, events: events.length };
+    const followInput = 'READ-ONLY-AFTER-COMPACTION';
+    const conversationCount = await client.responses.inputTokens.count({ conversation: conversation.id, input: followInput });
+    const responseCount = await client.responses.inputTokens.count({ previous_response_id: response.id, input: followInput });
+    assert.equal(conversationCount.input_tokens, responseCount.input_tokens, 'Conversation_and_published_Response_select_the_same_compacted_boundary');
+    receipt.checks.conversationImmutableCount = { inputTokens: conversationCount.input_tokens, omittedModel: true, paidGenerations: 0 };
     const retained = (await client.conversations.items.list(conversation.id, { order: 'asc' })).data;
     const prior = await client.responses.retrieve(response.id);
     await client.conversations.delete(conversation.id);
