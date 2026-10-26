@@ -96,6 +96,38 @@ pub(super) fn completed(id: &str) -> Result<Response> {
     Response::from_json(&json!({"id":id,"object":"conversation.purged","purged":true}))
 }
 
+pub(super) async fn release_closed(
+    context: &PublicationContext<'_>,
+    record: &ConversationRecord,
+    body: &Value,
+    noappend: bool,
+) -> Result<Response> {
+    let response = body["response_id"].as_str().unwrap_or_default();
+    if !valid_id(response) {
+        return util::json_error(400, "invalid_request", "Invalid response identity");
+    }
+    if noappend
+        && !quota::escrow::released(
+            context.env,
+            &record.owner,
+            context.operation,
+            &record.id,
+            response,
+            body["capacity_generation"].as_str().unwrap_or_default(),
+        )
+        .await?
+    {
+        return util::json_error(
+            409,
+            "conversation_capacity_generation_closed",
+            "The generation has no matching no-append receipt",
+        );
+    }
+    // This is only the existing idempotent writer-release acknowledgment. A
+    // purge fence still denies every admission, activation, extension and append.
+    Response::from_json(&json!({"id":record.id,"response_id":response,"released":true}))
+}
+
 async fn remove_prefix(storage: &Storage, prefix: &str) -> Result<()> {
     loop {
         let entries = storage

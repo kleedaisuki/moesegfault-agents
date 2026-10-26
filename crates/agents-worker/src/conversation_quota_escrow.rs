@@ -372,6 +372,19 @@ pub(crate) async fn known_lease(
         }))
 }
 
+pub(crate) async fn released(
+    env: &Env,
+    owner: &str,
+    operation: &ConversationOperation,
+    conversation: &str,
+    response: &str,
+    generation: &str,
+) -> Result<bool> {
+    Ok(row(env, owner, operation, conversation, response)
+        .await?
+        .is_some_and(|row| row.generation == generation && row.state == "released"))
+}
+
 pub(crate) async fn validate_generation(
     env: &Env,
     owner: &str,
