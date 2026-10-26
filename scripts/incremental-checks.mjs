@@ -93,7 +93,7 @@ export function selections(source, base, files) {
     }
     if (/^tests\/test_.*\.py$/.test(file)) checks.rust.push(command(`python:${file}`, ['python3', '-m', 'unittest', 'discover', '-s', 'tests', '-p', path.basename(file), '-v'], `Changed offline contract ${file}`));
     if (/^tests\/e2e\/test_.*\.py$/.test(file)) {
-      if (/test_workspace_(daemon|interpreter)/.test(file)) {
+      if (/test_workspace_(daemon|interpreter|code)/.test(file)) {
         checks.container.push(command(`pytest:${file}`, python('-m', 'pytest', file, '-ra', '-rP'), `Changed real-container journey ${file}`));
       } else if (/test_(current_responses_sdk_contract)/.test(file)) {
         checks.current_sdk.push(command(`pytest:${file}`, ['.cache/e2e-current-venv/bin/python', '-m', 'pytest', file, '-ra'], `Changed current SDK schema ${file}`));

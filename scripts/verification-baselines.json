@@ -3190,6 +3190,18 @@
     ],
     "unresolved_checks": [
       {
+        "id": "node:tests/worker/hosted-code.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "Code container outlives archived harness",
+          "tests/worker/hosted-code.test.mjs"
+        ],
+        "env": {},
+        "reason": "Only new retained-context lifecycle; accepted auto-Code remains a baseline."
+      },
+      {
         "id": "node:tests/worker/hosted-search.test.mjs",
         "argv": [
           "node",
@@ -3197,9 +3209,21 @@
           "tests/worker/hosted-search.test.mjs"
         ],
         "env": {
-          "MAGENTS_HOSTED_SEARCH_CASE": "platform"
+          "MAGENTS_HOSTED_SEARCH_CASE": "responses_multi"
         },
-        "reason": "Only current-SDK CI environment was unavailable; verify the repaired environment on the platform case, preserving all six same-Wasm local SDK journey receipts."
+        "reason": "Only new native multi-action preservation; six accepted search cases are retained."
+      },
+      {
+        "id": "node:tests/worker/hosted-image.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/hosted-image.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_HOSTED_IMAGE_CASE": "stored"
+        },
+        "reason": "First newly compiled image production/delivery path; run independent unread cases after the shared path is healthy."
       }
     ],
     "evidence": {
@@ -3252,5 +3276,46 @@
         "executed_tests": 2
       }
     ]
+  },
+  {
+    "source_sha": "0074abdffb489228743eb51472acbeb1aba9e2fd",
+    "run_id": "40297652125",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12638189018,
+    "verified_checks": [
+      {
+        "id": "node:scripts/deploy-config.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "e16371a265d40a36152ceacec4e6a3a759be2a090f2ae558d4a83231ac0e357b",
+        "receipt_path": "tooling.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "3943ed8cac2b69a8ea7ca944c913877deb50f92a1a978099e6ade2a002cec8ab",
+        "receipt_path": "tooling.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:scripts/deploy-workflow.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "76929f27a0fd3a23d74e9ce529bc7c44a9082da790453ec2c45bdd7e41673d12",
+        "receipt_path": "tooling.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:tests/e2e/test_hosted_search_sdk_contract.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "f8532ce283145051603925053a7a54833b308856fc4404dbcf8fe4140452cd25",
+        "receipt_path": "tooling.json",
+        "executed_tests": 4
+      }
+    ],
+    "unresolved_checks": []
   }
 ]
