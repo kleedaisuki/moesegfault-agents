@@ -331,6 +331,24 @@ Worker artifact `12658363089` / verification artifact `12658952375`. It rebuilt
 the changed Wasm and executed only that new contract, not the already accepted
 media lifecycle or earlier compact/vision cases.
 
+### One durable source per compact operation
+
+New native-purpose operations retain the complete native input once. Their user
+window is derived in source order when projecting output; the same user bodies
+are not also serialized as a Chat projection and a separate retained-item list.
+Portable Chat/Anthropic operations retain their established Message projection
+and explicit user window instead. Previously persisted envelopes still decode
+with both older fields and retain their original output identities. Protected
+instructions, source bytes, provider pins and idempotency hashes do not change.
+
+The edge drops its no-longer-used count request before awaiting the model actor.
+The bounded resolved-input envelope now matches the 8 MiB exact-renderer ceiling,
+rather than rejecting a valid context because three internal copies exceeded the
+old 2 MiB limit. Oversize input fails at the edge before actor creation or model
+admission. New serialization contracts compare exact envelope byte counts and
+old/new canonical retained output; they do not claim a measured latency or RSS
+improvement or replay accepted inference journeys.
+
 Provider image transport reference:
 https://api-docs.deepseek.com/guides/vision/#using-images-with-the-anthropic-api
 
