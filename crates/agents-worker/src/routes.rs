@@ -216,6 +216,11 @@ pub(crate) fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "billing_unavailable",
             "Pricing for this resource is not configured; contact the service administrator",
         ),
+        "conversation_actor_transport_failed" => (
+            503,
+            "conversation_actor_transport_failed",
+            "Conversation metadata RPC was interrupted; inspect the original request and scope before retrying",
+        ),
         "workspace_startup_timeout" => (
             503,
             "workspace_startup_timeout",

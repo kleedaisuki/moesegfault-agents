@@ -71,7 +71,9 @@ struct Route {
 }
 
 pub(crate) async fn handle(req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
-    let operation = ConversationOperation::account(env, owner).await?;
+    let operation = ConversationOperation::account(env, owner)
+        .await?
+        .with_traceparent(Some(&env.trace().traceparent()));
     let result = handle_inner(req, env, owner, &operation).await;
     operation.finish_result(env, owner, result, false).await
 }
@@ -217,9 +219,21 @@ pub(crate) async fn snapshot(
 }
 
 pub(crate) async fn admit(env: &Env, owner: &str, id: &str, response_id: &str) -> Result<Response> {
+    admit_traced(env, owner, id, response_id, None).await
+}
+
+pub(crate) async fn admit_traced(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    traceparent: Option<&str>,
+) -> Result<Response> {
     // Admission is one edge I/O attempt, not the accepted execution lifetime.
     // Activation creates/reuses the persistent cleanup hold before model work.
-    let operation = ConversationOperation::account(env, owner).await?;
+    let operation = ConversationOperation::account(env, owner)
+        .await?
+        .with_traceparent(traceparent);
     let result = Dispatch {
         env,
         owner,
@@ -243,8 +257,11 @@ pub(crate) async fn reserve_capacity(
     session_id: &str,
     accepted_revision: u64,
     capacity: &ConversationCapacityRequest,
+    traceparent: Option<&str>,
 ) -> Result<Response> {
-    let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
+    let operation = ConversationOperation::response_actor(env, owner, response_id)
+        .await?
+        .with_traceparent(traceparent);
     let result=Dispatch {env,owner,operation:&operation}.existing(id,Method::Post,"/responses/reserve",
         Some(json!({"response_id":response_id,"session_id":session_id,"accepted_revision":accepted_revision,"capacity":capacity}))).await;
     let rejected = result.as_ref().is_ok_and(|response| response.status_code() == 409
@@ -468,17 +485,56 @@ impl Dispatch<'_> {
         self.operation
             .actor_headers(self.env, self.owner, "actor", &headers)
             .await?;
+        let request_id = util::id("conv_rpc");
+        headers.set("X-Agents-Conversation-ID", id)?;
+        headers.set("X-Agents-Conversation-Request", &request_id)?;
+        let grant: Value = serde_json::from_str(
+            &headers
+                .get(crate::conversation_meter::HEADER)?
+                .unwrap_or_default(),
+        )?;
+        let response_id = body
+            .as_ref()
+            .and_then(|body| body["response_id"].as_str())
+            .map(str::to_owned);
+        self.operation.emit(
+            "rpc.started",
+            json!({"conversation_id":id,"request_id":request_id,
+            "request_path":path,"grant_event":grant["event"],"response_id":response_id}),
+        );
         let init = RequestInit {
             method,
             headers,
             body: body.map(|body| body.to_string().into()),
             ..Default::default()
         };
-        stub.fetch_with_request(Request::new_with_init(
-            &format!("https://conversation.internal{path}"),
-            &init,
-        )?)
-        .await
+        let started = util::now_ms();
+        let result = stub
+            .fetch_with_request(Request::new_with_init(
+                &format!("https://conversation.internal{path}"),
+                &init,
+            )?)
+            .await;
+        let mut fields = json!({"conversation_id":id,"request_id":request_id,"request_path":path,
+            "grant_event":grant["event"],"response_id":response_id,"duration_ms":util::now_ms().saturating_sub(started),
+            "status":result.as_ref().ok().map(|response| response.status_code())});
+        if let Err(error) = &result {
+            fields.as_object_mut().unwrap().extend(
+                crate::conversation_meter::error_metadata(error, started)
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        }
+        self.operation.emit(
+            if result.is_ok() {
+                "rpc.completed"
+            } else {
+                "rpc.failed"
+            },
+            fields,
+        );
+        result.map_err(|_| Error::RustError("conversation_actor_transport_failed".into()))
     }
 }
 

@@ -281,6 +281,7 @@ impl SessionInner {
         response_id: &str,
         input_items: &[Value],
         warmup: bool,
+        traceparent: Option<&str>,
     ) -> Result<std::result::Result<Option<String>, Response>> {
         let Some(input) = input else {
             return Ok(Ok(None));
@@ -302,6 +303,7 @@ impl SessionInner {
             &record.id,
             input.admission.revision,
             &capacity,
+            traceparent,
         )
         .await?;
         if response.status_code() >= 300 {

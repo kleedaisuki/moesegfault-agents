@@ -104,11 +104,16 @@ impl ConversationRecord {
 pub struct ConversationState {
     state: State,
     env: Env,
+    serial: futures::lock::Mutex<()>,
 }
 
 impl DurableObject for ConversationState {
     fn new(state: State, env: Env) -> Self {
-        Self { state, env }
+        Self {
+            state,
+            env,
+            serial: futures::lock::Mutex::new(()),
+        }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
@@ -116,52 +121,77 @@ impl DurableObject for ConversationState {
         let env = self.env.clone();
         let owner = req.headers().get("X-Agents-Owner")?.unwrap_or_default();
         let headers = req.headers().clone();
-        self.state
-            .block_concurrency_while(async move {
-                crate::conversation_meter::actor(&env, &owner, &headers, async {
-                    let operation = ConversationOperation::actor_scope(&headers)?;
-                    let result = handle(req, &storage, &env, &operation).await;
-                    let result = match result {
-                        Ok(mut response) => {
-                            if !matches!(quota::has_pending(&storage).await, Ok(false)) {
-                                response.headers_mut().set("X-Agents-Conversation-Capacity-Status", "pending")?;
-                            }
-                            Ok(response)
-                        }
-                        error => error,
-                    };
-                    match result {
-                        Err(Error::RustError(code)) if code == "conversation_item_conflict" => {
-                            util::json_error(
-                                409,
-                                "invalid_request",
-                                "Item id already exists in this conversation",
-                            )
-                        }
-                        Err(Error::RustError(code))
-                            if code == "conversation_execution_context_invalid" =>
-                        {
-                            util::json_error(
-                                400,
-                                "invalid_request",
-                                "Invalid conversation execution context",
-                            )
-                        }
-                        Err(Error::RustError(code)) if code == "conversation_capacity_exceeded" => {
-                            let mut error = util::error_body("conversation_capacity_exceeded", "Conversation retained logical-byte capacity has been reached; this budget is independent of Space storage");
-                            error["error"]["capacity_budget"] = json!("conversation_retained_logical_bytes");
-                            error["error"]["capacity"] = serde_json::to_value(quota::usage(&env, &owner, &operation).await?)?;
-                            Response::from_json(&error).map(|response| response.with_status(409))
-                        }
-                        Err(Error::RustError(code)) if code.starts_with("conversation_capacity_") && code!="conversation_capacity_exceeded" => util::json_error(409,&code,"Conversation capacity generation or input claim is no longer valid"),
-                        Err(Error::RustError(code)) if code=="conversation_item_reserved" => util::json_error(409,&code,"Item identity is reserved by an active response"),
-                        Err(Error::RustError(code)) if code=="unresolved_item_identity" => util::json_error(400,&code,"Server item identities require an owner-canonical reference"),
-                        result => result,
+        let operation = ConversationOperation::actor_scope(&headers)?;
+        let started = util::now_ms();
+        let conversation_id = headers.get("X-Agents-Conversation-ID")?;
+        let request_id = headers.get("X-Agents-Conversation-Request")?;
+        let path = req.path();
+        operation.emit(
+            "request.received",
+            json!({"conversation_id":conversation_id,"request_id":request_id,"request_path":path}),
+        );
+        let _serial = self.serial.lock().await;
+        operation.emit("request.locked", json!({"conversation_id":conversation_id,"request_id":request_id,"request_path":path,"lock_wait_ms":util::now_ms().saturating_sub(started)}));
+        let result =
+        crate::conversation_meter::actor(&env, &owner, &headers, async {
+            let result = handle(req, &storage, &env, &operation).await;
+            let result = match result {
+                Ok(mut response) => {
+                    if !matches!(quota::has_pending(&storage).await, Ok(false)) {
+                        response.headers_mut().set("X-Agents-Conversation-Capacity-Status", "pending")?;
                     }
-                })
-                .await
-            })
-            .await
+                    Ok(response)
+                }
+                error => error,
+            };
+            match result {
+                Err(Error::RustError(code)) if code == "conversation_item_conflict" => {
+                    util::json_error(
+                        409,
+                        "invalid_request",
+                        "Item id already exists in this conversation",
+                    )
+                }
+                Err(Error::RustError(code))
+                    if code == "conversation_execution_context_invalid" =>
+                {
+                    util::json_error(
+                        400,
+                        "invalid_request",
+                        "Invalid conversation execution context",
+                    )
+                }
+                Err(Error::RustError(code)) if code == "conversation_capacity_exceeded" => {
+                    let mut error = util::error_body("conversation_capacity_exceeded", "Conversation retained logical-byte capacity has been reached; this budget is independent of Space storage");
+                    error["error"]["capacity_budget"] = json!("conversation_retained_logical_bytes");
+                    error["error"]["capacity"] = serde_json::to_value(quota::usage(&env, &owner, &operation).await?)?;
+                    Response::from_json(&error).map(|response| response.with_status(409))
+                }
+                Err(Error::RustError(code)) if code.starts_with("conversation_capacity_") && code!="conversation_capacity_exceeded" => util::json_error(409,&code,"Conversation capacity generation or input claim is no longer valid"),
+                Err(Error::RustError(code)) if code=="conversation_item_reserved" => util::json_error(409,&code,"Item identity is reserved by an active response"),
+                Err(Error::RustError(code)) if code=="unresolved_item_identity" => util::json_error(400,&code,"Server item identities require an owner-canonical reference"),
+                result => result,
+            }
+        }).await;
+        let mut fields = json!({"conversation_id":conversation_id,"request_id":request_id,"request_path":path,
+            "duration_ms":util::now_ms().saturating_sub(started),"status":result.as_ref().ok().map(|response| response.status_code())});
+        if let Err(error) = &result {
+            fields.as_object_mut().unwrap().extend(
+                crate::conversation_meter::error_metadata(error, started)
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        }
+        operation.emit(
+            if result.is_ok() {
+                "request.completed"
+            } else {
+                "request.failed"
+            },
+            fields,
+        );
+        result
     }
 }
 
@@ -1070,6 +1100,13 @@ async fn handle(
     if record.as_ref().is_some_and(|record| record.owner != owner) {
         return util::json_error(404, "not_found", "Conversation not found");
     }
+    operation.emit("state.loaded", json!({"conversation_id":record.as_ref().map(|record| &record.id),
+        "response_id":record.as_ref().and_then(|record|record.active_response_id.as_deref()),
+        "session_id":record.as_ref().and_then(|record|record.active_session_id.as_deref()),
+        "activated":record.as_ref().is_some_and(|record|record.active_activated),
+        "pending":record.as_ref().is_some_and(|record|record.pending_expires_at_ms.is_some()),
+        "pending_deadline_ms":record.as_ref().and_then(|record|record.pending_expires_at_ms),
+        "capacity_generation":record.as_ref().and_then(|record|record.active_capacity_generation.as_deref())}));
     quota::recover(env, &owner, operation, storage).await?;
     let context = PublicationContext {
         storage,

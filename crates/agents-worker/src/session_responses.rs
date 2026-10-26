@@ -1238,6 +1238,7 @@ impl SessionInner {
                 &create.response_id,
                 &original_items,
                 create.execution.warmup,
+                traceparent.as_deref(),
             )
             .await?
         {
