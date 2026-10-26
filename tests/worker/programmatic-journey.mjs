@@ -163,7 +163,7 @@ export async function runProgrammaticClient(context) {
     { type: 'function', name: 'client', allowed_callers: ['programmatic'], strict: true,
       parameters: { type: 'object', properties: { value: { type: 'integer' }, nonce: { type: 'number' } }, required: ['value', 'nonce'], additionalProperties: false },
       output_schema: { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'], additionalProperties: false } },
-    { type: 'custom', name: 'decorate', allowed_callers: ['programmatic'], format: { type: 'text' }, output_schema: { type: 'string' } }];
+    { type: 'custom', name: 'decorate', allowed_callers: ['programmatic'], format: { type: 'text' } }];
   const body = { model: scenario.agent.id, tools, input: 'Run one program through function and custom handoffs.', max_tool_calls: 4 };
   async function invoke(request, key) {
     const wire = await scenario.client.responses.create({ ...request, stream: true }, { headers: { 'Idempotency-Key': key } }).asResponse();

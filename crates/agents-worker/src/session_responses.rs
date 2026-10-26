@@ -726,7 +726,7 @@ impl SessionInner {
                 "Continue from an independent child session",
             );
         }
-        if data.run.is_some()
+        if !super::programmatic::accepts_run(&data, &programmatic_resume)
             || self.closing.get()
             || data.archive_preparing
             || data.archive_pending
