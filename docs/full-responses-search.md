@@ -80,6 +80,33 @@ count and annotation ranges.
 
 ## Integration and verification
 
+The Session producer in `session_hosted_search.rs` now shares the existing
+`session_hosted_publication.rs` publisher and dispatch boundary with Code. This
+independent search vertical does not import the image, MCP or discovery WIP.
+It retains a secret-free operation digest, original admission/price snapshot,
+independent fee hold, durable dispatch fence, known provider receipt and canonical
+result. Known receipt settlement and publication retry those stored values only.
+An unknown dispatch publishes a bounded failed item, preserves its unresolved
+hold and cannot repeat provider HTTP on replay.
+
+The canonical lifecycle is `in_progress` → `searching` → `completed`/`failed`.
+The searching item and native phase events commit before external dispatch;
+only a searching **web search** item accepts that terminal update. Canonical
+query provenance for dedicated DeepSeek comes from the retained request; ranked
+sources come from its actual result. A native Responses BYOK service's own
+observed action is not overwritten with the outer query. Dedicated API results
+contain no answer-span offsets, and no offsets are manufactured for the outer
+assistant's separate text.
+
+`tests/worker/hosted-search.test.mjs` is the compiled-Worker acceptance entrypoint:
+platform search/open/find, an independent owner search credential, proved empty
+zero-unit results, and a lost response that retains its hold without redispatch.
+It uses the actual OpenAI Node SDK, strict current Python SDK wire validation,
+canonical SSE replay/JSON retrieval and actual D1 ledger/hold assertions. The
+fixture has no external network access. Select one increment with
+`MAGENTS_HOSTED_SEARCH_CASE=platform|byok|empty|unknown`; this note does not claim
+the compiled test or a live deployment passed before their receipts exist.
+
 The adapter slice owns `crates/agents-worker/src/search_byok.rs` and
 `crates/agents-worker/src/search_deepseek.rs`.
 Shared tool schemas, binding management, canonical item/event publication,

@@ -211,9 +211,76 @@ pub(crate) enum KnownUsage {
     },
 }
 
-/// Call once, persist this returned hold, and reuse it after cold recovery.
+/// Restore identity without authorizing dispatch or creating a reservation.
+/// Expired and finalized holds remain recoverable for known-result settlement
+/// replay or release proven never to have dispatched. The caller's durable
+/// operation fence, not the existence of a financial hold, governs retries.
+pub(crate) async fn restore_existing_hold(
+    env: &Env,
+    owner: &str,
+    session: Option<&str>,
+    operation: &str,
+    request_digest: &str,
+    admitted_at_ms: u64,
+    budget: ServiceBudget,
+) -> Result<Option<ServiceHold>> {
+    let hold = make_hold(
+        owner,
+        session,
+        operation,
+        request_digest,
+        admitted_at_ms,
+        budget,
+    )?;
+    Ok(existing_hold_state(env, owner, session, &hold)
+        .await?
+        .map(|_| hold))
+}
+
+/// Persist the original intent before reserving. Existing reserved holds are
+/// restored even after admission expires; validate_dispatch_time is still
+/// mandatory immediately before any new HTTP dispatch. Finalized holds may be
+/// restored explicitly for known-result replay but cannot admit a new request.
 pub(crate) async fn prepare_hold(
     env: &Env,
+    owner: &str,
+    session: Option<&str>,
+    operation: &str,
+    request_digest: &str,
+    admitted_at_ms: u64,
+    budget: ServiceBudget,
+) -> Result<ServiceHold> {
+    let hold = make_hold(
+        owner,
+        session,
+        operation,
+        request_digest,
+        admitted_at_ms,
+        budget,
+    )?;
+    if let Some(state) = existing_hold_state(env, owner, session, &hold).await? {
+        return prepared_hold(hold, state);
+    }
+    hold.validate_dispatch_time(crate::util::now_ms())?;
+    let reserved = metering::reserve(
+        &env.d1("DB")?,
+        owner,
+        session,
+        hold.id(),
+        &hold.key(),
+        &hold.hash()?,
+        hold.budget.ceiling(),
+        now_seconds()?,
+    )
+    .await?;
+    let state = verify_hold(env, owner, session, &hold).await?;
+    if reserved.id != hold.id {
+        return Err(fail("tool_service_hold_identity_conflict"));
+    }
+    prepared_hold(hold, state)
+}
+
+fn make_hold(
     owner: &str,
     session: Option<&str>,
     operation: &str,
@@ -231,22 +298,10 @@ pub(crate) async fn prepare_hold(
         budget,
     };
     hold.validate_identity(owner, session)?;
-    hold.validate_dispatch_time(crate::util::now_ms())?;
-    let reserved = metering::reserve(
-        &env.d1("DB")?,
-        owner,
-        session,
-        hold.id(),
-        &hold.key(),
-        &hold.hash()?,
-        hold.budget.ceiling(),
-        now_seconds()?,
-    )
-    .await?;
-    let state = verify_hold(env, owner, session, &hold).await?;
-    if reserved.id != hold.id {
-        return Err(fail("tool_service_hold_identity_conflict"));
-    }
+    Ok(hold)
+}
+
+fn prepared_hold(hold: ServiceHold, state: ReservationState) -> Result<ServiceHold> {
     if state != ReservationState::Reserved {
         return Err(fail("tool_service_hold_finalized"));
     }
@@ -295,6 +350,17 @@ async fn verify_hold(
     session: Option<&str>,
     hold: &ServiceHold,
 ) -> Result<ReservationState> {
+    existing_hold_state(env, owner, session, hold)
+        .await?
+        .ok_or_else(|| fail("tool_service_hold_not_found"))
+}
+
+async fn existing_hold_state(
+    env: &Env,
+    owner: &str,
+    session: Option<&str>,
+    hold: &ServiceHold,
+) -> Result<Option<ReservationState>> {
     hold.validate_identity(owner, session)?;
     #[derive(Deserialize)]
     struct Held {
@@ -305,14 +371,17 @@ async fn verify_hold(
     }
     let row = env.d1("DB")?.prepare("SELECT request_hash,idempotency_key,CAST(reserved_microusd AS TEXT) AS reserved_microusd,state FROM usage_reservations WHERE id=? AND account_id=? AND session_id IS ?")
         .bind(&[JsValue::from_str(hold.id()),JsValue::from_str(owner),session.map(JsValue::from_str).unwrap_or(JsValue::NULL)])?
-        .first::<Held>(None).await?.ok_or_else(||fail("tool_service_hold_not_found"))?;
+        .first::<Held>(None).await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
     if row.request_hash != hold.hash()?
         || row.idempotency_key != hold.key()
         || row.reserved_microusd != hold.budget.ceiling().to_string()
     {
         return Err(fail("tool_service_hold_identity_conflict"));
     }
-    Ok(row.state)
+    Ok(Some(row.state))
 }
 
 fn charge(hold: &ServiceHold, usage: &KnownUsage) -> Result<Charge> {
@@ -595,6 +664,53 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn expired_reserved_hold_restores_original_identity_without_new_dispatch_permission() {
+        let original = search_hold(true, DEEPSEEK_PAID_FROM_MS);
+        let restored = make_hold(
+            "owner",
+            Some("session-a"),
+            "operation-a",
+            &"a".repeat(64),
+            DEEPSEEK_PAID_FROM_MS,
+            original.budget.clone(),
+        )
+        .unwrap();
+        let restored = prepared_hold(restored, ReservationState::Reserved).unwrap();
+        assert_eq!(restored.hash().unwrap(), original.hash().unwrap());
+        assert_eq!(restored.admitted_at_ms, DEEPSEEK_PAID_FROM_MS);
+        assert!(
+            restored
+                .validate_dispatch_time(DEEPSEEK_PAID_FROM_MS + 300_001)
+                .is_err()
+        );
+        // A durable known receipt retains its original dispatch/completion
+        // times; a later wall clock must not erase its settlement evidence.
+        assert_eq!(
+            charge(
+                &restored,
+                &search_usage(DEEPSEEK_PAID_FROM_MS, DEEPSEEK_PAID_FROM_MS + 1, 1)
+            )
+            .unwrap()
+            .amount_microusd
+            .get(),
+            750
+        );
+    }
+
+    #[test]
+    fn finalized_hold_identity_is_restorable_but_cannot_prepare_another_request() {
+        let original = search_hold(true, DEEPSEEK_PAID_FROM_MS);
+        for state in [ReservationState::Settled, ReservationState::Released] {
+            let restored: ServiceHold =
+                serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
+            restored
+                .validate_identity("owner", Some("session-a"))
+                .unwrap();
+            assert!(prepared_hold(restored, state).is_err());
+        }
     }
 
     #[test]

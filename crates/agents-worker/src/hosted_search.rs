@@ -167,7 +167,7 @@ impl HostedSearchOutcome {
     /// Native upstream item IDs and internal function aliases never escape as
     /// canonical output identity. Citation offsets belong to other text parts.
     pub(crate) fn public_item(&self, item_id: &str) -> Value {
-        let action = self
+        let mut action = self
             .exchange
             .evidence
             .as_ref()
@@ -180,6 +180,15 @@ impl HostedSearchOutcome {
             })
             .cloned()
             .unwrap_or_else(|| native_action(&self.plan.action));
+        // Dedicated search returns ranked sources, not its submitted query.
+        // Restore only our own fenced action; native Responses actions remain
+        // exactly the provider's observed action, not the outer request.
+        if self.plan.route != SearchRouteKind::OpenaiResponsesByok
+            && let (DeepseekAction::Search { query }, SearchAction::Search { query: actual, .. }) =
+                (&self.plan.action, &mut action)
+        {
+            *actual = Some(query.clone());
+        }
         let status = match self.exchange.status {
             SearchStatus::Completed => "completed",
             SearchStatus::Incomplete | SearchStatus::Failed => "failed",
@@ -442,5 +451,37 @@ mod tests {
         assert_eq!(outcome.public_item("ws_failed")["status"], "failed");
         assert_eq!(outcome.model_result()["outcome_unknown"], true);
         assert!(outcome.receipt.is_none());
+    }
+
+    #[test]
+    fn dedicated_search_retains_its_fenced_query_and_real_sources() {
+        let plan = plan(
+            SearchServiceProvider::PlatformDeepseek,
+            &options(),
+            128,
+            r#"{"type":"search","query":"Rust ownership"}"#,
+        )
+        .unwrap();
+        let parsed = search_deepseek::parse_exchange(
+            json!({"results":[{"rerank_score":2.4,"title":"Ownership",
+                "url":"https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html",
+                "snippet":"Ownership","summary":"Rust ownership","content":"",
+                "site_name":null,"site_icon":null,"date":null,"authority":3}]}),
+            None,
+            "execution",
+            &options(),
+        );
+        let outcome = HostedSearchOutcome {
+            exchange: parsed.exchange,
+            receipt: parsed.receipt,
+            platform_funded: true,
+            request_started_ms: 42,
+            plan,
+        };
+        let item = outcome.public_item("ws_ours");
+        assert_eq!(item["action"]["query"], "Rust ownership");
+        assert_eq!(item["action"]["sources"].as_array().unwrap().len(), 1);
+        assert!(!item.to_string().contains("start_index"));
+        assert!(!outcome.exchange.usage.reported);
     }
 }

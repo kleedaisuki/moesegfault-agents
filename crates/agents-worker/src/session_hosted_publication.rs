@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 
 #[path = "session_hosted_code.rs"]
 mod code;
+#[path = "session_hosted_search.rs"]
+mod search;
 
 pub(super) enum HostedDispatch {
     Ready(Value),
@@ -53,6 +55,7 @@ fn initial_item(item: &Value) -> Value {
 fn accepts_terminal_update(item: &Value) -> bool {
     item["status"] == "in_progress"
         || (item["type"] == "code_interpreter_call" && item["status"] == "interpreting")
+        || (item["type"] == "web_search_call" && item["status"] == "searching")
 }
 
 fn code_start_events(item: &Value, index: usize) -> Vec<(&'static str, Value)> {
@@ -94,9 +97,22 @@ impl SessionInner {
                 vec![]
             };
             let kind = item["type"].as_str().unwrap_or("");
-            if let Some(event) =
-                phase_event(kind, terminal).filter(|_| kind != "code_interpreter_call" || terminal)
-            {
+            if kind == "web_search_call" && is_new {
+                events.push((
+                    "response.web_search_call.in_progress",
+                    json!({"item_id":item["id"],"output_index":index}),
+                ));
+            }
+            if kind == "web_search_call" && !terminal && item["status"] == "searching" {
+                events.push((
+                    "response.web_search_call.searching",
+                    json!({"item_id":item["id"],"output_index":index}),
+                ));
+                return events;
+            }
+            if let Some(event) = phase_event(kind, terminal).filter(|_| {
+                !matches!(kind, "code_interpreter_call" | "web_search_call") || terminal
+            }) {
                 events.push((event, json!({"item_id":item["id"],"output_index":index})));
             }
             events
@@ -110,9 +126,11 @@ impl SessionInner {
         execution: &str,
         call: &provider::ToolCall,
     ) -> Result<Option<HostedDispatch>> {
-        if crate::hosted_tools::Kind::from_alias(&call.function.name)
-            != Some(crate::hosted_tools::Kind::CodeInterpreter)
-        {
+        let kind = crate::hosted_tools::Kind::from_alias(&call.function.name);
+        if !matches!(
+            kind,
+            Some(crate::hosted_tools::Kind::CodeInterpreter | crate::hosted_tools::Kind::WebSearch)
+        ) {
             return Ok(None);
         }
         let binding = self
@@ -124,9 +142,16 @@ impl SessionInner {
             .cloned()
             .filter(|binding| binding.allows(crate::hosted_bindings::Caller::Direct))
             .ok_or_else(|| Error::RustError("hosted_tool_not_bound".into()))?;
-        self.dispatch_hosted_code(record, execution, call, &binding)
-            .await
-            .map(Some)
+        match kind {
+            Some(crate::hosted_tools::Kind::WebSearch) => self
+                .dispatch_hosted_search(record, execution, call, &binding)
+                .await
+                .map(Some),
+            _ => self
+                .dispatch_hosted_code(record, execution, call, &binding)
+                .await
+                .map(Some),
+        }
     }
 
     pub(super) async fn drain_cancelled_code(&self) -> Result<bool> {
@@ -249,6 +274,15 @@ mod tests {
         }
         assert!(!accepts_terminal_update(
             &json!({"type":"image_generation_call","status":"interpreting"})
+        ));
+        assert!(accepts_terminal_update(
+            &json!({"type":"web_search_call","status":"searching"})
+        ));
+        assert!(!accepts_terminal_update(
+            &json!({"type":"image_generation_call","status":"searching"})
+        ));
+        assert!(!accepts_terminal_update(
+            &json!({"type":"web_search_call","status":"completed"})
         ));
     }
 
