@@ -1129,6 +1129,17 @@ async fn handle(
         return util::json_error(404, "not_found", "Conversation not found");
     };
     if purge::resume(&context, &mut record).await? {
+        if method == Method::Post
+            && matches!(path.as_str(), "/responses/release" | "/responses/noappend")
+        {
+            return purge::release_closed(
+                &context,
+                &record,
+                &req.json().await?,
+                path == "/responses/noappend",
+            )
+            .await;
+        }
         return if path == "/purge" && method == Method::Post {
             purge::completed(&record.id)
         } else {
