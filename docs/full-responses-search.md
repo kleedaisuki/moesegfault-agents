@@ -104,8 +104,25 @@ zero-unit results, and a lost response that retains its hold without redispatch.
 It uses the actual OpenAI Node SDK, strict current Python SDK wire validation,
 canonical SSE replay/JSON retrieval and actual D1 ledger/hold assertions. The
 fixture has no external network access. Select one increment with
-`MAGENTS_HOSTED_SEARCH_CASE=platform|byok|empty|unknown`; this note does not claim
-the compiled test or a live deployment passed before their receipts exist.
+`MAGENTS_HOSTED_SEARCH_CASE=platform|byok|responses_byok|empty|http_error|unknown`.
+
+On 2026-10-26 all six cases passed locally against the actual Worker artifact
+`12636014402` from source `2cc1e0cb4b06c997212d1bbfa97c6a238e7977b6`, CI build
+`40291651029`; Wasm SHA-256
+`ee351088fce81db2950fbe569c3645e86307c0cfda21a50d76bb3fe0badfcc80`.
+The validator was locked current Python SDK `3.37.0`, not the legacy CI parser.
+Platform search/open/find produced three posts, four outer model turns and
+three 750-microUSD ledger entries; both BYOK routes produced one post and zero
+platform upstream debit. Empty and HTTP-429 results settled zero units. A
+truncated HTTP-200 body retained one unresolved hold and replay made no second
+post. Every case passed native phase order, exact SSE replay, matching JSON
+retrieval and strict wire validation. Missing reasoning/cache-write counters
+remained nullable under `agents_usage`; no tool tokens were manufactured.
+Per-case local receipts/logs are in `.temp/media-delivery/search-*` (the platform
+receipt's original source field is null; its identical Wasm checksum binds the
+retained artifact). This is controlled execution, not live provider acceptance.
+The original CI journey did not run because its Worker job installed only the
+legacy SDK environment; fixing that test environment reuses the same build.
 
 The adapter slice owns `crates/agents-worker/src/search_byok.rs` and
 `crates/agents-worker/src/search_deepseek.rs`.

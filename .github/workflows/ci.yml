@@ -210,10 +210,13 @@ jobs:
         run: |
           python3 -m venv .cache/e2e-venv
           .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
+          python3 -m venv .cache/e2e-current-venv
+          .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
       - run: node scripts/incremental-checks.mjs run worker-journeys
         if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         env:
           MAGENTS_SCHEMA_PYTHON: .cache/e2e-venv/bin/python
+          MAGENTS_CURRENT_SCHEMA_PYTHON: .cache/e2e-current-venv/bin/python
           MAGENTS_WORKER_SOURCE_SHA: ${{ needs.changes.outputs.worker_artifact_sha }}
           MAGENTS_WORKER_SOURCE_RUN: ${{ needs.changes.outputs.worker_artifact_run }}
           MAGENTS_WORKER_ARTIFACT_ID: ${{ steps.worker_artifact.outputs.artifact-id || needs.changes.outputs.worker_artifact_id }}

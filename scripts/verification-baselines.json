@@ -3042,5 +3042,161 @@
       }
     ],
     "unresolved_checks": []
+  },
+  {
+    "source_sha": "2cc1e0cb4b06c997212d1bbfa97c6a238e7977b6",
+    "run_id": "40291651029",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12636014402,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12636755400,
+    "verified_phases": [
+      "wasm_build",
+      "rust_lib_compile",
+      "changed_rust_checks"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs",
+      "Compile changed Worker tests without replaying accepted cases",
+      "Run node scripts/incremental-checks.mjs run worker-rust"
+    ],
+    "verified_checks": [
+      {
+        "id": "rust:agents-worker:unknown_outcome_has_bounded_failure_and_no_fabricated_receipt",
+        "status": "passed_current",
+        "input_fingerprint": "06d48cdef982122770123e89793e023e844b186051fc4a25c792ab908a9423a5",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:dedicated_search_retains_its_fenced_query_and_real_sources",
+        "status": "passed_current",
+        "input_fingerprint": "574f7593a20f105edf54ce458d96d2d61582d907c0fc24cc99d936081201eb21",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:direct_search_does_not_inherit_the_server_side_harness_promotion",
+        "status": "passed_current",
+        "input_fingerprint": "a0f7aab087db8c47459d32deb36cde085426fa9c41ee5f11899f7be03ddca7e1",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:expired_window_does_not_authorize_dispatch_or_settlement",
+        "status": "passed_current",
+        "input_fingerprint": "37042e2860614f3aeb40dd11d90064dc9f08708a5802f154630a0657ecdacf84",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:expired_reserved_hold_restores_original_identity_without_new_dispatch_permission",
+        "status": "passed_current",
+        "input_fingerprint": "e479b23243bf3947fc5145989b995bb2a526bfd78aeaac3130c835dfdbfc0dfb",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:finalized_hold_identity_is_restorable_but_cannot_prepare_another_request",
+        "status": "passed_current",
+        "input_fingerprint": "5a5351ecf6c4f406009ba8c9ddc25263924da9da235bd1fe6ebb9d6bb59fe9fc",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:hold_identity_is_durable_owner_session_operation_and_budget_bound",
+        "status": "passed_current",
+        "input_fingerprint": "8e35fdd34f6d56286a05eb159fe423d71fc327d9422e3027ddd4993a41f7cf6e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:interpreting_code_accepts_one_terminal_transition_not_another_execution",
+        "status": "passed_current",
+        "input_fingerprint": "dcb99ae13d1fe741c4bd635acc6741a182fac4c7d46b2bb3a60ad9a14de68bec",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:interrupted_dispatch_preserves_unknown_and_cannot_produce_usage_receipt",
+        "status": "passed_current",
+        "input_fingerprint": "76f94720e4f8952086442892993ff835b5c2d28a300e2c5ef738cca7b9226bbe",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:deepseek_budget_is_fixed_to_original_admission_and_provider_revision",
+        "status": "passed_current",
+        "input_fingerprint": "ae391851d2d112122e8424fa2e25bdb2fb04e86def063f4e4673c83d0db60eca",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:request_identity_binds_original_arguments_owner_session_and_service",
+        "status": "passed_current",
+        "input_fingerprint": "6fd7a51ab7cca8c712ae4fbb2ee1c582e71a60bdfc32968ad6046f96d1e49abb",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:cancellation_and_known_receipts_restore_original_missing_hold_without_redispatch",
+        "status": "passed_current",
+        "input_fingerprint": "e34f4858bdc394cd20ba714d90437b44dc2630f4a08b37a5b2851071084fc747",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "node:tests/worker/hosted-search.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/hosted-search.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_HOSTED_SEARCH_CASE": "platform"
+        },
+        "reason": "Only current-SDK CI environment was unavailable; verify the repaired environment on the platform case, preserving all six same-Wasm local SDK journey receipts."
+      }
+    ],
+    "evidence": {
+      "runtime_local_cases": [
+        "platform",
+        "byok",
+        "responses_byok",
+        "empty",
+        "http_error",
+        "unknown"
+      ],
+      "runtime_local_source": ".temp/media-delivery/search-*.json",
+      "wasm_sha256": "ee351088fce81db2950fbe569c3645e86307c0cfda21a50d76bb3fe0badfcc80",
+      "runtime_local_sdk": "3.37.0"
+    }
+  },
+  {
+    "source_sha": "2cc1e0cb4b06c997212d1bbfa97c6a238e7977b6",
+    "run_id": "40291651029",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12636538763,
+    "verified_checks": [
+      {
+        "id": "python:tests/test_hosted_service_metering_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "501028386b497661b126b257f082847f40ee33ac992097d400c8e527a6c045d4",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      }
+    ],
+    "unresolved_checks": []
   }
 ]
