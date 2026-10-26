@@ -303,6 +303,7 @@ impl Inner {
                 return self.fail(&mut receipt, "operation_input_invalid").await;
             }
         };
+        drop(bytes);
         let trace = input
             .traceparent
             .as_deref()

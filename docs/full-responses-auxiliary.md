@@ -349,6 +349,17 @@ admission. New serialization contracts compare exact envelope byte counts and
 old/new canonical retained output; they do not claim a measured latency or RSS
 improvement or replay accepted inference journeys.
 
+Actions `40351436054` passed both new serialization/compatibility contracts and
+built Worker artifact `12664162588` (verification `12663797748`). For one 800 KiB
+synthetic user body, the actual encoded private envelope decreased from
+2,458,242 to 819,758 bytes (66.65%); retained public output and protected
+instructions were unchanged, including after decoding the old envelope. No
+model, tool or previously accepted SDK journey ran for this measurement.
+The input decoder also releases its encoded byte buffer before inference so it
+does not retain a second full context through long-running provider I/O. This
+lifetime-only line awaits the next composed build; it does not change the
+measured serialization format or claim a separate RSS result.
+
 Provider image transport reference:
 https://api-docs.deepseek.com/guides/vision/#using-images-with-the-anthropic-api
 
