@@ -215,6 +215,22 @@ Conversation-specific execution, MCP approval suspension and additional hosted
 adapters remain the following verification/implementation increments; their
 readiness is not inferred from this non-Conversation client journey.
 
+The approval follow-up reuses the same encrypted MCP intent, sealed
+`ApprovalReference`, fresh credential/schema rebinding and one-use destination
+claim as direct MCP. Its original non-deserializable `AuthorizedInvocation`
+remains on the live Rust stack. Only that subroutine may advance programmatic
+approval actions; the normal driver handles direct actions only. After awaited
+journal writes, the HTTP effect boundary rechecks program expiry and cancellation.
+Known outcomes are read from the existing operation and fed into the program,
+not forwarded as provider outputs for model calls that never existed.
+
+Mailbox delivery has an additional non-persisted `delivery_ready` gate: a live
+future can see callback memory while storage acknowledgement is yielding, so
+only successful durable acceptance (or same-key durability repair) releases the
+batch. Deserializing a saved mailbox cannot recreate this I/O-context readiness.
+The new approval journey is pending; none of these follow-up changes is claimed
+by the already accepted client checkpoint above.
+
 ## Verification boundary
 
 The earlier workerd/Miniflare component proof passed eight isolation/duplex checks;

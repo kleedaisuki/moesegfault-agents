@@ -575,6 +575,7 @@ impl SessionInner {
             // Repair a warm retry's failed initial state/alarm publication,
             // without appending input or admitting a second execution.
             self.persist().await?;
+            self.programmatic_mailbox_committed(&existing.id);
             self.arm_alarm().await?;
         }
         self.observe_response(&existing, request.stream, None, false, None, false)
@@ -1459,6 +1460,7 @@ impl SessionInner {
             discovery,
             programmatic: programmatic_resume.clone().map(|mut pause| {
                 pause.inputs = programmatic_inputs;
+                pause.delivery_ready = false;
                 pause
             }),
             usage_base: programmatic_resume
@@ -1529,6 +1531,7 @@ impl SessionInner {
         }
         drop(acceptance);
         self.persist().await?;
+        self.programmatic_mailbox_committed(&response.id);
         if let Some(parent) = create.execution.steering_parent.as_deref() {
             self.forward_steering_successor(parent, Some(&response), &[]);
         }
@@ -2284,6 +2287,9 @@ impl SessionInner {
         let Some(mut response) = run.response.clone() else {
             return Ok(None);
         };
+        if response.programmatic.is_some() && terminal_status(&response.status) {
+            return Ok(None);
+        }
         response.usage = response.usage_since_start(&run.total);
         response.status = if response.cancel_requested {
             "cancelled"

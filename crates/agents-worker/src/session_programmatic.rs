@@ -330,6 +330,7 @@ impl SessionInner {
             }
             write_chunks(&storage, &state_key, &serde_json::to_vec(&program)?).await?;
             let mut client_calls = Vec::new();
+            let mut approvals = Vec::new();
             for call in &reply.calls {
                 if program.known_result(call.sequence).is_some() {
                     continue;
@@ -359,8 +360,9 @@ impl SessionInner {
                 let output = match self.dispatch_program_call(record, &proof).await {
                     Ok(output) => output,
                     Err(Error::RustError(code)) if code == "mcp_approval_required" => {
-                        program.fail("program_tool_approval_required");
-                        break;
+                        self.stage_programmatic_mcp_approval(record, &proof).await?;
+                        approvals.push(proof);
+                        continue;
                     }
                     Err(Error::RustError(code)) if code == "program_tool_allowance_exhausted" => {
                         program.fail("program_tool_allowance_exhausted");
@@ -383,7 +385,7 @@ impl SessionInner {
             if program.output_item().is_some() {
                 break;
             }
-            if !client_calls.is_empty() {
+            if !client_calls.is_empty() || !approvals.is_empty() {
                 write_chunks(&storage, &state_key, &serde_json::to_vec(&program)?).await?;
                 for item in &client_calls {
                     self.publish_hosted_item(item, true).await?;
@@ -391,7 +393,7 @@ impl SessionInner {
                 self.pause_programmatic_response(&key, &program, &client_calls)
                     .await?;
                 if let Err(error) = self
-                    .await_programmatic_results(&key, &mut program, deadline)
+                    .await_programmatic_results(&key, &mut program, &approvals, deadline)
                     .await
                 {
                     if matches!(error, Error::RustError(code) if code=="program_cancelled") {
@@ -403,6 +405,10 @@ impl SessionInner {
                 }
             }
             let frame = program.runtime_resume();
+            if self.programmatic_cancelled() {
+                program.cancel();
+                break;
+            }
             if channel.input.send(&frame, deadline).await.is_err() {
                 program.runtime_lost();
                 break;
@@ -552,7 +558,6 @@ impl SessionInner {
         if let Some(parent) = paused {
             let mut data = self.data.borrow_mut();
             let run = data.as_mut().unwrap().run.as_mut().unwrap();
-            run.response = None;
             run.terminal = Some(parent.value());
             return Ok(super::hosted_dispatch::HostedDispatch::Ready(
                 json!({"status":"incomplete","error":{"code":"program_runtime_expired"}})

@@ -213,3 +213,53 @@ export async function runProgrammaticClient(context) {
   return { public_responses: 3, model_calls: 2, client_function_calls: 1, client_custom_calls: 1, native_program_fetches: 1,
     native_heap_nonce_preserved: true, one_funded_execution: true, immutable_parent_usage: true, replayed_mailbox_not_reapplied: true };
 }
+
+export async function runProgrammaticApproval(context) {
+  const remote=context.providers.state;
+  const before=remote.calls;
+  const scenario=await createNativeSemanticsScenario(context,'programmatic-approval',[
+    {output:[program('const a=await tools.owned.echo({value:"雪"}); const b=await tools.owned.echo({value:a.echo}); text(JSON.stringify({a,b}));')]},
+    {output:[answer]},
+  ]);
+  await scenario.principal.browser('GET','/v1/account');
+  const declaration=authorization=>({type:'mcp',server_label:'owned',server_url:'https://mcp.example.com/mcp',authorization,require_approval:'always',allowed_callers:['programmatic']});
+  const body={model:scenario.agent.id,input:'Approve the first remote call and decline the second within the same live program.',tools:[{type:'programmatic_tool_calling'},declaration(remote.expectedAuth)],max_tool_calls:4};
+  async function invoke(input,key) {
+    const events=await collectNativeEvents(await scenario.client.responses.create({...input,stream:true},{headers:{'Idempotency-Key':key}}).asResponse());
+    if(scenario.state.failure)throw scenario.state.failure;
+    const value=events.findLast(event=>event.type==='response.completed')?.response;
+    assert.ok(value,JSON.stringify(events.findLast(event=>event.type==='response.failed')?.response?.error));
+    context.validateWire(value,events);
+    assert.deepEqual(await(await scenario.client.responses.retrieve(value.id).asResponse()).json(),value);
+    return value;
+  }
+  const first=await invoke(body,'program-approval-first');
+  const approval=first.output.find(item=>item.type==='mcp_approval_request');
+  assert.ok(approval);
+  assert.equal(remote.calls,before,'A program RPC proposal is not human approval');
+  assert.equal(scenario.state.calls,1);
+  await assert.rejects(scenario.client.responses.create({...body,previous_response_id:first.id,tools:[{type:'programmatic_tool_calling'}],input:[{type:'mcp_approval_response',approval_request_id:approval.id,approve:true}]}).asResponse(),error=>error.status===400&&error.code==='mcp_authorization_required');
+  remote.expectedAuth='PROGRAM-APPROVAL-REFRESHED-SECRET';
+  const approvedBody={...body,previous_response_id:first.id,tools:[{type:'programmatic_tool_calling'},declaration(remote.expectedAuth)],input:[{type:'mcp_approval_response',approval_request_id:approval.id,approve:true}]};
+  const second=await invoke(approvedBody,'program-approval-accepted');
+  assert.equal(remote.calls,before+1);
+  const next=second.output.find(item=>item.type==='mcp_approval_request');
+  assert.ok(next);
+  assert.notEqual(next.id,approval.id);
+  assert.equal(scenario.state.calls,1,'An approval resumes original JavaScript without another model decision');
+  assert.deepEqual(await invoke(approvedBody,'program-approval-accepted'),second);
+  assert.equal(remote.calls,before+1);
+  const denied=await invoke({...body,previous_response_id:second.id,tools:[{type:'programmatic_tool_calling'},declaration(remote.expectedAuth)],input:[{type:'mcp_approval_response',approval_request_id:next.id,approve:false}]},'program-approval-denied');
+  const output=denied.output.find(item=>item.type==='program_output');
+  assert.equal(output?.status,'completed',output?.result);
+  const result=JSON.parse(output.result);
+  assert.deepEqual(result.a,{echo:'雪'});
+  assert.equal(result.b.error.code,'mcp_approval_denied');
+  assert.equal(remote.calls,before+1,'Declined program RPC cannot send HTTP');
+  assert.equal(scenario.state.calls,2);
+  assert.deepEqual(await(await scenario.client.responses.retrieve(first.id).asResponse()).json(),first);
+  assert.deepEqual((await charges(context.db,scenario.principal.owner)).map(row=>[row.unit,Number(row.quantity),Number(row.amount_microusd)]).sort(),[
+    ['dynamic_worker_cpu_slot_100ms',1,2],['dynamic_worker_creation_day',1,2000],['dynamic_worker_request',1,1],
+  ].sort());
+  return {public_responses:3,model_calls:2,approved_remote_calls:1,denied_remote_calls:0,fresh_credentials:true,one_use_approval:true,originating_program_fetches:1};
+}
