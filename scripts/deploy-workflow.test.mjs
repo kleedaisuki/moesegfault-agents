@@ -11,6 +11,7 @@ test('image activation is additive staging configuration, never an automatic pro
   const run = overrides => vm.runInNewContext(code, { process: { env: { DEPLOY_ENVIRONMENT: 'staging', ACCEPTANCE_PROFILE: 'none',
     RUNTIME_FEATURES: 'web_search,file_search,code_interpreter,image_generation', SOURCE_RUN: '123', GITHUB_RUN_ATTEMPT: '1', ...overrides } } });
   assert.doesNotThrow(() => run({}));
+  assert.doesNotThrow(() => run({ RUNTIME_FEATURES: 'web_search,file_search,image_generation' }));
   assert.throws(() => run({ DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
   assert.throws(() => run({ RUNTIME_FEATURES: 'image_generation' }), /allowlist/);
   before('Require the selected Seedream image service credential without a paid probe', 'npx wrangler d1 migrations apply');

@@ -190,7 +190,7 @@ async function main() {
   const { values } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, directory: { type: 'string', default: '.temp/deploy-verification' } } });
   const source = process.env.GITHUB_SHA, repository = process.env.GITHUB_REPOSITORY;
   const runtime = deploymentRuntime(process.env);
-  const coreContainer = runtime.limited && !runtime.codeInterpreter;
+  const coreContainer = runtime.legacyContainerCompatible;
   need(SHA.test(source ?? '') && ID.test(values.run ?? ''), 'explicit_source_run_required');
   need(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? ''), 'invalid_ci_repository');
   const directory = path.resolve(values.directory), root = path.resolve('.');
