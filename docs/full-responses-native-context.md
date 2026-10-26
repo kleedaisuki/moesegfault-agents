@@ -176,3 +176,24 @@ vendored DeepSeek renderer. Two new controlled Worker journeys cover historical
 windows and pending tool pairs; their synthetic counter is explicitly not a
 production tokenizer claim. Compilation and real execution are still pending at
 this source checkpoint.
+### Compiled native-window checkpoint
+
+Actions `40329817331`, source `3b80eef`, built Worker artifact `12654956481`
+and passed the new absolute-view import/rebase contract. Its history journey
+completed all five planned generations and positive source/protected-instruction/
+count/default-fork assertions. Its independent closed-tool/pending-fork journey
+passed with three generations. The aggregate job remains failed: the subsequent
+disabled oversized request correctly reached a failed Response, but the fixture
+expected the domain code in the SDK canonical `error.code` instead of
+`server_error` plus `agents_error_code`. Original receipts are not relabeled green.
+
+Actions `40336199132`, source `eadc230`, reused that identical Worker artifact
+and passed only the previously unread automatic-unfit group with zero configured
+provider actions, zero model ledger rows and no external network. Neither the
+eight accepted generations nor the accepted Rust contracts were replayed. A
+fresh disabled request without an owned native view retains legacy upstream
+admission; it is not silently substituted for the original owned-view boundary.
+The intermediate fixture attempt `40335614120` failed on that distinction and
+is not capability evidence. Topic CI selectors are non-promoting and must not
+be copied into the integrated product source. Real provider/staging acceptance
+of this slice remains distinct from these controlled compiled-Worker receipts.
