@@ -63,7 +63,7 @@ impl StoreRow {
     }
 }
 
-pub(crate) const STORE_SELECT: &str = "SELECT vs.id,vs.name,vs.metadata_json,vs.created_at,vs.last_active_at,vs.expires_after_days,vs.status,COALESCE(SUM(vf.usage_bytes),0) AS usage_bytes,COALESCE(SUM(vf.status='in_progress'),0) AS in_progress,COALESCE(SUM(vf.status='completed'),0) AS completed,COALESCE(SUM(vf.status='failed'),0) AS failed,COALESCE(SUM(vf.status='cancelled'),0) AS cancelled FROM vector_stores vs LEFT JOIN vector_store_files vf ON vf.vector_store_id=vs.id AND vf.account_id=vs.account_id AND vf.removed_at IS NULL";
+pub(crate) const STORE_SELECT: &str = "SELECT vs.id,vs.name,vs.metadata_json,vs.created_at,vs.last_active_at,vs.expires_after_days,vs.status,COALESCE(SUM(vf.usage_bytes),0) AS usage_bytes,COALESCE(SUM(vf.public_status='in_progress'),0) AS in_progress,COALESCE(SUM(vf.public_status='completed'),0) AS completed,COALESCE(SUM(vf.public_status='failed'),0) AS failed,COALESCE(SUM(vf.public_status='cancelled'),0) AS cancelled FROM vector_stores vs LEFT JOIN vector_store_public_files vf ON vf.vector_store_id=vs.id AND vf.account_id=vs.account_id AND vf.removed_at IS NULL";
 
 fn validate_metadata(metadata: &BTreeMap<String, String>) -> Result<()> {
     if metadata.len() > 16
