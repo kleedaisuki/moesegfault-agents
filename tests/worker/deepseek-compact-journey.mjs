@@ -91,6 +91,11 @@ export async function runDeepseekCompactJourney({ mf, encryptionKey, request, pr
       assert.equal(window.object, 'response.compaction');
       const reserved = await db.prepare("SELECT MAX(reserved_microusd) AS amount FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'completion:%'").bind(principal.owner).first('amount');
       assert.ok(reserved > 0 && reserved < 5000, 'A small prompt must not reserve the entire one-million-token model window');
+      const calls = provider.state.compactions.length;
+      const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+      await assert.rejects(sdk.responses.compact({ model: agent.id, input: [{ role: 'user', content: [{ type: 'input_image', image_url: png }] }] },
+        { headers: { 'Idempotency-Key': 'compact-unsubmitted-media' } }), error => error.status === 422);
+      assert.equal(provider.state.compactions.length, calls, 'Unsupported prepared media must not buy inference');
       assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND state='reserved'").bind(principal.owner).first('n'), 0);
       return;
     }
