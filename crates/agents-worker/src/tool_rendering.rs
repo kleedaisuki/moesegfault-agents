@@ -43,7 +43,7 @@ impl ToolBindings<'_> {
         let declarations = if self.programmatic {
             self.programmatic_policy(declarations, server_time)?
                 .render_native(declarations)
-                .map_err(Error::RustError)?
+                .map_err(|code| Error::RustError(code.into()))?
         } else {
             declarations.to_vec()
         };
@@ -53,21 +53,21 @@ impl ToolBindings<'_> {
             None => Ok(tools),
             Some(registry) => registry
                 .render_resolved(&tools, true)
-                .map_err(Error::RustError),
+                .map_err(|code| Error::RustError(code.into())),
         }
     }
 
     pub(crate) fn rewrite_choice(&self, choice: Value, _bridge: bool) -> Result<Value> {
         let choice = crate::programmatic_tools::ProgramPolicy::default()
             .rewrite_choice(choice)
-            .map_err(Error::RustError)?;
+            .map_err(|code| Error::RustError(code.into()))?;
         let choice = self.hosted.rewrite_choice(choice)?;
         let choice = self.mcp.rewrite_choice(choice)?;
         match self.discovery {
             None => Ok(choice),
             Some(registry) => registry
                 .rewrite_choice(&choice, true)
-                .map_err(Error::RustError),
+                .map_err(|code| Error::RustError(code.into())),
         }
     }
 
@@ -137,7 +137,7 @@ impl ToolBindings<'_> {
             self.mcp,
             self.discovery,
         )
-        .map_err(Error::RustError)
+        .map_err(|code| Error::RustError(code.into()))
     }
 }
 
