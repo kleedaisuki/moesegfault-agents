@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
-  CODE_RUNTIME_CASE_PATTERN: 'lost Code VM releases capacity|owned CID reuses'
+  CODE_RUNTIME_CASE_PATTERN: 'owned CID reuses'
 jobs:
   code-runtime:
     runs-on: ubuntu-latest
@@ -31,13 +31,10 @@ jobs:
           cache-all-crates: true
           cache-on-failure: true
       - run: cargo fmt -p agents-worker --check
-      - name: Only the three unexecuted Rust contracts
+      - name: Compile contracts without repeating the three accepted Rust cases
         run: |
-          set -euo pipefail
           mkdir -p .temp/code-runtime
-          for test in a_borrowed_ticket_is_stable_but_cannot_change_owner_generation_or_funding borrowed_code_memory_never_selects_or_bills_a_second_local_vm code_resource_errors_preserve_owned_not_found_and_release_actions; do
-            cargo test --locked -p agents-worker --lib "$test" -- --nocapture 2>&1 | tee -a .temp/code-runtime/rust.log
-          done
+          cargo test --locked -p agents-worker --lib --no-run
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
@@ -64,7 +61,7 @@ jobs:
         run: |
           python3 -m venv .cache/e2e-current-venv
           .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
-      - name: Only new lost-VM and owned-CID Worker journeys
+      - name: Only the failed owned-CID ownership boundary
         env:
           MAGENTS_CURRENT_SCHEMA_PYTHON: .cache/e2e-current-venv/bin/python
           MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
@@ -75,6 +72,7 @@ jobs:
         if: always()
         with:
           name: code-runtime-receipts
+          include-hidden-files: true
           path: |
             .temp/code-runtime/*.log
             .temp/hosted-code-*/receipt.json
