@@ -158,6 +158,30 @@ presence is not a claim that the public tool is already deployed.
 
 ## Route and operation ownership
 
+### Single live Seedream delivery increment
+
+`tests/e2e/hosted-image-sdk.mjs` is the separately gated real-provider journey.
+It reuses the existing Responses SDK/provenance/direct-DeepSeek route helpers,
+persists one non-replayable create intent, and makes exactly one Responses create.
+The outer LLM remains direct DeepSeek; only the hosted image service uses
+OpenRouter. Original canonical SSE, JSON GET, GET event replay, current Python SDK
+wire validation, Files bytes and Files deletion are checked against the same
+image. Receipts retain hashes and resource handles, never raster/base64 content.
+The runner does not perform a paid direct-provider probe or repeat the six
+already accepted controlled image cases. Financial closure is a subsequent
+operator ledger/trace check, not inferred from SDK success.
+
+The additive staging scope is
+`web_search,file_search,code_interpreter,image_generation`; it preserves accepted
+services, requires the normal verified deployment, and does not alter production.
+The selected profile is pinned to the free
+[Seedream endpoint discovery](https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints)
+checked 2026-10-26: `seed` provider/tag, no fallbacks, no streaming, 14 references,
+1K/2K, and USD 0.018 per output image. Common `size` and `output_format`
+normalization fields match `Capabilities::from_openrouter_endpoint`; these are
+documented Image API fields, not guessed endpoint-specific knobs. No
+`response_format` or output CDN hostname is added.
+
 `image_generation.rs` validates native image-tool options and resolves them into
 one prepared image-service request. `image_generation_transport.rs` performs the
 actual HTTPS request, incrementally parses native image SSE when requested, and
