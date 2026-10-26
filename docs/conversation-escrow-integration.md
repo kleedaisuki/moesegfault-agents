@@ -116,7 +116,10 @@ authority materializes the same per-item private provenance after validation.
 This keeps the transport envelope within the canonical budget without a smaller
 arbitrary item count or successful truncation.
 
-Focused pure regressions cover strict generation parsing/activation, late cancel
-latches and safe rejection classification. Compilation and actual Worker escrow
-journeys remain a core CI responsibility; local checks here are formatting and
-diff validation only.
+Generation parsing, activation, late cancellation and definite-rejection
+classification are executable runtime fences. The focused compiled-Worker
+lifecycle uses one summary and one generation to observe the pre-existing hold,
+actual conversion, metadata deletion and explicit purge, then cold read-only
+Response survival. It does not replay accepted auto-window generations.
+Nine local actual-SQL lifecycle/concurrency/property checks passed; this is not
+a substitute for the new Worker lifecycle or subsequent real-provider staging.

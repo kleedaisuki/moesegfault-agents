@@ -56,8 +56,8 @@ cannot silently reuse an ID for different content.
 
 ## Integration
 
-The schema is appended to the root-approved, previously undeployed
-`0015_conversations.sql`. `ConversationState` uses one publication wrapper for
+The capacity schema is additive in `0021_conversation_capacity.sql`; deployed
+Conversation routing in `0015_conversations.sql` is not modified. `ConversationState` uses one publication wrapper for
 items, provenance, admission receipts and header mutations. Admission snapshot
 and visibility semantics remain unchanged. The D1 quota commit follows known
 canonical publication; a failed quota acknowledgment preserves the successful
@@ -80,11 +80,10 @@ overage, but new allocations still enforce the current plan. This adoption never
 rewrites or deletes user payloads, and a lost acknowledgment is retried from the
 unchanged legacy marker. No automatic tombstone/user-data GC is introduced.
 
-Automatic Conversation response output currently reserves its actual retained
-JSON at terminal publication. A separately approved per-response output-capacity
-envelope or explicit terminal rejection policy remains necessary to prevent an
-already-running model from waiting indefinitely when another actor fills the
-owner's budget; this capacity-policy integration is not silently claimed here.
+Automatic Responses reserve their full canonical append envelope before user
+journal acceptance and paid inference. Actual terminal publication atomically
+converts that escrow into retained allocations and refunds the unused envelope.
+See [the escrow integration](conversation-escrow-integration.md).
 
 ## Verification
 
