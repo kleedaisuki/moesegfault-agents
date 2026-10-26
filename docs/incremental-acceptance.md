@@ -209,3 +209,22 @@ normal CI and normal verified container provenance, never the old disabled-runti
 exception. This lets independent new user capabilities ship while managed Code
 gets its separate actual-runtime acceptance. The later Code selector can enable
 its already built corrected source without replaying any accepted operation.
+
+### Single namespace-fixture repair without positive-case replay
+
+Run `40349988842` at `1d1c3a2` built the actual Worker (`12663258034`) and daemon
+image (`12663702294`), passed the one new free native document guard and all
+ twelve selected tooling cases, and skipped the identical dashboard. Its native
+receipt `12663691578` records five actual CLI binary cases and two new capacity
+cases as `passed_current`, each with one executed test. The aggregate native job
+failed only because the namespace fixture's synthetic mount path contained
+literal `../../`, which the real absolute-path validator correctly rejected.
+The subsequent native clippy step was skipped, not passed.
+
+The correction canonicalizes that synthetic fixture path only. Its composed
+selection references the original successful leaves and keeps only
+`namespace_ancestor_mount_finds_the_actual_process_not_a_matching_sibling_limit`
+unresolved. The exact Worker and dashboard artifacts are reused from their real
+sources. The daemon is rebuilt because its tracked test-file fingerprint changed;
+normal native lint/type checking remains required. No passing CLI/capacity/tooling
+case, old Worker journey or provider request is replayed for the repair.
