@@ -4231,5 +4231,31 @@
     "receipt_artifact": "verification-container",
     "receipt_artifact_id": 12646575711,
     "verified_checks": []
+  },
+  {
+    "source_sha": "cbef197ea29b489e070592beb6297d6eb6e5bc82",
+    "run_id": "40327415867",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12652835401,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12653216116,
+    "verified_checks": [],
+    "unresolved_checks": [
+      {
+        "id": "node:tests/worker/file-batch-funding.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/file-batch-funding.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_FILE_FUNDING_CASE": "cancel"
+        },
+        "reason": "The original multi-batch admission/ledger front passed; repair only the zero-credit metadata cancellation and real SDK polling fragment"
+      }
+    ]
   }
 ]

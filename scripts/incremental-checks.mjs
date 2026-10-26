@@ -378,6 +378,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // actual SQL invariants run. Accepted text/PDF/citation families stay sealed.
     const fundingChecks=new Set(['python:tests/test_file_batch_funding_sql.py','node:tests/worker/file-batch-funding.test.mjs']);
     for(const job of Object.keys(receipt.checks))receipt.checks[job]=receipt.checks[job].filter(check=>fundingChecks.has(check.id));
+    for(const check of Object.values(receipt.checks).flat()) {
+      if(check.id==='node:tests/worker/file-batch-funding.test.mjs')check.env={...check.env,MAGENTS_FILE_FUNDING_CASE:'cancel'};
+      if(check.id==='python:tests/test_file_batch_funding_sql.py')check.argv=['python3','tests/test_file_batch_funding_sql.py','BatchFundingTests.test_public_failed_admission_preserves_internal_generation_and_standard_counts','-v'];
+      check.input_fingerprint=checkFingerprint(receipt.source_sha,check);
+    }
     receipt.non_deployable=true;
     receipt.diagnostic_only_components=['worker'];
     receipt.required_remediations=[...fundingChecks];
