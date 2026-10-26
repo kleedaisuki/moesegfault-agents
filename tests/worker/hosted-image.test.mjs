@@ -330,8 +330,11 @@ test('compiled Rust Worker: hosted image generation and private delivery lifecyc
         content: [{ type: 'output_text', text: 'Image operation recorded.', annotations: [], logprobs: [] }] }], gate,
         check(body) {
           const result = body.input.findLast(item => item.type === 'function_call_output' && item.call_id === 'image-call');
-          assert.equal(typeof result?.output, 'string', 'Hosted image receipts cross the native function-result boundary as JSON text');
-          assert.equal(JSON.parse(result.output).status, 'completed');
+          const output = result?.output;
+          const text = typeof output === 'string' ? output
+            : Array.isArray(output) && output.length === 1 && output[0]?.type === 'input_text' ? output[0].text : undefined;
+          assert.equal(typeof text, 'string', 'Hosted image receipts cross the native function-result boundary as JSON text or one input_text part');
+          assert.equal(JSON.parse(text).status, 'completed');
         } },
     ]);
     const credential = await principal.browser('POST', '/v1/provider-keys', { protocol: 'openai', base_url: model.baseUrl, api_key: model.key }, 201);
@@ -545,7 +548,7 @@ test('compiled Rust Worker: hosted image generation and private delivery lifecyc
   });
   assert.deepEqual(Object.keys(receipts).sort(), selected.sort(), 'Do not write a success receipt for a failed case');
   await mkdir(path.join(root, '.cache/v0.3-ci'), { recursive: true });
-  await writeFile(path.join(root, '.cache/v0.3-ci/hosted-image.json'), JSON.stringify({ source: process.env.GITHUB_SHA ?? null,
+  await writeFile(path.join(root, '.cache/v0.3-ci/hosted-image.json'), JSON.stringify({ source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? process.env.MAGENTS_WORKER_SOURCE_SHA ?? process.env.GITHUB_SHA ?? null,
     wasm_sha256: sha(await readFile(path.join(build, 'index_bg.wasm'))), fixture: 'actual-compiled-rust-worker',
     executed_case_ids: selected, not_executed_case_ids: caseNames.filter(name => !selected.includes(name)),
     external_network_calls: 0, capacity_before_post: capacityReceipts, ...receipts }, null, 2));
