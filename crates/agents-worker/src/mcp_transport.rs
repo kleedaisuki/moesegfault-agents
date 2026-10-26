@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use eventsource_stream::Eventsource;
 use futures::{StreamExt, future::Either};
-use rmcp::model::{CallToolResult, JsonRpcError, JsonRpcResponse, ListToolsResult};
+use rmcp::model::{CallToolResult, ErrorCode, JsonRpcError, JsonRpcResponse, ListToolsResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use worker::{
@@ -28,6 +28,18 @@ pub(crate) struct RpcFailure {
 }
 
 impl RpcFailure {
+    pub(crate) fn permits_legacy_initialize(&self, method: &str) -> bool {
+        if method != "server/discover" || self.outcome_unknown {
+            return false;
+        }
+        if self.protocol_code.is_some_and(modern_error) {
+            return false;
+        }
+        self.http_status == Some(400)
+            || self.protocol_code == Some(-32601)
+            || (self.protocol_code.is_none() && matches!(self.http_status, Some(404 | 405)))
+    }
+
     pub(crate) fn public(&self) -> Value {
         if let Some(code) = self.protocol_code {
             return json!({"type":"mcp_protocol_error","code":code,"message":"Remote MCP protocol error"});
@@ -87,10 +99,13 @@ pub(crate) fn prepare(
         "application/json, text/event-stream".into(),
     );
     headers.insert("content-type".into(), "application/json".into());
-    headers.insert(
-        "mcp-protocol-version".into(),
-        server.protocol.version().into(),
-    );
+    // Legacy initialization offers its version in the body, before negotiation.
+    if method != "initialize" {
+        headers.insert(
+            "mcp-protocol-version".into(),
+            server.protocol.version().into(),
+        );
+    }
     if let Some(session) = &server.session_id {
         if server.protocol != Protocol::Current {
             headers.insert("mcp-session-id".into(), session.clone());
@@ -363,12 +378,18 @@ pub(crate) fn parse_reply(
             .and_then(|id| serde_json::to_value(id).ok())
             != Some(json!(id))
         {
-            return failed(
+            let mut outcome = failed(
                 "mcp_reply_identity_mismatch",
                 Some(status),
                 side_effect,
                 started,
             );
+            // Modern transport validation may reject before assigning a request ID.
+            // Preserve only the typed discriminator, never the remote diagnostics.
+            if status == 400 && modern_error(error.error.code.0) {
+                outcome.failure.as_mut().unwrap().protocol_code = Some(error.error.code.0);
+            }
+            return outcome;
         }
         let mut outcome = failed("mcp_protocol_error", Some(status), false, started);
         outcome.failure.as_mut().unwrap().protocol_code = Some(error.error.code.0);
@@ -397,6 +418,15 @@ pub(crate) fn parse_reply(
         started_ms: started,
         ended_ms: timestamp(),
     }
+}
+
+fn modern_error(code: i32) -> bool {
+    [
+        ErrorCode::HEADER_MISMATCH.0,
+        ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY.0,
+        ErrorCode::UNSUPPORTED_PROTOCOL_VERSION.0,
+    ]
+    .contains(&code)
 }
 
 pub(crate) fn tools(value: Value) -> Result<(Vec<rmcp::model::Tool>, Option<String>)> {
@@ -540,6 +570,35 @@ fn timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_negotiation_is_metadata_only_and_modern_errors_never_downgrade() {
+        for code in [None, Some(-32600), Some(-32601)] {
+            let mut outcome = failed("mcp_protocol_error", Some(400), false, 0);
+            let failure = outcome.failure.as_mut().unwrap();
+            failure.protocol_code = code;
+            assert!(failure.permits_legacy_initialize("server/discover"));
+            for method in ["initialize", "tools/list", "tools/call", "unknown/effect"] {
+                assert!(!failure.permits_legacy_initialize(method));
+            }
+            failure.outcome_unknown = true;
+            assert!(!failure.permits_legacy_initialize("server/discover"));
+        }
+        for code in [-32020, -32021, -32022] {
+            for id in [json!("probe"), Value::Null] {
+                let outcome = parse_reply(
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":"private"}}),
+                    "probe",
+                    false,
+                    400,
+                    0,
+                );
+                let failure = outcome.failure.unwrap();
+                assert_eq!(failure.protocol_code, Some(code));
+                assert!(!failure.permits_legacy_initialize("server/discover"));
+            }
+        }
+    }
 
     #[test]
     fn typed_mcp_content_preserves_images_resources_and_audience_without_binary_text() {
