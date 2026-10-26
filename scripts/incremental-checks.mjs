@@ -384,6 +384,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // Non-promoting topic scope: only the new public-file renderer boundary.
+    const remoteChecks = new Set([
+      'rust:agents-worker:remote_files_share_public_origin_policy_without_leaking_signed_urls_into_text',
+      'rust:agents-worker:file_metadata_retains_exact_cache_boundary_and_reports_visual_capability',
+      'node:tests/worker/remote-file-input.test.mjs',
+    ]);
+    for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => remoteChecks.has(check.id));
+    for (const [name, component] of Object.entries(receipt.components)) if (name !== 'worker') component.action = 'not_requested';
+    receipt.native_packages = [];
+    receipt.non_deployable = true;
+    receipt.diagnostic_only_components = ['worker'];
+    receipt.required_remediations = [...remoteChecks];
+    receipt.required_jobs = ['changes', 'worker'];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
