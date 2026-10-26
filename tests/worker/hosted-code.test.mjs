@@ -122,6 +122,16 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
   assert.equal(agentResponse.status, 201);
   const agent = await agentResponse.json();
   const input = { model: agent.id, input: 'Compute and publish CSV.', tools: [{ type: 'code_interpreter', container: { type: 'auto' } }] };
+  const diagnostics = setTimeout(async () => {
+    try {
+      const route = await db.prepare('SELECT session_id FROM response_routes WHERE account_id=? ORDER BY created_at DESC LIMIT 1').bind(principal.owner).first();
+      const namespace = await mf.getDurableObjectNamespace('SESSIONS');
+      const actor = namespace.get(namespace.idFromName(`${principal.owner}:${route.session_id}`));
+      const state = await (await actor.fetch('https://session.internal/__test/code-inspect')).json();
+      console.error(JSON.stringify({ code_fixture_diagnostic: { posts, preparations, acknowledgements, order, state } }));
+    } catch (error) { console.error(JSON.stringify({ code_fixture_diagnostic: { failure: error.name, posts, preparations, order } })); }
+  }, 4000);
+  t.after(() => clearTimeout(diagnostics));
   const events = [];
   for await (const event of await client.responses.create({ ...input, stream: true }, { headers: { 'Idempotency-Key': 'known-code-auto' } })) events.push(event);
   const response = events.find(event => event.type === 'response.completed')?.response;

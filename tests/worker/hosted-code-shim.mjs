@@ -25,5 +25,22 @@ export class Session extends RustSession {
       return typeof value === 'function' ? value.bind(target) : value;
     } });
     super(state, env);
+    this.fixtureStorage = ctx.storage;
+    this.fixtureContainer = container;
+  }
+  async fetch(request) {
+    if (new URL(request.url).pathname !== '/__test/code-inspect') return super.fetch(request);
+    const entries = await this.fixtureStorage.list({ prefix: 'hosted:code:' });
+    const operations = [];
+    for (const [key, header] of entries) {
+      if (!header?.chunks || key.endsWith(':outcome')) continue;
+      const chunks = await Promise.all(Array.from({ length: header.chunks }, (_, n) => this.fixtureStorage.get(`${key}:${header.generation}:${n}`)));
+      const operation = JSON.parse(new TextDecoder().decode(Uint8Array.from(chunks.flat())));
+      operations.push({ prepared: operation.prepared, submitted: operation.submitted, context: operation.context,
+        failure: operation.failure, has_result: operation.result !== null });
+    }
+    return Response.json({ running: this.fixtureContainer.running, operations,
+      boot_present: Boolean(await this.fixtureStorage.get('workspace:boot')),
+      lease_present: Boolean(await this.fixtureStorage.get('workspace:lease')) });
   }
 }

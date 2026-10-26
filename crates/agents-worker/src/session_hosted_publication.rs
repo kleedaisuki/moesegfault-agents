@@ -50,6 +50,11 @@ fn initial_item(item: &Value) -> Value {
     initial
 }
 
+fn accepts_terminal_update(item: &Value) -> bool {
+    item["status"] == "in_progress"
+        || (item["type"] == "code_interpreter_call" && item["status"] == "interpreting")
+}
+
 fn code_start_events(item: &Value, index: usize) -> Vec<(&'static str, Value)> {
     if item["type"] != "code_interpreter_call" {
         return vec![];
@@ -188,12 +193,7 @@ impl SessionInner {
                 self.persist().await?;
                 return Ok(());
             }
-            if existing.is_some_and(|index| {
-                !matches!(
-                    response.output[index]["status"].as_str(),
-                    Some("in_progress")
-                )
-            }) {
+            if existing.is_some_and(|index| !accepts_terminal_update(&response.output[index])) {
                 return Err(Error::RustError("hosted_item_identity_conflict".into()));
             }
             let index = existing.unwrap_or(response.output.len());
@@ -234,6 +234,23 @@ impl SessionInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interpreting_code_accepts_one_terminal_transition_not_another_execution() {
+        for status in ["in_progress", "interpreting"] {
+            assert!(accepts_terminal_update(
+                &json!({"type":"code_interpreter_call","status":status})
+            ));
+        }
+        for status in ["completed", "failed", "incomplete"] {
+            assert!(!accepts_terminal_update(
+                &json!({"type":"code_interpreter_call","status":status})
+            ));
+        }
+        assert!(!accepts_terminal_update(
+            &json!({"type":"image_generation_call","status":"interpreting"})
+        ));
+    }
 
     #[test]
     fn code_lifecycle_uses_current_sdk_event_names_and_real_source() {

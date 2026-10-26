@@ -430,7 +430,8 @@ mod tests {
                 format!("item_{response}_{round}_{ordinal}")]
             {
                 prop_assert!(service_owned_id(&id));
-                prop_assert!(limits.item_bytes(&response, &json!({"id":id,"type":"message"})).is_ok());
+                let item = json!({"id":id,"type":"message"});
+                prop_assert!(limits.item_bytes(&response, &item).is_ok());
             }
         }
 

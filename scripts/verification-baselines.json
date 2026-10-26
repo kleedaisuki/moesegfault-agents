@@ -2170,5 +2170,526 @@
         "executed_tests": 2
       }
     ]
+  },
+  {
+    "source_sha": "2d19ca24fdf6dc48db81fca0edae2c42f409f538",
+    "run_id": "40276195378",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12629928179,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12630252413,
+    "verified_phases": [
+      "wasm_build"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "verified_checks": [
+      {
+        "id": "journey:Responses auxiliary compact and count",
+        "status": "passed_current",
+        "input_fingerprint": "e80b3ade77fe9b50f7b853e1fdc56039142e17dc8c9984976be12e689b2a8758",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "rust:agents-worker:omitted_public_memory_uses_one_gib_without_resizing_an_existing_profile",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "omitted_public_memory_uses_one_gib_without_resizing_an_existing_profile",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/hosted_bindings.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:memory_selection_uses_the_same_validated_declaration_without_creating_contexts",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "memory_selection_uses_the_same_validated_declaration_without_creating_contexts",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/hosted_bindings.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:fresh_available_profiles_do_not_resize_existing_sessions_or_create_existing_ids",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "fresh_available_profiles_do_not_resize_existing_sessions_or_create_existing_ids",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/hosted_bindings.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:all_production_id_families_obey_encoded_bounds",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "all_production_id_families_obey_encoded_bounds",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/response_limits.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:reserved_namespace_matches_exact_slot_and_hash_grammars",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "reserved_namespace_matches_exact_slot_and_hash_grammars",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/response_limits.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:every_response_scoped_generated_id_is_reserved_even_with_embedded_underscores",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "every_response_scoped_generated_id_is_reserved_even_with_embedded_underscores",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/response_limits.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:generated_identifiers_make_the_item_lower_bound_executable",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "generated_identifiers_make_the_item_lower_bound_executable",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/response_limits.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:incremental_append_replace_matches_exact_array_encoding",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "incremental_append_replace_matches_exact_array_encoding",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/response_limits.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:byte_limit_and_item_limit_are_one_mathematical_contract",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "byte_limit_and_item_limit_are_one_mathematical_contract",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/response_limits.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:read_only_output_keeps_array_wire_shape_and_reconstructs_transient_cache",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "read_only_output_keeps_array_wire_shape_and_reconstructs_transient_cache",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/response_limits.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:accepted_artifact_deletion_is_durable_and_does_not_invent_a_replacement_file",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "accepted_artifact_deletion_is_durable_and_does_not_invent_a_replacement_file",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:only_an_accepted_publication_tombstone_settles_an_unpublished_artifact",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "only_an_accepted_publication_tombstone_settles_an_unpublished_artifact",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:cancellation_never_overrides_known_publication_cleanup",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "cancellation_never_overrides_known_publication_cleanup",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:acknowledged_progress_remains_recoverable_during_cancellation",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "acknowledged_progress_remains_recoverable_during_cancellation",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:execution_scope_is_path_safe_and_changed_arguments_conflict_in_same_slot",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "execution_scope_is_path_safe_and_changed_arguments_conflict_in_same_slot",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:terminal_projection_uses_only_owned_published_image_urls",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "terminal_projection_uses_only_owned_published_image_urls",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:ordinary_python_exception_is_a_failed_native_item_without_rerun",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "ordinary_python_exception_is_a_failed_native_item_without_rerun",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:operation_state_retains_published_reference_before_acknowledgement",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "operation_state_retains_published_reference_before_acknowledgement",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_code.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:code_lifecycle_uses_current_sdk_event_names_and_real_source",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "code_lifecycle_uses_current_sdk_event_names_and_real_source",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_publication.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:only_defined_hosted_phase_events_are_published",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "only_defined_hosted_phase_events_are_published",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_publication.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:initial_items_do_not_duplicate_final_logs_images_or_invent_status_fields",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "initial_items_do_not_duplicate_final_logs_images_or_invent_status_fields",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_hosted_publication.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:persisted_entropy_keeps_same_sequence_frames_identical_without_public_seed",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "persisted_entropy_keeps_same_sequence_frames_identical_without_public_seed",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_responses.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:output_turn_is_preflighted_before_any_item_or_event_is_published",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "output_turn_is_preflighted_before_any_item_or_event_is_published",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_responses.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:output_replacement_replay_and_clear_keep_one_exact_capacity_charge",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "output_replacement_replay_and_clear_keep_one_exact_capacity_charge",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_responses.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:observer_projection_is_per_request_and_keeps_private_replay_complete",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "observer_projection_is_per_request_and_keeps_private_replay_complete",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/session_responses.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:known_input_rejections_do_not_retry_and_busy_remains_transient",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "known_input_rejections_do_not_retry_and_busy_remains_transient",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/workspace_interpreter.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:pre_dispatch_cancellation_receipt_does_not_claim_a_container_was_created",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "pre_dispatch_cancellation_receipt_does_not_claim_a_container_was_created",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/workspace_interpreter.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "rust:agents-worker:cancellation_during_bootstrap_cannot_reclassify_an_unknown_post",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "cancellation_during_bootstrap_cannot_reclassify_an_unknown_post",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "source_file": "crates/agents-worker/src/workspace_interpreter.rs",
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      },
+      {
+        "id": "node:tests/worker/hosted-code.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/hosted-code.test.mjs"
+        ],
+        "env": {},
+        "reason": "Unexecuted Code Rust filters or actual controlled publication failure in40276195378"
+      }
+    ],
+    "evidence": {
+      "test_compile": "failed_property_macro",
+      "code_journey": "actual_terminal_publication_hang_known_result_not_replayed",
+      "auxiliary": "passed"
+    }
   }
 ]
