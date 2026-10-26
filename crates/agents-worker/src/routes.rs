@@ -386,6 +386,11 @@ fn attachment_input_error(text: &str) -> Option<(u16, &'static str, &'static str
             422,
             "This adapter supports file text extraction with auto detail, not PDF page-image rendering",
         ),
+        (
+            "native_cache_control_unsupported",
+            422,
+            "This provider manages caching automatically and does not support explicit content cache breakpoints",
+        ),
         ("invalid_file_id", 400, "The file ID is invalid"),
         (
             "invalid_file_name",

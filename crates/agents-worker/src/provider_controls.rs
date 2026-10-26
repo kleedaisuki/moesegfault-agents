@@ -40,6 +40,36 @@ fn unavailable(field: &str) -> String {
     format!("native provider does not honor {field}; select a capable model/provider")
 }
 
+pub(crate) const CACHE_CONTROL_UNSUPPORTED: &str = "native_cache_control_unsupported";
+
+pub(crate) fn validate_input(config: &ProviderConfig, input: &[Value]) -> Result<(), String> {
+    if profile(config) != Profile::DeepSeek {
+        return Ok(());
+    }
+    // Inspect native content slots, not arbitrary tool arguments or JSON schemas.
+    // DeepSeek manages KV caching automatically; explicit cache directives are
+    // unsupported and must not silently disappear in its tokenizer recipe.
+    // https://api-docs.deepseek.com/guides/responses_api/#compatibility-details
+    let explicit = input.iter().any(|item| {
+        ["content", "output"].iter().any(|slot| {
+            item.get(*slot)
+                .and_then(Value::as_array)
+                .is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        matches!(
+                            part["type"].as_str(),
+                            Some("input_text" | "output_text" | "input_image" | "input_file")
+                        ) && requested(part, "prompt_cache_breakpoint")
+                    })
+                })
+        })
+    });
+    if explicit {
+        return Err(CACHE_CONTROL_UNSUPPORTED.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn validate(
     config: &ProviderConfig,
     body: &Value,
