@@ -483,6 +483,9 @@ pub async fn fail_job(
         "file_extraction_byte_limit"
         | "file_integrity_error"
         | "file_search_embedding_input_byte_limit"
+        | "file_search_document_invalid"
+        | "file_search_document_text_limit"
+        | "file_search_document_archive_limit"
         | "file_search_chunk_count_limit" => "invalid_file",
         _ => "server_error",
     };

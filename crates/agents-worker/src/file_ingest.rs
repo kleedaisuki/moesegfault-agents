@@ -34,6 +34,9 @@ pub(crate) fn preflight(profile: &VectorServiceProfile, meter: &ResourceMeter<'_
     ] {
         meter.require_tariff(&allocation.resource, &allocation.unit)?;
     }
+    if let Some(allocation) = &profile.conversion_allocation {
+        meter.require_tariff(&allocation.resource, &allocation.unit)?;
+    }
     Ok(())
 }
 

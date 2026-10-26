@@ -47,6 +47,8 @@ pub struct VectorServiceProfile {
     pub embedding_allocation: Allocation,
     pub query_allocation: Allocation,
     pub upsert_allocation: Allocation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversion_allocation: Option<Allocation>,
 }
 
 impl VectorServiceProfile {
@@ -62,7 +64,11 @@ impl VectorServiceProfile {
         self.embedding_allocation
             .validate("embedding_input_bytes")?;
         self.query_allocation.validate("queried_dimensions")?;
-        self.upsert_allocation.validate("written_dimensions")
+        self.upsert_allocation.validate("written_dimensions")?;
+        if let Some(allocation) = &self.conversion_allocation {
+            allocation.validate("conversion_input_bytes")?;
+        }
+        Ok(())
     }
 
     pub(crate) fn validate_bindings(&self, env: &Env) -> Result<()> {
@@ -457,6 +463,9 @@ pub enum IngestProgress {
     Completed,
 }
 
+#[path = "file_document.rs"]
+mod document;
+
 async fn vectors_for_batch(
     env: &Env,
     profile: &VectorServiceProfile,
@@ -578,13 +587,27 @@ pub async fn ingest_turn(
             .await?;
             return Ok(IngestProgress::Unavailable);
         }
-        let text = match std::str::from_utf8(&bytes) {
-            Ok(text) if !text.contains('\0') && !text.trim().is_empty() => text,
-            _ => {
+        let text = match document::text(
+            env,
+            profile,
+            &job,
+            &source,
+            &bytes,
+            meter,
+            &format!("{attempt}:document"),
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(Error::RustError(code))
+                if code == "unsupported_or_empty_document"
+                    || code == "file_extraction_byte_limit"
+                    || code.starts_with("file_search_document_") =>
+            {
                 file_index::fail_job(
                     env,
                     &job,
-                    "unsupported_or_empty_document",
+                    &code,
                     crate::util::now_ms(),
                     meter,
                     &format!("{attempt}:failure"),
@@ -592,10 +615,11 @@ pub async fn ingest_turn(
                 .await?;
                 return Ok(IngestProgress::Unavailable);
             }
+            Err(error) => return Err(error),
         };
         let strategy: file_index::ChunkingStrategy = serde_json::from_str(&job.chunking_json)?;
         let chunks = match file_index::token_chunk_ranges(
-            text,
+            &text,
             &strategy,
             profile.embedding.input_byte_limit,
         ) {

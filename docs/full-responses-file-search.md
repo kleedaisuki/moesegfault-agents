@@ -226,6 +226,41 @@ intervals split at the signed-ledger limit without losing units. Debt retains it
 pending interval; unknown quantities never become zero. Source and SQL checks
 are not compiled/live acceptance of this independent clock increment.
 
+## Bounded document extraction
+
+The optional operator `conversion_allocation` enables native Workers AI
+`toMarkdown` for byte-identified PDF, DOCX and XLSX, not extension-based
+routing. It uses the documented document parser path; image inputs and empty
+text are rejected, with no image captioning/OCR or generative fallback. A
+controlled transport fixture is not proof of real document-parser output.
+
+Rich input is capped at four MiB and converted UTF-8 text at one MiB. Office
+archives are inspected with the mature ZIP parser after a bounded end-record
+check: at most 2048 entries, one-MiB central directory, sixteen-MiB advertised
+expansion, no encryption, ZIP64, symlinks, traversal, macros or unsupported
+codecs. Canonical internal filenames follow the detected container. Native
+output must report the expected MIME type and text format.
+
+Migration 0025 is disposable derived text, independent of source Files and
+financial evidence. Dispatch is persisted before the native call; successful
+text is reused after restart. An unknown result is never automatically
+purchased again. Current owner, digest, generation and lease fence dispatch
+and result publication. Cleanup removes the cache only after its generation's
+chunks have actually disappeared.
+
+The operator tariff `worker/conversion_input_bytes` bills a declared platform
+conversion allocation, never the converter's estimated `tokens` field or
+purported actual model tokens. Returned input bytes are recorded once;
+unknown service outcomes retain their observation instead of inventing zero.
+
+Chunk staging retains only UTF-8 byte ranges for the full source and owns text
+for one 32-chunk D1 batch at a time. This removes the additional overlapping
+full-source copy beside the warm DeepSeek tokenizer. The existing tokenizer,
+semantic splitter, exact offsets and provider byte cap remain unchanged. A
+local RAII admission guard allows one active ingestion buffer per isolate;
+durable leases and ordinary polling/maintenance still provide cross-isolate
+recovery and horizontal concurrency. Cancellation releases admission directly.
+
 ## Primary references
 
 - [OpenAI file search](https://developers.openai.com/api/docs/guides/tools-file-search)

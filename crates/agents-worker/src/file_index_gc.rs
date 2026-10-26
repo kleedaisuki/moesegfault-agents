@@ -120,6 +120,10 @@ async fn cleanup_batch(env: &Env, job: &Job, lease: &str, meter: &ResourceMeter<
 }
 
 async fn finish_job(env: &Env, job: &Job, lease: &str, meter: &ResourceMeter<'_>) -> Result<()> {
+    meter.require_d1("extraction-forget").await?;
+    let extracted=env.d1("DB")?.prepare("DELETE FROM file_search_extractions WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND NOT EXISTS(SELECT 1 FROM file_search_chunks c WHERE c.account_id=?1 AND c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4)")
+        .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into()])?.run().await?;
+    meter.record_d1("extraction-forget", &extracted).await?;
     crate::file_index::storage::close(
         env,
         &job.account_id,
