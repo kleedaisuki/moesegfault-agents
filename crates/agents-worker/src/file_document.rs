@@ -10,7 +10,9 @@ use wasm_bindgen_futures::JsFuture;
 use worker::{Env, Error, Result};
 
 use crate::{
-    file_index::IngestJob, file_vector::VectorServiceProfile, resources::ResourceMeter,
+    file_index::IngestJob,
+    file_vector::{Allocation, VectorServiceProfile},
+    resources::ResourceMeter,
     space::OwnedFile,
 };
 
@@ -29,7 +31,24 @@ enum Kind {
     Xlsx,
 }
 
+enum ConversionBilling<'a> {
+    FreeNativeDocumentText,
+    PlatformAllocation(&'a Allocation),
+}
+
 impl Kind {
+    fn billing(self, allocation: Option<&Allocation>) -> ConversionBilling<'_> {
+        // This capability is the native document-to-text parser, not image
+        // description/OCR or an unknown converter with a missing price.
+        // https://developers.cloudflare.com/workers-ai/features/markdown-conversion/#pricing
+        // https://developers.cloudflare.com/workers-ai/features/markdown-conversion/supported-formats/
+        match (self, allocation) {
+            (_, Some(allocation)) => ConversionBilling::PlatformAllocation(allocation),
+            (Self::Pdf | Self::Docx | Self::Xlsx, None) => {
+                ConversionBilling::FreeNativeDocumentText
+            }
+        }
+    }
     fn name(self) -> &'static str {
         match self {
             Self::Pdf => "source.pdf",
@@ -247,10 +266,10 @@ pub(super) async fn text<'a>(
         }
         return Ok(Cow::Borrowed(text));
     };
-    let allocation = profile
-        .conversion_allocation
-        .as_ref()
-        .ok_or_else(|| fail("file_search_document_service_unavailable"))?;
+    let allocation = match kind.billing(profile.conversion_allocation.as_ref()) {
+        ConversionBilling::FreeNativeDocumentText => None,
+        ConversionBilling::PlatformAllocation(allocation) => Some(allocation),
+    };
     meter.require_d1(&format!("{event}:read")).await?;
     let result=env.d1("DB")?.prepare("SELECT status,text,error_code FROM file_search_extractions WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND source_sha256=?5")
         .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into(),job.file_sha256.as_str().into()])?.all().await?;
@@ -267,15 +286,24 @@ pub(super) async fn text<'a>(
         };
     }
     let prepared = prepare(env, profile, kind, bytes)?;
-    let funded = crate::file_index::funding::fund(
-        env,
-        &job.into(),
-        "convert",
-        Some((allocation, bytes.len() as u64, 1)),
-        crate::file_index::funding::io_budget(env)?,
-    )
-    .await?;
-    let paid = funded.meter(env, &job.account_id)?;
+    let funded = if let Some(allocation) = allocation {
+        Some(
+            crate::file_index::funding::fund(
+                env,
+                &job.into(),
+                "convert",
+                Some((allocation, bytes.len() as u64, 1)),
+                crate::file_index::funding::io_budget(env)?,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let paid = funded
+        .as_ref()
+        .map(|funding| funding.meter(env, &job.account_id))
+        .transpose()?;
     let effect = "provider";
     meter.require_d1(&format!("{event}:intent")).await?;
     let result=env.d1("DB")?.prepare("INSERT INTO file_search_extractions(account_id,vector_store_id,file_id,generation,source_sha256,status,created_at_ms) SELECT ?1,?2,?3,?4,?5,'dispatched',CAST(?7 AS INTEGER) WHERE EXISTS(SELECT 1 FROM vector_store_files vf JOIN space_files sf ON sf.id=vf.file_id AND sf.account_id=vf.account_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.generation=?4 AND vf.lease_id=?6 AND vf.status='in_progress' AND vf.lease_until>CAST(?7 AS INTEGER) AND sf.status='processed' AND sf.sha256=?5) ON CONFLICT(vector_store_id,file_id,generation) DO NOTHING RETURNING file_id")
@@ -284,20 +312,24 @@ pub(super) async fn text<'a>(
     if result.results::<Value>()?.is_empty() {
         return Err(fail("file_search_extraction_lease_lost"));
     }
-    paid.require_observation(effect, allocation.resource.clone(), &allocation.unit)
-        .await?;
+    if let Some((allocation, paid)) = allocation.zip(paid.as_ref()) {
+        paid.require_observation(effect, allocation.resource.clone(), &allocation.unit)
+            .await?;
+    }
     let outcome = convert(prepared).await;
     if matches!(&outcome,Err(Error::RustError(code)) if code=="file_search_document_service_failed")
     {
         return outcome.map(Cow::Owned);
     }
-    paid.record_observation(
-        effect,
-        allocation.resource.clone(),
-        &allocation.unit,
-        bytes.len() as u64,
-    )
-    .await?;
+    if let Some((allocation, paid)) = allocation.zip(paid.as_ref()) {
+        paid.record_observation(
+            effect,
+            allocation.resource.clone(),
+            &allocation.unit,
+            bytes.len() as u64,
+        )
+        .await?;
+    }
     let (state, text, error) = match &outcome {
         Ok(text) => ("completed", Some(text.as_str()), None),
         Err(Error::RustError(code)) => ("failed", None, Some(code.as_str())),
@@ -310,7 +342,9 @@ pub(super) async fn text<'a>(
     if result.results::<Value>()?.is_empty() {
         return Err(fail("file_search_extraction_lease_lost"));
     }
-    paid.settle_run().await?;
+    if let Some(paid) = paid {
+        paid.settle_run().await?;
+    }
     outcome.map(Cow::Owned)
 }
 
@@ -332,6 +366,32 @@ mod tests {
             writer.write_all(data).unwrap();
         }
         writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn native_free_text_capability_never_hides_configured_or_unknown_prices() {
+        for kind in [Kind::Pdf, Kind::Docx, Kind::Xlsx] {
+            assert!(matches!(
+                kind.billing(None),
+                ConversionBilling::FreeNativeDocumentText
+            ));
+            let explicit = Allocation {
+                resource: agents_auth::billing::Resource::Worker,
+                unit: "conversion_input_bytes".into(),
+            };
+            let ConversionBilling::PlatformAllocation(allocation) = kind.billing(Some(&explicit))
+            else {
+                panic!("A configured allocation cannot silently become free");
+            };
+            let prices=crate::resources::ResourcePricing::parse(r#"{"version":"fixture","tariffs":[{"resource":"worker","unit":"wall_ms","microusd_numerator":1,"quantity_denominator":1000,"price_version":"fixture"}]}"#).unwrap();
+            assert!(
+                prices
+                    .tariff(&allocation.resource, &allocation.unit)
+                    .is_err()
+            );
+        }
+        assert!(kind(b"\x89PNG\r\n\x1a\n").unwrap().is_none());
+        assert!(kind(b"PK\x03\x04unknown").is_err());
     }
 
     #[test]
