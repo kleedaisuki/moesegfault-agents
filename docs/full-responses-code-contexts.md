@@ -513,3 +513,48 @@ and settling their real start/stop costs. The new profile-specific live behavior
 and financial closure remain required after repair. Safe metadata and original
 operation identities are retained under `.temp/code-staging/` in the integration
 checkout; the original source/run conclusions remain unchanged.
+
+not retried. At driver preparation, actual Cloudflare runs and scoped financial
+closure were still pending; the following receipts close that managed boundary.
+
+## Actual managed Cloudflare delivery completed, 2026-10-27
+
+Staging deployment `40360107662` enabled the explicit Code selector without a
+rebuild. Its assembly/daemon source is
+`3539c1c9fb3a247c465249eb59a4dd2a438b116e`; actual Worker source remains
+`1d1c3a21d6bf91cfd90029bf7230834ae414c83b`, not the newer assembly label.
+Deployment provenance binds Worker artifact `12663258034` from `40349988842`
+and daemon artifact `12663918464` from successful normal CI `40353675534`.
+
+Each repaired profile used one new bounded direct-DeepSeek Response and one real
+Python cell. Neither original failed Code request was replayed. Both passed all
+five native Code phases and original-payload Python SDK 3.37 validation (117
+events for 1g, 121 for 4g), printed 42, and published the exact nine-byte CSV with
+SHA-256 `e642f71729782d3a01113233973eacdad72f4ddf49d5e9b9535c28ae82fceef5`.
+
+| Profile | Native response | Real CID, subsequently deleted | Allocation / observed guest bytes | Total / compute microUSD |
+| --- | --- | --- | --- | --- |
+| basic 1g | `resp_27e56a74268b440da021c61678a03f2e` | `cntr_28aad6df300a4c069ba582d5a120a847` | 1073741824 / 1272700928 | 1815 / 1183 |
+| standard-1 4g | `resp_f1e0c4f679424601af1c3013b9fa153d` | `cntr_d48f7fbfe72f4966a6c3c67bec2e1772` | 4294967296 / 4366254080 | 1298 / 849 |
+
+Both live metadata proofs reported `capacity_source=cloudflare_vm`, the matching
+`Session`/`Session4G` class and exact verified daemon source. Each actual cell's
+independent `MemTotal` observation matched the separately published guest bytes;
+neither result pretends the guest's unbounded cgroup has a finite 1g/4g ceiling.
+
+For each same accepted operation, normal harness archival left the CID running;
+explicit Containers DELETE then produced CID 404 while the ordinary published
+File remained readable with the original nine bytes. Both catalog allocations
+are deleted/released and both compute leases settled against their actual wall
+intervals. The scoped postflights include the new account operations as well as
+Session rows: zero new holds and zero pending observations. Managed catalog
+`memory_limit=NULL` correctly retains its existing `source_profile` fallback;
+no representation rewrite or manual SQL settlement was used. All collectors
+stopped after the final receipts.
+
+The operator receipts are in the integration worktree's
+`.temp/code-staging/repaired-{1g,4g}-{receipt,postflight-confirmed}.json`.
+The earlier failed preparations and their genuinely unknown exit-time financial
+holds remain separate historical reconciliation work; they are not relabeled
+successful or silently refunded by these new clean receipts. Do not rerun either
+repaired profile, the accepted BYOK guest journey, or the original paid failures.
