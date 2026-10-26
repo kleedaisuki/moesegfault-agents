@@ -183,3 +183,29 @@ two Code deployment/provenance cases and five narrow staging-driver contracts
 remain selected. Changed Wasm, native packages, daemon image and dashboard are
 built under normal CI from the exact new source; artifact/dependency fingerprint
 gates are unchanged. The new compact media transport is not part of this source.
+
+## Independent feature rollout and corrected capacity source
+
+The next composed selection boundary is `afba8e9`, not a fabricated compiled
+artifact. Exact normal component baselines now come from successful source CI
+`40338717364` / `1b7f2cd`; its Worker/container/dashboard artifact IDs are pinned
+individually. Controlled native-window, context quota/purge/count, media, MCP,
+indexing-resume and programmatic receipts retain their original sources and
+partial aggregate outcomes in the catalog. They are not replayed for a green
+combined label.
+
+New work selected after that boundary is exactly five relevant CLI binary cases
+(four new cases and the changed progressive-help contract), three native capacity
+source/discovery cases, one free native document price/capability guard, and twelve
+new or materially changed deployment/driver cases. No old compiled Worker
+journey, managed Python cell, SDK trajectory or provider request is selected.
+Changed Wasm/native/daemon inputs build normally; the identical dashboard reuses
+its exact `1b7f2cd` artifact.
+
+The additive `web_search,file_search,image_generation` staging profile keeps both
+verified daemon application bindings for existing cleanup but advertises no Code
+memory profile and no Code runtime. Image activation still requires successful
+normal CI and normal verified container provenance, never the old disabled-runtime
+exception. This lets independent new user capabilities ship while managed Code
+gets its separate actual-runtime acceptance. The later Code selector can enable
+its already built corrected source without replaying any accepted operation.
