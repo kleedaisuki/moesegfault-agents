@@ -47,6 +47,12 @@ impl McpBindings {
                 .iter()
                 .find(|tool| tool.name == intent.tool.name)
                 .ok_or_else(|| fail("mcp_tool_not_allowed"))?;
+            if !server.allows(intent.caller) {
+                return Err(fail("mcp_tool_not_allowed"));
+            }
+            if !server.allows(intent.caller) {
+                return Err(fail("mcp_tool_not_allowed"));
+            }
             if current.input_schema != intent.tool.input_schema {
                 return Err(fail("mcp_approval_schema_changed"));
             }
@@ -283,10 +289,27 @@ impl McpBindings {
         execution: &str,
         call: &crate::provider::ToolCall,
     ) -> Result<Option<CallIntent>> {
+        self.prepare_call_as(
+            owner,
+            response,
+            execution,
+            call,
+            crate::hosted_bindings::Caller::Direct,
+        )
+    }
+
+    pub(crate) fn prepare_call_as(
+        &self,
+        owner: &str,
+        response: &str,
+        execution: &str,
+        call: &crate::provider::ToolCall,
+        caller: crate::hosted_bindings::Caller,
+    ) -> Result<Option<CallIntent>> {
         let Some((server, tool)) = self.lookup(&call.function.name) else {
             return Ok(None);
         };
-        if server.owner != owner || !server.direct {
+        if server.owner != owner || !server.allows(caller) {
             return Err(fail("mcp_tool_not_bound"));
         }
         if call.function.arguments.len() > crate::mcp_items::MAX_ARGUMENT_BYTES {
@@ -307,6 +330,7 @@ impl McpBindings {
             source_response: response.into(),
             execution: execution.into(),
             native_call_id: call.id.clone(),
+            caller,
             server: server.for_call(),
             tool: tool.clone(),
             arguments,
@@ -321,6 +345,8 @@ impl McpBindings {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CallIntent {
+    #[serde(default = "direct_caller")]
+    pub caller: crate::hosted_bindings::Caller,
     pub owner: String,
     pub source_response: String,
     pub execution: String,
@@ -330,6 +356,10 @@ pub(crate) struct CallIntent {
     pub arguments: Value,
     pub approval_id: Option<String>,
     pub item_id: String,
+}
+
+fn direct_caller() -> crate::hosted_bindings::Caller {
+    crate::hosted_bindings::Caller::Direct
 }
 
 impl std::fmt::Debug for CallIntent {
@@ -357,6 +387,7 @@ impl CallIntent {
             &self.source_response,
             &self.execution,
             &self.native_call_id,
+            self.caller,
             &self.server.label,
             &self.server.url,
             &self.tool.name,
@@ -400,7 +431,7 @@ impl CallIntent {
             .ok_or_else(|| fail("mcp_native_result_missing"))
     }
     pub(crate) fn prepare(&self, env: &Env, owner: &str) -> Result<mcp_transport::PreparedRpc> {
-        if self.owner != owner {
+        if self.owner != owner || !self.server.allows(self.caller) {
             return Err(fail("mcp_approval_not_found"));
         }
         mcp_transport::prepare(
