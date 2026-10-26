@@ -57,8 +57,9 @@ never repeat model/tool work merely to repair observation or obtain a receipt.
 Final production/public release requires root clearance and aggregate named
 capability evidence: branches, Conversations, rich fields, WebSocket/steering,
 count/compact, hosted execution/artifacts, accounting, performance and clients.
-Old narrow baseline receipts do not close that objective. The integration captain
-owns the shared index; ReleaseOps owns evidence/activation wording. Keep
+Old narrow baseline receipts do not close that objective. Topic owners deliver
+and integrate directly, coordinating shared-index writes briefly; the deployment
+owner activates a pinned candidate while later topics continue independently. Keep
 environment-paired configuration and existing databases, namespaces,
 buckets, Identity registration and encryption/signing keys. Do not generate keys,
 change subject sectors, issue grants or rotate secrets as routine deployment
