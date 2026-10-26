@@ -68,9 +68,19 @@ async function migrate(db) {
 }
 
 function validateWire(response, stream) {
+  const jsonOnly = stream.length === 0;
+  const arguments_ = jsonOnly ? ['-c', `
+import json, sys, openai
+from typing import Any
+from openai.types.responses import Response
+value: dict[str, Any] = json.load(sys.stdin)
+validated: Response = Response.model_validate(value, strict=True)
+assert validated.status == "completed"
+print(json.dumps({"sdk": openai.__version__, "scope": "strict_current_sdk_json_only", "passed": True}))
+`] : ['tests/e2e/current_responses_sdk.py', 'response-wire', '--input', '-'];
   const checked = spawnSync(process.env.MAGENTS_CURRENT_SCHEMA_PYTHON,
-    ['tests/e2e/current_responses_sdk.py', 'response-wire', '--input', '-'],
-    { cwd: root, input: JSON.stringify({ response, events: stream }), encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    arguments_,
+    { cwd: root, input: JSON.stringify(jsonOnly ? response : { response, events: stream }), encoding: 'utf8', maxBuffer: 1024 * 1024 });
   assert.equal(checked.status, 0, checked.stderr || checked.stdout);
   return JSON.parse(checked.stdout);
 }
