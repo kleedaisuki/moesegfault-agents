@@ -107,6 +107,26 @@ export async function runNativeWindowRejectionJourney(context) {
     unfit, model_ledger_rows: 0, external_network_calls: 0 };
 }
 
+export async function runNativeWindowCountRejectionJourney(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'window-count-rejection', []);
+  scenario.state.count = windowFixtureCount;
+  scenario.agent = await context.request('PATCH', `/v1/agents/${scenario.agent.id}`, {
+    model: { ...scenario.agent.model, context_window: capacity, max_output_tokens: outputBudget }, compaction_percent: 99,
+  }, 200, scenario.principal.apiKey);
+  const sessions = () => context.request('GET', `/v1/agents/${scenario.agent.id}/sessions`, undefined, 200, scenario.principal.apiKey);
+  assert.deepEqual((await sessions()).data, []);
+  await assert.rejects(scenario.client.responses.inputTokens.count({ model: scenario.agent.id,
+    input: 'UNFIT-LATEST-COUNT-GROUP-' + 'x'.repeat(6000), truncation: 'auto' }),
+  error => error.status === 400 && error.code === 'context_length_exceeded');
+  assert.deepEqual((await sessions()).data, [], 'A rejected read-only fit cannot admit a Session');
+  assert.equal(scenario.state.calls, 0);
+  assert.ok(scenario.state.countRequests.length >= 1, 'The input is rejected from actual prepared counting, not a character guess');
+  await assertModelLedger(scenario, []);
+  return { provider_calls: 0, synthetic_counter_calls: scenario.state.countRequests.length,
+    status: 400, code: 'context_length_exceeded', no_session_admission: true, model_ledger_rows: 0,
+    external_network_calls: 0, counter_kind: 'deterministic-synthetic-provider-endpoint-not-production-tokenizer' };
+}
+
 export async function runContextCapacityJourney(context) {
   const custom = 'CURRENT-RESPONSE-INSTRUCTIONS-KEEP';
   const original = 'ORIGINAL-CONTEXT-CAPACITY-INPUT';
