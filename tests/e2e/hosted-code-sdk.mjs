@@ -81,7 +81,8 @@ export async function countCodeBeforeAdmission(client, request, agent, body) {
   const route = `/v1/agents/${agent}/sessions`;
   const before = await request('GET', route);
   assert.deepEqual(before.data, [], 'new_Code_agent_must_not_have_a_preselected_profile');
-  const count = await client.responses.inputTokens.count(body);
+  const { model, input, tools, reasoning } = body;
+  const count = await client.responses.inputTokens.count({ model, input, tools, reasoning });
   assert.equal(count.object, 'response.input_tokens');
   assert.ok(Number.isSafeInteger(count.input_tokens) && count.input_tokens > 0);
   assert.deepEqual(await request('GET', route), before, 'count_must_not_allocate_or_pin_a_Session');

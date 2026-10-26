@@ -13,7 +13,7 @@ const response = { status: 'completed', output: [{ id: 'ci-owned', type: 'code_i
 test('Code profile admission never prepins a basic Session before selecting the real 4g executor', async () => {
   const body = codeRequest('owned-agent', 'code-1234-abcd.csv', '4g'), order = [];
   const client = { responses: { inputTokens: { count: async (...args) => {
-    order.push('count'); assert.deepEqual(args, [body]);
+    order.push('count'); assert.deepEqual(args, [{ model: body.model, input: body.input, tools: body.tools, reasoning: body.reasoning }]);
     return { object: 'response.input_tokens', input_tokens: 200 };
   } } } };
   const request = async (method, route) => {
