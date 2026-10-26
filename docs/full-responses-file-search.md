@@ -206,6 +206,17 @@ ingestion, delayed visibility, owner isolation, harness search/citation,
 current-SDK original-wire validation, replay and source deletion. Its two-
 dimensional vectors are controlled transports, not real semantic-quality proof.
 
+Native boundary invariants are executable, not fixture normalization. With
+serde_json arbitrary precision enabled, generic serde-wasm-bindgen serialization
+of a JSON Value can expose private Number structs instead of JavaScript
+numbers. Vector service arguments therefore pass through the native JSON
+parser. Numeric vector entries and topK remain numeric at the actual binding.
+
+Public file_search_call objects are distinct from private model tool results.
+The public item retains structured results; the private continuation carries
+serialized JSON text, matching the existing Code/Search output-content contract.
+An object-valued tool message must not reach native text/part translation.
+
 ## Allocated vector capacity clock
 
 The independent 0024 increment uses `worker/allocated_vector_dimension_ms`:

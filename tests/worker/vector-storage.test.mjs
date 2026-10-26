@@ -90,7 +90,7 @@ test('compiled Rust Worker: vector capacity carries units until confirmed native
   assert.equal(after.finalized, 1);
   assert.equal(after.pending_json, null);
   assert.equal(after.carry_dimension_ms, '0');
-  const usage = await db.prepare('SELECT COALESCE(SUM(CAST(quantity AS INTEGER)),0) AS quantity,COALESCE(SUM(CAST(amount_microusd AS INTEGER)),0) AS amount FROM usage_ledger WHERE account_id=? AND unit=?').bind(principal.owner, unit).first();
+  const usage = await db.prepare('SELECT COALESCE(SUM(CAST(quantity AS INTEGER)),0) AS quantity,COALESCE(SUM(CAST(amount_microusd AS INTEGER)),0) AS amount FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit=?').bind(principal.owner, unit).first();
   const expected = after.dimensions * (after.removed_at_ms - after.created_at_ms);
   assert.equal(usage.quantity, expected);
   assert.equal(usage.amount, Math.ceil(expected / 1000));

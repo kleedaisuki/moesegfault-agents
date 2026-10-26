@@ -106,7 +106,7 @@ test('compiled Rust Worker: document conversion is bounded recoverable and not b
   const result = await sdk.vectorStores.search(store.id, { query: 'silver-lantern-513' });
   assert.equal(result.data.length, 2);
   assert.ok(result.data.every(hit => hit.content.some(part => part.text.includes('silver-lantern-513'))));
-  const usage = await db.prepare("SELECT COALESCE(SUM(CAST(quantity AS INTEGER)),0) AS quantity FROM usage_ledger WHERE account_id=? AND unit='conversion_input_bytes'").bind(principal.owner).first();
+  const usage = await db.prepare("SELECT COALESCE(SUM(CAST(quantity AS INTEGER)),0) AS quantity FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit='conversion_input_bytes'").bind(principal.owner).first();
   assert.equal(usage.quantity, inputs.reduce((n,b) => n+b.length,0), 'Estimated converter tokens are not vendor usage');
   const invalid = await sdk.files.create({ purpose: 'assistants', file: await toFile(Buffer.from('PK\x03\x04broken'), 'broken.docx') });
   await sdk.vectorStores.files.create(store.id, { file_id: invalid.id });
