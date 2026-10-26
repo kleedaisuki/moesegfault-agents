@@ -37,15 +37,16 @@ export function createMcpTransport(native) {
         assert.equal(body.params?._meta?.['io.modelcontextprotocol/protocolVersion'], undefined);
         if (body.method === 'initialize') {
           state.initialize = (state.initialize ?? 0) + 1;
+          state.legacySession = `owned-legacy-session-${state.initialize}`;
           assert.equal(request.headers.get('mcp-protocol-version'), null, 'Do not send an unnegotiated version header');
           assert.equal(request.headers.get('mcp-session-id'), null);
           assert.equal(body.params.protocolVersion, '2025-11-25');
           return Response.json({ jsonrpc: '2.0', id: body.id, result: {
             protocolVersion: state.legacyVersion, capabilities: { tools: {} }, serverInfo: { name: 'legacy-fixture', version: '1' },
-          } }, { headers: { 'Mcp-Session-Id': 'owned-legacy-session' } });
+          } }, { headers: { 'Mcp-Session-Id': state.legacySession } });
         }
         assert.equal(request.headers.get('mcp-protocol-version'), state.legacyVersion);
-        assert.equal(request.headers.get('mcp-session-id'), 'owned-legacy-session');
+        assert.equal(request.headers.get('mcp-session-id'), state.legacySession);
         if (body.method === 'notifications/initialized') {
           state.initialized = (state.initialized ?? 0) + 1;
           assert.equal(body.id, undefined);
@@ -111,20 +112,22 @@ export async function runMcpLegacyJourney(context) {
   assert.equal(state.initialized, 1);
   assert.equal(state.calls, 0, 'Negotiation and an approval request cannot execute the remote tool');
   context.validateWire(await (await scenario.client.responses.retrieve(first.id).asResponse()).json(), []);
+  state.expectedAuth = 'MCP-LEGACY-REFRESHED-SECRET';
   const final = await (await scenario.client.responses.create({ model: scenario.agent.id, previous_response_id: first.id,
-    input: [{ type: 'mcp_approval_response', approval_request_id: approval.id, approve: true }], tools,
+    input: [{ type: 'mcp_approval_response', approval_request_id: approval.id, approve: true }], tools: [mcpTool(state.expectedAuth)],
     reasoning: { effort: 'none' } }).asResponse()).json();
   assert.equal(final.status, 'completed');
   assert.ok(final.output.find(item => item.type === 'mcp_call')?.output.includes('echo:雪'));
   assert.equal(state.calls, 1);
-  assert.equal(state.initialize, 1, 'Approval continuation retains the negotiated binding rather than renegotiating');
+  assert.equal(state.initialize, 2, 'A new Response negotiates its own fresh authorized binding');
+  assert.equal(state.initialized, 2);
   const before = { model: scenario.state.calls, rpc: state.calls };
   const stored = await (await scenario.client.responses.retrieve(final.id).asResponse()).json();
   assert.deepEqual(stored, final);
   context.validateWire(stored, []);
   assert.deepEqual({ model: scenario.state.calls, rpc: state.calls }, before);
   return { negotiated_version: state.legacyVersion, initial_modern_probe_rejected: true, initialize_without_version_header: true,
-    model_calls: scenario.state.calls, remote_tool_calls: state.calls, approval_preserved_negotiated_binding: true,
+    model_calls: scenario.state.calls, remote_tool_calls: state.calls, approval_uses_fresh_negotiated_binding: true,
     legacy_result_without_result_type: true, readonly_tail_dispatches: 0 };
 }
 
