@@ -30,6 +30,8 @@ pub(crate) mod responses;
 mod tool_media;
 
 pub use config::resolve_config;
+#[path = "provider_compaction.rs"]
+pub(crate) mod compaction;
 
 const MAX_COMPLETION_BYTES: usize = 16 * 1024 * 1024;
 

@@ -241,3 +241,30 @@ existing Miniflare harness, not yet claimed passed until Actions runs it. The
 independent `DeepSeek exact count-only tokenizer cold warm and profile
 replacement` journey uses the vendor's independent expected counts and records
 actual workerd memory/timing without paid inference.
+
+## Purpose-specific DeepSeek compaction transport
+
+Direct Responses does not report cache-write tokens; those values remain unknown
+for ordinary generation. DeepSeek also exposes a documented
+[Anthropic-compatible endpoint](https://api-docs.deepseek.com/guides/anthropic_api/).
+A separate, single development capability request on 2026-10-26 returned real
+`input_tokens=7`, `cache_read_input_tokens=0`,
+`cache_creation_input_tokens=0`, and `output_tokens=2` from that endpoint. This
+was not a repeat of the earlier native-Responses usage probe. Neither a key nor
+raw prompt/response was recorded, and the request had no retries.
+
+Compaction can therefore select this transport **before dispatch**, reuse the
+existing Messages serializer/stream parser and request `thinking: disabled`.
+Only an actually non-thinking response can attest zero reasoning tokens; an
+absent cache-creation field still fails rather than becoming zero. Caller model
+configuration, generation transport, credentials and protected-prefix hashes do
+not change. There is no post-failure fallback or hidden repair inference.
+
+The native context is passed as complete JSON data rather than a lossy Chat
+projection. The exact outgoing Messages body uses the official renderer and the
+same bounded warm vocabulary for the context-window check. Existing sealing
+retains protected instructions separately. This first slice supports resolved
+text/tool context; media and vendor-opaque inputs without a portable resolution
+remain explicit pre-inference capability errors, not text placeholders. Their
+full-context integration remains required. Known partial/failed model output is
+accounted for but never installed as a successful summary.

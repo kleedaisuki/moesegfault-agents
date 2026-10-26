@@ -111,6 +111,7 @@ export function selections(source, base, files) {
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
     [/context_management/, 'Responses request context management emits sealed item and continues'],
     [/^tests\/worker\/auxiliary-journey\.mjs$/, 'Responses auxiliary compact and count'],
+    [/^tests\/worker\/deepseek-compact-journey\.mjs$/, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage'],
     [/^tests\/worker\/deepseek-tokenizer-journey\.mjs$/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
   ];
   for (const [pattern, name] of journeys) {
