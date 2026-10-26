@@ -153,3 +153,43 @@ remain denied. This lets a retired queued Session finish cleanup without a
 permanent purged-404 loop, without inventing zero unknown model usage. That
 terminal acknowledgment wiring remains for the next coherent artifact build;
 it is not relabeled as executed in the earlier source-bound receipt.
+
+## Actual Cloudflare pre-admission interruption (2026-10-27)
+
+The one authorized context submission on Worker `1d1c3a2` / assembly `3539c1c9`
+returned HTTP 500 after 63,951 ms. The original route was
+`resp_78a70f2f64e24b659f72c9cbf73e67c0`, Session
+`f743705e-343d-41be-9988-c8ce1523f39c`. Read-only reconciliation found no model
+reservation, no retained Response and no running Session. Its separate account
+scope `conv-response:resp_78a70f2f64e24b659f72c9cbf73e67c0` retained its original
+20,000-microUSD hold with all resource observations known: actor 28,460 ms,
+parent 35,445 ms. Logical output escrow remained reserved at 93,071,671 bytes.
+No model request was repeated and no balance or escrow row was manually edited.
+
+The whole funded Conversation request was wrapped in `blockConcurrencyWhile`,
+including grant checks, asynchronous D1 publication/accounting and their final
+observations. Cloudflare documents a [30-second callback timeout followed by
+object reset](https://developers.cloudflare.com/durable-objects/api/state/), and
+[recommends keeping this guard out of ordinary external-I/O request
+handling](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/).
+The actor duration excludes grant setup and observation closure; it is not the
+complete guard duration. The measured RPC interval exceeds that platform bound.
+This is a concrete primitive mismatch, not evidence that inference failed.
+
+Conversation requests now retain the same per-object serialization using a Rust
+async mutex, without placing remote I/O inside the platform initialization guard.
+Published header/intents, numeric quota coordination and unknown-money fences
+are unchanged. A new zero-model actual-Worker test inserts one real 33-second
+asynchronous D1 delay and overlaps two metadata writers; it checks final order,
+no regular `blockConcurrencyWhile` use and real measured long actor time.
+Compiled execution is pending until its focused Actions artifact runs.
+
+Structured operational events preserve Conversation/request/operation/grant IDs,
+trace/span correlation, lock waiting, RPC duration, grant checking, individual
+D1 funding/RPC/observation durations, and pending/activated/generation boundaries.
+Known Conversation transport failure has a diagnostic 503 code rather than
+being silently flattened to `internal_error`; original response route identity
+is retained on admission failure. Private source remains in its controlled
+canonical stores and diagnostic receipts; keys and private bodies are not logged.
+Original financial/logical holds still require fenced recovery on the original
+IDs after the corrected artifact is deployed, not a new paid submission.
