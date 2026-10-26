@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync, mkdirSync, mkdtempSync } from 'node:fs';
-import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks, rustTestArguments, operatorUsagePlan } from './incremental-checks.mjs';
+import { execFileSync } from 'node:child_process';
+import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks, rustTestArguments, operatorUsagePlan, plan } from './incremental-checks.mjs';
 mkdirSync('.temp', { recursive: true });
 const directory = mkdtempSync('.temp/incremental-checks-test-');
 const source = 'a'.repeat(40), baseline = 'b'.repeat(40);
@@ -31,8 +32,20 @@ test('property-test function syntax retains targeted selection', () => {
 test('new standalone Worker contracts and assets are selected without the legacy HTTP suite', () => {
   const selected = selections(source, baseline, ['tests/worker/native-semantics.test.mjs', 'tests/test_deepseek_tokenizer_assets.py']);
   assert.deepEqual(selected.worker.filter(check => !check.env.MAGENTS_WORKER_CASE).map(check => check.argv), [['node', '--test', '--test-reporter=tap', 'tests/worker/native-semantics.test.mjs']]);
-  assert.equal(selected.worker.filter(check => check.env.MAGENTS_WORKER_CASE).length, 1);
+  assert.equal(selected.worker.filter(check => check.env.MAGENTS_WORKER_CASE).length, 0);
   assert.equal(selected.rust[0].argv.at(-2), 'test_deepseek_tokenizer_assets.py');
+});
+
+test('retained remediation commands preserve exactly one Node reporter', () => {
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const selected = plan(revision, [{ source_sha: revision, run_id: '40315380519',
+    components: ['worker', 'native', 'container', 'dashboard', 'tooling'],
+    unresolved_checks: [{ id: 'node:tests/worker/hosted-image.test.mjs',
+      argv: ['node', '--test', '--test-reporter=tap', 'tests/worker/hosted-image.test.mjs'],
+      env: { MAGENTS_HOSTED_IMAGE_CASE: 'stored' }, reason: 'A failed retained producer, not a passed replay' }],
+  }]);
+  assert.equal(selected.checks.worker.length, 1);
+  assert.equal(selected.checks.worker[0].argv.filter(arg => arg.startsWith('--test-reporter=')).length, 1);
 });
 test('new auxiliary and tokenizer increments select exact public journeys', () => {
   const selected = selections(source, baseline, ['tests/worker/auxiliary-journey.mjs', 'tests/worker/deepseek-tokenizer-journey.mjs']);
