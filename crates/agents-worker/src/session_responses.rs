@@ -1090,8 +1090,6 @@ impl SessionInner {
                 "Session changed while reserving Conversation capacity",
             );
         }
-        self.import_conversation_workspace(conversation_seed.as_ref(), &create.response_id)
-            .await?;
         // No await separates this domain preflight from acceptance mutations.
         // Exhausted revisions and non-idle records cannot partially consume tools.
         let _image_observation = self.begin_original_image_observation(
