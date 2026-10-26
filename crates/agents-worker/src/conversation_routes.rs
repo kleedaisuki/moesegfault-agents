@@ -262,6 +262,13 @@ pub(crate) async fn reserve_capacity(
     let operation = ConversationOperation::response_actor(env, owner, response_id)
         .await?
         .with_traceparent(traceparent);
+    if operation.is_finished() {
+        return util::json_error(
+            409,
+            "conversation_request_closed",
+            "The original admission is closed; use a new idempotency key for new work",
+        );
+    }
     let result=Dispatch {env,owner,operation:&operation}.existing(id,Method::Post,"/responses/reserve",
         Some(json!({"response_id":response_id,"session_id":session_id,"accepted_revision":accepted_revision,"capacity":capacity}))).await;
     let rejected = result.as_ref().is_ok_and(|response| response.status_code() == 409

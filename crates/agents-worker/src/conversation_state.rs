@@ -462,18 +462,6 @@ async fn admit(
     if !valid_id(response_id) {
         return util::json_error(400, "invalid_request", "Invalid response identity");
     }
-    if !record.admitted_responses.contains(response_id)
-        && context
-            .operation
-            .response_closed(context.env, &record.owner, response_id)
-            .await?
-    {
-        return util::json_error(
-            409,
-            "conversation_request_closed",
-            "This request was rejected before admission; use a new idempotency key",
-        );
-    }
     let accepted = receipt(storage, record, response_id).await?;
     if accepted.is_none() && record.deleted {
         return util::json_error(404, "not_found", "Conversation not found");
@@ -487,6 +475,17 @@ async fn admit(
             .is_some_and(|active| active != response_id)
     {
         return busy(record);
+    }
+    let funding_closed = context
+        .operation
+        .response_closed(context.env, &record.owner, response_id)
+        .await?;
+    if !record.admitted_responses.contains(response_id) && funding_closed {
+        return util::json_error(
+            409,
+            "conversation_request_closed",
+            "This request was rejected before admission; use a new idempotency key",
+        );
     }
     let mut bodies = vec![];
     let accepted = match accepted {
@@ -513,7 +512,7 @@ async fn admit(
             accepted
         }
     };
-    if !record.deleted && !record.committed_responses.contains_key(response_id) {
+    if !funding_closed && !record.deleted && !record.committed_responses.contains_key(response_id) {
         record.reserve_lease(response_id, now_ms);
         context.save(record, bodies).await?;
     }
