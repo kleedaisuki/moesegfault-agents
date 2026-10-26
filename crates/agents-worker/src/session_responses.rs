@@ -2032,10 +2032,18 @@ fn projected_response_frame(
     projection: &wire::ResponseProjection,
     obfuscation: &Obfuscation,
 ) -> Vec<u8> {
+    wire::event_frame(&projected_response_value(event, projection, obfuscation))
+}
+
+fn projected_response_value(
+    event: &Value,
+    projection: &wire::ResponseProjection,
+    obfuscation: &Obfuscation,
+) -> Value {
     let mut event = event.clone();
     wire::project_output_event(&mut event, &projection.include);
     obfuscation.project(&mut event, projection.include_obfuscation);
-    wire::event_frame(&event)
+    event
 }
 
 fn send_response_event(
@@ -2250,6 +2258,24 @@ fn input_items(response: &ResponseRun, url: &worker::Url) -> Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    proptest::proptest! {
+        #[test]
+        fn ordinary_image_aware_frames_preserve_legacy_projection(
+            delta in ".{0,1024}", sequence in proptest::prelude::any::<u64>(), obfuscated in proptest::prelude::any::<bool>(),
+        ) {
+            let event = json!({"type":"response.output_text.delta","sequence_number":sequence,
+                "item_id":"msg_known","output_index":0,"content_index":0,"delta":delta});
+            let projection = wire::ResponseProjection { include: vec![], include_obfuscation: obfuscated };
+            let obfuscation = test_obfuscation();
+            let mut expected = event.clone();
+            wire::project_output_event(&mut expected, &projection.include);
+            obfuscation.project(&mut expected, obfuscated);
+            let frame = response_frame(&event, &projection, &ResponseImages::default(), &obfuscation);
+            let ResponseFrame::Encoded(bytes) = frame else { panic!("ordinary event requested image I/O") };
+            proptest::prop_assert_eq!(bytes, wire::event_frame(&expected));
+        }
+    }
     use crate::response_preflight::validate_imported_history;
 
     fn response() -> ResponseRun {
