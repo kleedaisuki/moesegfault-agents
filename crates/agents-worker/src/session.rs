@@ -2317,7 +2317,7 @@ async fn load_state(storage: &Storage) -> Result<Option<PersistedSession>> {
     let Some(bytes) = read_chunks(storage, STATE_KEY).await? else {
         return Ok(None);
     };
-    let mut data: PersistedSession = serde_json::from_slice(&bytes)?;
+    let mut data: PersistedSession = crate::session_storage::decode_json(&bytes)?;
     if let Some(response) = data.run.as_mut().and_then(|r| r.response.as_mut()) {
         response.recover_sequence();
         // Commit a fresh allocation fence before any restored fetch/alarm can
