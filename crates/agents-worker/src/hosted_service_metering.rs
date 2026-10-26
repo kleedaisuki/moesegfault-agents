@@ -11,7 +11,6 @@ use worker::{Env, Error, Result};
 
 use crate::{metering, search_deepseek::SearchRequestReceipt};
 
-pub(crate) const DEEPSEEK_PAID_FROM_MS: u64 = 1_793_462_400_000;
 pub(crate) const SEEDREAM5_IMAGE_MICROUSD: i64 = 18_000;
 const MAX_ADMISSION_WINDOW_MS: u64 = 300_000;
 
@@ -80,10 +79,7 @@ impl ServiceBudget {
             | Self::ReportedCost {
                 ceiling_microusd, ..
             } => *ceiling_microusd,
-            // Reserve the one-request maximum even in the advertised free
-            // period. A disconnected call can outlive a local deadline, and
-            // the provider receipt has no authoritative billing timestamp.
-            Self::DeepseekRequest { .. } => 750,
+            Self::DeepseekRequest { .. } => crate::search_deepseek::PAID_UNIT_MICRODOLLARS as i64,
         }
     }
 
@@ -444,18 +440,9 @@ fn charge(hold: &ServiceHold, usage: &KnownUsage) -> Result<Charge> {
             {
                 return Err(fail("tool_service_admission_expired"));
             }
-            if hold.budget.platform_funded()
-                && quantity != 0
-                && *started_at_ms < DEEPSEEK_PAID_FROM_MS
-                && *completed_at_ms >= DEEPSEEK_PAID_FROM_MS
-            {
-                return Err(fail("search_service_price_boundary_uncertain"));
-            }
-            let amount = if *started_at_ms >= DEEPSEEK_PAID_FROM_MS {
-                quantity * 750
-            } else {
-                0
-            };
+            // The server-side Harness promotion does not cover this direct
+            // standalone API route. No promotion entitlement is inferred.
+            let amount = quantity * crate::search_deepseek::PAID_UNIT_MICRODOLLARS;
             (
                 quantity,
                 "successful_search_request",
@@ -561,6 +548,8 @@ mod tests {
     use proptest::prelude::*;
     use serde_json::json;
 
+    const SEARCH_ADMISSION_MS: u64 = 1_793_462_400_000;
+
     fn hold(budget: ServiceBudget, admitted_at_ms: u64) -> ServiceHold {
         ServiceHold {
             id: hold_id("owner", "operation-a", budget.service()).unwrap(),
@@ -599,68 +588,50 @@ mod tests {
     }
 
     #[test]
-    fn search_boundary_reserves_maximum_but_only_charges_known_actual_fee() {
-        let before = search_hold(true, DEEPSEEK_PAID_FROM_MS - 1_000);
-        assert_eq!(before.budget.ceiling(), 750);
-        let free = charge(
-            &before,
-            &search_usage(DEEPSEEK_PAID_FROM_MS - 100, DEEPSEEK_PAID_FROM_MS - 1, 1),
-        )
-        .unwrap();
-        assert_eq!(free.amount_microusd, MicroUsd::ZERO);
-        assert_eq!(free.quantity, 1);
-        assert_eq!(free.unit, "successful_search_request");
-        assert!(
-            charge(
-                &before,
-                &search_usage(DEEPSEEK_PAID_FROM_MS - 1, DEEPSEEK_PAID_FROM_MS, 1)
-            )
-            .is_err()
-        );
-        let after = search_hold(true, DEEPSEEK_PAID_FROM_MS);
-        assert_eq!(
-            charge(
-                &after,
-                &search_usage(DEEPSEEK_PAID_FROM_MS, DEEPSEEK_PAID_FROM_MS + 1, 1)
-            )
-            .unwrap()
-            .amount_microusd
-            .get(),
-            750
-        );
-        assert_eq!(
-            charge(
-                &after,
-                &search_usage(DEEPSEEK_PAID_FROM_MS, DEEPSEEK_PAID_FROM_MS + 1, 0)
-            )
-            .unwrap()
-            .amount_microusd,
-            MicroUsd::ZERO
-        );
+    fn direct_search_does_not_inherit_the_server_side_harness_promotion() {
+        // November 1 is a boundary for the separate server-side promotion,
+        // not for our standalone Search/Fetch route.
+        for (start, end) in [
+            (SEARCH_ADMISSION_MS - 100, SEARCH_ADMISSION_MS - 1),
+            (SEARCH_ADMISSION_MS - 1, SEARCH_ADMISSION_MS),
+            (SEARCH_ADMISSION_MS, SEARCH_ADMISSION_MS + 1),
+        ] {
+            for funded in [true, false] {
+                let held = search_hold(funded, start);
+                assert_eq!(held.budget.ceiling(), if funded { 750 } else { 0 });
+                let known = charge(&held, &search_usage(start, end, 1)).unwrap();
+                assert_eq!(known.amount_microusd.get(), if funded { 750 } else { 0 });
+                assert_eq!(known.quantity, 1);
+                assert_eq!(known.unit, "successful_search_request");
+                let empty = charge(&held, &search_usage(start, end, 0)).unwrap();
+                assert_eq!(empty.amount_microusd, MicroUsd::ZERO);
+                assert_eq!(empty.quantity, 0);
+            }
+        }
     }
 
     #[test]
     fn expired_window_does_not_authorize_dispatch_or_settlement() {
-        let held = search_hold(true, DEEPSEEK_PAID_FROM_MS);
+        let held = search_hold(true, SEARCH_ADMISSION_MS);
         assert!(
-            held.validate_dispatch_time(DEEPSEEK_PAID_FROM_MS - 1)
+            held.validate_dispatch_time(SEARCH_ADMISSION_MS - 1)
                 .is_err()
         );
         assert!(
-            held.validate_dispatch_time(DEEPSEEK_PAID_FROM_MS + 1_001)
+            held.validate_dispatch_time(SEARCH_ADMISSION_MS + 1_001)
                 .is_err()
         );
         assert!(
             charge(
                 &held,
-                &search_usage(DEEPSEEK_PAID_FROM_MS, DEEPSEEK_PAID_FROM_MS + 1_001, 1)
+                &search_usage(SEARCH_ADMISSION_MS, SEARCH_ADMISSION_MS + 1_001, 1)
             )
             .is_err()
         );
         assert!(
             charge(
                 &held,
-                &search_usage(DEEPSEEK_PAID_FROM_MS + 1, DEEPSEEK_PAID_FROM_MS, 1)
+                &search_usage(SEARCH_ADMISSION_MS + 1, SEARCH_ADMISSION_MS, 1)
             )
             .is_err()
         );
@@ -668,22 +639,22 @@ mod tests {
 
     #[test]
     fn expired_reserved_hold_restores_original_identity_without_new_dispatch_permission() {
-        let original = search_hold(true, DEEPSEEK_PAID_FROM_MS);
+        let original = search_hold(true, SEARCH_ADMISSION_MS);
         let restored = make_hold(
             "owner",
             Some("session-a"),
             "operation-a",
             &"a".repeat(64),
-            DEEPSEEK_PAID_FROM_MS,
+            SEARCH_ADMISSION_MS,
             original.budget.clone(),
         )
         .unwrap();
         let restored = prepared_hold(restored, ReservationState::Reserved).unwrap();
         assert_eq!(restored.hash().unwrap(), original.hash().unwrap());
-        assert_eq!(restored.admitted_at_ms, DEEPSEEK_PAID_FROM_MS);
+        assert_eq!(restored.admitted_at_ms, SEARCH_ADMISSION_MS);
         assert!(
             restored
-                .validate_dispatch_time(DEEPSEEK_PAID_FROM_MS + 300_001)
+                .validate_dispatch_time(SEARCH_ADMISSION_MS + 300_001)
                 .is_err()
         );
         // A durable known receipt retains its original dispatch/completion
@@ -691,7 +662,7 @@ mod tests {
         assert_eq!(
             charge(
                 &restored,
-                &search_usage(DEEPSEEK_PAID_FROM_MS, DEEPSEEK_PAID_FROM_MS + 1, 1)
+                &search_usage(SEARCH_ADMISSION_MS, SEARCH_ADMISSION_MS + 1, 1)
             )
             .unwrap()
             .amount_microusd
@@ -702,7 +673,7 @@ mod tests {
 
     #[test]
     fn finalized_hold_identity_is_restorable_but_cannot_prepare_another_request() {
-        let original = search_hold(true, DEEPSEEK_PAID_FROM_MS);
+        let original = search_hold(true, SEARCH_ADMISSION_MS);
         for state in [ReservationState::Settled, ReservationState::Released] {
             let restored: ServiceHold =
                 serde_json::from_str(&serde_json::to_string(&original).unwrap()).unwrap();
@@ -742,7 +713,7 @@ mod tests {
 
     #[test]
     fn hold_identity_is_durable_owner_session_operation_and_budget_bound() {
-        let held = search_hold(true, DEEPSEEK_PAID_FROM_MS);
+        let held = search_hold(true, SEARCH_ADMISSION_MS);
         let restored: ServiceHold =
             serde_json::from_str(&serde_json::to_string(&held).unwrap()).unwrap();
         assert_eq!(held.id(), restored.id());

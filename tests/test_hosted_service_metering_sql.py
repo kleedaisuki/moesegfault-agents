@@ -53,16 +53,16 @@ class HostedServiceMeteringSqlTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT quantity,unit,amount_microusd FROM usage_ledger WHERE reservation_id='image-call'").fetchall(), [(1, "generated_image", 18000)])
         self.assertEqual(self.db.execute("SELECT state FROM usage_reservations WHERE id='outer-run'").fetchone(), ("reserved",))
 
-    def test_unknown_dispatch_stays_funded_and_known_free_receipt_releases_surplus(self) -> None:
+    def test_unknown_dispatch_stays_funded_and_proved_empty_receipt_releases_surplus(self) -> None:
         self.reserve("unknown-search", 750)
         self.assertEqual(self.db.execute("SELECT state,reserved_microusd FROM usage_reservations WHERE id='unknown-search'").fetchone(), ("reserved", 750))
-        self.reserve("known-free", 750)
-        self.append("known-free", 1, "successful_search_request", 0)
+        self.reserve("known-empty", 750)
+        self.append("known-empty", 0, "successful_search_request", 0)
         with self.assertRaises(sqlite3.IntegrityError):
-            self.db.execute(RELEASE, ("3", "known-free"))
-        self.db.execute(SETTLE, ("known-free", "3", "known-free"))
+            self.db.execute(RELEASE, ("3", "known-empty"))
+        self.db.execute(SETTLE, ("known-empty", "3", "known-empty"))
         self.assertEqual(self.db.execute("SELECT spent_microusd,reserved_microusd FROM usage_accounts WHERE account_id='alice'").fetchone(), (0, 750))
-        self.assertEqual(self.db.execute("SELECT quantity,unit,amount_microusd FROM usage_ledger WHERE reservation_id='known-free'").fetchone(), (1, "successful_search_request", 0))
+        self.assertEqual(self.db.execute("SELECT quantity,unit,amount_microusd FROM usage_ledger WHERE reservation_id='known-empty'").fetchone(), (0, "successful_search_request", 0))
 
     def test_readonly_rehydration_is_owner_and_session_scoped(self) -> None:
         self.reserve("image-call", 18000)
@@ -82,6 +82,30 @@ class HostedServiceMeteringSqlTests(unittest.TestCase):
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM usage_ledger WHERE reservation_id='paid'").fetchone(), (0,))
         self.assertEqual(self.db.execute("SELECT state FROM usage_reservations WHERE id='paid'").fetchone(), ("reserved",))
         self.assertEqual(self.db.execute("SELECT spent_microusd,reserved_microusd FROM usage_accounts WHERE account_id='alice'").fetchone(), (0, 18000))
+
+    def test_expired_window_recovery_reads_then_releases_original_undispatched_hold(self) -> None:
+        self.reserve("expired-before-dispatch", 750)
+        original: tuple[object, ...] | None = self.db.execute(VERIFY, ("expired-before-dispatch", "alice", None)).fetchone()
+        self.assertIsNotNone(original)
+        # No new reservation or timestamp is manufactured during cold restore.
+        # An admission window is dispatch policy, not financial-row expiration.
+        self.assertEqual(self.db.execute("SELECT created_at,updated_at FROM usage_reservations WHERE id='expired-before-dispatch'").fetchone(), (1, 1))
+        self.assertEqual(self.db.execute(VERIFY, ("expired-before-dispatch", "alice", None)).fetchone(), original)
+        self.db.execute(RELEASE, ("604801", "expired-before-dispatch"))
+        self.assertEqual(self.db.execute(VERIFY, ("expired-before-dispatch", "alice", None)).fetchone(), ("frozen:expired-before-dispatch", "tool:seedream5:expired-before-dispatch", "750", "released"))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM usage_reservations").fetchone(), (1,))
+        self.assertEqual(self.db.execute("SELECT spent_microusd,reserved_microusd FROM usage_accounts WHERE account_id='alice'").fetchone(), (0, 0))
+
+    def test_finalized_hold_recovery_replays_known_receipt_without_new_reservation(self) -> None:
+        self.reserve("already-paid", 18000)
+        self.append("already-paid", 1, "generated_image", 18000)
+        self.db.execute(SETTLE, ("already-paid", "3", "already-paid"))
+        self.assertEqual(self.db.execute(VERIFY, ("already-paid", "alice", None)).fetchone(), ("frozen:already-paid", "tool:seedream5:already-paid", "18000", "settled"))
+        self.append("already-paid", 1, "generated_image", 18000)
+        self.db.execute(SETTLE, ("already-paid", "604801", "already-paid"))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM usage_reservations").fetchone(), (1,))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM usage_ledger").fetchone(), (1,))
+        self.assertEqual(self.db.execute("SELECT spent_microusd,reserved_microusd FROM usage_accounts WHERE account_id='alice'").fetchone(), (18000, 0))
 
 
 if __name__ == "__main__":

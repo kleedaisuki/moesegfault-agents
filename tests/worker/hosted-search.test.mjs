@@ -172,7 +172,7 @@ test('compiled Rust Worker: independently funded native web search and replay', 
     const rows = (await db.prepare("SELECT CAST(l.quantity AS TEXT) AS quantity,CAST(l.amount_microusd AS TEXT) AS amount FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit='successful_search_request'")
       .bind(principal.owner).all()).results;
     assert.equal(rows.length, name === 'unknown' ? 0 : actions.length);
-    const amount = name === 'empty' || name === 'byok' || Date.now() < Date.parse('2026-10-31T16:00:00Z') ? '0' : '750';
+    const amount = name === 'empty' || name === 'byok' ? '0' : '750';
     for (const row of rows) assert.deepEqual(row, { quantity: name === 'empty' ? '0' : '1', amount });
     const unresolved = await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'tool:deepseek_request:%' AND state='reserved'")
       .bind(principal.owner).first();

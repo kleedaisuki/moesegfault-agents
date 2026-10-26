@@ -143,14 +143,28 @@ impl PreparedHostedSearch {
 
     pub(crate) async fn dispatch(self) -> HostedSearchOutcome {
         let request_started_ms = crate::util::now_ms();
-        let result = match self.dispatch {
-            PreparedDispatch::Responses(prepared) => {
-                prepared.dispatch().await.map(|exchange| (exchange, None))
+        let prepared_dispatch = self.dispatch;
+        let dispatch = async move {
+            match prepared_dispatch {
+                PreparedDispatch::Responses(prepared) => {
+                    prepared.dispatch().await.map(|exchange| (exchange, None))
+                }
+                PreparedDispatch::Deepseek(prepared) => prepared
+                    .dispatch()
+                    .await
+                    .map(|outcome| (outcome.exchange, outcome.receipt)),
             }
-            PreparedDispatch::Deepseek(prepared) => prepared
-                .dispatch()
-                .await
-                .map(|outcome| (outcome.exchange, outcome.receipt)),
+        };
+        // A dropped HTTP future is not proof that the provider stopped. The
+        // durable caller keeps the original dispatch fence and unresolved hold.
+        let result = match futures::future::select(
+            Box::pin(dispatch),
+            Box::pin(worker::Delay::from(std::time::Duration::from_secs(240))),
+        )
+        .await
+        {
+            futures::future::Either::Left((result, _)) => result,
+            futures::future::Either::Right(_) => Err(error("search_provider_outcome_unknown")),
         };
         let (exchange, receipt) = result.unwrap_or_else(|_| (unknown_exchange(), None));
         HostedSearchOutcome {

@@ -164,13 +164,14 @@ it is not silently settled as zero or retried. Known HTTP failures and empty
 results produce zero successful units. The adapter does not invent token counts
 or use language-model token prices for this API.
 
-The official tariff snapshot is `$0.75 / 1,000` successful nonempty search or
-fetch requests, i.e. **750 microdollars per unit**. The documented free period
-ends at **2026-11-01 00:00 Beijing time**, or **2026-10-31T16:00:00Z**. The receipt
-includes `price_revision=deepseek-search-fetch-2026-10-25`; billing must use the
-original dispatch timestamp and tariff revision, not the later settlement clock.
-Platform actual provider cost is zero during that window; BYOK provider charges
-are always paid by the owner. Infrastructure remains separately metered. Search
+The direct API tariff is `$0.75 / 1,000` successful nonempty search or fetch
+requests, i.e. **750 microdollars per unit now**. The November 1 promotion boundary
+in the official guide concerns separate server-side Harness/Claude Code/Codex
+calls, not this application's direct standalone requests. No such entitlement
+is inferred. Receipts pin `price_revision=deepseek-direct-search-fetch-2026-10-26`;
+known empty/failed responses have zero units, while an unknown outcome remains
+held. BYOK provider charges are paid by the owner, not the platform wallet.
+Infrastructure remains separately metered. Search
 and fetch have separate account QPS budgets (100 and 25 respectively); admission
 and resource reservations belong to the owning coordinator.
 

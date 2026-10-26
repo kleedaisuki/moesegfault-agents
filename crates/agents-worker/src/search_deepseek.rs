@@ -15,8 +15,7 @@ use crate::{
     telemetry::TraceContext,
 };
 
-pub const PRICE_REVISION: &str = "deepseek-search-fetch-2026-10-25";
-pub const PAID_FROM_UTC: &str = "2026-10-31T16:00:00Z";
+pub const PRICE_REVISION: &str = "deepseek-direct-search-fetch-2026-10-26";
 pub const PAID_UNIT_MICRODOLLARS: u64 = 750;
 
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;

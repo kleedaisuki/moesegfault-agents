@@ -94,7 +94,7 @@ impl SessionInner {
             binding,
             &call.function.arguments,
             execution_id,
-            trace.as_ref(),
+            Some(&trace),
         )
         .await?;
         if operation.is_none() {

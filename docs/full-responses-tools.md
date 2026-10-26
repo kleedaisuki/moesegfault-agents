@@ -52,9 +52,9 @@ call. Explicit BYOK supports that service or a configured OpenAI-compatible
 Responses search service. Native search/open/find actions, sources and answer
 annotations remain meaningful; unsupported provider-specific location/cache/image
 options are not silently dropped. Each dedicated request retains its exact known
-successful-nonempty request unit. The official tariff is USD 0.75 per thousand
-such requests after 2026-11-01 00:00 Beijing time; the preceding advertised free
-window has a zero provider charge, not invented zero token usage. Account
+successful-nonempty request unit. Direct API calls cost USD 0.75 per thousand
+such requests; the separate server-side Harness promotion is not inherited. No
+language-model token usage is invented. Account
 capability and configured service availability still require staging acceptance.
 Annotation offsets in that service's answer must not be copied onto a different
 outer model answer. Only known evidence URLs/markers can be anchored in the
