@@ -560,14 +560,8 @@ impl SessionInner {
                 .get(&id)
                 .and_then(|resource| resource.cleanup.clone());
             if let Some(cleanup) = cleanup {
-                ResourceMeter::with_account_pricing(
-                    &self.env,
-                    &record.owner_id,
-                    &cleanup.id,
-                    cleanup.pricing,
-                )?
-                .settle_run()
-                .await?;
+                crate::code_executor_state::finish_cleanup(&self.env, &record.owner_id, &cleanup)
+                    .await?;
             }
             self.update_code_registry(|registry| {
                 registry.resources.remove(&id);
@@ -657,14 +651,8 @@ impl SessionInner {
             .clone();
         if resource.allocation.allocation_released_at_ms.is_some() {
             if let Some(cleanup) = &resource.cleanup {
-                ResourceMeter::with_account_pricing(
-                    &self.env,
-                    &record.owner_id,
-                    &cleanup.id,
-                    cleanup.pricing.clone(),
-                )?
-                .settle_run()
-                .await?;
+                crate::code_executor_state::finish_cleanup(&self.env, &record.owner_id, cleanup)
+                    .await?;
             }
             self.update_code_registry(|registry| {
                 registry.resources.remove(id);
@@ -810,15 +798,9 @@ impl SessionInner {
             }
         }
         if let Some(cleanup) = resource.cleanup {
-            if ResourceMeter::with_account_pricing(
-                &self.env,
-                &record.owner_id,
-                &cleanup.id,
-                cleanup.pricing,
-            )?
-            .settle_run()
-            .await
-            .is_err()
+            if crate::code_executor_state::finish_cleanup(&self.env, &record.owner_id, &cleanup)
+                .await
+                .is_err()
             {
                 return Ok(true);
             }

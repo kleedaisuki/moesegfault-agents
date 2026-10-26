@@ -47,6 +47,15 @@ class CodeExecutorSqlTests(unittest.TestCase):
         self.claim("a", "ended-run")
         self.assertIsNone(self.db.execute("SELECT 1 FROM code_contexts WHERE allocation_id='ended-run'").fetchone())
 
+    def test_unused_cleanup_refund_never_discards_an_unknown_observation(self) -> None:
+        state_source: str = (Path(__file__).resolve().parents[1] / "crates/agents-worker/src/code_executor_state.rs").read_text(encoding="utf-8")
+        release: str = re.search(r'RELEASE_UNUSED_SQL:\s*&str\s*=\s*"([^"\n]+)"', state_source).group(1)
+        self.db.execute("INSERT INTO resource_observations(run_id,account_id,session_id,event_key,resource,unit,quantity,price_version,observed_at,status) VALUES('cleanup-a','a',NULL,'unknown','durable_object','wall_ms',NULL,'fixture',NULL,'pending')")
+        self.db.execute(release, ("cleanup-a", "a", "3"))
+        self.assertEqual(self.db.execute("SELECT state FROM usage_reservations WHERE id='cleanup-a'").fetchone()[0], "reserved")
+        self.db.execute(release, ("cleanup-b", "b", "3"))
+        self.assertEqual(self.db.execute("SELECT state FROM usage_reservations WHERE id='cleanup-b'").fetchone()[0], "released")
+
     def test_pinned_backend_memory_cleanup_and_origin_cannot_be_rewritten(self) -> None:
         self.claim("a", "frozen")
         for field, value in (("executor_kind", "platform"), ("memory_limit", "16g"), ("cleanup_run_id", "cleanup-b"), ("executor_lease_key", "e" * 64)):
