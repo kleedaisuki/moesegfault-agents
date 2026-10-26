@@ -19,6 +19,8 @@ test('compiled Rust Worker: bounded file batches fund separately, resume only un
   const encryptionKey = randomBytes(32), identity = createIdentityFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const pricing = JSON.parse(deployment.env.staging.vars.RESOURCE_PRICING_JSON);
+  const controlledUnits=new Set(['embedding_input_bytes','queried_dimensions','written_dimensions','allocated_vector_dimension_ms','conversion_input_bytes']);
+  pricing.tariffs=pricing.tariffs.filter(tariff=>tariff.resource!=='worker'||!controlledUnits.has(tariff.unit));
   for (const [unit, denominator] of [['embedding_input_bytes', 1], ['queried_dimensions', 100], ['written_dimensions', 100], ['allocated_vector_dimension_ms', 1000]]) {
     pricing.tariffs.push({ resource: 'worker', unit, microusd_numerator: 1, quantity_denominator: denominator, price_version: pricing.version });
   }
