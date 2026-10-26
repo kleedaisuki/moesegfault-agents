@@ -120,7 +120,13 @@ fn router(state: Arc<App>) -> Router {
         )
         .route(
             "/v1/python/contexts",
-            post(interpreter::prepare_context).layer(DefaultBodyLimit::max(256 * 1024)),
+            post(interpreter::prepare_context)
+                .get(interpreter::current_context)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/v1/python/contexts/{id}",
+            get(interpreter::inspect_context).delete(interpreter::delete_context),
         )
         .route(
             "/v1/python/{id}",

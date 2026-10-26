@@ -12,6 +12,9 @@ use worker::{Delay, Error, Method, ResponseBody, Result};
 use super::{Workspace, digest_key, transport::TimedResponse};
 use crate::space::OwnedFile;
 
+#[path = "workspace_code_contexts.rs"]
+mod code_contexts;
+
 const PENDING: &str = "workspace:python-publication-pending";
 const ARTIFACT_LIMIT: usize = 16 * 1024 * 1024;
 const REPLY_LIMIT: usize = 32 * 1024 * 1024;
@@ -462,6 +465,9 @@ impl Workspace<'_> {
             .storage()
             .put(&format!("workspace:python-cancel:{id}"), true)
             .await?;
+        if !self.container()?.running() {
+            return Ok(());
+        }
         let _ = self
             .request(Method::Delete, &format!("/v1/python/{id}"), None, &[])
             .await;

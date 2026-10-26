@@ -1,5 +1,9 @@
 //! Managed Jupyter execution. The control plane publishes artifacts into Space.
 
+#[path = "interpreter_contexts.rs"]
+mod contexts;
+pub(crate) use contexts::{current_context, delete_context, inspect_context};
+
 use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path as FsPath, PathBuf},
@@ -389,6 +393,7 @@ pub(super) struct Interpreter {
     root: PathBuf,
     spool: PathBuf,
     context: Mutex<Option<ContextState>>,
+    context_identity: std::sync::Mutex<Option<String>>,
     active: Mutex<Option<String>>,
     admissions: Mutex<Admissions>,
     completed: Mutex<VecDeque<CodeResult>>,
@@ -405,6 +410,7 @@ impl Interpreter {
             root,
             spool,
             context: Mutex::new(None),
+            context_identity: std::sync::Mutex::new(None),
             active: Mutex::new(None),
             admissions: Mutex::new(Admissions::default()),
             completed: Mutex::new(VecDeque::new()),
@@ -454,6 +460,7 @@ impl Interpreter {
         sandbox::directory(&data, true)?;
         sandbox::directory(&runtime, true)?;
         protected_directory(&inputs, false)?;
+        *self.context_identity.lock().unwrap() = Some(id.clone());
         Ok(ContextState {
             id,
             expired: false,
@@ -503,6 +510,7 @@ impl Interpreter {
             return Ok(());
         };
         context.expired = true;
+        *self.context_identity.lock().unwrap() = None;
         // Expiry revokes root egress authority even if later process or scratch
         // cleanup fails and this unusable context must remain as a fence.
         drop(context.gateway.take());
@@ -928,6 +936,12 @@ pub(super) async fn execute(
     let task = tokio::spawn(async move {
         let _guard = guard;
         let result = state.interpreter.execute(request, cancel).await;
+        let scan_store = state.store.clone();
+        let tree = tokio::task::spawn_blocking(move || scan_store.fingerprint())
+            .await
+            .ok()
+            .and_then(Result::ok);
+        crate::record_tree(&state, tree).await;
         state.interpreter.finish(result.clone()).await;
         *state.active.lock().await = None;
         result

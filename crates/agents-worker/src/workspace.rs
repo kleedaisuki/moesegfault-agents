@@ -1387,6 +1387,15 @@ impl<'a> Workspace<'a> {
     /// Data publication precedes a durable release intent. Once stopped, billing
     /// uncertainty must retain its hold without preventing physical completion.
     pub async fn release(&self) -> Result<ReleaseOutcome> {
+        self.release_inner(true).await
+    }
+
+    /// Retain cleanup funds until the resource catalog has acknowledged release.
+    pub async fn release_preserving_funding(&self) -> Result<ReleaseOutcome> {
+        self.release_inner(false).await
+    }
+
+    async fn release_inner(&self, settle: bool) -> Result<ReleaseOutcome> {
         let storage = self.state.storage();
         let mut intent = match storage.get::<ReleaseIntent>(RELEASE_INTENT).await? {
             Some(intent) => intent,
@@ -1451,6 +1460,12 @@ impl<'a> Workspace<'a> {
             return Err(Error::RustError(
                 "workspace_release_stop_unconfirmed".into(),
             ));
+        }
+        if !settle {
+            return Ok(ReleaseOutcome {
+                checkpoint: intent.checkpoint.clone(),
+                accounting_pending: true,
+            });
         }
         let accounting_pending = self.release_accounting(&intent).await.is_err();
         let outcome = ReleaseOutcome {

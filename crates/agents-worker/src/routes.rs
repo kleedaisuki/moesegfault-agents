@@ -469,6 +469,7 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "space", "workspace-versions", tail @ ..] => {
             crate::workspace_versions::route(req, env, owner, tail).await
         }
+        ["v1", "containers", cid] => crate::code_context_routes::handle(req, env, owner, cid).await,
         ["v1", "space" | "files", ..] => crate::space::handle(req, env, owner, &path).await,
         ["v1", "skills"] => crate::skills::handle(req, env, &principal, None).await,
         ["v1", "skills", name] => crate::skills::handle(req, env, &principal, Some(name)).await,

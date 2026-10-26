@@ -29,7 +29,10 @@ async function migrate(db) {
   }
 }
 
-test('compiled Rust Worker: hosted Code Interpreter auto context publication and exact retry', { timeout: 90000 }, async t => {
+test('compiled Rust Worker: hosted Code Interpreter auto context publication and exact retry', { timeout: 90000 }, t => codeJourney(t, false));
+test('compiled Rust Worker: Code container outlives archived harness and explicit release preserves Files', { timeout: 90000 }, t => codeJourney(t, true));
+
+async function codeJourney(t, lifecycle) {
   const encryptionKey = randomBytes(32), identity = createIdentityFixture(), providers = createNativeSemanticsProvider();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   await mkdir(path.join(root, '.temp'), { recursive: true });
@@ -37,7 +40,8 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
   process.env.TMP = process.env.TEMP = process.env.TMPDIR = directory;
   const results = new Map();
   const order = [];
-  let posts = 0, preparations = 0, acknowledgements = 0;
+  let posts = 0, preparations = 0, acknowledgements = 0, releases = 0;
+  let contextLive = false;
   const mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: build,
     modules: [{ type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
       contents: await readFile(new URL('./hosted-code-shim.mjs', import.meta.url), 'utf8') },
@@ -68,12 +72,17 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
       order.push(`${request.method} ${url.pathname}`);
       if (url.pathname === '/health') return Response.json({ boot_id: 'supervisor-known-boot' });
       if (url.pathname === '/v1/status') return Response.json({ running: false, dirty_bytes: 0 });
+      if (url.pathname === `/v1/python/contexts/${contextId}`) {
+        if (request.method === 'DELETE') { contextLive = false; releases++; return new Response(null, { status: 204 }); }
+        return contextLive ? Response.json({ container_id: contextId, status: 'running' }) : Response.json({ error: 'not found' }, { status: 404 });
+      }
       if (url.pathname === '/v1/python/contexts') {
+        if (request.method === 'GET') return contextLive ? Response.json({ container_id: contextId }) : new Response(null, { status: 404 });
         const body = await request.json();
         assert.equal(body.memory_limit, '1g');
         assert.deepEqual(body.network_policy, { type: 'disabled' });
         assert.equal(body.container_id, null);
-        preparations++;
+        preparations++; contextLive = true;
         return Response.json({ container_id: contextId });
       }
       if (url.pathname === '/v1/python' && request.method === 'POST') {
@@ -153,6 +162,28 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
   const file = files.data.find(file => file.filename === 'result.csv');
   assert.ok(file);
   assert.equal(hash(Buffer.from(await (await client.files.content(file.id)).arrayBuffer())), hash(artifact));
+  if (lifecycle) {
+    const route = await db.prepare('SELECT session_id FROM response_routes WHERE account_id=? AND id=?').bind(principal.owner, response.id).first();
+    assert.ok(route?.session_id);
+    const archive = await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${principal.apiKey}` } });
+    assert.equal(archive.status, 200, await archive.clone().text());
+    assert.deepEqual((await archive.json()).retained_code_containers, [contextId]);
+    const retained = await client.containers.retrieve(contextId);
+    assert.equal(retained.status, 'running');
+    assert.equal(releases, 0);
+    await client.containers.delete(contextId);
+    assert.equal(releases, 1);
+    await assert.rejects(client.containers.retrieve(contextId), error => error.status === 404);
+    assert.equal(hash(Buffer.from(await (await client.files.content(file.id)).arrayBuffer())), hash(artifact));
+    const allocation = await db.prepare('SELECT state, allocation_released_at_ms FROM code_contexts WHERE account_id=? AND container_id=?').bind(principal.owner, contextId).first();
+    assert.equal(allocation.state, 'deleted');
+    assert.ok(allocation.allocation_released_at_ms > 0);
+    const namespace = await mf.getDurableObjectNamespace('SESSIONS');
+    const actor = namespace.get(namespace.idFromName(`${principal.owner}:${route.session_id}`));
+    const state = await (await actor.fetch('https://session.internal/__test/code-inspect')).json();
+    assert.equal(state.running, false, 'the last resource interest must actually stop the physical VM');
+    assert.equal(state.lease_present, false, 'physical release must detach its funded lease');
+  }
   const replayEvents = [];
   for await (const event of await client.responses.create({ ...input, stream: true }, { headers: { 'Idempotency-Key': 'known-code-auto' } })) replayEvents.push(event);
   assert.equal(replayEvents.find(event => event.type === 'response.completed')?.response.id, response.id);
@@ -168,5 +199,5 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
   await writeFile(path.join(directory, 'receipt.json'), JSON.stringify({ source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? null,
     wasm_sha256: hash(await readFile(path.join(build, 'index_bg.wasm'))), fixture: 'real-rust-worker-controlled-supervisor',
     real_python: false, external_network_calls: 0, model_calls: model.calls, code_posts: posts,
-    preparations, acknowledgements, artifact_bytes: artifact.length, phases }, null, 2));
-});
+    preparations, acknowledgements, releases, lifecycle, artifact_bytes: artifact.length, phases }, null, 2));
+}

@@ -27,6 +27,7 @@ struct CodeExecution<'a> {
     key: &'a str,
     id: &'a str,
     source: &'a str,
+    run: &'a str,
     options: &'a crate::hosted_bindings::CodeOptions,
 }
 
@@ -110,7 +111,9 @@ fn permanent(error: &Error) -> Option<&'static str> {
         return None;
     };
     match code.as_str() {
-        "code_container_not_found" => Some("code_container_not_found"),
+        "code_container_not_found" | "code_context_generation_changed" => {
+            Some("code_container_not_found")
+        }
         "file_not_found" => Some("file_not_found"),
         "code_memory_profile_mismatch" => Some("code_memory_profile_mismatch"),
         "code_network_policy_conflict" => Some("code_network_policy_conflict"),
@@ -175,8 +178,7 @@ impl SessionInner {
         if operation.supervisor_id != format!("pyexec_{scope}") {
             return Err(fail("hosted_code_operation_conflict"));
         }
-        if !operation.submitted
-            || operation.result.is_some()
+        if operation.result.is_some()
             || read_chunks(&storage, &format!("{key}:outcome"))
                 .await?
                 .is_some()
@@ -200,6 +202,11 @@ impl SessionInner {
         {
             Ok(dispatch) => Ok(dispatch),
             Err(error) if super::permanent_publication_error(&error) => Err(error),
+            Err(error) if permanent(&error).is_some() => Ok(HostedDispatch::Ready(
+                json!({"error":permanent(&error).unwrap(),"outputs":[],"files":[]})
+                    .to_string()
+                    .into(),
+            )),
             Err(Error::RustError(code))
                 if matches!(
                     code.as_str(),
@@ -290,6 +297,16 @@ impl SessionInner {
             .ok_or_else(|| fail("run_missing"))?
             .id
             .clone();
+        if !operation.submitted
+            && operation.result.is_none()
+            && read_chunks(&storage, &format!("{key}:outcome"))
+                .await?
+                .is_none()
+        {
+            self.begin_local_code_prepare(record, &run_id, options)
+                .await?;
+        }
+        let _resource = self.code_operation.lock().await;
         let workspace = self.workspace(record).for_run(&run_id);
         if operation.failure.is_none()
             && operation.result.is_none()
@@ -315,6 +332,7 @@ impl SessionInner {
                         key: &key,
                         id: execution_id,
                         source: &arguments.code,
+                        run: &run_id,
                         options,
                     },
                     &mut operation,
@@ -386,6 +404,7 @@ impl SessionInner {
             key,
             id: execution_id,
             source: code,
+            run,
             options,
         } = execution;
         let storage = self.state.storage();
@@ -437,6 +456,14 @@ impl SessionInner {
                     if !operation.prepared {
                         let request = python_request(options, operation.context.clone(), code);
                         operation.context = Some(workspace.prepare_python_context(&request).await?);
+                        self.bind_local_code_context(
+                            record,
+                            run,
+                            execution_id,
+                            operation.context.as_deref().unwrap(),
+                            options,
+                        )
+                        .await?;
                         operation.prepared = true;
                         save(&storage, key, operation).await?;
                     }

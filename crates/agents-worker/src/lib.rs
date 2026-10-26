@@ -5,6 +5,8 @@ mod auxiliary_routes;
 mod chat_relay;
 mod checkpoint_gc;
 mod cleanup;
+mod code_context_routes;
+mod code_contexts;
 mod context_prefix;
 mod conversation_meter;
 mod conversation_routes;

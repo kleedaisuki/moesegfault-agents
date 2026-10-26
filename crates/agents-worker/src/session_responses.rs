@@ -203,6 +203,7 @@ pub(super) struct CreateResponse {
 
 impl SessionInner {
     pub(super) async fn workspace_action(&self, mut req: Request) -> Result<Response> {
+        let _resource = self.code_operation.lock().await;
         let value: Value = req.json().await?;
         let restore = req.path().ends_with("/restore");
         let Some(object) = value.as_object() else {

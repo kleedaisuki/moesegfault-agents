@@ -24,6 +24,8 @@ pub(crate) mod branch;
 mod budget;
 #[path = "session_chat_receipts.rs"]
 mod chat_receipts;
+#[path = "session_code_resources.rs"]
+mod code_resources;
 #[path = "session_connection.rs"]
 mod connection;
 #[path = "session_context.rs"]
@@ -161,6 +163,8 @@ struct PersistedSession {
     inherited_source_exclusions: Vec<crate::response_execution::SourceRange>,
     #[serde(default)]
     connection_cleanup_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    code_resources_seen: bool,
     #[serde(default)]
     response_archive_releases: Vec<String>,
     #[serde(default)]
@@ -254,6 +258,9 @@ struct SessionInner {
     response_publication_barrier: RefCell<response_steering::PublicationBarrier>,
     terminal_followers: crate::observation_registry::TerminalFollowers,
     persistence: futures::lock::Mutex<()>,
+    code_metadata: futures::lock::Mutex<()>,
+    code_operation: futures::lock::Mutex<()>,
+    code_deadline: Cell<Option<u64>>,
 }
 
 #[durable_object]
@@ -277,6 +284,9 @@ impl Session {
             ),
             terminal_followers: crate::observation_registry::TerminalFollowers::default(),
             persistence: futures::lock::Mutex::new(()),
+            code_metadata: futures::lock::Mutex::new(()),
+            code_operation: futures::lock::Mutex::new(()),
+            code_deadline: Cell::new(None),
         });
         let loaded = inner.clone();
         let _init = inner.state.block_concurrency_while(async move {
@@ -324,6 +334,7 @@ impl Session {
             *loaded.data.borrow_mut() = restored;
             let initialized = loaded.data.borrow().is_some();
             if initialized {
+                loaded.restore_code_resources().await?;
                 loaded.restore_connection_cleanup().await?;
             }
             Ok(())
@@ -339,6 +350,9 @@ impl DurableObject for Session {
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let inner = &self.inner;
+        if req.method() == Method::Post && req.path().starts_with("/code-resources/") {
+            return inner.code_resource_route(req).await;
+        }
         if req.path().starts_with("/connection-leases/")
             || req.path().ends_with("/connection-parent")
         {
@@ -422,6 +436,7 @@ impl DurableObject for Session {
                     imported_parent: None,
                     inherited_source_exclusions: vec![],
                     connection_cleanup_at: None,
+                    code_resources_seen: false,
                     response_archive_releases: vec![],
                     response_archive_retry_at: 0,
                     response_archive_retry_attempts: 0,
@@ -715,7 +730,12 @@ impl DurableObject for Session {
                     );
                 }
                 inner.archive(true).await?;
-                Response::from_json(&json!({"closed":true}))
+                let retained = inner.retained_code_ids().await?;
+                let mut receipt = json!({"closed":true});
+                if !retained.is_empty() {
+                    receipt["retained_code_containers"] = json!(retained);
+                }
+                Response::from_json(&receipt)
             }
             _ => util::json_error(404, "not_found", "Unknown session operation"),
         }
@@ -723,6 +743,12 @@ impl DurableObject for Session {
 
     async fn alarm(&self) -> Result<Response> {
         let inner = &self.inner;
+        if inner.reconcile_code_resources().await.is_err() {
+            inner
+                .code_deadline
+                .set(Some(util::now_ms().saturating_add(10_000)));
+            util::emit("code.cleanup_pending", json!({"retry_after_ms":10_000}));
+        }
         inner.cleanup_connection_grants().await?;
         inner.reconcile_conversation_releases().await?;
         inner.reconcile_response_archives().await?;
@@ -931,6 +957,7 @@ impl SessionInner {
                 .ok_or_else(|| Error::RustError("Session is not initialized".into()))?;
             alarm_deadline(data, util::now_ms())
         };
+        let deadline = deadline.into_iter().chain(self.code_deadline.get()).min();
         match deadline {
             Some(deadline) => {
                 self.state
@@ -1099,6 +1126,7 @@ impl SessionInner {
                 .unwrap()
                 .admitted = true;
             self.persist().await?;
+            self.admit_local_code_resource(record, run).await?;
             meter
                 .require_observation("worker.wall", Resource::Worker, "wall_ms")
                 .await?;
@@ -1291,6 +1319,7 @@ impl SessionInner {
         }
         if let Some(response) = &run.response {
             if let Some(file) = response.attachments.get(response.attachments_ready) {
+                let _resource = self.code_operation.lock().await;
                 self.workspace(record)
                     .for_run(&run.id)
                     .materialize_file(file)
@@ -1690,6 +1719,7 @@ impl SessionInner {
                 run.ended_at_ms.unwrap(),
             )
             .await?;
+            self.finish_local_code_use(&run.id).await?;
             let meter = crate::resources::ResourceMeter::new(
                 &self.env,
                 &data.record.owner_id,
@@ -1875,6 +1905,14 @@ impl SessionInner {
         if !record.pinned.tools.iter().any(|t| t.name == *name) {
             return Err(Error::RustError("tool_not_pinned".into()));
         }
+        let _resource = if matches!(
+            tools::tool_kind(name),
+            Some(tools::ToolKind::Workspace | tools::ToolKind::Persistence)
+        ) {
+            Some(self.code_operation.lock().await)
+        } else {
+            None
+        };
         if tools::tool_kind(name) == Some(tools::ToolKind::Persistence) {
             let run_id = self.snapshot()?.run.as_ref().unwrap().id.clone();
             let workspace = self.workspace(record).for_run(&run_id);
@@ -2017,6 +2055,7 @@ impl SessionInner {
         if self.closing.replace(true) {
             return Ok(());
         }
+        let _operation = self.code_operation.lock().await;
         let result = self.archive_inner(force).await;
         if let Err(error) = &result {
             let mut data = self.data.borrow_mut();
@@ -2043,6 +2082,8 @@ impl SessionInner {
         }
         let record = &data.record;
         let workspace = self.workspace(record);
+        let retain_code = self.code_retains_compute().await?;
+        let physical = record.pinned.workspace || workspace.cleanup_funding().await?.is_some();
         // Pin-only sessions contain no paid work or workspace data. Their DO
         // journal is already durable; closing must not require a funded wallet.
         if data.journal.is_empty()
@@ -2060,7 +2101,12 @@ impl SessionInner {
                 .await?;
             let backstop =
                 crate::cleanup::load(&self.env, &record.owner_id, &record.id, generation).await?;
-            let lease = workspace.cleanup_funding().await?;
+            // The retained Code VM still owns its compute hold after archival.
+            let lease = if retain_code {
+                None
+            } else {
+                workspace.cleanup_funding().await?
+            };
             let uses_lease = lease.is_some();
             let funding = match lease.or(backstop.clone()) {
                 Some(funding) => funding,
@@ -2096,7 +2142,7 @@ impl SessionInner {
         if !prepared.archive_pending {
             // Cleanup spends the already-funded warm lease. Do not demand a new
             // lease merely because its renewal margin is near at an empty wallet.
-            if record.pinned.workspace {
+            if physical {
                 workspace.checkpoint().await?;
                 let metadata = workspace.snapshot_metadata().await?;
                 if let Some(snapshot) = metadata
@@ -2187,7 +2233,7 @@ impl SessionInner {
                 .await?;
         }
         let mut accounting_pending = false;
-        if record.pinned.workspace {
+        if physical && !retain_code {
             accounting_pending = workspace.release().await?.accounting_pending;
         }
         if meter.settle_run().await.is_err() {
@@ -2207,7 +2253,7 @@ impl SessionInner {
             .unwrap()
             .complete_archive(accounting_pending)?;
         self.persist().await?;
-        self.state.storage().delete_alarm().await?;
+        self.arm_alarm().await?;
         util::emit(
             "session.archived",
             json!({"session_id":record.id,"agent_id":record.agent_id,"build_id":util::build_id(&self.env)}),
@@ -2774,6 +2820,7 @@ mod tests {
             imported_parent: None,
             inherited_source_exclusions: vec![],
             connection_cleanup_at: None,
+            code_resources_seen: false,
             response_archive_releases: vec![],
             response_archive_retry_at: 0,
             response_archive_retry_attempts: 0,
