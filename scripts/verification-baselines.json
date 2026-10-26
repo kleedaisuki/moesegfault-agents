@@ -2946,5 +2946,101 @@
         "executed_tests": 1
       }
     ]
+  },
+  {
+    "source_sha": "163d7d4f0795288833f974a1e42ce8349c1d5298",
+    "run_id": "40287212807",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12635270577,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12635250689,
+    "verified_checks": [
+      {
+        "id": "rust:agents-worker:operation_identity_is_owner_bound_and_unambiguous",
+        "status": "passed_current",
+        "input_fingerprint": "f016cb9470f0f1b90ee90a5e32fd878b4125769fa10785afdfe8e5e08fad5f92",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:legacy_receipts_do_not_invent_a_generation_or_unused_funding_proof",
+        "status": "passed_current",
+        "input_fingerprint": "59d677fa03f4cde1abd5c9b3f22841abeecb992354e55db9cdbc211aa95f6395",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:permanent_known_usage_failures_are_terminal_but_database_io_is_retryable",
+        "status": "passed_current",
+        "input_fingerprint": "e692fca28abf75f7b478f7bcde53b66d22edf257b935518cf872764b962a16d7",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:predispatch_rejections_have_stable_terminal_codes_not_retry_queues",
+        "status": "passed_current",
+        "input_fingerprint": "1a2d49d76add6d44e5c5105ea637fdbec2f48ff5a4f00c0f3e962b6bbec7a4bc",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:tests/worker/hosted-code.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "98ba1ee72f3324b96cd8a3dff8eaddd659380a8566715344598e5c40296361e3",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "journey:ModelOperation execution lease cold loss and terminal admission rejection",
+        "status": "passed_current",
+        "input_fingerprint": "ee7efa9a3d9294b94f418661818c1a26916d72b9d5c0925aceb5fe05c3b9dffc",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      }
+    ],
+    "unresolved_checks": []
+  },
+  {
+    "source_sha": "163d7d4f0795288833f974a1e42ce8349c1d5298",
+    "run_id": "40287212807",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12634227636,
+    "verified_checks": [
+      {
+        "id": "python:tests/test_execution_leases_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "e52536c83cd61994edc853a83d404ceabbd64bd375746451abad3ff17da6d55c",
+        "receipt_path": "rust.json",
+        "executed_tests": 11
+      }
+    ],
+    "unresolved_checks": []
+  },
+  {
+    "source_sha": "163d7d4f0795288833f974a1e42ce8349c1d5298",
+    "run_id": "40287212807",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12634462133,
+    "verified_checks": [
+      {
+        "id": "node:scripts/execution-lease-selection.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "d79df98cc2efbabfb6b9861cb8d58391599c9cc79d2c741c8b47f9df091e2f49",
+        "receipt_path": "tooling.json",
+        "executed_tests": 1
+      }
+    ],
+    "unresolved_checks": []
   }
 ]
