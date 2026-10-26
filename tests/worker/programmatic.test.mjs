@@ -14,7 +14,7 @@ import { createMcpTransport } from './mcp-journey.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
 
-test('compiled Rust Worker: a real isolated program calls pinned time and never replays effects', { timeout: 75000 }, async t => {
+test('compiled Rust Worker: selected programmatic Session capability journeys', { timeout: 75000 }, async t => {
   const identity = createIdentityFixture();
   const encryptionKey = randomBytes(32);
   const providers = createMcpTransport(createNativeSemanticsProvider());
@@ -84,10 +84,12 @@ test('compiled Rust Worker: a real isolated program calls pinned time and never 
   }
   async function configureProgramCapability(missing) {
     const tariffs = pricing.tariffs.filter(tariff => !tariff.unit.startsWith('dynamic_worker_'));
-    await mf.setOptions({ ...options,
-      workerLoaders: missing === 'loader' ? {} : options.workerLoaders,
-      bindings: { ...options.bindings, RESOURCE_PRICING_JSON: missing === 'price' ? JSON.stringify({ ...pricing, tariffs }) : JSON.stringify(pricing) },
-    });
+    const worker = options.workers[0];
+    const env = { ...worker.config.env };
+    if (missing === 'loader') delete env.PROGRAM_LOADER;
+    env.RESOURCE_PRICING_JSON = { type: 'text', value: missing === 'price' ? JSON.stringify({ ...pricing, tariffs }) : JSON.stringify(pricing) };
+    await mf.setOptions({ ...options, workers: [{ ...worker, config: { ...worker.config, env } }, ...options.workers.slice(1)] });
+    context.db = await mf.getD1Database('DB');
   }
   const context = { mf, db, encryptionKey, providers, request, validateWire, configureProgramCapability };
   const cases = { time: runProgrammaticTime, mcp: runProgrammaticMcp, admission: runProgrammaticAdmissionFailures };
