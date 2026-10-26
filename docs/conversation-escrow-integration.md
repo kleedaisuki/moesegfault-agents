@@ -197,3 +197,34 @@ is retained on admission failure. Private source remains in its controlled
 canonical stores and diagnostic receipts; keys and private bodies are not logged.
 Original financial/logical holds still require fenced recovery on the original
 IDs after the corrected artifact is deployed, not a new paid submission.
+
+### Original observed resource scope closure
+
+After a canonical never-activated pending generation is retired and its writer
+is durably cleared, reclamation now validates the original owner-bound
+`conv-response:` maintenance scope and delegates to `ResourceMeter::settle_run`.
+It neither records a new old interval nor reprices historical resource usage:
+the original ledger sum is the settlement authority. The current cleanup scope
+pays for its own lookup. Any original pending observation still prevents
+settlement; model-money reservations are a different scope and are untouched.
+A closed admission may still be observed through its retained accepted receipt,
+but cannot acquire a fresh pending writer or funding grant for new work.
+
+Actions `40367465993`, source `9201f205`, Worker artifact `12669804907`, passed
+one new zero-model lifecycle in 3,654 ms. The actual public create lost its
+successful reserve acknowledgment before Session acceptance, leaving a real
+known resource hold and output escrow. A fixture-only deadline advance selected
+normal never-activated recovery; standard metadata DELETE/purge released escrow
+and settled the original scope to exactly its prior ledger sum. Original ledger
+row count/amount were unchanged; no provider, model or external service ran.
+This mirrors the preserved 3539 pre-admission failure without repeating its
+Response POST. The later small closed-admission observation guard remains for
+the next coherent artifact build, not relabeled as part of that earlier receipt.
+
+For the original staging recovery, deploy the corrected artifact first and use
+the existing owned Conversation metadata DELETE/purge path. Check the same
+Response/Session IDs still show no running/model work; verify the original
+logical generation becomes released with zero remaining bytes and the exact
+`conv-response:` scope settles to its original ledger sum. If any canonical
+activation or unknown observation exists, stop at its fence and retain the hold.
+Do not modify balance rows, invent durations or submit another Response.
