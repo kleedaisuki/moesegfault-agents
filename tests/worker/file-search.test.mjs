@@ -189,12 +189,14 @@ test('compiled Rust Worker: owned file upload indexing query citation and deleti
   await sdk.files.delete(source.id);
   assert.deepEqual((await sdk.vectorStores.search(store.id, { query: 'recovery code' })).data, []);
   await sdk.vectorStores.delete(store.id);
-  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id='retrieval-owned' AND state='reserved'").first()).n, 0);
+  // The live Session deliberately keeps its separately funded cleanup hold.
+  // Only the completed model and retrieval operations must be fully settled.
+  assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND state='reserved' AND (id=? OR id LIKE 'file-search:%' OR id LIKE 'file-ingest:%' OR id LIKE 'file-cleanup:%')").bind(principal.owner, final.id).first()).n, 0);
   await writeFile(path.join(directory, 'receipt.json'), JSON.stringify({ fixture: 'actual-rust-worker-controlled-ai-vectorize',
     source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? process.env.GITHUB_SHA ?? null,
     wasm_sha256: createHash('sha256').update(await readFile(path.join(build, 'index_bg.wasm'))).digest('hex'),
     real_cloudflare_embeddings: false, paid_llm_calls: 0, external_network_calls: 0, native_model_calls: state.calls,
     indexing_embeddings: 1, query_embeddings: retrieval.state.embedCalls - 1, upserts: retrieval.state.upsertCalls,
     checks: ['owned_upload_attach', 'background_index', 'visibility_without_reembedding', 'semantic_transport_and_lexical_fusion', 'cross_owner_rejected',
-      'native_file_search_sse', 'actual_text_file_citation', 'strict_current_sdk_original_wire', 'bounded_format_failure', 'exact_replay', 'source_delete_invalidates', 'resource_holds_settled'] }, null, 2));
+      'native_file_search_sse', 'actual_text_file_citation', 'strict_current_sdk_original_wire', 'bounded_format_failure', 'exact_replay', 'source_delete_invalidates', 'terminal_operation_holds_settled'] }, null, 2));
 });
