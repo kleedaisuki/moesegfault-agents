@@ -377,3 +377,39 @@ promised resource expiry is covered by physical funding. The new journey checks
 a distinct next lease, coverage through resource expiry, and settlement of the
 old interval without a second VM. It is a controlled state-boundary test, not a
 claim of waiting twelve wall-clock minutes or a new real-Python acceptance.
+
+
+## Independent compatible executor BYOK
+
+An Agent may separately configure
+`tool_services.code_interpreter={"provider":"workspace_daemon","credential_id":"..."}`.
+This is an owned bearer credential for a compatible **executor service root**,
+not the outer language-model credential and not an inferred vendor execute API.
+The platform calls the real workspace-daemon `/v1/python` context, cell, status,
+cancel, file and artifact APIs; it never adds another inference to emulate Code.
+Origins are immutable and redirects are rejected. Decrypted keys are neither
+serialized nor logged.
+
+The authenticated capability contract reports actual accepted memory limits and
+an atomic prepare boot header. The reference daemon currently validates exact
+1g/4g cgroups; the executor-level memory domain also expresses16g/64g without
+pretending those are available Cloudflare SKUs. Provider selection precedes CF
+physical-profile selection. `source_profile` routes the original actor only;
+`executor_kind` and `memory_limit` describe its actual Code resource. An external
+4g executor can therefore use an ordinary1g actor without starting any local VM.
+
+The reference protocol has a dedicated single-instance kernel. Its normalized
+service origin/path is leased exclusively across source allocations after
+successful authentication; another source must use the owned CID or a separate
+instance. A new Auto configuration must not silently share or reset another
+source's live heap. Existing CIDs keep using the original actor, credential route,
+boot and policy. Model arguments still cannot select another resource.
+
+Migration0027 adds independent backend/memory, exclusive executor lease and
+cleanup-funding descriptors. Remote resources reserve a small account-scoped
+cleanup hold before execution, so twenty-minute expiry does not depend on a
+local CF compute lease or a fresh wallet top-up after harness archive. Upstream
+executor fees are BYOK; only actually consumed platform infrastructure is charged
+here. Known/ambiguous dispatches retain their original no-replay fence. Exact
+outcomes and ordinary Files publication decisions precede artifact ACK; scratch
+is not a fake durable Python heap.

@@ -19,13 +19,7 @@ const PENDING: &str = "workspace:python-publication-pending";
 const ARTIFACT_LIMIT: usize = 16 * 1024 * 1024;
 const REPLY_LIMIT: usize = 32 * 1024 * 1024;
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PythonMemoryTier {
-    #[serde(rename = "1g")]
-    OneGiB,
-    #[serde(rename = "4g")]
-    FourGiB,
-}
+pub use agents_core::CodeMemory as PythonMemoryTier;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -224,6 +218,7 @@ impl Workspace<'_> {
         let expected = match request.memory_limit {
             PythonMemoryTier::OneGiB => agents_core::RuntimeProfile::Basic1g,
             PythonMemoryTier::FourGiB => agents_core::RuntimeProfile::Standard4g,
+            _ => return Err(fail("code_memory_profile_unavailable")),
         };
         if self.runtime_profile != expected {
             return Err(fail("code_memory_profile_mismatch"));
@@ -286,6 +281,7 @@ impl Workspace<'_> {
         let expected = match request.memory_limit {
             PythonMemoryTier::OneGiB => agents_core::RuntimeProfile::Basic1g,
             PythonMemoryTier::FourGiB => agents_core::RuntimeProfile::Standard4g,
+            _ => return Err(fail("code_memory_profile_unavailable")),
         };
         if self.runtime_profile != expected {
             return Err(fail("code_memory_profile_mismatch"));

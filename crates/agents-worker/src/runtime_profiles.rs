@@ -105,19 +105,46 @@ fn profile_pricing(
     crate::resources::ResourcePricing::parse(&serde_json::to_string(&base)?)
 }
 
+pub(crate) fn requested_for(
+    request: &Value,
+    services: &agents_core::ToolServices,
+) -> Result<Option<RuntimeProfile>> {
+    if services.code_interpreter.as_ref().is_some_and(|service| {
+        service.provider == agents_core::CodeServiceProvider::WorkspaceDaemon
+    }) {
+        if let Some(tools) = request.get("tools").and_then(Value::as_array) {
+            crate::hosted_bindings::BoundTools::declared_code_memory(tools)?;
+        }
+        return Ok(None);
+    }
+    requested(request)
+}
+
+pub(crate) fn requested_tools_for(
+    tools: &[crate::responses_wire::ResponseTool],
+    services: &agents_core::ToolServices,
+) -> Result<Option<RuntimeProfile>> {
+    let declarations = tools
+        .iter()
+        .map(crate::responses_wire::ResponseTool::to_wire_value)
+        .collect::<Vec<_>>();
+    requested_for(&serde_json::json!({"tools":declarations}), services)
+}
+
 pub(crate) fn requested(request: &Value) -> Result<Option<RuntimeProfile>> {
     let declarations = request.get("tools").and_then(Value::as_array);
     let Some(declarations) = declarations else {
         return Ok(None);
     };
     crate::hosted_bindings::BoundTools::requested_memory(declarations)
-        .map(|memory| memory.map(from_memory))
+        .and_then(|memory| memory.map(from_memory).transpose())
 }
 
-fn from_memory(memory: crate::hosted_bindings::MemoryTier) -> RuntimeProfile {
+fn from_memory(memory: crate::hosted_bindings::MemoryTier) -> Result<RuntimeProfile> {
     match memory {
-        crate::hosted_bindings::MemoryTier::OneGiB => RuntimeProfile::Basic1g,
-        crate::hosted_bindings::MemoryTier::FourGiB => RuntimeProfile::Standard4g,
+        crate::hosted_bindings::MemoryTier::OneGiB => Ok(RuntimeProfile::Basic1g),
+        crate::hosted_bindings::MemoryTier::FourGiB => Ok(RuntimeProfile::Standard4g),
+        _ => Err(Error::RustError("code_memory_profile_unavailable".into())),
     }
 }
 
@@ -129,7 +156,7 @@ pub(crate) fn requested_tools(
         .map(crate::responses_wire::ResponseTool::to_wire_value)
         .collect::<Vec<_>>();
     crate::hosted_bindings::BoundTools::requested_memory(&declarations)
-        .map(|memory| memory.map(from_memory))
+        .and_then(|memory| memory.map(from_memory).transpose())
 }
 
 pub(crate) fn check_archive(profile: RuntimeProfile, logical_bytes: u64) -> Result<()> {
@@ -206,5 +233,18 @@ mod tests {
                 .get(),
             37_800
         );
+    }
+    #[test]
+    fn owned_executor_is_selected_before_cloudflare_memory_policy() {
+        let request = serde_json::json!({"tools":[{"type":"code_interpreter","container":{"type":"auto","memory_limit":"16g"}}]});
+        assert!(requested(&request).is_err());
+        let services = agents_core::ToolServices {
+            code_interpreter: Some(agents_core::CodeService {
+                provider: agents_core::CodeServiceProvider::WorkspaceDaemon,
+                credential_id: Some("executor".into()),
+            }),
+            ..Default::default()
+        };
+        assert!(requested_for(&request, &services).unwrap().is_none());
     }
 }

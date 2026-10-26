@@ -25,6 +25,10 @@ fn fail(code: &str) -> Error {
 }
 
 impl<'a> BorrowedExecutor<'a> {
+    pub(crate) fn boot(&self) -> String {
+        self.context.daemon_boot.clone()
+    }
+
     pub(crate) fn new(
         env: &'a Env,
         owner: &'a str,

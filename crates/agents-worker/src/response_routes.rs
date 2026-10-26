@@ -146,7 +146,13 @@ pub(crate) async fn create_owned_with_context(
         }
     }
     if let Some(session_id) = session_header.as_deref() {
-        let requested = match crate::runtime_profiles::requested_tools(&input.tools) {
+        let Some(selected) = Store::new(env).get_session(owner, session_id).await? else {
+            return not_found();
+        };
+        let requested = match crate::runtime_profiles::requested_tools_for(
+            &input.tools,
+            &selected.pinned.tool_services,
+        ) {
             Ok(profile) => profile,
             Err(_) => return invalid("Requested Container memory is not supported"),
         };
@@ -236,7 +242,14 @@ async fn dispatch_create(
             if existing.is_none() {
                 if let Some(session_id) = &admission.predecessor_session_id {
                     if let Some(candidate) = Store::new(env).get_session(owner, session_id).await? {
-                        let requested = crate::runtime_profiles::requested(&request)?;
+                        let requested = requested_profile(
+                            env,
+                            owner,
+                            &route.agent_id,
+                            &route.session_id,
+                            &request,
+                        )
+                        .await?;
                         if admission.predecessor_agent_id.as_deref()
                             == Some(route.agent_id.as_str())
                             && admission.predecessor_pin_hash.as_deref()
@@ -267,7 +280,8 @@ async fn dispatch_create(
             });
         }
     }
-    let requested_profile = crate::runtime_profiles::requested(&request)?;
+    let requested_profile =
+        requested_profile(env, owner, &route.agent_id, &route.session_id, &request).await?;
     let session = if existing_session {
         let Some(session) = Store::new(env)
             .get_session(owner, &route.session_id)
@@ -423,7 +437,18 @@ async fn dispatch_branch(
     let seed: crate::session::branch::BranchExport = exported.json().await?;
     let child_id = crate::session::branch::child_session_id(owner, &route.id);
     let retained_pin = (seed.agent_id == route.agent_id).then(|| seed.pinned.clone());
-    let profile = crate::runtime_profiles::requested(&request)?.unwrap_or(source.runtime_profile);
+    let services = match &retained_pin {
+        Some(pin) => pin.tool_services.clone(),
+        None => {
+            Store::new(env)
+                .get_agent(owner, &route.agent_id)
+                .await?
+                .ok_or_else(|| worker::Error::RustError("agent_not_found".into()))?
+                .tool_services
+        }
+    };
+    let profile = crate::runtime_profiles::requested_for(&request, &services)?
+        .unwrap_or(source.runtime_profile);
     if let crate::session::branch::WorkspaceSeed::Archive { archive } = &seed.point.workspace {
         crate::runtime_profiles::check_archive(profile, archive.logical_bytes)?;
     }
@@ -647,6 +672,33 @@ fn request_hash(value: &Value, session: Option<&str>) -> String {
     hash.update(b"\0");
     hash.update(session.unwrap_or_default().as_bytes());
     format!("{:x}", hash.finalize())
+}
+
+async fn requested_profile(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent: &str,
+    session: &str,
+    request: &Value,
+) -> Result<Option<agents_core::RuntimeProfile>> {
+    if !request
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "code_interpreter"))
+    {
+        return Ok(None);
+    }
+    let services = match Store::new(env).get_session(owner, session).await? {
+        Some(record) => record.pinned.tool_services,
+        None => {
+            Store::new(env)
+                .get_agent(owner, agent)
+                .await?
+                .ok_or_else(|| worker::Error::RustError("agent_not_found".into()))?
+                .tool_services
+        }
+    };
+    crate::runtime_profiles::requested_for(request, &services)
 }
 
 fn invalid(message: &str) -> Result<Response> {

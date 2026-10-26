@@ -8,6 +8,14 @@ struct ContextIdentity {
 }
 
 impl Workspace<'_> {
+    pub(crate) async fn python_boot(&self) -> Result<String> {
+        self.state
+            .storage()
+            .get::<String>("workspace:boot")
+            .await?
+            .ok_or_else(|| fail("workspace_boot_missing"))
+    }
+
     pub(crate) async fn python_dispatch_exists(&self, id: &str) -> Result<bool> {
         Ok(self
             .state

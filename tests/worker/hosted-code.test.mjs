@@ -35,9 +35,13 @@ test('compiled Rust Worker: Code container outlives archived harness and explici
 test('compiled Rust Worker: lost Code VM releases capacity while preserving unknown finance and published Files', { timeout: 90000 }, t => codeJourney(t, 'lost'));
 test('compiled Rust Worker: owned CID reuses the archived source kernel with fresh guest context and no second VM', { timeout: 90000 }, t => codeJourney(t, 'borrowed'));
 test('compiled Rust Worker: late owned-CID use funds its full new twenty-minute idle window', { timeout: 90000 }, t => codeJourney(t, 'late'));
+test('compiled Rust Worker: BYOK Code executor uses its own key and real memory without a local VM', { timeout: 90000 }, t => codeJourney(t, 'executor'));
 
 async function codeJourney(t, lifecycle) {
   const borrowed=lifecycle==='borrowed'||lifecycle==='late';
+  const external=lifecycle==='executor';
+  const executorOrigin='https://owned-executor.example.com';
+  const executorKey='synthetic-executor-only-key';
   const encryptionKey = randomBytes(32), identity = createIdentityFixture(), providers = createNativeSemanticsProvider();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   await mkdir(path.join(root, '.temp'), { recursive: true });
@@ -46,7 +50,7 @@ async function codeJourney(t, lifecycle) {
   const results = new Map();
   const order = [];
   let posts = 0, preparations = 0, acknowledgements = 0, releases = 0;
-  let contextLive = false;
+  let contextLive = false,capabilitiesCalls=0;
   const mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: build,
     modules: [{ type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
       contents: await readFile(new URL('./hosted-code-shim.mjs', import.meta.url), 'utf8') },
@@ -68,13 +72,18 @@ async function codeJourney(t, lifecycle) {
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000', FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000' },
     async outboundService(request) {
       const url = new URL(request.url);
-      if (url.hostname !== 'code-supervisor.fixture') {
+      if (url.hostname !== 'code-supervisor.fixture' && url.origin!==executorOrigin) {
         const response = await providers.handle(request);
         assert.notEqual(response, undefined, `Unexpected fixture origin ${url.origin}`);
         return response;
       }
-      assert.ok(request.headers.get('authorization')?.startsWith('Bearer '));
+      if (external) assert.equal(request.headers.get('authorization'),`Bearer ${executorKey}`);
+      else assert.ok(request.headers.get('authorization')?.startsWith('Bearer '));
       order.push(`${request.method} ${url.pathname}`);
+      if (url.pathname === '/v1/python/capabilities') {
+        capabilitiesCalls++;
+        return Response.json({protocol:'workspace-daemon',context_scope:'instance',version:1,memory_limits:['4g'],network_disabled:true,network_allowlist:false,max_execution_ms:300000,max_artifact_bytes:16*1024*1024,atomic_boot_header:true});
+      }
       if (url.pathname === '/health') return Response.json({ boot_id: 'supervisor-known-boot' });
       if (url.pathname === '/v1/status') return Response.json({ running: false, dirty_bytes: 0 });
       if (url.pathname === `/v1/python/contexts/${contextId}`) {
@@ -84,18 +93,18 @@ async function codeJourney(t, lifecycle) {
       if (url.pathname === '/v1/python/contexts') {
         if (request.method === 'GET') return contextLive ? Response.json({ container_id: contextId }) : new Response(null, { status: 404 });
         const body = await request.json();
-        assert.equal(body.memory_limit, '1g');
+        assert.equal(body.memory_limit, external?'4g':'1g');
         assert.deepEqual(body.network_policy, { type: 'disabled' });
         assert.equal(body.container_id, null);
         preparations++; contextLive = true;
-        return Response.json({ container_id: contextId });
+        return Response.json({ container_id: contextId },{headers:{'X-Code-Boot-Id':'supervisor-known-boot'}});
       }
       if (url.pathname === '/v1/python' && request.method === 'POST') {
         const body = await request.json();
         const borrowedCell = borrowed && body.code === guestSource;
         assert.ok(body.code === source || borrowedCell);
         assert.equal(body.container_id, contextId);
-        assert.equal(body.memory_limit, '1g');
+        assert.equal(body.memory_limit, external?'4g':'1g');
         assert.ok(!results.has(body.id), 'No accepted cell may be POSTed twice');
         posts++;
         const result = { id: body.id, container_id: contextId, outputs: [{ type: 'logs', logs: borrowedCell ? '43\n' : '42\n' }],
@@ -129,16 +138,18 @@ async function codeJourney(t, lifecycle) {
       content: [{ type: 'output_text', text: '42', annotations: [], logprobs: [] }] }] },
   ]);
   const key = await principal.browser('POST', '/v1/provider-keys', { protocol: 'openai', base_url: model.baseUrl, api_key: model.key }, 201);
+  const executorCredential=external?await principal.browser('POST','/v1/provider-keys',{protocol:'openai',base_url:executorOrigin,api_key:executorKey},201):null;
   const client = new OpenAI({ apiKey: principal.apiKey, baseURL: 'https://agents.test/v1', maxRetries: 0,
     fetch: (input, init) => mf.dispatchFetch(input, init) });
   const agentResponse = await mf.dispatchFetch('https://agents.test/v1/agents', { method: 'POST',
     headers: { Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: 'Code auto publication', instructions: 'SOURCE_PIN_MARKER', workspace: false, tools: [],
+      ...(external?{tool_services:{code_interpreter:{provider:'workspace_daemon',credential_id:executorCredential.id}}}:{}),
       model: { provider: 'byok', credential_id: key.id, protocol: 'responses', model: model.model, context_window: 32768, max_output_tokens: 512 } }) });
   assert.equal(agentResponse.status, 201);
   const agent = await agentResponse.json();
   const input = { model: agent.id, input: 'Compute and publish CSV.', include: ['code_interpreter_call.outputs'],
-    tools: [{ type: 'code_interpreter', container: { type: 'auto' } }] };
+    tools: [{ type: 'code_interpreter', container: { type: 'auto',...(external?{memory_limit:'4g'}:{}) } }] };
   const diagnostics = setTimeout(async () => {
     try {
       const route = await db.prepare('SELECT session_id FROM response_routes WHERE account_id=? ORDER BY created_at DESC LIMIT 1').bind(principal.owner).first();
@@ -183,6 +194,13 @@ async function codeJourney(t, lifecycle) {
     const namespace = await mf.getDurableObjectNamespace('SESSIONS');
     const actor = namespace.get(namespace.idFromName(`${principal.owner}:${route.session_id}`));
     let lostLease = null;
+    if (external) {
+      const execution=await(await actor.fetch('https://session.internal/__test/code-inspect')).json();
+      assert.equal(execution.running,false);assert.equal(execution.lease_present,false);
+      const allocated=await db.prepare('SELECT executor_kind,memory_limit,source_profile,cleanup_run_id FROM code_contexts WHERE account_id=? AND container_id=?').bind(principal.owner,contextId).first();
+      assert.equal(allocated.executor_kind,'workspace_daemon');assert.equal(allocated.memory_limit,'4g');assert.equal(allocated.source_profile,'basic1g');assert.ok(allocated.cleanup_run_id);
+    }
+
     if (lifecycle === 'lost') {
       const dropped = await (await actor.fetch('https://session.internal/__test/code-drop')).json();
       assert.ok(dropped.lease_id);
@@ -194,6 +212,7 @@ async function codeJourney(t, lifecycle) {
       assert.deepEqual((await archive.json()).retained_code_containers, [contextId]);
       const retained = await client.containers.retrieve(contextId);
       assert.equal(retained.status, 'running');
+      if (external) assert.equal(retained.memory_limit,'4g');
     }
     if (borrowed) {
       if (lifecycle==='late') await actor.fetch('https://session.internal/__test/code-funding-window');
@@ -264,6 +283,15 @@ async function codeJourney(t, lifecycle) {
     const state = await (await actor.fetch('https://session.internal/__test/code-inspect')).json();
     assert.equal(state.running, false, 'the last resource interest must actually stop the physical VM');
     assert.equal(state.lease_present, false, 'physical release must detach its funded lease');
+    if (external) {
+      const cleanup=await db.prepare('SELECT r.state FROM usage_reservations r JOIN code_contexts c ON c.cleanup_run_id=r.id WHERE c.account_id=? AND c.container_id=?').bind(principal.owner,contextId).first();
+      assert.equal(cleanup.state,'settled');
+      const before=capabilitiesCalls;
+      await assert.rejects(client.responses.create({model:agent.id,input:'Use larger memory.',tools:[{type:'code_interpreter',container:{type:'auto',memory_limit:'16g'}}]}),error=>error.status===400);
+      assert.ok(capabilitiesCalls>before,'executor capabilities, not the CF1g SKU gate, must reject unsupported16g');
+      assert.equal(model.calls,2);assert.equal(posts,1);
+    }
+
     if (lostLease) {
       const reservation = await db.prepare('SELECT state FROM usage_reservations WHERE account_id=? AND id=?').bind(principal.owner, lostLease).first();
       assert.equal(reservation.state, 'reserved', 'an unknown exit time is not a bill or a refund');
