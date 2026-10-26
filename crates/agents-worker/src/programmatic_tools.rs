@@ -167,11 +167,12 @@ impl ProgramPolicy {
             for tool in &server.tools {
                 let path = ToolPath::new(vec![server.label.clone(), tool.name.clone()])?;
                 let declaration = json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.input_schema,"strict":true,"allowed_callers":["programmatic"]});
-                if server.deferred && !registry.is_some_and(|registry| {
+                let loaded = registry.is_some_and(|registry| {
                     registry.declares_public_call(
                         &json!({"type":"function_call","namespace":server.label,"name":tool.name}),
                     )
-                }) {
+                });
+                if server.deferred && !loaded {
                     continue;
                 }
                 policy.0.retain(|grant| grant.path != path);
@@ -1150,12 +1151,39 @@ mod tests {
             .unwrap();
         let authorized = state.begin_dispatch(0, 102).unwrap();
         assert_eq!(authorized.parent_call_id, state.call_id());
+        assert_eq!(
+            authorized.call_item().unwrap()["caller"]["caller_id"],
+            state.call_id()
+        );
+        assert_eq!(
+            authorized.result_item(&json!({"unix_ms":102})).unwrap()["caller"]["caller_id"],
+            state.call_id()
+        );
         assert!(state.begin_dispatch(0, 103).is_err());
         let mut restored: ProgramState =
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
         assert!(restored.begin_dispatch(0, 104).is_err());
         restored.runtime_lost();
         assert_eq!(restored.output_item().unwrap()["status"], "incomplete");
+    }
+
+    #[test]
+    fn actor_loaded_registry_is_the_only_deferred_program_interface() {
+        let declarations = [
+            json!({"type":"tool_search","execution":"server"}),
+            json!({"type":"function","name":"pending","parameters":{"type":"object"},"allowed_callers":["programmatic"],"defer_loading":true}),
+        ];
+        let registry = crate::tool_discovery::ToolRegistry::compile(&declarations)
+            .unwrap()
+            .unwrap();
+        let policy =
+            ProgramPolicy::resolve_bound(&declarations, true, &Default::default(), Some(&registry))
+                .unwrap();
+        assert_eq!(
+            policy.runtime_tools(),
+            json!([{"path":["time"],"kind":"function"}])
+        );
+        assert!(ProgramPolicy::resolve_bound(&[json!({"type":"function","name":"client","parameters":{"type":"object"},"allowed_callers":["programmatic"]})], false, &Default::default(), None).is_err());
     }
 
     #[test]
