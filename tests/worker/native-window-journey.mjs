@@ -195,6 +195,77 @@ export async function runContextCapacityJourney(context) {
     model_ledger_rows: ledger.length, external_network_calls: 0 };
 }
 
+export async function runConversationWindowCountJourney(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'conversation-window-count', [{
+    output: [answer('conversation-count')], usage: windowFixtureUsage,
+    check: expectInput({ old: false, latest: true }),
+  }]);
+  scenario.state.count = windowFixtureCount;
+  scenario.agent = await context.request('PATCH', `/v1/agents/${scenario.agent.id}`, {
+    model: { ...scenario.agent.model, context_window: capacity, max_output_tokens: outputBudget }, compaction_percent: 99,
+  }, 200, scenario.principal.apiKey);
+  const conversation = await scenario.client.conversations.create();
+  const source = await scenario.invoke({ conversation: conversation.id, truncation: 'auto', input: [
+    { role: 'developer', content: policyMarker }, { role: 'user', content: oldInput }, { role: 'user', content: latestInput },
+  ] }, 200, 'conversation-window-count-source');
+  assert.equal(source.value.status, 'completed');
+  assert.equal(scenario.state.calls, 1);
+  const sessionId = source.headers.get('x-agents-session');
+  const before = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+  const countBody = { conversation: conversation.id, input: 'READ-ONLY-CONVERSATION-ADDITION' };
+  await scenario.client.responses.inputTokens.count(countBody);
+  let measured = scenario.state.countRequests.at(-1);
+  assert.equal(mentions(measured, oldMarker), 0, 'Conversation counting uses the published native window');
+  assert.equal(mentions(measured, newMarker), 1);
+  assert.equal(mentions(measured, policyMarker), 1);
+  assert.equal(mentions(measured, fixedMarker), 1);
+  const after = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+  assert.equal(after.input_revision, before.input_revision);
+  assert.equal(after.last_input_at_ms, before.last_input_at_ms);
+  assert.deepEqual(after.messages, before.messages);
+  // A new non-Conversation warmup moves the Session head without model work.
+  // The Conversation's published predecessor must still select its older ref.
+  const upgrade = await context.mf.dispatchFetch('https://agents.test/v1/responses', {
+    headers: { Upgrade: 'websocket', Connection: 'Upgrade', Authorization: `Bearer ${scenario.principal.apiKey}` },
+  });
+  assert.equal(upgrade.status, 101);
+  const socket = upgrade.webSocket;
+  assert.ok(socket);
+  try {
+    const terminal = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('new sibling warmup did not finish')), 10000);
+      socket.addEventListener('message', message => {
+        const event = JSON.parse(message.data);
+        if (event.type === 'response.completed' || event.type === 'error') { clearTimeout(timer); resolve(event); }
+      });
+    });
+    socket.accept();
+    socket.send(JSON.stringify({ type: 'response.create', model: scenario.agent.id, previous_response_id: source.value.id,
+      input: 'SIBLING-HEAD-MUST-NOT-LEAK', generate: false }));
+    const event = await terminal;
+    assert.equal(event.type, 'response.completed', JSON.stringify(event));
+  } finally { socket.close(1000); }
+  await context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sessionId}` });
+  await scenario.client.responses.inputTokens.count(countBody);
+  measured = scenario.state.countRequests.at(-1);
+  assert.equal(mentions(measured, oldMarker), 0);
+  assert.equal(mentions(measured, newMarker), 1);
+  assert.equal(mentions(measured, 'SIBLING-HEAD-MUST-NOT-LEAK'), 0, 'Never select the current Session head instead of the published Response');
+  await scenario.client.conversations.update(conversation.id, { metadata: { label: 'metadata-only' } });
+  await scenario.client.responses.inputTokens.count(countBody);
+  assert.equal(mentions(scenario.state.countRequests.at(-1), oldMarker), 0);
+  await scenario.client.conversations.items.create(conversation.id, { items: [{ role: 'user', content: 'EXTERNAL-CONTENT-EDIT' }] });
+  const beforeInvalid = scenario.state.countRequests.length;
+  await assert.rejects(scenario.client.responses.inputTokens.count(countBody), error => error.status === 400);
+  assert.equal(scenario.state.countRequests.length, beforeInvalid, 'A missing authorized model cannot dispatch a guessed count');
+  await scenario.client.responses.inputTokens.count({ ...countBody, model: scenario.agent.id });
+  assert.equal(mentions(scenario.state.countRequests.at(-1), 'EXTERNAL-CONTENT-EDIT'), 1);
+  assert.equal(scenario.state.calls, 1, 'Only the genuinely new source generation executes; every later operation is read-only or warmup');
+  return { provider_calls: 1, warmup_generations: 0, conversation_omitted_model_from_owned_predecessor: true,
+    immutable_native_window_selected: true, later_session_head_excluded: true, metadata_preserves_anchor: true,
+    external_item_edit_invalidates_anchor: true, count_preserves_source_and_user_clock: true, external_network_calls: 0 };
+}
+
 export async function runNativeWindowJourney(context) {
   const checks = [expectInput({ old: true, latest: false }), expectInput({ old: false, latest: true }),
     expectInput({ old: false, latest: true, additional: 'SAME-HEAD-SHORT-INPUT' }),

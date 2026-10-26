@@ -16,6 +16,14 @@ pub(crate) struct ConversationSnapshot {
     pub id: String,
     pub revision: u64,
     pub items: Vec<Value>,
+    #[serde(default)]
+    pub predecessor_response_id: Option<String>,
+    #[serde(default)]
+    pub predecessor_session_id: Option<String>,
+    #[serde(default)]
+    pub predecessor_agent_id: Option<String>,
+    #[serde(default)]
+    pub predecessor_pin_hash: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub item_provenance: std::collections::BTreeMap<String, ConversationItemProvenance>,
 }

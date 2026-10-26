@@ -9,8 +9,7 @@ use crate::{
     provider::{self, Message, ProviderConfig, responses::PreparedRequest},
     responses_auxiliary::expand_for_prefix,
     responses_wire::ResponseRequest,
-    routes::{self, RouteContext},
-    store::Store,
+    routes::RouteContext,
 };
 
 pub(crate) struct Context {
@@ -33,45 +32,9 @@ pub(crate) async fn prepare(
     compact: bool,
     personality: Option<Value>,
 ) -> Result<Context> {
-    let source = match request.previous_response_id.as_deref() {
-        Some(id) => {
-            let mut response = crate::response_routes::context(env, owner, id).await?;
-            if response.status_code() >= 300 {
-                return Err(fail(if response.status_code() == 404 {
-                    "response_not_found"
-                } else {
-                    "response_context_unavailable"
-                }));
-            }
-            Some(
-                response
-                    .json::<crate::session::context::ResponseContext>()
-                    .await?,
-            )
-        }
-        None => None,
-    };
-    if request.model.is_empty() {
-        request.model = source
-            .as_ref()
-            .map(|context| context.record.agent_id.clone())
-            .unwrap_or_default();
-    }
-    if request.model.is_empty() {
-        return Err(fail("invalid_auxiliary_request"));
-    }
-    let pinned = match &source {
-        Some(context) if context.record.agent_id == request.model => context.record.pinned.clone(),
-        _ => {
-            let agent = Store::new(env)
-                .get_agent(owner, &request.model)
-                .await?
-                .ok_or_else(|| fail("agent_not_found"))?;
-            routes::pin(env, &agent)
-                .await?
-                .map_err(|_| fail("invalid_agent_configuration"))?
-        }
-    };
+    let selected = crate::auxiliary_source::select(env, owner, request).await?;
+    let source = selected.previous;
+    let pinned = selected.pinned;
     let config = provider::resolve_config(env, owner, &pinned.model).await?;
     let item_context =
         crate::session::native_items::ItemContext::new(owner, &request.model, &pinned, &config)?;
@@ -82,6 +45,13 @@ pub(crate) async fn prepare(
     let mut inherited_discovery = None;
     let mut pending_search = Vec::new();
     if let Some(context) = source {
+        if context
+            .native_provider_binding
+            .as_ref()
+            .is_some_and(|binding| *binding != item_context.provider_binding)
+        {
+            return Err(fail("response_context_mismatch"));
+        }
         if context.record.owner_id != owner {
             return Err(fail("response_not_found"));
         }
@@ -103,13 +73,7 @@ pub(crate) async fn prepare(
             instructions = context.response_instructions;
         }
     }
-    if let Some(id) = request
-        .conversation_id()
-        .map_err(|_| fail("invalid_auxiliary_request"))?
-    {
-        let conversation = crate::conversation_routes::snapshot(env, owner, id)
-            .await?
-            .ok_or_else(|| fail("conversation_not_found"))?;
+    if let Some(conversation) = selected.conversation {
         prior_native.extend(
             crate::session::native_items::resolve_conversation(
                 env,
