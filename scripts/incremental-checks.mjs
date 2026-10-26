@@ -387,7 +387,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Non-promoting topic execution: old text, budget and vision receipts are
     // retained; only the newly implemented media compactor is exercised here.
     const selected = new Set([
-      'journey:DeepSeek compact keeps frozen images and files through a complete continuation window',
+      'rust:agents-worker:compact_low_detail_keeps_exif_orientation_in_the_final_raster',
     ]);
     for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => selected.has(check.id));
     if (receipt.checks.worker.length !== selected.size) throw Error('Missing new compact-media check');
