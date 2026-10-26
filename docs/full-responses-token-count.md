@@ -273,8 +273,8 @@ The dedicated Worker/SDK case adds owned-file/HTTPS equivalence, one fetch per
 preparation, private/redirect/oversize refusals, no count Sessions/model ledger,
 and one controlled create observing the same frozen GIF payload. All provider
 traffic in that fixture is synthetic; its usage equality is not hosted vision
-usage parity. No paid model probe is required. Compiled execution is pending
-the new-source incremental CI, not implied by the offline corpus.
+usage parity. No paid model probe is required; the execution receipts below are
+separate from the offline reference corpus.
 
 The first actual compiled runtime is `b2dddb6848bf1e257e2d68e932c9c713ae013b52`,
 CI 40325451814, Worker artifact 12650154454 (Wasm SHA256
@@ -287,5 +287,12 @@ Current Python SDK 3.37 strict JSON validation also passed. The fixture reports
 known input 219 while cache creation remains unknown: standard `usage` stays
 null and authoritative input is retained in `agents_usage`, not fabricated as
 zero. This is a controlled protocol test, not a hosted vision usage probe.
-The added fail-closed turn-capability guard and repaired Rust corpus assertion
-still require the subsequent new-source CI.
+The final guard/reference runtime passed CI 40327906021, source
+`7ca3c6cda4695426c5339dd4c75ba00a71d58e96`: native compilation/lint, the repaired
+official corpus Rust contract and the actual Worker/Node SDK journey all passed.
+Worker artifact 12653465695, verification-worker 12652491505 and performance-v3
+12652536428 retain the exact build, executed selectors and count/create receipt.
+This run also exercised the three explicit user-led capability rejections. The
+seven unchanged successful Rust contracts retain their original 403254 receipt;
+they were not repeated. No old image generation, Search live or model probe was
+replayed. CI-only topic selection changes are not part of the product slice.

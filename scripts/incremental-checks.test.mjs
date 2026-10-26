@@ -164,6 +164,18 @@ test('a verified unchanged check becomes reused_verified rather than passed_curr
   assert.equal(result.reused_checks[0].executed_tests,2);
   assert.equal(reuseChecks(source,[check],[seal],()=> 'changed').checks.length,1);
 });
+
+test('exact vision receipt fingerprints include image sizing headers and reference corpus', () => {
+  const check = { id: 'rust:agents-worker:official_prepared_vision_reference_corpus_counts_each_image_once',
+    argv: ['cargo', 'test', '-p', 'agents-worker'], source_file: 'crates/agents-worker/src/deepseek_tokenizer.rs' };
+  const files = ['deepseek_tokenizer', 'deepseek_image_tokens', 'input_image_metadata', 'provider_responses', 'session']
+    .map(name => `crates/agents-worker/src/${name}.rs`);
+  const paths = checkInputPaths('c'.repeat(40), check, () => files.join('\n'));
+  for (const file of files.slice(0, -1)) assert.ok(paths.includes(file), file);
+  assert.ok(paths.includes('tests/fixtures/deepseek-image-count.json'));
+  assert.ok(paths.includes('tests/fixtures/deepseek-token-count.json'));
+  assert.ok(!paths.includes('crates/agents-worker/src/session.rs'));
+});
 test('failed and zero-test historical receipts never authorize check reuse', () => {
   const check={id:'node:new',argv:['node','--test','new.test.mjs'],env:{}};
   for(const proof of [{status:'failed_current',executed_tests:1},{status:'passed_current',executed_tests:0}]) {
