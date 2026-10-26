@@ -384,10 +384,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
-    // Topic-only actual >30s Conversation I/O boundary; no model work.
+    // Topic-only original known resource hold reclamation; zero model work.
     for (const job of Object.keys(receipt.checks)) {
-      receipt.checks[job] = receipt.checks[job].filter(check => check.id === 'node:tests/worker/conversation-io.test.mjs');
+      receipt.checks[job] = receipt.checks[job].filter(check => check.id === 'node:tests/worker/conversation-reclaim.test.mjs');
     }
+    for (const [component, details] of Object.entries(receipt.components)) {
+      if (component !== 'worker') { details.action = 'not_executed'; details.artifact = null; }
+    }
+    receipt.native_packages = [];
     receipt.non_deployable = true;
     receipt.diagnostic_only_components = ['worker'];
     receipt.required_jobs = ['changes', 'worker'];
