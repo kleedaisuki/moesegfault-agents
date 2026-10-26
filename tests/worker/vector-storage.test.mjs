@@ -9,6 +9,7 @@ import OpenAI, { toFile } from 'openai';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createBrowserPrincipal } from './browser-principal.mjs';
 import { createIdentityFixture } from './auth-journey.mjs';
+import { dispatchSDKFetch } from './sdk-miniflare-fetch.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -67,7 +68,7 @@ test('compiled Rust Worker: vector capacity carries units until confirmed native
     await db.batch(JSON.parse(parsed.stdout).map(sql => db.prepare(sql)));
   }
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'capacity-owner' });
-  const sdk = new OpenAI({ baseURL: 'https://agents.test/v1', apiKey: principal.apiKey, maxRetries: 0, fetch: (input, init) => mf.dispatchFetch(input, init) });
+  const sdk = new OpenAI({ baseURL: 'https://agents.test/v1', apiKey: principal.apiKey, maxRetries: 0, fetch: (input, init) => dispatchSDKFetch(mf, input, init) });
   const file = await sdk.files.create({ purpose: 'assistants', file: await toFile(Buffer.from('A small owned capacity document.'), 'capacity.txt', { type: 'text/plain' }) });
   const store = await sdk.vectorStores.create({});
   await sdk.vectorStores.files.create(store.id, { file_id: file.id });
