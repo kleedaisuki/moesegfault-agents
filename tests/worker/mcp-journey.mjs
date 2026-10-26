@@ -101,6 +101,7 @@ export async function runMcpLegacyJourney(context) {
       assert.ok(output.output.some(part => part.type === 'input_text' && part.text === 'echo:雪'));
     } },
   ]);
+  await scenario.principal.browser('GET', '/v1/account');
   const tools = [mcpTool('MCP-LEGACY-SECRET')];
   const first = await scenario.client.responses.create({ model: scenario.agent.id, input: 'Read the legacy echo.', tools, reasoning: { effort: 'none' } });
   const approval = first.output.find(item => item.type === 'mcp_approval_request');
