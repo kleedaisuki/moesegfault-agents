@@ -566,13 +566,19 @@ impl SessionInner {
         imported.messages.extend(messages);
         imported.pending = pending;
         if let (Some(reference), Some(items)) = (&seed.point.native, &seed.native_items) {
-            let history = self
+            let mut history = self
                 .native_import(
                     items,
                     &reference.provider_binding,
                     &format!("branch:{}", seed.child_response_id),
                 )
                 .await?;
+            if let Some(history) = history.as_mut() {
+                history.window = reference
+                    .window
+                    .as_ref()
+                    .map(crate::native_window::Window::rebased);
+            }
             imported.native_context = history.map(|history| super::native::NativeContext {
                 history,
                 messages_end: imported.messages.len(),

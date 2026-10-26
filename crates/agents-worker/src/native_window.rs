@@ -21,6 +21,9 @@ pub(crate) struct Window {
 }
 
 impl Window {
+    pub(crate) fn rebased(&self) -> Self {
+        Self::default()
+    }
     fn validate(&self, end: usize) -> Result<()> {
         if self.begin > end
             || self.protected.iter().any(|index| *index >= self.begin)
@@ -326,6 +329,19 @@ fn content(value: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_window_import_rebases_only_the_exported_positions() {
+        let original = Window {
+            begin: 5,
+            protected: vec![1],
+        };
+        let exported = original.indices(8).unwrap();
+        let imported = original.rebased();
+        assert_eq!(imported.indices(exported.len()).unwrap(), vec![0, 1, 2, 3]);
+        assert_eq!(exported, vec![1, 5, 6, 7]);
+        assert_eq!(original.begin, 5);
+    }
 
     fn config() -> ProviderConfig {
         ProviderConfig {
