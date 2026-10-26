@@ -3508,5 +3508,36 @@
       }
     ],
     "unresolved_checks": []
+  },
+  {
+    "source_sha": "ebb84c682c30c8169983eb77bd976258b1b32936",
+    "run_id": "40320804651",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12649316192,
+    "verified_phases": [
+      "wasm_build"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "unresolved_checks": [
+      {
+        "id": "journey:DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage"
+        },
+        "reason": "Typed compaction, real usage, continuation and failure fences passed; close the intentionally created continuation Session before checking its cleanup reservation."
+      }
+    ]
   }
 ]

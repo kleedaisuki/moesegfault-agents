@@ -375,7 +375,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Topic-only probe. This selector is not part of the product commit: other
     // independently accepted topics must not be replayed for compaction.
     const compactChecks = new Set([
-      'rust:agents-worker:retained_user_messages_have_stable_typed_ids_without_changing_role_or_text',
       'journey:DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage',
     ]);
     for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => compactChecks.has(check.id));
