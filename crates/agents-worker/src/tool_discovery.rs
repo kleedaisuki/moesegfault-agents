@@ -1598,6 +1598,54 @@ fn allowed_discovery(choice: Option<&Value>, item: &Value) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn deferred_mcp_search_loads_schema_policy_and_owned_dispatch_alias() {
+        let declaration = crate::mcp_bindings::ServerDeclaration::parse(&json!({"type":"mcp","server_label":"remote","server_url":"https://mcp.example.com/mcp","defer_loading":true})).unwrap();
+        let mut server = declaration
+            .bind("owner", "response", &"A".repeat(43))
+            .unwrap();
+        server.insert_tools(vec![serde_json::from_value(json!({"name":"echo","description":"Echo value","inputSchema":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}})).unwrap()]).unwrap();
+        let alias = server.alias("echo");
+        let bindings = crate::mcp_runtime::McpBindings {
+            servers: vec![server],
+            discovery_funding: None,
+        };
+        let mut registry = ToolRegistry::compile(&[json!({"type":"tool_search"})])
+            .unwrap()
+            .unwrap();
+        registry.register_mcp(&bindings).unwrap();
+        registry.encode_input(&[], true, None).unwrap();
+        let initial = registry.render(true).unwrap();
+        assert!(
+            !serde_json::to_string(&initial)
+                .unwrap()
+                .contains("\"required\":[\"value\"]")
+        );
+        let call = json!({"type":"function_call","name":INVOKE_ALIAS,"call_id":"call","arguments":json!({"tool":"remote.echo","arguments":{"value":"snow"}}).to_string(),"status":"completed"});
+        assert!(registry.resolved_mcp_call(&call).is_err());
+        let choice = json!({"type":"allowed_tools","mode":"auto","tools":[{"type":"mcp","server_label":"remote","name":"echo"},{"type":"tool_search"}]});
+        let result = registry
+            .discover("search", &json!({"paths":["remote"]}), Some(&choice), true)
+            .unwrap();
+        assert_eq!(
+            result.output["tools"][0]["tools"][0]["parameters"]["required"],
+            json!(["value"])
+        );
+        assert_eq!(
+            result.output["tools"][0]["tools"][0]["allowed_callers"],
+            json!(["direct"])
+        );
+        assert_eq!(registry.render(true).unwrap(), initial);
+        registry.validate_call(&call, None).unwrap();
+        let resolved = registry.resolved_mcp_call(&call).unwrap().unwrap();
+        assert_eq!(resolved["name"], alias);
+        assert!(resolved.get("namespace").is_none());
+        let mut invalid = call.clone();
+        invalid["arguments"] =
+            json!(json!({"tool":"remote.echo","arguments":{"value":7}}).to_string());
+        assert!(registry.validate_call(&invalid, None).is_err());
+    }
+
     fn registry() -> ToolRegistry {
         let mut registry = ToolRegistry::compile(&[
             json!({"type":"namespace","name":"crm","description":"Orders and customers","tools":[{"type":"function","name":"orders","description":"Find open orders","defer_loading":true,"parameters":{"type":"object","properties":{"id":{"type":"string"}}}}]}),

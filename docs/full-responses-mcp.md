@@ -56,3 +56,12 @@ acceptance receipt; compiler/runtime outcomes must be attached after execution.
 The production limitations of global Fetch DNS authority remain relevant: a
 future deployment adding private origins must review SSRF protection rather than
 mistaking hostname syntax validation for resolved-address pinning.
+## First remote compiler checkpoint
+
+CI run 40333565874 at source `448faeb` passed the full Worker Wasm type check
+and 42 new Rust contracts (15 MCP, 14 registry, 11 grammar, one client-search
+completion barrier and one alias/namespace identity fence). Actual release
+linking then identified the missing `instant/wasm-bindgen` clock backend while
+building llguidance's published cdylib. The target-specific feature is now
+explicit. No compiled Worker journey ran in that failed build; those 42 accepted
+contracts are retained rather than replayed in the next gate.
