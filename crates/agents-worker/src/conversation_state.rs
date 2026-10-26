@@ -357,6 +357,52 @@ fn busy(record: &ConversationRecord) -> Result<Response> {
     Ok(Response::from_json(&body)?.with_status(409))
 }
 
+async fn reclaim_pending(
+    context: &PublicationContext<'_>,
+    record: &mut ConversationRecord,
+    rejected: Option<(&str, &str)>,
+) -> Result<bool> {
+    // A deadline exists only for the unactivated admission protocol. Legacy
+    // active/unknown leases have no invented deadline and cannot be reclaimed.
+    if record.active_activated || record.pending_expires_at_ms.is_none() {
+        return Ok(false);
+    }
+    let known_rejection = rejected.is_some_and(|(response, generation)| {
+        record.active_response_id.as_deref() == Some(response)
+            && record
+                .active_capacity_generation
+                .as_deref()
+                .is_none_or(|active| active == generation)
+    });
+    if !known_rejection && (rejected.is_some() || !record.pending_expired(util::now_ms())) {
+        return Ok(false);
+    }
+    if let (Some(response), Some(generation)) = (
+        &record.active_response_id,
+        &record.active_capacity_generation,
+    ) {
+        quota::escrow::release(
+            context.env,
+            &record.owner,
+            context.operation,
+            &record.id,
+            &quota::escrow::Lease {
+                response_id: response.clone(),
+                generation: generation.clone(),
+            },
+        )
+        .await?;
+    }
+    if let Some((response, _)) = rejected.filter(|_| known_rejection) {
+        // No Session input/run was accepted. Completed/cancelled Responses keep
+        // their admission membership and retain their established retry path.
+        record.admitted_responses.remove(response);
+    }
+    record.clear_lease();
+    save(context, record).await?;
+    Ok(true)
+}
+
 async fn admit(
     context: &PublicationContext<'_>,
     storage: &Storage,
@@ -367,30 +413,24 @@ async fn admit(
     if !valid_id(response_id) {
         return util::json_error(400, "invalid_request", "Invalid response identity");
     }
+    if !record.admitted_responses.contains(response_id)
+        && context
+            .operation
+            .response_closed(context.env, &record.owner, response_id)
+            .await?
+    {
+        return util::json_error(
+            409,
+            "conversation_request_closed",
+            "This request was rejected before admission; use a new idempotency key",
+        );
+    }
     let accepted = receipt(storage, record, response_id).await?;
     if accepted.is_none() && record.deleted {
         return util::json_error(404, "not_found", "Conversation not found");
     }
     let now_ms = util::now_ms();
-    if record.pending_expired(now_ms) {
-        if let (Some(response), Some(generation)) = (
-            &record.active_response_id,
-            &record.active_capacity_generation,
-        ) {
-            quota::escrow::release(
-                context.env,
-                &record.owner,
-                context.operation,
-                &record.id,
-                &quota::escrow::Lease {
-                    response_id: response.clone(),
-                    generation: generation.clone(),
-                },
-            )
-            .await?;
-        }
-        record.clear_lease();
-    }
+    reclaim_pending(context, record, None).await?;
     if !record.committed_responses.contains_key(response_id)
         && record
             .active_response_id
@@ -454,6 +494,34 @@ fn capacity_failure(required: u64, available: u64) -> Result<Response> {
     body["error"]["required_bytes"] = json!(required);
     body["error"]["available_bytes"] = json!(available);
     Response::from_json(&body).map(|response| response.with_status(409))
+}
+
+async fn reject_capacity(
+    context: &PublicationContext<'_>,
+    response: &str,
+    generation: &str,
+    required: u64,
+    available: u64,
+) -> Result<Response> {
+    // Reload canonical state after a definite failed header allocation, rather
+    // than retaining the candidate's unpublished larger header high-water mark.
+    let mut record = load(context.storage)
+        .await?
+        .ok_or_else(|| Error::RustError("conversation_state_corrupt".into()))?;
+    let reclaimed = reclaim_pending(context, &mut record, Some((response, generation))).await;
+    let released = matches!(reclaimed, Ok(true));
+    if reclaimed.is_err() {
+        util::emit(
+            "conversation.pending_reclaim_deferred",
+            json!({"conversation_id":record.id,"response_id":response}),
+        );
+    }
+    let mut rejected = capacity_failure(required, available)?;
+    rejected.headers_mut().set(
+        "X-Agents-Conversation-Writer-Released",
+        if released { "true" } else { "pending" },
+    )?;
+    Ok(rejected)
 }
 
 fn capacity_request(body: &Value) -> Result<quota::escrow::Request> {
@@ -521,12 +589,16 @@ async fn reserve_capacity(
     if let Err(error) = save(context, record).await {
         if matches!(&error,Error::RustError(code) if code=="conversation_capacity_exceeded") {
             let usage = quota::usage(context.env, &record.owner, context.operation).await?;
-            return capacity_failure(
+            return reject_capacity(
+                context,
+                response_id,
+                &generation,
                 plan.required_bytes(),
                 usage
                     .limit_bytes
                     .saturating_sub(usage.reserved_bytes.saturating_add(usage.retained_bytes)),
-            );
+            )
+            .await;
         }
         return Err(error);
     }
@@ -548,7 +620,16 @@ async fn reserve_capacity(
         quota::escrow::Prepared::Insufficient {
             required_bytes,
             available_bytes,
-        } => capacity_failure(required_bytes, available_bytes),
+        } => {
+            reject_capacity(
+                context,
+                response_id,
+                &generation,
+                required_bytes,
+                available_bytes,
+            )
+            .await
+        }
     }
 }
 

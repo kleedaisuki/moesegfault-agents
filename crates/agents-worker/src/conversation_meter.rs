@@ -209,6 +209,31 @@ impl ConversationOperation {
         matches!(self.scope, Scope::Response { finished: true })
     }
 
+    pub(crate) async fn response_closed(
+        &self,
+        env: &Env,
+        owner: &str,
+        response: &str,
+    ) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct Funding {
+            state: String,
+        }
+        let id = response_operation_id(response)?;
+        let rows = self
+            .query(
+                env,
+                owner,
+                "response-closed",
+                env.d1("DB")?
+                    .prepare("SELECT state FROM usage_reservations WHERE id=?1 AND account_id=?2")
+                    .bind(&[id.as_str().into(), owner.into()])?,
+            )
+            .await?
+            .results::<Funding>()?;
+        Ok(rows.first().is_some_and(|row| row.state == "settled"))
+    }
+
     fn require_open(&self) -> Result<()> {
         if self.is_finished() {
             return Err(fail("conversation_response_operation_finished"));

@@ -247,7 +247,9 @@ pub(crate) async fn reserve_capacity(
     let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
     let result=Dispatch {env,owner,operation:&operation}.existing(id,Method::Post,"/responses/reserve",
         Some(json!({"response_id":response_id,"session_id":session_id,"accepted_revision":accepted_revision,"capacity":capacity}))).await;
-    operation.finish_result(env, owner, result, false).await
+    let rejected = result.as_ref().is_ok_and(|response| response.status_code() == 409
+        && matches!(response.headers().get("X-Agents-Conversation-Writer-Released"), Ok(Some(value)) if value == "true"));
+    operation.finish_result(env, owner, result, rejected).await
 }
 
 pub(crate) async fn activate_generation(
