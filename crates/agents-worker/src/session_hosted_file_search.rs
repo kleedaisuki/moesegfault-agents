@@ -65,7 +65,7 @@ impl SessionInner {
             return Err(Error::RustError("file_search_operation_conflict".into()));
         }
         if operation.finished {
-            return Ok(HostedDispatch::Ready(search_result(&operation)));
+            return Ok(HostedDispatch::Ready(search_result(&operation).into()));
         }
         let resource = format!("file-search:{}", hosted_item_id(execution));
         let meter = ResourceMeter::with_account_pricing(
@@ -148,7 +148,7 @@ impl SessionInner {
         self.publish_hosted_item(&item, true).await?;
         operation.finished = true;
         write_chunks(&storage, &key, &serde_json::to_vec(&operation)?).await?;
-        Ok(HostedDispatch::Ready(search_result(&operation)))
+        Ok(HostedDispatch::Ready(search_result(&operation).into()))
     }
 
     fn file_search_cancelled(&self) -> bool {
@@ -169,7 +169,7 @@ async fn release_empty_budget(env: &Env, owner: &str, resource: &str) -> Result<
     Ok(())
 }
 
-fn search_result(operation: &SearchOperation) -> Value {
+fn search_result(operation: &SearchOperation) -> String {
     let result = match &operation.hits {
         Some(hits) => {
             json!({"results":file_ingest::evidence(hits),"citation_instructions":"Append the exact citation_marker after each supported statement. Never invent a marker or cite a different file."})
@@ -178,7 +178,7 @@ fn search_result(operation: &SearchOperation) -> Value {
             json!({"error":{"code":operation.error.as_deref().unwrap_or("file_search_failed")}})
         }
     };
-    Value::String(result.to_string())
+    result.to_string()
 }
 
 #[cfg(test)]
@@ -199,7 +199,8 @@ mod tests {
             error: None,
             finished: true,
         };
-        let message = provider::Message::tool_result_content("call", search_result(&operation));
+        let message =
+            provider::Message::tool_result_content("call", search_result(&operation).into());
         let items = provider::responses::message_items(&[message]).unwrap();
         let text = items[0]["output"][0]["text"].as_str().unwrap();
         assert!(serde_json::from_str::<Value>(text).unwrap()["results"].is_array());
@@ -207,7 +208,7 @@ mod tests {
         operation.error = Some("file_search_outcome_unknown".into());
         let result = search_result(&operation);
         assert_eq!(
-            serde_json::from_str::<Value>(result.as_str().unwrap()).unwrap()["error"]["code"],
+            serde_json::from_str::<Value>(&result).unwrap()["error"]["code"],
             "file_search_outcome_unknown"
         );
     }
