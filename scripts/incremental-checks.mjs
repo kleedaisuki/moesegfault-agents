@@ -386,11 +386,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
     // Non-promoting topic scope: only the new public-file renderer boundary.
     const remoteChecks = new Set([
-      'rust:agents-worker:remote_files_share_public_origin_policy_without_leaking_signed_urls_into_text',
       'rust:agents-worker:file_metadata_retains_exact_cache_boundary_and_reports_visual_capability',
       'node:tests/worker/remote-file-input.test.mjs',
     ]);
     for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => remoteChecks.has(check.id));
+    for (const check of Object.values(receipt.checks).flat()) {
+      if (check.id === 'node:tests/worker/remote-file-input.test.mjs') check.env = {...check.env, MAGENTS_REMOTE_FILE_CASE: 'metadata-budget'};
+      check.input_fingerprint = checkFingerprint(receipt.source_sha, check);
+    }
     for (const [name, component] of Object.entries(receipt.components)) if (name !== 'worker') component.action = 'not_requested';
     receipt.native_packages = [];
     receipt.non_deployable = true;
