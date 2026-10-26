@@ -276,6 +276,7 @@ struct SessionInner {
     closing: Cell<bool>,
     observer: RefCell<Option<Observer>>,
     mcp_preparing: RefCell<std::collections::BTreeMap<String, usize>>,
+    mcp_operations: futures::lock::Mutex<()>,
     response_observers: RefCell<Vec<ResponseObserver>>,
     image_observations: image_observation::ImageObservations,
     response_publication_barrier: RefCell<response_steering::PublicationBarrier>,
@@ -302,6 +303,7 @@ impl Session {
             closing: Cell::new(false),
             observer: RefCell::new(None),
             mcp_preparing: RefCell::new(std::collections::BTreeMap::new()),
+            mcp_operations: futures::lock::Mutex::new(()),
             response_observers: RefCell::new(vec![]),
             image_observations: image_observation::ImageObservations::default(),
             response_publication_barrier: RefCell::new(

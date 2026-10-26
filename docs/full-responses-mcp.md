@@ -65,3 +65,32 @@ linking then identified the missing `instant/wasm-bindgen` clock backend while
 building llguidance's published cdylib. The target-specific feature is now
 explicit. No compiled Worker journey ran in that failed build; those 42 accepted
 contracts are retained rather than replayed in the next gate.
+
+## Actual Worker checkpoint and remaining increment
+
+Run 40334959346 built the real Worker at `0b92c0d837962451eba9ceb41603fbb5c03b3f60`
+(Wasm SHA-256 `c774b77f87495de3e98c0776bc008da423bc2f96d0aa2578adef5c9cd11bb323`).
+Its approval journey passed: exact 356-token catalog count, no effect before
+consent, fresh credentials, one SSE RPC, model continuation, immutable raw GET,
+idempotency and private terminal credential cleanup. Both real negative journeys
+from the authority review passed: invalid client search cannot publish a completed
+handoff, and an ordinary programmatic-only function cannot be called directly or
+by forged provider caller metadata. The new deferred registry contract also passed.
+
+Using that exact retained Wasm locally with repaired fixture runtime configuration
+and ledger join, the server-search/strict-invalid/BYOK bridge journeys passed.
+The denial and malformed-HTTP-result journey then passed with current SDK 3.37.0
+strict response snapshot validation: denial made zero remote calls, one ambiguous
+HTTP call stayed unknown, and replay made no second remote call. These were
+controlled transports with all unplanned outbound access denied, not live paid
+model or third-party MCP service evidence.
+
+The first actual deferred MCP request exposed an old compile-time refusal before
+the new resolved catalog join. That refusal is removed and the registry contract
+now includes the original MCP declaration. The remaining increment also consumes
+each original approval into exactly one destination Response under the source
+operation mutex. Same-destination cold retries remain valid; a second branch is
+rejected before another effect. Cleanup cannot overwrite that consumption claim.
+Mixed direct/programmatic declarations keep their direct capability, while the
+programmatic permission never grants direct execution authority. No JavaScript
+executor is claimed by accepting that permission metadata.

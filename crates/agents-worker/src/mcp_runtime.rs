@@ -487,6 +487,8 @@ impl ApprovalReference {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ApprovedCall {
+    pub reference: ApprovalReference,
+    pub capability: String,
     pub intent: CallIntent,
     pub approved: bool,
     pub completed: bool,
