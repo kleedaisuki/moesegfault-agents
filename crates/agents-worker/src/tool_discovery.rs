@@ -414,6 +414,22 @@ impl ToolRegistry {
         self.group(&self.loaded.iter().cloned().collect::<Vec<_>>())
     }
 
+    pub(crate) fn programmatic_declarations(&self) -> Vec<Value> {
+        fn loaded(mut tool: Value) -> Value {
+            if let Some(children) = tool.get_mut("tools").and_then(Value::as_array_mut) {
+                *children = std::mem::take(children).into_iter().map(loaded).collect();
+            }
+            if let Some(fields) = tool.as_object_mut() {
+                fields.remove("defer_loading");
+            }
+            tool
+        }
+        self.validation_declarations()
+            .into_iter()
+            .map(loaded)
+            .collect()
+    }
+
     pub(crate) fn declares_public_call(&self, item: &Value) -> bool {
         if item["type"] == "tool_search_call" {
             return self.search.is_some();

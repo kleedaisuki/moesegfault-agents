@@ -46,6 +46,22 @@ impl SessionInner {
         execution: &str,
         name: &str,
     ) -> Result<bool> {
+        self.admit_tool_dispatch_as(
+            record,
+            execution,
+            name,
+            crate::hosted_bindings::Caller::Direct,
+        )
+        .await
+    }
+
+    pub(super) async fn admit_tool_dispatch_as(
+        &self,
+        record: &SessionRecord,
+        execution: &str,
+        name: &str,
+        caller: crate::hosted_bindings::Caller,
+    ) -> Result<bool> {
         let admission = {
             let mut data = self.data.borrow_mut();
             let data = data
@@ -59,13 +75,13 @@ impl SessionInner {
                 response
                     .bound_tools
                     .lookup(name)
-                    .is_some_and(|binding| binding.allows(crate::hosted_bindings::Caller::Direct))
+                    .is_some_and(|binding| binding.allows(caller))
             });
             let resolved_server = run.response.as_ref().is_some_and(|response| {
                 response
                     .mcp_bindings
                     .lookup(name)
-                    .is_some_and(|(server, _)| server.direct)
+                    .is_some_and(|(server, _)| server.allows(caller))
                     || response
                         .discovery
                         .as_ref()

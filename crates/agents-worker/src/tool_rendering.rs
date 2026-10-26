@@ -12,6 +12,7 @@ pub(crate) struct ToolBindings<'a> {
     pub hosted: &'a BoundTools,
     pub mcp: &'a McpBindings,
     pub discovery: Option<&'a ToolRegistry>,
+    pub programmatic: bool,
 }
 
 pub(crate) struct ServerChoice {
@@ -37,8 +38,16 @@ impl ToolBindings<'_> {
         &self,
         declarations: &[Value],
         _bridge: bool,
+        server_time: bool,
     ) -> Result<Vec<Value>> {
-        let tools = self.hosted.render_native(declarations)?;
+        let declarations = if self.programmatic {
+            self.programmatic_policy(declarations, server_time)?
+                .render_native(declarations)
+                .map_err(Error::RustError)?
+        } else {
+            declarations.to_vec()
+        };
+        let tools = self.hosted.render_native(&declarations)?;
         let tools = self.mcp.render_native(&tools)?;
         match self.discovery {
             None => Ok(tools),
@@ -49,6 +58,9 @@ impl ToolBindings<'_> {
     }
 
     pub(crate) fn rewrite_choice(&self, choice: Value, _bridge: bool) -> Result<Value> {
+        let choice = crate::programmatic_tools::ProgramPolicy::default()
+            .rewrite_choice(choice)
+            .map_err(Error::RustError)?;
         let choice = self.hosted.rewrite_choice(choice)?;
         let choice = self.mcp.rewrite_choice(choice)?;
         match self.discovery {
@@ -60,9 +72,11 @@ impl ToolBindings<'_> {
     }
 
     pub(crate) fn is_server_alias(&self, name: &str) -> bool {
-        self.hosted
-            .lookup(name)
-            .is_some_and(|binding| binding.allows(Caller::Direct))
+        (self.programmatic && name == crate::programmatic_tools::PROGRAM_ALIAS)
+            || self
+                .hosted
+                .lookup(name)
+                .is_some_and(|binding| binding.allows(Caller::Direct))
             || self
                 .mcp
                 .lookup(name)
@@ -77,6 +91,12 @@ impl ToolBindings<'_> {
     pub(crate) fn policy_call(&self, raw: &Value) -> Option<Value> {
         if raw["type"] != "function_call" {
             return None;
+        }
+        if self.programmatic
+            && raw["name"] == crate::programmatic_tools::PROGRAM_ALIAS
+            && raw.get("namespace").is_none_or(Value::is_null)
+        {
+            return Some(json!({"type":"programmatic_tool_calling_call","call_id":raw["call_id"]}));
         }
         let resolved = self
             .discovery
@@ -104,6 +124,20 @@ impl ToolBindings<'_> {
             return Some(json!({"type":"tool_search_call","execution":"server","call_id":null}));
         }
         None
+    }
+
+    pub(crate) fn programmatic_policy(
+        &self,
+        declarations: &[Value],
+        server_time: bool,
+    ) -> Result<crate::programmatic_tools::ProgramPolicy> {
+        crate::programmatic_tools::ProgramPolicy::resolve_bound(
+            declarations,
+            server_time,
+            self.mcp,
+            self.discovery,
+        )
+        .map_err(Error::RustError)
     }
 }
 

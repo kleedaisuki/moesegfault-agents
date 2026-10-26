@@ -903,6 +903,74 @@ impl SessionInner {
         self.execute_mcp(record, &intent).await.map(Some)
     }
 
+    pub(super) async fn dispatch_programmatic_mcp(
+        &self,
+        record: &SessionRecord,
+        proof: &crate::programmatic_tools::AuthorizedInvocation,
+        capability: &str,
+    ) -> Result<Value> {
+        proof
+            .verify_scope(&record.owner_id, &record.id, util::now_ms())
+            .map_err(mcp_fault)?;
+        let call = provider::ToolCall {
+            id: proof.call_id().into(),
+            kind: "function".into(),
+            function: provider::FunctionCall {
+                name: capability.into(),
+                arguments: serde_json::to_string(proof.arguments())?,
+            },
+        };
+        self.dispatch_mcp_tool_as(
+            record,
+            proof.execution_key(),
+            &call,
+            crate::hosted_bindings::Caller::Programmatic,
+        )
+        .await?
+        .ok_or_else(|| mcp_fault("mcp_tool_not_bound"))?;
+        let response = self
+            .snapshot()?
+            .run
+            .and_then(|run| run.response)
+            .ok_or_else(|| mcp_fault("mcp_response_missing"))?;
+        let operation = self
+            .read_mcp_operation(&mcp_key(&response.id, proof.execution_key()))
+            .await?
+            .ok_or_else(|| mcp_fault("mcp_operation_missing"))?;
+        let outcome = operation
+            .outcome
+            .ok_or_else(|| mcp_fault("mcp_outcome_unknown"))?;
+        if let Some(failure) = outcome.failure {
+            return Ok(json!({"error":failure.public(),"outcome_unknown":failure.outcome_unknown}));
+        }
+        let (output, _) = crate::mcp_transport::tool_result(
+            outcome
+                .result
+                .ok_or_else(|| mcp_fault("mcp_result_missing"))?,
+        )?;
+        let value: Value = serde_json::from_str(&output)?;
+        if let Some(structured) = value.get("structuredContent") {
+            return Ok(structured.clone());
+        }
+        let content = value["content"]
+            .as_array()
+            .ok_or_else(|| mcp_fault("mcp_invalid_tool_result"))?
+            .iter()
+            .filter(|part| {
+                part.pointer("/annotations/audience")
+                    .and_then(Value::as_array)
+                    .is_none_or(|audience| audience.iter().any(|role| role == "assistant"))
+            })
+            .map(|part| {
+                if part["type"] != "text" {
+                    return Err(mcp_fault("program_mcp_modality_unavailable"));
+                }
+                Ok(json!({"type":"text","text":part["text"]}))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({"content":content,"isError":value["isError"]==true}))
+    }
+
     pub(super) async fn execute_mcp(
         &self,
         record: &SessionRecord,

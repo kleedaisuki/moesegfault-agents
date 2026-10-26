@@ -143,6 +143,11 @@ impl SessionInner {
             hosted: &response.bound_tools,
             mcp: &response.mcp_bindings,
             discovery: response.discovery.as_ref(),
+            programmatic: response
+                .request
+                .tools
+                .iter()
+                .any(|tool| tool.kind == "programmatic_tool_calling"),
         };
         let mut choices = std::collections::BTreeMap::new();
         for raw in &turn.output {
@@ -230,6 +235,11 @@ impl SessionInner {
                 hosted: &response.bound_tools,
                 mcp: &response.mcp_bindings,
                 discovery: response.discovery.as_ref(),
+                programmatic: response
+                    .request
+                    .tools
+                    .iter()
+                    .any(|tool| tool.kind == "programmatic_tool_calling"),
             };
             if let Some(policy) = bindings.policy_call(raw) {
                 if let Some(registry) = response.discovery.as_ref() {
