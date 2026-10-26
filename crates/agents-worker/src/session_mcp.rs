@@ -860,6 +860,22 @@ impl SessionInner {
         execution: &str,
         call: &provider::ToolCall,
     ) -> Result<Option<hosted_dispatch::HostedDispatch>> {
+        self.dispatch_mcp_tool_as(
+            record,
+            execution,
+            call,
+            crate::hosted_bindings::Caller::Direct,
+        )
+        .await
+    }
+
+    pub(super) async fn dispatch_mcp_tool_as(
+        &self,
+        record: &SessionRecord,
+        execution: &str,
+        call: &provider::ToolCall,
+        caller: crate::hosted_bindings::Caller,
+    ) -> Result<Option<hosted_dispatch::HostedDispatch>> {
         let call = self.resolved_mcp_call(call)?;
         let intent = {
             let data = self.data.borrow();
@@ -870,9 +886,13 @@ impl SessionInner {
             let Some(response) = run.response.as_ref() else {
                 return Ok(None);
             };
-            response
-                .mcp_bindings
-                .prepare_call(&record.owner_id, &response.id, execution, &call)?
+            response.mcp_bindings.prepare_call_as(
+                &record.owner_id,
+                &response.id,
+                execution,
+                &call,
+                caller,
+            )?
         };
         let Some(intent) = intent else {
             return Ok(None);
@@ -883,7 +903,7 @@ impl SessionInner {
         self.execute_mcp(record, &intent).await.map(Some)
     }
 
-    async fn execute_mcp(
+    pub(super) async fn execute_mcp(
         &self,
         record: &SessionRecord,
         intent: &CallIntent,
