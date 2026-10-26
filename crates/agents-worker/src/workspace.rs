@@ -49,7 +49,7 @@ pub(crate) use crate::workspace_blobs::OwnedArchiveRef;
 mod lost_code;
 
 use lease::ComputeLease;
-use transport::{Deadline, TimedResponse};
+pub(crate) use transport::{Deadline, TimedResponse};
 
 const PORT: u16 = 8080;
 const STARTUP_BUDGET_MS: u64 = 120_000;
