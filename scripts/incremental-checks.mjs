@@ -375,10 +375,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
     if (process.env.MAGENTS_RUNTIME_TOPIC === 'media') {
-      const selected = new Set(['node:tests/worker/hosted-image.test.mjs']);
-      const deferred = receipt.checks.worker.filter(check => check.argv[0] === 'node' && !selected.has(check.id));
-      receipt.checks.worker = receipt.checks.worker.filter(check => check.argv[0] !== 'node' || selected.has(check.id));
-      receipt.topic_scope = 'media-producer-regression-only';
+      const selected = new Set(['node:tests/worker/hosted-image.test.mjs', 'rust:agents-worker:wrapped_credit_denials_stay_actionable_without_backend_error_disclosure']);
+      const deferred = receipt.checks.worker.filter(check => !selected.has(check.id));
+      receipt.checks.worker = receipt.checks.worker.filter(check => selected.has(check.id));
+      for (const check of receipt.checks.worker) {
+        if (check.argv[0] === 'node') check.env.MAGENTS_HOSTED_IMAGE_CASE = 'funded_delivery';
+      }
+      receipt.topic_scope = 'media-funded-observation-regression-only';
       receipt.components.worker.validation_scope = receipt.topic_scope;
       receipt.components.worker.deferred_checks = deferred;
       receipt.diagnostic_only_components = [...new Set([...receipt.diagnostic_only_components, 'worker'])];
