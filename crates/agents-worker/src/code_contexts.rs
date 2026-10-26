@@ -1,7 +1,8 @@
 //! Owned context routing is a projection; the source actor validates live authority.
 
+use crate::code_executor_state::ExecutorKind;
 use crate::resources::ResourceMeter;
-use agents_core::RuntimeProfile;
+use agents_core::{CodeMemory, RuntimeProfile};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
 use worker::{D1PreparedStatement, D1Result, Env, Error, Result};
@@ -32,6 +33,14 @@ pub(crate) struct Allocation {
     pub source_session_id: String,
     pub source_profile: RuntimeProfile,
     pub funding_run_id: String,
+    #[serde(default)]
+    pub executor_kind: ExecutorKind,
+    #[serde(default)]
+    pub memory_limit: Option<CodeMemory>,
+    #[serde(default)]
+    pub cleanup_run_id: Option<String>,
+    #[serde(default)]
+    pub executor_lease_key: Option<String>,
     pub container_id: Option<String>,
     pub daemon_boot_id: Option<String>,
     pub policy_revision: Option<String>,
@@ -43,14 +52,37 @@ pub(crate) struct Allocation {
     pub allocation_released_at_ms: Option<u64>,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct OwnedContext {
     pub id: String,
     pub source_session: String,
     pub profile: RuntimeProfile,
     pub daemon_boot: String,
     pub policy_revision: String,
+    #[serde(default, skip_serializing_if = "ExecutorKind::is_managed")]
+    pub executor_kind: ExecutorKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit: Option<CodeMemory>,
 }
+
+impl OwnedContext {
+    pub(crate) fn memory(&self) -> CodeMemory {
+        self.memory_limit
+            .unwrap_or_else(|| CodeMemory::from_core(self.profile))
+    }
+}
+impl PartialEq for OwnedContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.source_session == other.source_session
+            && self.profile == other.profile
+            && self.daemon_boot == other.daemon_boot
+            && self.policy_revision == other.policy_revision
+            && self.executor_kind == other.executor_kind
+            && self.memory() == other.memory()
+    }
+}
+impl Eq for OwnedContext {}
 
 impl Allocation {
     pub fn owned(&self) -> Result<OwnedContext> {
@@ -64,6 +96,8 @@ impl Allocation {
                 .ok_or_else(|| fail("code_context_corrupt"))?,
             source_session: self.source_session_id.clone(),
             profile: self.source_profile,
+            executor_kind: self.executor_kind,
+            memory_limit: self.memory_limit,
             daemon_boot: self
                 .daemon_boot_id
                 .clone()
@@ -97,7 +131,7 @@ pub(crate) fn valid_cid(value: &str) -> bool {
         .is_some_and(|tail| tail.len() == 32 && tail.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-const COLUMNS: &str = "allocation_id,account_id,source_session_id,source_profile,funding_run_id,container_id,daemon_boot_id,policy_revision,state,created_at_ms,last_used_at_ms,expires_at_ms,ended_at_ms,allocation_released_at_ms";
+const COLUMNS: &str = "allocation_id,account_id,source_session_id,source_profile,funding_run_id,container_id,daemon_boot_id,policy_revision,state,created_at_ms,last_used_at_ms,expires_at_ms,ended_at_ms,allocation_released_at_ms,executor_kind,memory_limit,cleanup_run_id,executor_lease_key";
 
 pub(crate) async fn find(
     env: &Env,
@@ -143,7 +177,7 @@ pub(crate) fn public(allocation: &Allocation, running: bool) -> serde_json::Valu
     serde_json::json!({"id":allocation.container_id,"object":"container","name":"Code Interpreter",
         "created_at":allocation.created_at_ms/1000,"last_active_at":allocation.last_used_at_ms/1000,
         "status":if running { "running" } else { "expired" },
-        "memory_limit":match allocation.source_profile { RuntimeProfile::Basic1g=>"1g",RuntimeProfile::Standard4g=>"4g" },
+        "memory_limit":allocation.memory_limit.unwrap_or_else(||CodeMemory::from_core(allocation.source_profile)),
         "expires_after":{"anchor":"last_active_at","minutes":20},
         "agents_cleanup_status":if allocation.allocation_released_at_ms.is_some() { "complete" } else if !running { "pending" } else { "not_requested" }})
 }
@@ -184,6 +218,9 @@ pub(crate) async fn claim(
     {
         return Err(fail("invalid_code_context_allocation"));
     }
+    if allocation.executor_kind == ExecutorKind::WorkspaceDaemon {
+        return claim_executor(env, allocation, capacity, meter).await;
+    }
     let statement = env.d1("DB")?.prepare("INSERT INTO code_contexts(allocation_id,account_id,source_session_id,source_profile,funding_run_id,state,created_at_ms,last_used_at_ms,expires_at_ms) SELECT ?1,?2,?3,?4,?5,'reserved',CAST(?6 AS INTEGER),CAST(?6 AS INTEGER),CAST(?7 AS INTEGER) WHERE EXISTS(SELECT 1 FROM usage_reservations WHERE id=?5 AND account_id=?2 AND session_id=?3 AND state='reserved' AND execution_finished_at IS NULL) AND (EXISTS(SELECT 1 FROM code_contexts WHERE account_id=?2 AND source_session_id=?3 AND allocation_released_at_ms IS NULL) OR (SELECT COUNT(DISTINCT source_session_id) FROM code_contexts WHERE account_id=?2 AND allocation_released_at_ms IS NULL)<CAST(?8 AS INTEGER)) ON CONFLICT DO NOTHING")
         .bind(&[text(&allocation.allocation_id),text(&allocation.account_id),text(&allocation.source_session_id),text(allocation.source_profile.name()),text(&allocation.funding_run_id),text(&allocation.created_at_ms.to_string()),text(&allocation.expires_at_ms.to_string()),text(&capacity.to_string())])?;
     query(meter, statement).await?;
@@ -200,6 +237,48 @@ pub(crate) async fn claim(
         || stored.funding_run_id != allocation.funding_run_id
         || stored.created_at_ms != allocation.created_at_ms
         || !matches!(stored.state, ContextState::Reserved | ContextState::Ready)
+    {
+        return Err(fail("code_context_allocation_conflict"));
+    }
+    Ok(())
+}
+
+async fn claim_executor(
+    env: &Env,
+    allocation: &Allocation,
+    capacity: u32,
+    meter: &ResourceMeter<'_>,
+) -> Result<()> {
+    let memory = serde_json::to_value(
+        allocation
+            .memory_limit
+            .ok_or_else(|| fail("code_executor_memory_missing"))?,
+    )?;
+    let cleanup = allocation
+        .cleanup_run_id
+        .as_deref()
+        .ok_or_else(|| fail("code_executor_cleanup_unfunded"))?;
+    let key = allocation
+        .executor_lease_key
+        .as_deref()
+        .ok_or_else(|| fail("code_executor_lease_missing"))?;
+    let statement=env.d1("DB")?.prepare("WITH funded_actor AS(SELECT 1 FROM usage_reservations WHERE id=?5 AND account_id=?2 AND session_id=?3 AND state='reserved' AND execution_finished_at IS NULL), funded_cleanup AS(SELECT 1 FROM usage_reservations WHERE id=?11 AND account_id=?2 AND session_id IS NULL AND state='reserved') INSERT INTO code_contexts(allocation_id,account_id,source_session_id,source_profile,funding_run_id,state,created_at_ms,last_used_at_ms,expires_at_ms,executor_kind,memory_limit,cleanup_run_id,executor_lease_key) SELECT ?1,?2,?3,?4,?5,'reserved',CAST(?6 AS INTEGER),CAST(?6 AS INTEGER),CAST(?7 AS INTEGER),'workspace_daemon',?9,?11,?10 WHERE EXISTS(SELECT 1 FROM funded_actor) AND EXISTS(SELECT 1 FROM funded_cleanup) AND (EXISTS(SELECT 1 FROM code_contexts WHERE account_id=?2 AND source_session_id=?3 AND allocation_released_at_ms IS NULL) OR(SELECT COUNT(DISTINCT source_session_id) FROM code_contexts WHERE account_id=?2 AND allocation_released_at_ms IS NULL)<CAST(?8 AS INTEGER)) ON CONFLICT DO NOTHING")
+        .bind(&[text(&allocation.allocation_id),text(&allocation.account_id),text(&allocation.source_session_id),text(allocation.source_profile.name()),text(&allocation.funding_run_id),text(&allocation.created_at_ms.to_string()),text(&allocation.expires_at_ms.to_string()),text(&capacity.to_string()),text(memory.as_str().unwrap()),text(key),text(cleanup)])?;
+    query(meter, statement).await?;
+    let stored = get(
+        env,
+        &allocation.account_id,
+        &allocation.allocation_id,
+        meter,
+    )
+    .await?
+    .ok_or_else(|| fail("code_executor_or_capacity_busy"))?;
+    if stored.executor_kind != allocation.executor_kind
+        || stored.executor_lease_key != allocation.executor_lease_key
+        || stored.memory_limit != allocation.memory_limit
+        || stored.cleanup_run_id != allocation.cleanup_run_id
+        || stored.source_session_id != allocation.source_session_id
+        || stored.funding_run_id != allocation.funding_run_id
     {
         return Err(fail("code_context_allocation_conflict"));
     }
@@ -289,5 +368,16 @@ mod tests {
         for value in ["cntr_new", "cntr_../source", "", "session_123"] {
             assert!(!valid_cid(value));
         }
+    }
+    #[test]
+    fn legacy_context_pins_keep_identity_and_ticket_bytes_across_memory_descriptors() {
+        let wire = serde_json::json!({"id":format!("cntr_{}","a".repeat(32)),"source_session":"source","profile":"basic1g","daemon_boot":"boot","policy_revision":"policy"});
+        let old: OwnedContext = serde_json::from_value(wire.clone()).unwrap();
+        let mut described = old.clone();
+        described.memory_limit = Some(CodeMemory::OneGiB);
+        assert!(old == described);
+        assert_eq!(serde_json::to_value(&old).unwrap(), wire);
+        described.memory_limit = Some(CodeMemory::FourGiB);
+        assert!(old != described);
     }
 }

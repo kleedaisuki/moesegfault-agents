@@ -156,6 +156,41 @@ impl SessionInner {
         }
     }
 
+    async fn source_code_runtime<'a>(
+        &'a self,
+        record: &'a SessionRecord,
+        context: &OwnedContext,
+        ticket: &Ticket,
+        traceparent: Option<String>,
+    ) -> Result<crate::code_runtime::CodeRuntime<'a>> {
+        match self.local_code_backend(&context.id).await? {
+            crate::code_executor_state::ExecutionBackend::Managed => {
+                Ok(crate::code_runtime::CodeRuntime::Local(
+                    self.workspace(record)
+                        .existing_code_only()
+                        .with_traceparent(traceparent),
+                ))
+            }
+            crate::code_executor_state::ExecutionBackend::Executor { profile } => {
+                let trace = traceparent
+                    .as_deref()
+                    .and_then(crate::telemetry::TraceContext::parse);
+                Ok(crate::code_runtime::CodeRuntime::Executor(
+                    crate::code_executor_runtime::RemoteRuntime::new(
+                        self.state.storage(),
+                        &self.env,
+                        &record.owner_id,
+                        &ticket.guest_session,
+                        &ticket.guest_run,
+                        profile,
+                        trace,
+                    )
+                    .await?,
+                ))
+            }
+        }
+    }
+
     async fn borrowed_code_inspect(
         &self,
         record: &SessionRecord,
@@ -172,9 +207,7 @@ impl SessionInner {
             .ok_or_else(|| fail("code_container_not_found"))?;
         if allocation.owned()? != reference.context
             || !self
-                .workspace(record)
-                .with_traceparent(traceparent)
-                .python_context_live(&reference.context.id, &reference.context.daemon_boot)
+                .code_context_live(record, &reference.context.id)
                 .await?
         {
             return Err(fail("code_container_not_found"));
@@ -232,9 +265,8 @@ impl SessionInner {
             }
         }
         let workspace = self
-            .workspace(record)
-            .existing_code_only()
-            .with_traceparent(traceparent);
+            .source_code_runtime(record, &cell.context, &cell.ticket, traceparent)
+            .await?;
         let draining = receipt.is_some() && workspace.python_dispatch_exists(&id).await?;
         let allocation = if draining {
             None
@@ -316,9 +348,8 @@ impl SessionInner {
             .ticket
             .supervisor_id(&record.owner_id, &reference.context)?;
         let workspace = self
-            .workspace(record)
-            .existing_code_only()
-            .with_traceparent(traceparent);
+            .source_code_runtime(record, &reference.context, &reference.ticket, traceparent)
+            .await?;
         let receipt = read_chunks(&self.state.storage(), &key(&id))
             .await?
             .map(|bytes| {
@@ -420,9 +451,8 @@ impl SessionInner {
             return Err(fail("code_resource_outcome_pending"));
         }
         let workspace = self
-            .workspace(record)
-            .existing_code_only()
-            .with_traceparent(traceparent);
+            .source_code_runtime(record, &reference.context, &reference.ticket, traceparent)
+            .await?;
         if path.ends_with("/complete") {
             if receipt
                 .artifacts

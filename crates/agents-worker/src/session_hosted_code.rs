@@ -205,7 +205,8 @@ impl SessionInner {
         {
             return Ok(());
         }
-        self.hosted_code_runtime(record, &run_id, &execution, &options)?
+        self.hosted_code_runtime(record, &run_id, &execution, &options)
+            .await?
             .cancel_python(&operation.supervisor_id)
             .await
     }
@@ -243,7 +244,7 @@ impl SessionInner {
         }
     }
 
-    fn hosted_code_runtime<'a>(
+    async fn hosted_code_runtime<'a>(
         &'a self,
         record: &'a SessionRecord,
         run: &str,
@@ -274,6 +275,48 @@ impl SessionInner {
                 )),
             )?;
             return Ok(crate::code_runtime::CodeRuntime::Borrowed(executor));
+        }
+        let external = match &options.executor {
+            Some(crate::hosted_bindings::ExecutorBinding::Pinned { profile }) => {
+                Some(profile.clone())
+            }
+            Some(_) => return Err(fail("code_executor_profile_unresolved")),
+            None => match options.owned_context() {
+                Some(context)
+                    if context.executor_kind
+                        == crate::code_executor_state::ExecutorKind::WorkspaceDaemon =>
+                {
+                    match self.local_code_backend(&context.id).await? {
+                        crate::code_executor_state::ExecutionBackend::Executor { profile } => {
+                            Some(profile)
+                        }
+                        _ => return Err(fail("code_resource_binding_mismatch")),
+                    }
+                }
+                _ => None,
+            },
+        };
+        if let Some(profile) = external {
+            let header = self
+                .data
+                .borrow()
+                .as_ref()
+                .and_then(|data| data.run.as_ref())
+                .and_then(|run| run.traceparent.clone());
+            return Ok(crate::code_runtime::CodeRuntime::Executor(
+                crate::code_executor_runtime::RemoteRuntime::new(
+                    self.state.storage(),
+                    &self.env,
+                    &record.owner_id,
+                    &record.id,
+                    run,
+                    profile,
+                    Some(crate::telemetry::TraceContext::from_traceparent(
+                        header.as_deref(),
+                    )),
+                )
+                .await?,
+            ));
         }
         let mut workspace = self.workspace(record).for_run(run);
         if matches!(&options.container, CodeContainer::Existing { .. }) {
@@ -368,7 +411,9 @@ impl SessionInner {
                 .await?;
         }
         let _resource = self.code_operation.lock().await;
-        let workspace = self.hosted_code_runtime(record, &run_id, execution_id, options)?;
+        let workspace = self
+            .hosted_code_runtime(record, &run_id, execution_id, options)
+            .await?;
         if operation.failure.is_none()
             && operation.result.is_none()
             && action(
@@ -524,6 +569,9 @@ impl SessionInner {
                                 execution_id,
                                 operation.context.as_deref().unwrap(),
                                 options,
+                                &workspace
+                                    .boot(operation.context.as_deref().unwrap())
+                                    .await?,
                             )
                             .await?;
                         }
@@ -662,10 +710,7 @@ fn python_request(
         container_id: context,
         timeout_ms: 120_000,
         max_output_bytes: 1024 * 1024,
-        memory_limit: match options.allocated_memory {
-            MemoryTier::OneGiB => PythonMemoryTier::OneGiB,
-            MemoryTier::FourGiB => PythonMemoryTier::FourGiB,
-        },
+        memory_limit: options.allocated_memory,
         network_policy,
     }
 }
@@ -901,6 +946,7 @@ mod tests {
                         id: "cntr_known".into(),
                     },
                     allocated_memory: MemoryTier::OneGiB,
+                    executor: None,
                 },
             },
             allowed_callers: None,

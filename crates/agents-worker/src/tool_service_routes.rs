@@ -11,6 +11,11 @@ pub async fn validate_owned(env: &Env, owner: &str, services: &ToolServices) -> 
     services
         .validate()
         .map_err(|_| Error::RustError("invalid_tool_services".into()))?;
+    if let Some(code) = &services.code_interpreter {
+        if code.provider == agents_core::CodeServiceProvider::WorkspaceDaemon {
+            validate_credential(env, owner, code.credential_id.as_deref()).await?;
+        }
+    }
     if let Some(image) = &services.image_generation {
         for host in &image.asset_hosts {
             let normalized = match url::Host::parse(host) {

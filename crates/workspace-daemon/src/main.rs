@@ -1,5 +1,6 @@
 mod file_import;
 mod interpreter;
+mod interpreter_capabilities;
 mod interpreter_egress;
 mod interpreter_files;
 mod interpreter_limits;
@@ -117,6 +118,10 @@ fn router(state: Arc<App>) -> Router {
         .route(
             "/v1/python",
             post(interpreter::execute).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/v1/python/capabilities",
+            get(interpreter_capabilities::capabilities),
         )
         .route(
             "/v1/python/contexts",

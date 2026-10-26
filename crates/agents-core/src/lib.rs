@@ -1,12 +1,14 @@
 //! Shared, platform-independent contracts for the agent control and execution planes.
 
 pub mod agent;
+pub mod code_service;
 pub mod context;
 pub mod session;
 pub mod tool_services;
 pub mod usage;
 
 pub use agent::*;
+pub use code_service::*;
 pub use context::*;
 pub use session::*;
 pub use tool_services::*;

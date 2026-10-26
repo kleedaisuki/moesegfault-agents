@@ -72,11 +72,7 @@ impl Cell {
         {
             return Err(fail("code_container_not_found"));
         }
-        let memory = match self.request.memory_limit {
-            PythonMemoryTier::OneGiB => agents_core::RuntimeProfile::Basic1g,
-            PythonMemoryTier::FourGiB => agents_core::RuntimeProfile::Standard4g,
-        };
-        if memory != self.context.profile {
+        if self.request.memory_limit != self.context.memory() {
             return Err(fail("code_memory_profile_mismatch"));
         }
         if self.request.code.is_empty()
@@ -103,6 +99,8 @@ mod tests {
             profile: agents_core::RuntimeProfile::Basic1g,
             daemon_boot: "boot".into(),
             policy_revision: "policy".into(),
+            executor_kind: crate::code_executor_state::ExecutorKind::Managed,
+            memory_limit: None,
         };
         let ticket = Ticket {
             guest_session: "guest".into(),

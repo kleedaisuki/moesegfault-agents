@@ -1,5 +1,6 @@
 //! Code memory has its own resource clock; closing a harness does not renew it.
 use super::*;
+use crate::code_executor_state::{CleanupFunding, ExecutionBackend, ExecutorKind};
 use crate::{
     code_contexts::{self as catalog, Allocation, ContextState, IDLE_MS, OwnedContext},
     hosted_bindings::{CodeContainer, CodeOptions, NetworkPolicy, ResolvedTool},
@@ -29,6 +30,10 @@ impl Retirement {
 struct Resource {
     allocation: Allocation,
     policy: NetworkPolicy,
+    #[serde(default, skip_serializing_if = "ExecutionBackend::is_managed")]
+    backend: ExecutionBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cleanup: Option<CleanupFunding>,
     preparation_started: bool,
     namespace_retired: bool,
     retry_at_ms: u64,
@@ -49,11 +54,15 @@ impl Registry {
             .values()
             .filter_map(|resource| match resource.allocation.state {
                 ContextState::Ready => Some(
-                    resource
-                        .allocation
-                        .expires_at_ms
-                        .min(now.saturating_add(HEARTBEAT_MS))
-                        .max(now.saturating_add(1000)),
+                    if resource.backend.is_managed() {
+                        resource
+                            .allocation
+                            .expires_at_ms
+                            .min(now.saturating_add(HEARTBEAT_MS))
+                    } else {
+                        resource.allocation.expires_at_ms
+                    }
+                    .max(now.saturating_add(1000)),
                 ),
                 ContextState::Expired | ContextState::Deleted => {
                     Some(resource.retry_at_ms.max(now.saturating_add(1000)))
@@ -70,7 +79,8 @@ impl Registry {
 
     fn retained(&self, now: u64) -> bool {
         self.resources.values().any(|resource| {
-            resource.allocation.allocation_released_at_ms.is_none()
+            resource.backend.is_managed()
+                && resource.allocation.allocation_released_at_ms.is_none()
                 && (resource.allocation.state == ContextState::Reserved
                     || resource.allocation.state == ContextState::Ready
                         && resource.allocation.expires_at_ms > now)
@@ -117,6 +127,41 @@ impl SessionInner {
         }
         self.arm_alarm().await?;
         Ok(result)
+    }
+
+    async fn resource_is_live(&self, record: &SessionRecord, resource: &Resource) -> Result<bool> {
+        let Some(cid) = resource.allocation.container_id.as_deref() else {
+            return Ok(false);
+        };
+        let boot = resource.allocation.daemon_boot_id.as_deref().unwrap_or("");
+        match &resource.backend {
+            ExecutionBackend::Managed => {
+                self.workspace(record).python_context_live(cid, boot).await
+            }
+            ExecutionBackend::Executor { profile } => {
+                profile
+                    .open(&self.env, &record.owner_id, None)
+                    .await?
+                    .inspect(cid, boot)
+                    .await
+            }
+        }
+    }
+
+    pub(super) async fn code_context_live(
+        &self,
+        record: &SessionRecord,
+        cid: &str,
+    ) -> Result<bool> {
+        let registry = self.read_code_registry().await?;
+        let Some(resource) = registry
+            .resources
+            .values()
+            .find(|resource| resource.allocation.container_id.as_deref() == Some(cid))
+        else {
+            return Ok(false);
+        };
+        self.resource_is_live(record, resource).await
     }
 
     pub(super) async fn restore_code_resources(&self) -> Result<()> {
@@ -190,14 +235,7 @@ impl SessionInner {
                         && resource.allocation.expires_at_ms > util::now_ms()
                 })
                 .ok_or_else(|| fail("code_container_not_found"))?;
-            if !self
-                .workspace(record)
-                .python_context_live(
-                    id,
-                    resource.allocation.daemon_boot_id.as_deref().unwrap_or(""),
-                )
-                .await?
-            {
+            if !self.resource_is_live(record, resource).await? {
                 return Err(fail("code_container_not_found"));
             }
             return Ok(());
@@ -210,13 +248,7 @@ impl SessionInner {
         {
             if resource.allocation.state == ContextState::Ready {
                 let live = resource.allocation.expires_at_ms > util::now_ms()
-                    && self
-                        .workspace(record)
-                        .python_context_live(
-                            resource.allocation.container_id.as_deref().unwrap_or(""),
-                            resource.allocation.daemon_boot_id.as_deref().unwrap_or(""),
-                        )
-                        .await?;
+                    && self.resource_is_live(record, resource).await?;
                 if !live {
                     let meter = ResourceMeter::new(&self.env, &record.owner_id, &record.id, run)?;
                     if !self
@@ -232,9 +264,18 @@ impl SessionInner {
                 }
             }
         }
+        let backend = match &options.executor {
+            Some(crate::hosted_bindings::ExecutorBinding::Pinned { profile }) => {
+                ExecutionBackend::Executor {
+                    profile: profile.clone(),
+                }
+            }
+            Some(_) => return Err(fail("code_executor_profile_unresolved")),
+            None => ExecutionBackend::Managed,
+        };
         let network_policy = network_policy.clone();
         let now = util::now_ms();
-        let allocation = self
+        let mut allocation = self
             .update_code_registry(|registry| {
                 if let Some(resource) = registry
                     .current
@@ -259,6 +300,17 @@ impl SessionInner {
                     source_session_id: record.id.clone(),
                     source_profile: record.runtime_profile,
                     funding_run_id: run.into(),
+                    executor_kind: backend.kind(),
+                    memory_limit: if backend.is_managed() {
+                        None
+                    } else {
+                        Some(options.allocated_memory)
+                    },
+                    cleanup_run_id: None,
+                    executor_lease_key: match &backend {
+                        ExecutionBackend::Executor { profile } => Some(profile.lease_key()),
+                        _ => None,
+                    },
                     container_id: None,
                     daemon_boot_id: None,
                     policy_revision: None,
@@ -275,6 +327,8 @@ impl SessionInner {
                     Resource {
                         allocation: allocation.clone(),
                         policy: network_policy,
+                        backend: backend.clone(),
+                        cleanup: None,
                         preparation_started: false,
                         namespace_retired: false,
                         retry_at_ms: 0,
@@ -285,6 +339,31 @@ impl SessionInner {
                 Ok(allocation)
             })
             .await?;
+        if allocation.executor_kind == ExecutorKind::WorkspaceDaemon
+            && allocation.cleanup_run_id.is_none()
+        {
+            let id = format!("code-cleanup:{}", allocation.allocation_id);
+            let pricing = crate::resources::ResourcePricing::parse(
+                &self.env.var("RESOURCE_PRICING_JSON")?.to_string(),
+            )?;
+            let reservation =
+                crate::reconcile::maintenance_account_reservation(&self.env, &record.owner_id, &id)
+                    .await?;
+            if reservation.state != agents_auth::billing::ReservationState::Reserved {
+                return Err(fail("code_executor_cleanup_unfunded"));
+            }
+            allocation = self
+                .update_code_registry(|registry| {
+                    let resource = registry
+                        .resources
+                        .get_mut(&allocation.allocation_id)
+                        .ok_or_else(|| fail("code_resource_state_corrupt"))?;
+                    resource.allocation.cleanup_run_id = Some(id.clone());
+                    resource.cleanup = Some(CleanupFunding { id, pricing });
+                    Ok(resource.allocation.clone())
+                })
+                .await?;
+        }
         if allocation.state == ContextState::Reserved {
             let meter = ResourceMeter::new(&self.env, &record.owner_id, &record.id, run)?;
             let capacity = Store::new(&self.env)
@@ -332,13 +411,9 @@ impl SessionInner {
         execution: &str,
         cid: &str,
         _options: &CodeOptions,
+        boot: &str,
     ) -> Result<()> {
-        let boot = self
-            .state
-            .storage()
-            .get::<String>("workspace:boot")
-            .await?
-            .ok_or_else(|| fail("workspace_boot_missing"))?;
+        let boot = boot.to_owned();
         let now = util::now_ms();
         let (allocation, context, used_at) = self
             .update_code_registry(|registry| {
@@ -365,6 +440,8 @@ impl SessionInner {
                     id: cid.into(),
                     source_session: record.id.clone(),
                     profile: record.runtime_profile,
+                    executor_kind: resource.allocation.executor_kind,
+                    memory_limit: resource.allocation.memory_limit,
                     daemon_boot: boot,
                     policy_revision: resource
                         .allocation
@@ -429,7 +506,8 @@ impl SessionInner {
                     .get_mut(id)
                     .ok_or_else(|| fail("code_resource_state_corrupt"))?;
                 if resource.allocation.state == ContextState::Reserved
-                    && (!resource.preparation_started || unprepared)
+                    && (!resource.preparation_started
+                        || (unprepared && resource.backend.is_managed()))
                     && resource.allocation.funding_run_id == run
                 {
                     resource.allocation.state = ContextState::Expired;
@@ -452,6 +530,22 @@ impl SessionInner {
             .await?;
             catalog::release_allocation(&self.env, &record.owner_id, &id, util::now_ms(), &meter)
                 .await?;
+            let cleanup = self
+                .read_code_registry()
+                .await?
+                .resources
+                .get(&id)
+                .and_then(|resource| resource.cleanup.clone());
+            if let Some(cleanup) = cleanup {
+                ResourceMeter::with_account_pricing(
+                    &self.env,
+                    &record.owner_id,
+                    &cleanup.id,
+                    cleanup.pricing,
+                )?
+                .settle_run()
+                .await?;
+            }
             self.update_code_registry(|registry| {
                 registry.resources.remove(&id);
                 if registry.current.as_ref() == Some(&id) {
@@ -539,6 +633,16 @@ impl SessionInner {
             .record
             .clone();
         if resource.allocation.allocation_released_at_ms.is_some() {
+            if let Some(cleanup) = &resource.cleanup {
+                ResourceMeter::with_account_pricing(
+                    &self.env,
+                    &record.owner_id,
+                    &cleanup.id,
+                    cleanup.pricing.clone(),
+                )?
+                .settle_run()
+                .await?;
+            }
             self.update_code_registry(|registry| {
                 registry.resources.remove(id);
                 if registry.current.as_deref() == Some(id) {
@@ -561,7 +665,19 @@ impl SessionInner {
         let Some(_operation) = self.code_operation.try_lock() else {
             if cause == Retirement::ExplicitDelete {
                 if let Some(execution) = resource.active_borrowed.as_deref() {
-                    self.workspace(&record).cancel_python(execution).await?;
+                    match &resource.backend {
+                        ExecutionBackend::Managed => {
+                            self.workspace(&record).cancel_python(execution).await?
+                        }
+                        ExecutionBackend::Executor { profile } => {
+                            use sha2::{Digest, Sha256};
+                            profile
+                                .open(&self.env, &record.owner_id, None)
+                                .await?
+                                .cancel(&format!("{:x}", Sha256::digest(execution.as_bytes())))
+                                .await?;
+                        }
+                    }
                     return Ok(false);
                 }
                 let response = self
@@ -579,14 +695,32 @@ impl SessionInner {
         };
         let workspace = self.workspace(&record);
         if !resource.namespace_retired {
-            let context = match resource.allocation.container_id.as_deref() {
-                Some(cid) => Some(cid.to_owned()),
-                None if resource.preparation_started => workspace.python_context().await?,
-                None => None,
+            let stopped = match &resource.backend {
+                ExecutionBackend::Managed => {
+                    let context = match resource.allocation.container_id.as_deref() {
+                        Some(cid) => Some(cid.to_owned()),
+                        None if resource.preparation_started => workspace.python_context().await?,
+                        None => None,
+                    };
+                    match context {
+                        Some(cid) => workspace.retire_python_context(&cid).await?,
+                        None => true,
+                    }
+                }
+                ExecutionBackend::Executor { profile } => {
+                    let executor = profile.open(&self.env, &record.owner_id, None).await?;
+                    let context = match resource.allocation.container_id.as_deref() {
+                        Some(cid) => Some(cid.to_owned()),
+                        None if resource.preparation_started => executor.current_context().await?,
+                        None => None,
+                    };
+                    match context {
+                        Some(cid) => executor.retire(&cid).await?,
+                        None => true,
+                    }
+                }
             };
-            if let Some(context) = context
-                && !workspace.retire_python_context(&context).await?
-            {
+            if !stopped {
                 return Ok(false);
             }
             self.update_code_registry(|registry| {
@@ -597,11 +731,19 @@ impl SessionInner {
             })
             .await?;
         }
-        if workspace.python_publication_pending().await? {
+        let pending = match resource.backend {
+            ExecutionBackend::Managed => workspace.python_publication_pending().await?,
+            ExecutionBackend::Executor { .. } => {
+                crate::code_executor_runtime::publication_pending(&self.state.storage()).await?
+            }
+        };
+        if pending {
             return Ok(false);
         }
         let release_physical = !self.code_retains_compute().await?
-            && (record.status == SessionStatus::Closed || !record.pinned.workspace);
+            && (record.status == SessionStatus::Closed || !record.pinned.workspace)
+            && (workspace.physical_workspace_running().await?
+                || workspace.cleanup_funding().await?.is_some());
         let lost = if release_physical && !workspace.physical_workspace_running().await? {
             workspace.observe_lost_code_incarnation().await?
         } else {
@@ -644,6 +786,20 @@ impl SessionInner {
                 );
             }
         }
+        if let Some(cleanup) = resource.cleanup {
+            if ResourceMeter::with_account_pricing(
+                &self.env,
+                &record.owner_id,
+                &cleanup.id,
+                cleanup.pricing,
+            )?
+            .settle_run()
+            .await
+            .is_err()
+            {
+                return Ok(true);
+            }
+        }
         self.update_code_registry(|registry| {
             registry.resources.remove(id);
             if registry.current.as_deref() == Some(id) {
@@ -671,62 +827,60 @@ impl SessionInner {
             .record
             .clone();
         let workspace = self.workspace(&record);
-        let Some(funding) = workspace.cleanup_funding().await? else {
-            let pending = self
-                .update_code_registry(|registry| {
-                    registry.resources.retain(|_, resource| {
-                        resource.allocation.allocation_released_at_ms.is_none()
-                    });
-                    if registry
-                        .current
-                        .as_ref()
-                        .is_some_and(|id| !registry.resources.contains_key(id))
-                    {
-                        registry.current = None;
-                    }
-                    Ok(!registry.resources.is_empty())
-                })
-                .await?;
-            if pending {
-                self.code_deadline
-                    .set(Some(util::now_ms().saturating_add(60_000)));
-            }
-            return Ok(());
-        };
-        let meter = ResourceMeter::with_pricing(
-            &self.env,
-            &record.owner_id,
-            &record.id,
-            &funding.id,
-            funding.pricing,
-        )?;
-        let due = self
-            .read_code_registry()
-            .await?
+        let warm = workspace.cleanup_funding().await?;
+        let registry = self.read_code_registry().await?;
+        let due = registry
             .resources
-            .into_iter()
+            .iter()
             .filter(|(_, resource)| {
-                (matches!(
+                matches!(
                     resource.allocation.state,
                     ContextState::Expired | ContextState::Deleted
-                ) && resource.retry_at_ms <= util::now_ms())
-                    || (matches!(
+                ) && resource.retry_at_ms <= util::now_ms()
+                    || matches!(
                         resource.allocation.state,
                         ContextState::Reserved | ContextState::Ready
-                    ) && resource.allocation.expires_at_ms <= util::now_ms())
+                    ) && resource.allocation.expires_at_ms <= util::now_ms()
             })
-            .map(|(id, _)| id)
-            .take(8)
-            .collect::<Vec<_>>();
+            .take(8);
         let mut failed = false;
-        for id in due {
+        for (id, resource) in due {
+            let meter = if let Some(cleanup) = &resource.cleanup {
+                ResourceMeter::with_account_pricing(
+                    &self.env,
+                    &record.owner_id,
+                    &cleanup.id,
+                    cleanup.pricing.clone(),
+                )?
+            } else if let Some(warm) = &warm {
+                ResourceMeter::with_pricing(
+                    &self.env,
+                    &record.owner_id,
+                    &record.id,
+                    &warm.id,
+                    warm.pricing.clone(),
+                )?
+            } else {
+                if resource.allocation.allocation_released_at_ms.is_some() {
+                    self.update_code_registry(|registry| {
+                        registry.resources.remove(id);
+                        if registry.current.as_deref() == Some(id) {
+                            registry.current = None;
+                        }
+                        Ok(())
+                    })
+                    .await?;
+                } else {
+                    failed = true;
+                }
+                continue;
+            };
             if self
-                .retire_code_resource(&id, Retirement::Idle, &meter)
+                .retire_code_resource(id, Retirement::Idle, &meter)
                 .await
                 .is_err()
             {
                 failed = true;
-                break;
             }
         }
         let registry = self.read_code_registry().await?;
@@ -769,7 +923,7 @@ impl SessionInner {
                     let record = self.data.borrow().as_ref().unwrap().record.clone();
                     let running = resource.allocation.state == ContextState::Ready
                         && resource.allocation.expires_at_ms > util::now_ms()
-                        && self.workspace(&record).python_context_live(&input.container_id, resource.allocation.daemon_boot_id.as_deref().unwrap_or("")).await?;
+                        && self.resource_is_live(&record,&resource).await?;
                     Response::from_json(&catalog::public(&resource.allocation, running))
                 }
                 "/code-resources/delete" => {
@@ -786,6 +940,16 @@ impl SessionInner {
 }
 
 impl SessionInner {
+    pub(super) async fn local_code_backend(&self, cid: &str) -> Result<ExecutionBackend> {
+        self.read_code_registry()
+            .await?
+            .resources
+            .into_values()
+            .find(|resource| resource.allocation.container_id.as_deref() == Some(cid))
+            .map(|resource| resource.backend)
+            .ok_or_else(|| fail("code_container_not_found"))
+    }
+
     pub(super) async fn local_code_allocation(&self, cid: &str) -> Result<Option<Allocation>> {
         Ok(self
             .read_code_registry()
@@ -860,6 +1024,10 @@ mod tests {
                 source_session_id: "source".into(),
                 source_profile: agents_core::RuntimeProfile::Basic1g,
                 funding_run_id: "run".into(),
+                executor_kind: ExecutorKind::Managed,
+                memory_limit: None,
+                cleanup_run_id: None,
+                executor_lease_key: None,
                 container_id: Some(format!("cntr_{}", "a".repeat(32))),
                 daemon_boot_id: Some("boot".into()),
                 policy_revision: Some("policy".into()),
@@ -871,6 +1039,8 @@ mod tests {
                 allocation_released_at_ms: None,
             },
             policy: NetworkPolicy::Disabled,
+            backend: ExecutionBackend::Managed,
+            cleanup: None,
             preparation_started: true,
             namespace_retired: false,
             retry_at_ms: 0,

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct ToolServices {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_interpreter: Option<crate::CodeService>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_generation: Option<ImageService>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<SearchService>,
@@ -15,10 +17,15 @@ pub struct ToolServices {
 
 impl ToolServices {
     pub fn is_empty(&self) -> bool {
-        self.image_generation.is_none() && self.web_search.is_none()
+        self.code_interpreter.is_none()
+            && self.image_generation.is_none()
+            && self.web_search.is_none()
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(code) = &self.code_interpreter {
+            code.validate()?;
+        }
         if let Some(image) = &self.image_generation {
             image.validate()?;
         }

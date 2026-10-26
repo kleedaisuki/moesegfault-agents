@@ -979,7 +979,13 @@ pub(super) async fn prepare_context(
         return error(StatusCode::NOT_FOUND, "code container not found");
     }
     match state.interpreter.prepare(&request).await {
-        Ok(id) => Json(serde_json::json!({"container_id":id})).into_response(),
+        Ok(id) => {
+            let mut response = Json(serde_json::json!({"container_id":id})).into_response();
+            response
+                .headers_mut()
+                .insert("X-Code-Boot-Id", state.boot_id.parse().unwrap());
+            response
+        }
         Err(PreparationFailure::Missing) => {
             error(StatusCode::NOT_FOUND, "code container not found")
         }

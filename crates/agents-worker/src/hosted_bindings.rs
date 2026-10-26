@@ -17,22 +17,7 @@ use crate::{
     image_generation::ImageOptions, search_byok::SearchOptions, tools::ToolDefinition,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum MemoryTier {
-    #[serde(rename = "1g")]
-    OneGiB,
-    #[serde(rename = "4g")]
-    FourGiB,
-}
-
-impl MemoryTier {
-    pub(crate) const fn from_core(profile: agents_core::RuntimeProfile) -> Self {
-        match profile {
-            agents_core::RuntimeProfile::Basic1g => Self::OneGiB,
-            agents_core::RuntimeProfile::Standard4g => Self::FourGiB,
-        }
-    }
-}
+pub(crate) use agents_core::CodeMemory as MemoryTier;
 
 /// These facts must come from the operator's actual service/container profile.
 /// A pinned Bash permission is not evidence of Python memory or network limits.
@@ -79,10 +64,23 @@ pub(crate) enum CodeContainer {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ExecutorBinding {
+    Configured {
+        credential_id: String,
+    },
+    Pinned {
+        profile: crate::code_executor_transport::ExecutorProfile,
+    },
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CodeOptions {
     pub container: CodeContainer,
     pub allocated_memory: MemoryTier,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<ExecutorBinding>,
 }
 
 impl CodeOptions {
@@ -186,6 +184,16 @@ impl BoundTools {
     /// Select a fresh Session's actual profile before admission. Existing
     /// logical-container references never authorize allocating a new namespace.
     pub(crate) fn requested_memory(declarations: &[Value]) -> Result<Option<MemoryTier>> {
+        let memory = Self::declared_code_memory(declarations)?;
+        if memory.is_some_and(|memory| {
+            matches!(memory, MemoryTier::SixteenGiB | MemoryTier::SixtyFourGiB)
+        }) {
+            return Err(fail("code_memory_profile_unavailable"));
+        }
+        Ok(memory)
+    }
+
+    pub(crate) fn declared_code_memory(declarations: &[Value]) -> Result<Option<MemoryTier>> {
         validate_caller_declarations(declarations, 0, &mut 0)?;
         let mut found = false;
         let mut requested = None;
@@ -249,7 +257,7 @@ impl BoundTools {
         self.lookup(Kind::CodeInterpreter.alias())
             .is_some_and(|binding| {
                 matches!(&binding.tool,
-            ResolvedTool::Code{options} if options.owned_context().is_none())
+            ResolvedTool::Code{options} if options.owned_context().is_none()&&options.executor.is_none())
             })
     }
 
@@ -348,6 +356,32 @@ impl BoundTools {
             let ResolvedTool::Code { options } = &mut binding.tool else {
                 continue;
             };
+            if let Some(ExecutorBinding::Configured { credential_id }) = &options.executor {
+                let profile = crate::code_executor_transport::ExecutorProfile::resolve(
+                    env,
+                    owner,
+                    credential_id,
+                )
+                .await?;
+                if !profile
+                    .capabilities
+                    .memory_limits
+                    .contains(&options.allocated_memory)
+                {
+                    return Err(fail("code_executor_memory_unsupported"));
+                }
+                if let CodeContainer::Auto { network_policy, .. } = &options.container {
+                    let supported = match network_policy {
+                        NetworkPolicy::Disabled => profile.capabilities.network_disabled,
+                        NetworkPolicy::Allowlist { .. } => profile.capabilities.network_allowlist,
+                    };
+                    if !supported {
+                        return Err(fail("code_network_policy_unavailable"));
+                    }
+                }
+                options.executor = Some(ExecutorBinding::Pinned { profile });
+                continue;
+            }
             let CodeContainer::Existing { id, source } = &mut options.container else {
                 continue;
             };
@@ -355,7 +389,7 @@ impl BoundTools {
             if source.as_ref().is_some_and(|pinned| pinned != &owned) {
                 return Err(fail("code_context_identity_conflict"));
             }
-            options.allocated_memory = MemoryTier::from_core(owned.profile);
+            options.allocated_memory = owned.memory();
             *source = Some(owned);
         }
         Ok(())
@@ -384,6 +418,12 @@ impl BoundTools {
                 }
                 ResolvedTool::Search { service, .. } => services.web_search = Some(service.clone()),
                 ResolvedTool::Code { options } => {
+                    if let Some(ExecutorBinding::Configured { credential_id }) = &options.executor {
+                        services.code_interpreter = Some(agents_core::CodeService {
+                            provider: agents_core::CodeServiceProvider::WorkspaceDaemon,
+                            credential_id: Some(credential_id.clone()),
+                        });
+                    }
                     for id in options.file_ids() {
                         validate_file_owner(env, owner, id).await?;
                     }
@@ -436,7 +476,7 @@ fn resolve_tool(
 ) -> Result<ResolvedTool> {
     match kind {
         Kind::CodeInterpreter => Ok(ResolvedTool::Code {
-            options: code_options(options, capabilities)?,
+            options: code_options_for(options, capabilities, services.code_interpreter.as_ref())?,
         }),
         Kind::ImageGeneration => {
             let options: ImageOptions = parse(options)?;
@@ -569,7 +609,8 @@ fn parse_code_declaration(value: Value) -> Result<ParsedCode> {
     let requested = match container.memory_limit.as_deref().unwrap_or("1g") {
         "1g" => MemoryTier::OneGiB,
         "4g" => MemoryTier::FourGiB,
-        "16g" | "64g" => return Err(fail("code_memory_profile_unavailable")),
+        "16g" => MemoryTier::SixteenGiB,
+        "64g" => MemoryTier::SixtyFourGiB,
         _ => return Err(fail("invalid_code_memory_limit")),
     };
     let network_policy = network_policy(container.network_policy)?;
@@ -581,6 +622,14 @@ fn parse_code_declaration(value: Value) -> Result<ParsedCode> {
 }
 
 fn code_options(value: Value, capabilities: &HostCapabilities) -> Result<CodeOptions> {
+    code_options_for(value, capabilities, None)
+}
+
+fn code_options_for(
+    value: Value,
+    capabilities: &HostCapabilities,
+    service: Option<&agents_core::CodeService>,
+) -> Result<CodeOptions> {
     let parsed = parse_code_declaration(value)?;
     if let ParsedCode::Existing(id) = parsed {
         let allocated_memory = capabilities
@@ -592,6 +641,7 @@ fn code_options(value: Value, capabilities: &HostCapabilities) -> Result<CodeOpt
         return Ok(CodeOptions {
             container: CodeContainer::Existing { id, source: None },
             allocated_memory,
+            executor: None,
         });
     }
     let ParsedCode::Auto {
@@ -602,6 +652,22 @@ fn code_options(value: Value, capabilities: &HostCapabilities) -> Result<CodeOpt
     else {
         unreachable!("Existing container handled above")
     };
+    let external = service
+        .filter(|service| service.provider == agents_core::CodeServiceProvider::WorkspaceDaemon);
+    if let Some(service) = external {
+        let credential_id = service
+            .credential_id
+            .clone()
+            .ok_or_else(|| fail("provider_key_required"))?;
+        return Ok(CodeOptions {
+            container: CodeContainer::Auto {
+                file_ids,
+                network_policy,
+            },
+            allocated_memory: memory,
+            executor: Some(ExecutorBinding::Configured { credential_id }),
+        });
+    }
     let available = match capabilities.container_memory {
         Some(actual) => actual == memory,
         None => capabilities.available_container_profiles.contains(&memory),
@@ -622,6 +688,7 @@ fn code_options(value: Value, capabilities: &HostCapabilities) -> Result<CodeOpt
             network_policy,
         },
         allocated_memory: memory,
+        executor: None,
     })
 }
 
@@ -1003,6 +1070,7 @@ mod tests {
     #[test]
     fn byok_does_not_require_platform_service_and_bindings_remain_secret_free() {
         let services = ToolServices {
+            code_interpreter: None,
             image_generation: Some(ImageService {
                 provider: ImageServiceProvider::OpenaiImages,
                 credential_id: Some("key-owned".into()),
@@ -1132,6 +1200,8 @@ mod tests {
             profile: agents_core::RuntimeProfile::Standard4g,
             daemon_boot: "boot".into(),
             policy_revision: "policy".into(),
+            executor_kind: crate::code_executor_state::ExecutorKind::Managed,
+            memory_limit: None,
         };
         let options = CodeOptions {
             container: CodeContainer::Existing {
@@ -1139,6 +1209,7 @@ mod tests {
                 source: Some(source),
             },
             allocated_memory: MemoryTier::FourGiB,
+            executor: None,
         };
         assert!(!options.is_local_to("fresh-guest"));
         assert!(options.is_local_to("original"));
