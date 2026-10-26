@@ -571,7 +571,10 @@ impl SessionInner {
         }
         let previous_response_id =
             super::conversations::previous(&request, create.execution.conversation.as_ref());
-        let requested_profile = match crate::runtime_profiles::requested_tools(&request.tools) {
+        let requested_profile = match crate::runtime_profiles::requested_tools_for(
+            &request.tools,
+            &data.record.pinned.tool_services,
+        ) {
             Ok(profile) => profile,
             Err(_) => {
                 return util::json_error(
