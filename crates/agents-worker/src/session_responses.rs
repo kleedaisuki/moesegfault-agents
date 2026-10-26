@@ -750,8 +750,11 @@ impl SessionInner {
             )
             .await?;
         if let Some(registry) = discovery.as_mut() {
-            if let Err(error) = registry.register_mcp(&mcp_bindings) {
-                return util::json_error(400, "unsupported_tool_discovery", &error);
+            if let Err(error) = self
+                .join_discovery(&data, registry, &mcp_bindings, request.tool_choice.as_ref())
+                .await
+            {
+                return util::json_error(400, "unsupported_tool_discovery", &error.to_string());
             }
         }
         if request.tools.iter().any(|tool| {
@@ -1004,8 +1007,11 @@ impl SessionInner {
                     .await?;
             }
             if let Some(registry) = discovery.as_mut() {
-                if let Err(error) = registry.register_mcp(&mcp_bindings) {
-                    return util::json_error(400, "unsupported_tool_discovery", &error);
+                if let Err(error) = self
+                    .join_discovery(&data, registry, &mcp_bindings, request.tool_choice.as_ref())
+                    .await
+                {
+                    return util::json_error(400, "unsupported_tool_discovery", &error.to_string());
                 }
                 execution_items = match registry.encode_input(
                     &execution_items,
