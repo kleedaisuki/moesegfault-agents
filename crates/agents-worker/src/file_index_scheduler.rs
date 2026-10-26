@@ -7,10 +7,31 @@ use crate::{
     util,
 };
 use serde::Deserialize;
+use std::cell::Cell;
 use worker::{Env, Result};
 
 #[path = "file_index_gc.rs"]
 mod gc;
+
+thread_local! {
+    // A source buffer shares the isolate with the warm tokenizer. Durable job
+    // leases provide correctness; this local gate bounds simultaneous buffers.
+    static INGEST_BUSY: Cell<bool> = const { Cell::new(false) };
+}
+
+struct IngestPermit;
+
+impl IngestPermit {
+    fn acquire() -> Option<Self> {
+        INGEST_BUSY.with(|busy| if busy.replace(true) { None } else { Some(Self) })
+    }
+}
+
+impl Drop for IngestPermit {
+    fn drop(&mut self) {
+        INGEST_BUSY.with(|busy| busy.set(false));
+    }
+}
 
 #[derive(Deserialize)]
 struct Job {
@@ -69,6 +90,9 @@ pub(crate) async fn kickoff(
 }
 
 async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
+    let Some(_permit) = IngestPermit::acquire() else {
+        return Ok(());
+    };
     let profile: file_vector::VectorServiceProfile =
         serde_json::from_str(job.service_profile_json.as_deref().ok_or_else(|| {
             worker::Error::RustError("file_search_ingest_profile_missing".into())
@@ -160,4 +184,19 @@ async fn settle_terminal(env: &Env, owner: Option<&str>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn ingestion_admission_is_bounded_and_cancellation_releases_it() {
+        let first = IngestPermit::acquire().unwrap();
+        assert!(IngestPermit::acquire().is_none());
+        assert!(IngestPermit::acquire().is_none());
+        drop(first);
+        assert!(IngestPermit::acquire().is_some());
+        assert!(IngestPermit::acquire().is_some());
+    }
 }

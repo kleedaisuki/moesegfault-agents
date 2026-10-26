@@ -104,11 +104,11 @@ impl text_splitter::TryChunkSizer for RetrievalSizer<'_, '_> {
     }
 }
 
-pub(crate) fn token_chunks(
+pub(crate) fn token_chunk_ranges(
     text: &str,
     strategy: &ChunkingStrategy,
     input_byte_limit: usize,
-) -> Result<Vec<Chunk>> {
+) -> Result<Vec<std::ops::Range<usize>>> {
     let (size, overlap) = strategy.parameters()?;
     crate::deepseek_tokenizer::with_retrieval_tokenizer(|tokenizer| {
         let revision = format!(
@@ -130,19 +130,35 @@ pub(crate) fn token_chunks(
             .enumerate()
             .map(|(ordinal, chunk)| {
                 let (start, text) = chunk?;
+                if ordinal >= 65536 {
+                    return Err("file_search_chunk_count_limit".into());
+                }
                 if text.len() > input_byte_limit {
                     return Err("file_search_embedding_input_byte_limit".into());
                 }
-                Ok(Chunk {
-                    ordinal,
-                    byte_start: start,
-                    byte_end: start + text.len(),
-                    text: text.into(),
-                })
+                Ok(start..start + text.len())
             })
             .collect()
     })
     .map_err(Error::RustError)
+}
+
+#[cfg(test)]
+fn token_chunks(
+    text: &str,
+    strategy: &ChunkingStrategy,
+    input_byte_limit: usize,
+) -> Result<Vec<Chunk>> {
+    Ok(token_chunk_ranges(text, strategy, input_byte_limit)?
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, range)| Chunk {
+            ordinal,
+            byte_start: range.start,
+            byte_end: range.end,
+            text: text[range].into(),
+        })
+        .collect())
 }
 
 pub async fn pending_chunks(
@@ -466,7 +482,8 @@ pub async fn fail_job(
         "unsupported_or_empty_document" => "unsupported_file",
         "file_extraction_byte_limit"
         | "file_integrity_error"
-        | "file_search_embedding_input_byte_limit" => "invalid_file",
+        | "file_search_embedding_input_byte_limit"
+        | "file_search_chunk_count_limit" => "invalid_file",
         _ => "server_error",
     };
     let error = serde_json::json!({"code":public_code,"message":code}).to_string();

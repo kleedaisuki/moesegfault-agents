@@ -594,24 +594,42 @@ pub async fn ingest_turn(
             }
         };
         let strategy: file_index::ChunkingStrategy = serde_json::from_str(&job.chunking_json)?;
-        let chunks =
-            match file_index::token_chunks(text, &strategy, profile.embedding.input_byte_limit) {
-                Ok(chunks) => chunks,
-                Err(Error::RustError(code)) if code == "file_search_embedding_input_byte_limit" => {
-                    file_index::fail_job(
-                        env,
-                        &job,
-                        "file_search_embedding_input_byte_limit",
-                        crate::util::now_ms(),
-                        meter,
-                        &format!("{attempt}:chunk_failure"),
-                    )
-                    .await?;
-                    return Ok(IngestProgress::Unavailable);
-                }
-                Err(error) => return Err(error),
-            };
-        for (ordinal, batch) in chunks.chunks(32).enumerate() {
+        let chunks = match file_index::token_chunk_ranges(
+            text,
+            &strategy,
+            profile.embedding.input_byte_limit,
+        ) {
+            Ok(chunks) => chunks,
+            Err(Error::RustError(code))
+                if code == "file_search_embedding_input_byte_limit"
+                    || code == "file_search_chunk_count_limit" =>
+            {
+                file_index::fail_job(
+                    env,
+                    &job,
+                    &code,
+                    crate::util::now_ms(),
+                    meter,
+                    &format!("{attempt}:chunk_failure"),
+                )
+                .await?;
+                return Ok(IngestProgress::Unavailable);
+            }
+            Err(error) => return Err(error),
+        };
+        for (ordinal, ranges) in chunks.chunks(32).enumerate() {
+            // Keep only one D1 batch of owned strings, not a second overlapping
+            // copy of the complete source beside the warm tokenizer.
+            let batch = ranges
+                .iter()
+                .enumerate()
+                .map(|(index, range)| file_index::Chunk {
+                    ordinal: ordinal * 32 + index,
+                    byte_start: range.start,
+                    byte_end: range.end,
+                    text: text[range.clone()].into(),
+                })
+                .collect::<Vec<_>>();
             if !file_index::renew_job(
                 env,
                 &job,
@@ -626,7 +644,7 @@ pub async fn ingest_turn(
             file_index::stage_chunks(
                 env,
                 &job,
-                batch,
+                &batch,
                 &profile.embedding,
                 crate::util::now_ms(),
                 meter,
