@@ -305,7 +305,7 @@ async function codeJourney(t, lifecycle) {
     assert.equal(state.lease_present, false, 'physical release must detach its funded lease');
     if (external) {
       const cleanup=await db.prepare('SELECT r.state FROM usage_reservations r JOIN code_contexts c ON c.cleanup_run_id=r.id WHERE c.account_id=? AND c.container_id=?').bind(principal.owner,contextId).first();
-      assert.equal(cleanup.state,'settled');
+      assert.equal(cleanup.state,'released','explicit deletion used its metered public operation; its untouched cleanup reserve must be released, not fabricated as observed zero');
       const before=capabilitiesCalls;
       await assert.rejects(client.responses.create({model:agent.id,input:'Use larger memory.',tools:[{type:'code_interpreter',container:{type:'auto',memory_limit:'16g'}}]}),error=>error.status===400);
       assert.ok(capabilitiesCalls>before,'executor capabilities, not the CF1g SKU gate, must reject unsupported16g');
