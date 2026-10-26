@@ -3317,5 +3317,149 @@
       }
     ],
     "unresolved_checks": []
+  },
+  {
+    "source_sha": "ebf2af3cb20263b4c54dd3dc550935ee5d248a42",
+    "run_id": "40304114316",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12641069736,
+    "receipt_artifact": "verification-container",
+    "receipt_artifact_id": 12641738367,
+    "verified_checks": [
+      {
+        "id": "pytest:tests/e2e/test_workspace_code_contexts.py",
+        "status": "passed_current",
+        "input_fingerprint": "b27581b4fae398f83633fc1c1276f3c790e712601deae966ca85bbff54a8dd75",
+        "receipt_path": "container.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "pytest:tests/e2e/test_workspace_code_writes.py",
+        "status": "passed_current",
+        "input_fingerprint": "f9d9fd3f0468fb51543123d2071646c41e6e20be04da9fea99bab3e13f8ec090",
+        "receipt_path": "container.json",
+        "executed_tests": 1
+      }
+    ],
+    "unresolved_checks": []
+  },
+  {
+    "source_sha": "ebf2af3cb20263b4c54dd3dc550935ee5d248a42",
+    "run_id": "40304114316",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12641797736,
+    "verified_checks": [
+      {
+        "id": "node:scripts/code-lifecycle-selection.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "9f951974c6354f89b68f365e34e0bb4eed16ead8febbddffd863b83804013d0a",
+        "receipt_path": "tooling.json",
+        "executed_tests": 1
+      }
+    ],
+    "unresolved_checks": []
+  },
+  {
+    "source_sha": "ebf2af3cb20263b4c54dd3dc550935ee5d248a42",
+    "run_id": "40304114316",
+    "components": [
+      "native"
+    ],
+    "status": "partial_verified",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12641427993,
+    "verified_steps": [
+      "Run node scripts/incremental-checks.mjs run rust"
+    ],
+    "unverified_steps": [
+      "Run node scripts/incremental-checks.mjs check-native"
+    ],
+    "verified_checks": [
+      {
+        "id": "rust:agents-core:omitted_routes_keep_old_configuration_serialization_empty",
+        "status": "passed_current",
+        "input_fingerprint": "25473c106d35b516321d80e1119a6b7d6b0be98181a656f1bb0cbce85a4bdaf7",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-core:omitted_image_contract_keeps_legacy_route_bytes_unchanged",
+        "status": "passed_current",
+        "input_fingerprint": "8124b15c47424b9c266564a6de1d2f2581c82abc2e2a180f6e407bf133cd515a",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-core:owner_image_contract_is_versioned_bounded_and_never_platform_authority",
+        "status": "passed_current",
+        "input_fingerprint": "cf75eaad5486310658894ca0224ce0be0a7cab06d34ca825ac6235e1bd891e94",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-core:image_contract_has_no_secret_or_unversioned_escape_hatch",
+        "status": "passed_current",
+        "input_fingerprint": "db41d26876257df6036048c0ac72526de3b6a4ca10d6206ce2bc30bb7213cd58",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "python:tests/test_code_context_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "be625583a297add4e7df8cac75be852beea4c01b8ffa0f27623bc1719d089d8f",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_conversation_image_blob_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "f4f706162b0a927d79aff9d7f3dcafe24c987dd8f75385425205fc60009774fa",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_deepseek_retrieval_tokenizer_assets.py",
+        "status": "passed_current",
+        "input_fingerprint": "43470e9a5c13797c6f9e2e79f161e859e95d69a8d0a7dbf0550824a2ea2b1bf9",
+        "receipt_path": "rust.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "python:tests/test_file_ingest_recovery_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "18d48aeb1e94799ebb863087b8788444e5de319f381a1564b69a96541d18c8b5",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_image_blob_holders_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "7b64cd4d88f3ba2f5426b2e4c3249ca6329ecb3aaa2b27b6f6225499dc4d8b00",
+        "receipt_path": "rust.json",
+        "executed_tests": 5
+      },
+      {
+        "id": "python:tests/test_image_execution_blob_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "50076866e437486f5608dbf7420abf2599fb25dee937de446cc5b1c8e11748a3",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_original_image_read_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "58909206b3f91bd0800e9b1dd7d438c9d68678d90429b8b61409a7d047180f71",
+        "receipt_path": "rust.json",
+        "executed_tests": 3
+      }
+    ],
+    "unresolved_checks": []
   }
 ]
