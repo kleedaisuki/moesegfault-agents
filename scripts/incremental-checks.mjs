@@ -110,8 +110,8 @@ export function selections(source, base, files) {
     [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
     [/context_management/, 'Responses request context management emits sealed item and continues'],
-    [/auxiliary|context_prefix/, 'Responses auxiliary compact and count'],
-    [/deepseek[_-]tokenizer/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
+    [/^tests\/worker\/auxiliary-journey\.mjs$/, 'Responses auxiliary compact and count'],
+    [/^tests\/worker\/deepseek-tokenizer-journey\.mjs$/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
   ];
   for (const [pattern, name] of journeys) {
     // Lease fixture controls belong to the new actor journey, not the accepted endpoint baseline.
