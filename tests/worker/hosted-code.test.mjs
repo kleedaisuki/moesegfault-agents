@@ -18,6 +18,7 @@ const contextId = `cntr_${'a'.repeat(32)}`;
 const artifactId = `pyart_${'b'.repeat(64)}`;
 const source = "retained_value = 42\nprint(retained_value)\n";
 const artifact = Buffer.from('value\n42\n');
+const guestSource = "print(retained_value + 1)\n";
 
 async function migrate(db) {
   for (const name of (await readdir(path.join(root, 'migrations'))).filter(name => name.endsWith('.sql')).sort()) {
@@ -31,6 +32,8 @@ async function migrate(db) {
 
 test('compiled Rust Worker: hosted Code Interpreter auto context publication and exact retry', { timeout: 90000 }, t => codeJourney(t, false));
 test('compiled Rust Worker: Code container outlives archived harness and explicit release preserves Files', { timeout: 90000 }, t => codeJourney(t, true));
+test('compiled Rust Worker: lost Code VM releases capacity while preserving unknown finance and published Files', { timeout: 90000 }, t => codeJourney(t, 'lost'));
+test('compiled Rust Worker: owned CID reuses the archived source kernel with fresh guest context and no second VM', { timeout: 90000 }, t => codeJourney(t, 'borrowed'));
 
 async function codeJourney(t, lifecycle) {
   const encryptionKey = randomBytes(32), identity = createIdentityFixture(), providers = createNativeSemanticsProvider();
@@ -87,13 +90,14 @@ async function codeJourney(t, lifecycle) {
       }
       if (url.pathname === '/v1/python' && request.method === 'POST') {
         const body = await request.json();
-        assert.equal(body.code, source);
+        const borrowedCell = lifecycle === 'borrowed' && body.code === guestSource;
+        assert.ok(body.code === source || borrowedCell);
         assert.equal(body.container_id, contextId);
         assert.equal(body.memory_limit, '1g');
         assert.ok(!results.has(body.id), 'No accepted cell may be POSTed twice');
         posts++;
-        const result = { id: body.id, container_id: contextId, outputs: [{ type: 'logs', logs: '42\n' }],
-          artifacts: [{ id: artifactId, filename: 'result.csv', path: 'result.csv', bytes: artifact.length,
+        const result = { id: body.id, container_id: contextId, outputs: [{ type: 'logs', logs: borrowedCell ? '43\n' : '42\n' }],
+          artifacts: borrowedCell ? [] : [{ id: artifactId, filename: 'result.csv', path: 'result.csv', bytes: artifact.length,
             sha256: hash(artifact), mime_type: 'text/csv' }], artifact_error: null, error: null,
           python_error: false, timed_out: false, cancelled: false, truncated: false, duration_ms: 5 };
         results.set(body.id, result);
@@ -127,7 +131,7 @@ async function codeJourney(t, lifecycle) {
     fetch: (input, init) => mf.dispatchFetch(input, init) });
   const agentResponse = await mf.dispatchFetch('https://agents.test/v1/agents', { method: 'POST',
     headers: { Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Code auto publication', workspace: false, tools: [],
+    body: JSON.stringify({ name: 'Code auto publication', instructions: 'SOURCE_PIN_MARKER', workspace: false, tools: [],
       model: { provider: 'byok', credential_id: key.id, protocol: 'responses', model: model.model, context_window: 32768, max_output_tokens: 512 } }) });
   assert.equal(agentResponse.status, 201);
   const agent = await agentResponse.json();
@@ -165,30 +169,104 @@ async function codeJourney(t, lifecycle) {
   if (lifecycle) {
     const route = await db.prepare('SELECT session_id FROM response_routes WHERE account_id=? AND id=?').bind(principal.owner, response.id).first();
     assert.ok(route?.session_id);
-    const archive = await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${principal.apiKey}` } });
-    assert.equal(archive.status, 200, await archive.clone().text());
-    assert.deepEqual((await archive.json()).retained_code_containers, [contextId]);
-    const retained = await client.containers.retrieve(contextId);
-    assert.equal(retained.status, 'running');
+    let finished = false;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const observed = await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`, { headers: { Authorization: `Bearer ${principal.apiKey}` } });
+      assert.equal(observed.status,200);
+      const session = await observed.json();
+      if (session.status === 'idle' && !session.run_id) { finished = true; break; }
+      await new Promise(resolve => setTimeout(resolve,25));
+    }
+    assert.ok(finished,'canonical completion must finish financial/harness bookkeeping before archival');
+    const namespace = await mf.getDurableObjectNamespace('SESSIONS');
+    const actor = namespace.get(namespace.idFromName(`${principal.owner}:${route.session_id}`));
+    let lostLease = null;
+    if (lifecycle === 'lost') {
+      const dropped = await (await actor.fetch('https://session.internal/__test/code-drop')).json();
+      assert.ok(dropped.lease_id);
+      lostLease = dropped.lease_id;
+      assert.equal((await client.containers.retrieve(contextId)).status, 'expired');
+    } else {
+      const archive = await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${principal.apiKey}` } });
+      assert.equal(archive.status, 200, await archive.clone().text());
+      assert.deepEqual((await archive.json()).retained_code_containers, [contextId]);
+      const retained = await client.containers.retrieve(contextId);
+      assert.equal(retained.status, 'running');
+    }
+    if (lifecycle === 'borrowed') {
+      const before = await (await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`, { headers: { Authorization: `Bearer ${principal.apiKey}` } })).json();
+      assert.equal(before.status,'closed');
+      const guest = providers.register('hosted-code-guest', [
+        { output: [{ id:'guest-code',type:'function_call',name:'__agents_code_interpreter',call_id:'guest-call',arguments:JSON.stringify({code:guestSource}),status:'completed' }] },
+        { output: [{ id:'guest-answer',type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:'43',annotations:[],logprobs:[]}] }] },
+      ]);
+      const guestKey = await principal.browser('POST','/v1/provider-keys',{protocol:'openai',base_url:guest.baseUrl,api_key:guest.key},201);
+      const created = await mf.dispatchFetch('https://agents.test/v1/agents',{method:'POST',headers:{Authorization:`Bearer ${principal.apiKey}`,'Content-Type':'application/json'},body:JSON.stringify({
+        name:'Fresh guest policy',instructions:'GUEST_PIN_MARKER',workspace:false,tools:[],model:{provider:'byok',credential_id:guestKey.id,protocol:'responses',model:guest.model,context_window:32768,max_output_tokens:512},
+      })});
+      assert.equal(created.status,201,await created.clone().text());
+      const guestAgent=await created.json();
+      const guestResponse=await client.responses.create({model:guestAgent.id,input:'Use the existing kernel without importing another conversation.',include:['code_interpreter_call.outputs'],tools:[{type:'code_interpreter',container:contextId}]});
+      const guestItem=guestResponse.output.find(item=>item.type==='code_interpreter_call');
+      assert.equal(guestResponse.status,'completed');
+      assert.equal(guestItem?.container_id,contextId);
+      assert.deepEqual(guestItem.outputs,[{type:'logs',logs:'43\n'}]);
+      assert.equal(guest.calls,2);
+      assert.equal(model.calls,2,'the source harness must never resume its model');
+      assert.ok(JSON.stringify(guest.requests).includes('GUEST_PIN_MARKER'));
+      assert.ok(!JSON.stringify(guest.requests).includes('SOURCE_PIN_MARKER'));
+      const guestRoute=await db.prepare('SELECT session_id FROM response_routes WHERE account_id=? AND id=?').bind(principal.owner,guestResponse.id).first();
+      assert.notEqual(guestRoute.session_id,route.session_id);
+      const guestActor=namespace.get(namespace.idFromName(`${principal.owner}:${guestRoute.session_id}`));
+      const guestState=await (await guestActor.fetch('https://session.internal/__test/code-inspect')).json();
+      assert.equal(guestState.running,false);
+      assert.equal(guestState.lease_present,false);
+      const sourceState=await (await actor.fetch('https://session.internal/__test/code-inspect')).json();
+      assert.equal(sourceState.borrowed_receipts,1);
+      assert.equal(sourceState.published_borrowed_receipts,1);
+      assert.equal(sourceState.borrowed_outcome_bytes,0,'the guest owns the published result; the source retains only its replay fence');
+      assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM code_contexts WHERE account_id=?').bind(principal.owner).first()).n,1);
+      const after=await (await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`,{headers:{Authorization:`Bearer ${principal.apiKey}`}})).json();
+      assert.equal(after.status,'closed');
+      assert.equal(after.last_input_at_ms,before.last_input_at_ms);
+      assert.equal(posts,2);assert.equal(preparations,1);
+      const outsider=await createBrowserPrincipal({mf,db,encryptionKey,owner:'hosted-code-outsider'});
+      const forbidden=providers.register('hosted-code-forbidden',[]);
+      const forbiddenKey=await outsider.browser('POST','/v1/provider-keys',{protocol:'openai',base_url:forbidden.baseUrl,api_key:forbidden.key},201);
+      const other=await outsider.browser('POST','/v1/agents',{name:'Other owner',workspace:false,tools:[],model:{provider:'byok',credential_id:forbiddenKey.id,protocol:'responses',model:forbidden.model,context_window:32768,max_output_tokens:512}},201);
+      const otherClient=new OpenAI({apiKey:outsider.apiKey,baseURL:'https://agents.test/v1',maxRetries:0,fetch:(input,init)=>mf.dispatchFetch(input,init)});
+      await assert.rejects(otherClient.responses.create({model:other.id,input:'Use this foreign code container.',tools:[{type:'code_interpreter',container:contextId}]}),error=>error.status===404&&error.code==='code_container_not_found');
+      assert.equal(forbidden.calls,0,'foreign CID ownership must fail before any outer inference');
+      assert.equal(posts,2);assert.equal(preparations,1);
+    }
     assert.equal(releases, 0);
     await client.containers.delete(contextId);
-    assert.equal(releases, 1);
+    assert.equal(releases, lifecycle === 'lost' ? 0 : 1);
     await assert.rejects(client.containers.retrieve(contextId), error => error.status === 404);
     assert.equal(hash(Buffer.from(await (await client.files.content(file.id)).arrayBuffer())), hash(artifact));
     const allocation = await db.prepare('SELECT state, allocation_released_at_ms FROM code_contexts WHERE account_id=? AND container_id=?').bind(principal.owner, contextId).first();
     assert.equal(allocation.state, 'deleted');
     assert.ok(allocation.allocation_released_at_ms > 0);
-    const namespace = await mf.getDurableObjectNamespace('SESSIONS');
-    const actor = namespace.get(namespace.idFromName(`${principal.owner}:${route.session_id}`));
     const state = await (await actor.fetch('https://session.internal/__test/code-inspect')).json();
     assert.equal(state.running, false, 'the last resource interest must actually stop the physical VM');
     assert.equal(state.lease_present, false, 'physical release must detach its funded lease');
+    if (lostLease) {
+      const reservation = await db.prepare('SELECT state FROM usage_reservations WHERE account_id=? AND id=?').bind(principal.owner, lostLease).first();
+      assert.equal(reservation.state, 'reserved', 'an unknown exit time is not a bill or a refund');
+      const unknown = await db.prepare("SELECT status,quantity FROM resource_observations WHERE account_id=? AND run_id=? AND event_key='container:unexpected_exit' AND resource='container' AND unit='wall_ms'").bind(principal.owner,lostLease).first();
+      assert.equal(unknown.status, 'pending');
+      assert.equal(unknown.quantity, null);
+      const archived = await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${principal.apiKey}` } });
+      assert.equal(archived.status,200,await archived.clone().text());
+      assert.equal((await archived.json()).retained_code_containers,undefined);
+    }
+
   }
   const replayEvents = [];
   for await (const event of await client.responses.create({ ...input, stream: true }, { headers: { 'Idempotency-Key': 'known-code-auto' } })) replayEvents.push(event);
   assert.equal(replayEvents.find(event => event.type === 'response.completed')?.response.id, response.id);
   assert.deepEqual(replayEvents, events);
-  assert.equal(posts, 1); assert.equal(preparations, 1); assert.equal(acknowledgements, 1); assert.equal(model.calls, 2);
+  assert.equal(posts, lifecycle === 'borrowed' ? 2 : 1); assert.equal(preparations, 1); assert.equal(acknowledgements, 1); assert.equal(model.calls, 2);
   const getAt = order.indexOf(`GET /v1/python/artifacts/${artifactId}`), ackAt = order.indexOf(`DELETE /v1/python/artifacts/${artifactId}`);
   assert.ok(getAt >= 0 && ackAt > getAt);
   if (process.env.MAGENTS_CURRENT_SCHEMA_PYTHON) {

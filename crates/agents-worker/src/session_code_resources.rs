@@ -33,6 +33,8 @@ struct Resource {
     namespace_retired: bool,
     retry_at_ms: u64,
     last_use: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_borrowed: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -159,6 +161,9 @@ impl SessionInner {
         else {
             return Ok(());
         };
+        if !options.is_local_to(&record.id) {
+            return Ok(());
+        }
         self.ensure_local_code_resource(record, &run.id, &options)
             .await
     }
@@ -171,7 +176,7 @@ impl SessionInner {
     ) -> Result<()> {
         self.reconcile_code_resources().await?;
         let CodeContainer::Auto { network_policy, .. } = &options.container else {
-            let CodeContainer::Existing { id } = &options.container else {
+            let CodeContainer::Existing { id, .. } = &options.container else {
                 unreachable!()
             };
             let registry = self.read_code_registry().await?;
@@ -274,6 +279,7 @@ impl SessionInner {
                         namespace_retired: false,
                         retry_at_ms: 0,
                         last_use: None,
+                        active_borrowed: None,
                     },
                 );
                 Ok(allocation)
@@ -554,6 +560,10 @@ impl SessionInner {
         .await?;
         let Some(_operation) = self.code_operation.try_lock() else {
             if cause == Retirement::ExplicitDelete {
+                if let Some(execution) = resource.active_borrowed.as_deref() {
+                    self.workspace(&record).cancel_python(execution).await?;
+                    return Ok(false);
+                }
                 let response = self
                     .data
                     .borrow()
@@ -592,7 +602,12 @@ impl SessionInner {
         }
         let release_physical = !self.code_retains_compute().await?
             && (record.status == SessionStatus::Closed || !record.pinned.workspace);
-        if release_physical {
+        let lost = if release_physical && !workspace.physical_workspace_running().await? {
+            workspace.observe_lost_code_incarnation().await?
+        } else {
+            None
+        };
+        if release_physical && lost.is_none() {
             workspace.release_preserving_funding().await?;
             let snapshot = workspace.snapshot_metadata().await?;
             let changed = if let Some(data) = self.data.borrow_mut().as_mut() {
@@ -614,7 +629,13 @@ impl SessionInner {
             Ok(())
         })
         .await?;
-        if release_physical {
+        if let Some(lost) = lost {
+            workspace.detach_lost_code_incarnation(&lost).await?;
+            util::emit(
+                "code.incarnation_lost",
+                json!({"session_id":record.id,"financial_outcome":"unknown","heap_recoverable":false}),
+            );
+        } else if release_physical {
             let outcome = workspace.release().await?;
             if outcome.accounting_pending {
                 util::emit(
@@ -764,6 +785,69 @@ impl SessionInner {
     }
 }
 
+impl SessionInner {
+    pub(super) async fn local_code_allocation(&self, cid: &str) -> Result<Option<Allocation>> {
+        Ok(self
+            .read_code_registry()
+            .await?
+            .resources
+            .into_values()
+            .find(|resource| resource.allocation.container_id.as_deref() == Some(cid))
+            .map(|resource| resource.allocation))
+    }
+
+    pub(super) async fn finish_borrowed_code(&self, cid: &str, execution: &str) -> Result<()> {
+        self.update_code_registry(|registry| {
+            if let Some(resource) = registry
+                .resources
+                .values_mut()
+                .find(|resource| resource.allocation.container_id.as_deref() == Some(cid))
+            {
+                if resource.active_borrowed.as_deref() == Some(execution) {
+                    resource.active_borrowed = None;
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn touch_borrowed_code(
+        &self,
+        allocation: &str,
+        execution: &str,
+        meter: &ResourceMeter<'_>,
+    ) -> Result<()> {
+        let now = util::now_ms();
+        let (owner, used_at) = self
+            .update_code_registry(|registry| {
+                let resource = registry
+                    .resources
+                    .get_mut(allocation)
+                    .ok_or_else(|| fail("code_container_not_found"))?;
+                if resource.allocation.state != ContextState::Ready
+                    || resource.allocation.expires_at_ms <= now
+                {
+                    return Err(fail("code_container_not_found"));
+                }
+                resource.active_borrowed = Some(execution.into());
+                if resource.last_use.as_deref() != Some(execution) {
+                    resource.allocation.last_used_at_ms =
+                        now.max(resource.allocation.last_used_at_ms);
+                    resource.allocation.expires_at_ms =
+                        resource.allocation.last_used_at_ms.saturating_add(IDLE_MS);
+                    resource.last_use = Some(execution.into());
+                }
+                Ok((
+                    resource.allocation.account_id.clone(),
+                    resource.allocation.last_used_at_ms,
+                ))
+            })
+            .await?;
+        catalog::touch(&self.env, &owner, allocation, used_at, meter).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,6 +875,7 @@ mod tests {
             namespace_retired: false,
             retry_at_ms: 0,
             last_use: Some("execution".into()),
+            active_borrowed: None,
         };
         Registry {
             current: Some("allocation".into()),

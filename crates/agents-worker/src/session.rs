@@ -24,6 +24,8 @@ pub(crate) mod branch;
 mod budget;
 #[path = "session_chat_receipts.rs"]
 mod chat_receipts;
+#[path = "session_code_borrowed.rs"]
+mod code_borrowed;
 #[path = "session_code_resources.rs"]
 mod code_resources;
 #[path = "session_connection.rs"]
@@ -362,6 +364,12 @@ impl DurableObject for Session {
         let inner = &self.inner;
         if req.method() == Method::Post && req.path().starts_with("/image-observations/") {
             return inner.image_observation_close_route(req).await;
+        }
+        if req.method() == Method::Post && req.path().starts_with("/code-executions/") {
+            return match inner.borrowed_code_route(req).await {
+                Ok(response) => Ok(response),
+                Err(error) => crate::routes::error_response(&error),
+            };
         }
         if req.method() == Method::Post && req.path().starts_with("/code-resources/") {
             return inner.code_resource_route(req).await;

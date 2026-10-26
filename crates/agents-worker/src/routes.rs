@@ -246,6 +246,22 @@ pub(crate) fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "idempotency_conflict",
             "This request key was already used with different parameters",
         ),
+        "code_container_not_found" => (404, "code_container_not_found", "Code container not found"),
+        "code_context_capacity_exceeded" => (
+            429,
+            "code_context_capacity_exceeded",
+            "Release a retained code container before creating another",
+        ),
+        "code_resource_cleanup_pending" => (
+            409,
+            "code_resource_cleanup_pending",
+            "The previous code resource is still being released",
+        ),
+        "code_context_identity_conflict" => (
+            409,
+            "code_context_identity_conflict",
+            "The selected code container no longer matches its pinned identity",
+        ),
         "session_not_found" => (404, "not_found", "Session not found"),
         "file_not_found" => (404, "file_not_found", "File not found in your Space"),
         "file_not_ready" | "file_upload_pending" => (
@@ -1714,5 +1730,12 @@ mod tests {
             assert_eq!(safe["error_code"], code);
             assert!(safe.get("raw_error").is_none());
         }
+    }
+    #[test]
+    fn code_resource_errors_preserve_owned_not_found_and_release_actions() {
+        assert_eq!(classify_error("code_container_not_found").0, 404);
+        assert_eq!(classify_error("code_context_capacity_exceeded").0, 429);
+        assert_eq!(classify_error("code_resource_cleanup_pending").0, 409);
+        assert_eq!(classify_error("code_context_identity_conflict").0, 409);
     }
 }

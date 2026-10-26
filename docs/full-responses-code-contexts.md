@@ -302,10 +302,54 @@ explicitly world-shared durable workspace are detected with the existing tree
 fingerprint; ordinary interpreter scratch remains ephemeral, and published
 artifacts remain ordinary Files with explicit-delete semantics.
 
-The focused new acceptance is `Code container outlives archived harness and
-explicit release preserves Files` in `tests/worker/hosted-code.test.mjs`, plus
-new native context metadata/release and durable-write tests. This slice does
-**not** yet implement a guest Session's borrowed execution RPC or the separate
-configured-executor BYOK transport; those are subsequent required slices, not
-implicit capabilities of the public GET/DELETE routes. Existing known-cell
+The focused lifecycle acceptance is `Code container outlives archived harness
+and explicit release preserves Files` in `tests/worker/hosted-code.test.mjs`, plus
+new native context metadata/release and durable-write tests. Existing known-cell
 publication must never claim a new resource or replay Python during recovery.
+The separately configured executor/BYOK route is not an implicit capability of
+these public GET/DELETE routes.
+
+
+## Borrowed execution data path
+
+`code_owned_bindings.rs` resolves owner/catalog/live identity before outer model
+admission. The frozen `CodeContainer::Existing.source` contains only the real
+CID, source actor/profile, boot and policy revision. Its allocated memory affects
+Code execution, not the fresh guest Session's physical profile or instructions.
+A borrowed 4g resource therefore does not allocate or price a second 4g VM.
+
+The same-actor case uses the local runtime rather than making a reentrant RPC
+while holding that actor's operation lock. Cross-Session calls use
+`code_borrowed_client.rs` and `session_code_borrowed.rs`; neither endpoint starts
+or resumes the source model harness. Each fresh internal request carries the
+existing funded actor grant for the **guest** Session/run. Source wall time is
+observed against that grant; the single physical lease remains source-owned.
+A ticket is an idempotency identity, not authorization. The receiver validates
+owner, fixed generation, live allocation, requested memory, no network-policy
+override, and guest funding. Only the code string is a model-controlled argument.
+
+```text
+Guest model/context -> CodeRuntime::Borrowed -> source resource RPC -> same kernel
+       |                       |                         |
+       +-- guest outcome ------+                 source compute lease
+       +-- Files publication -> artifact ACK -> publication-complete barrier
+```
+
+Source receipts separate small mutable metadata from exact outcome bytes.
+Result caching and publication metadata share a short metadata gate; execution,
+checkpoint and namespace mutation share the operation gate. Poll/cancel never
+wait behind user execution. Receipt state is `prepared -> result_known ->
+published`; a late poll cannot overwrite published ACK state. A published
+receipt is a permanent non-execution fence. After the guest has durably saved
+the exact result and all Files publication/ACK decisions, the source clears its
+large outcome payload while retaining the small ticket/artifact fence. It is not
+a second archive of the guest's logs or conversation.
+
+The new Worker journey `owned CID reuses the archived source kernel with fresh
+guest context and no second VM` checks source archive, another Agent/Session and
+model key, unchanged source user clock and model-call count, isolated guest
+instructions, the same CID without another namespace preparation or guest VM,
+one catalog allocation, compacted source result bytes, and a foreign-owner
+rejection before any model or code execution. This controlled-supervisor journey
+establishes routing/state ownership, not an additional claim of real Python
+execution; the native kernel acceptance remains separate.
