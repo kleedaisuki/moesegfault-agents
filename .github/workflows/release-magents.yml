@@ -71,8 +71,19 @@ jobs:
                   raise SystemExit("Checked-out source does not match the requested release tag")
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
               output.write(f"PACKAGE_VERSION={version}\n")
-      - name: Test real CLI journeys on the native platform
-        run: cargo test --locked --release -p magents --target "$TARGET"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Test the v0.3 CLI increment on the actual native release binary
+        run: node scripts/magents-release-checks.mjs
+      - name: Retain platform-specific native release validation
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-checks-${{ env.PACKAGE_VERSION }}-${{ matrix.target }}
+          path: .temp/magents-release-checks/${{ matrix.target }}/
+          if-no-files-found: warn
+          retention-days: 30
       - name: Build the distributable binary
         run: cargo build --locked --release -p magents --target "$TARGET"
       - name: Verify and package binary with source metadata
