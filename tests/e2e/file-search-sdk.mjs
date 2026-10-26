@@ -22,7 +22,8 @@ const sdk = new OpenAI({ baseURL, apiKey: process.env.FILE_SEARCH_API_KEY, maxRe
     const url = new URL(typeof input === 'string' ? input : input.url ?? input);
     assert.equal(url.origin, parsed.origin);
     assert.ok(!/\/(?:responses|completions|messages)(?:\/|$)/.test(url.pathname), 'Language-model routes are forbidden in this native retrieval journey');
-    const headers = new Headers(init.headers);
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init.headers).forEach((value, name) => headers.set(name, value));
     if (trace) headers.set('traceparent', `00-${trace}-${randomUUID().replaceAll('-', '').slice(0, 16)}-00`);
     return fetch(input, { ...init, headers, redirect: 'error' });
   } });
