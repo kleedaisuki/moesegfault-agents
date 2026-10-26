@@ -325,11 +325,16 @@ async function codeJourney(t, lifecycle) {
     }
 
   }
-  const publishedArtifactPaths = order.filter(value => value.startsWith('GET /v1/python/artifacts/')).map(value => value.slice(4));
-  const acknowledgedArtifactPaths = order.filter(value => value.startsWith('DELETE /v1/python/artifacts/')).map(value => value.slice(7));
+  let cell = 0;
+  const artifactEffects = order.map(value => {
+    if (value === 'POST /v1/python') cell++;
+    return { cell, value };
+  });
+  const publishedArtifactPaths = artifactEffects.filter(({ value }) => value.startsWith('GET /v1/python/artifacts/')).map(({ cell, value }) => `${cell}:${value.slice(4)}`);
+  const acknowledgedArtifactPaths = artifactEffects.filter(({ value }) => value.startsWith('DELETE /v1/python/artifacts/')).map(({ cell, value }) => `${cell}:${value.slice(7)}`);
   assert.ok(publishedArtifactPaths.length > 0);
   assert.deepEqual(acknowledgedArtifactPaths, publishedArtifactPaths, 'every real artifact must be published before its single ACK');
-  assert.equal(new Set(acknowledgedArtifactPaths).size, acknowledgedArtifactPaths.length, 'one immutable artifact spool cannot be ACKed twice');
+  assert.equal(new Set(acknowledgedArtifactPaths).size, acknowledgedArtifactPaths.length, 'one cell artifact publication cannot be ACKed twice');
   const acknowledgedBeforeReplay = acknowledgements;
   const replayEvents = [];
   for await (const event of await client.responses.create({ ...input, stream: true }, { headers: { 'Idempotency-Key': 'known-code-auto' } })) replayEvents.push(event);
