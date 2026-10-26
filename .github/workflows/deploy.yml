@@ -20,7 +20,7 @@ on:
       runtime_features:
         description: Runtime feature allowlist, independent of whether a journey runs
         type: choice
-        options: [configured, none, web_search, file_search, 'web_search,file_search', 'web_search,file_search,code_interpreter']
+        options: [configured, none, web_search, file_search, 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation']
         default: configured
         required: true
 
@@ -45,7 +45,7 @@ jobs:
           node --input-type=module <<'REQUEST'
           const profile=process.env.ACCEPTANCE_PROFILE, environment=process.env.DEPLOY_ENVIRONMENT;
           const features=process.env.RUNTIME_FEATURES ?? 'configured';
-          if (!['configured','none','web_search','file_search','web_search,file_search','web_search,file_search,code_interpreter'].includes(features)) throw Error('Invalid runtime feature allowlist');
+          if (!['configured','none','web_search','file_search','web_search,file_search','web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation'].includes(features)) throw Error('Invalid runtime feature allowlist');
           if (environment!=='staging' && features!=='configured') throw Error('Runtime feature overrides are staging-only');
           if (!['staging','production'].includes(environment) || !['none','direct-deepseek-usage-probe','responses-increment'].includes(profile)) throw Error('Invalid finite operation scope');
           if (!/^[1-9][0-9]{0,14}$/.test(process.env.SOURCE_RUN ?? '')) throw Error('Invalid source CI identity');
@@ -186,6 +186,11 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: test -n "$DEEPSEEK_API_KEY" || { echo 'Missing existing direct DeepSeek search route'; exit 1; }
+      - name: Require the selected Seedream image service credential without a paid probe
+        if: inputs.environment == 'staging' && contains(inputs.runtime_features, 'image_generation')
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: test -n "$OPENROUTER_API_KEY" || { echo 'Missing existing image service credential'; exit 1; }
       - name: Never replay paid stage work through an Actions rerun
         if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         run: test "$GITHUB_RUN_ATTEMPT" = 1 || { echo 'Inspect the original accepted operations; paid stage actions are not replayable'; exit 1; }

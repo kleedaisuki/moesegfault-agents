@@ -2,6 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { verifyDeploymentEvidence } from './deploy-provenance.mjs';
 
+test('image activation requires the normal verified deployment, not the old core-only daemon exception', () => {
+  const value = fixture();
+  value.workerRuntimeFeatures = ['web_search', 'file_search', 'code_interpreter', 'image_generation'];
+  assert.deepEqual(verifyDeploymentEvidence(value).worker_runtime_features, value.workerRuntimeFeatures);
+  const core = coreCompatibleFixture();
+  core.workerRuntimeFeatures = ['image_generation'];
+  assert.throws(() => verifyDeploymentEvidence(core), /images_require_normal_verified_deployment/);
+});
+
 test('Code staging requires the normal verified daemon and preserves its explicit runtime scope', () => {
   const value = fixture();
   value.workerRuntimeFeatures = ['web_search', 'file_search', 'code_interpreter'];

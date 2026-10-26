@@ -8,6 +8,33 @@ const account = '0123456789abcdef0123456789abcdef';
 const target = () => ({ vars: { EXISTING: 'retained', BUILD_ID: 'stale' }, d1_databases: [{ migrations_dir: 'migrations' }], containers: [{ image: 'container/Dockerfile', image_build_context: '.' }] });
 const input = () => ({ main: 'build/worker/shim.mjs', assets: { directory: 'apps/dashboard/dist' }, build: { command: 'unused' }, env: { staging: target(), production: target() } });
 
+test('image staging adds the pinned inline Seedream endpoint without removing accepted runtimes', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const env = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha,
+    RUNTIME_FEATURES: 'web_search,file_search,code_interpreter,image_generation' };
+  const rendered = renderDeploymentConfig(source, env), stage = rendered.env.staging;
+  assert.equal(deploymentRuntime(env).imageGeneration, true);
+  assert.equal(stage.vars.HOSTED_TOOL_RUNTIMES, env.RUNTIME_FEATURES);
+  const capabilities = JSON.parse(stage.vars.HOSTED_TOOL_CAPABILITIES_JSON);
+  assert.equal(capabilities.platform_images, true); assert.equal(capabilities.platform_search, true); assert.equal(capabilities.file_search, true);
+  assert.deepEqual(capabilities.available_container_profiles, ['1g', '4g']);
+  const registry = JSON.parse(stage.vars.IMAGE_GENERATION_PROFILE_JSON);
+  assert.equal(registry.profiles.length, 1);
+  const profile = registry.profiles[0];
+  assert.equal(profile.model, 'bytedance-seed/seedream-5-0-flash');
+  assert.equal(profile.base_url, 'https://openrouter.ai/api/v1');
+  assert.equal(profile.reservation_microusd, 18000);
+  assert.equal(profile.price_revision, 'seedream-catalog-2026-10-26');
+  assert.deepEqual(profile.asset_hosts, []);
+  assert.deepEqual(profile.router_endpoint, { provider_slug: 'seed', provider_tag: 'seed', passthrough_parameters: [] });
+  assert.equal(profile.capabilities.streaming, false);
+  assert.equal(profile.capabilities.parameters.output_format, undefined);
+  assert.equal(profile.capabilities.parameters.response_format, undefined);
+  assert.equal(source.env.staging.vars.IMAGE_GENERATION_PROFILE_JSON, undefined);
+  assert.deepEqual(rendered.env.production, source.env.production);
+  assert.throws(() => renderDeploymentConfig(source, { ...env, DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
+});
+
 test('Code staging explicitly retains both real profile apps and the accepted search services', async () => {
   const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
   const env = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha,

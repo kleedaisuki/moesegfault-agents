@@ -13,12 +13,26 @@ export function requireDistinctEnvironmentDatabases(input) {
 
 export function deploymentRuntime(env) {
   const features = env.RUNTIME_FEATURES ?? 'configured';
-  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter'].includes(features)) throw new Error('Invalid runtime feature allowlist');
+  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation'].includes(features)) throw new Error('Invalid runtime feature allowlist');
   if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
   const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
   const workerFeatures = limited && features !== 'none' && features !== 'configured' ? features.split(',') : [];
-  return { features, limited, workerFeatures, webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter') };
+  return { features, limited, workerFeatures, webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter'), imageGeneration: workerFeatures.includes('image_generation') };
 }
+
+// Seed endpoint discovery, 2026-10-26: /api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints.
+// Inline output is the API contract; no speculative CDN allowlist or format selector.
+export const seedreamProfile = {
+  version: 1, profiles: [{ api: 'openrouter', base_url: 'https://openrouter.ai/api/v1',
+    model: 'bytedance-seed/seedream-5-0-flash', public_model: null,
+    capabilities: { streaming: false, parameters: {
+      resolution: { type: 'enum', values: ['1K', '2K'] },
+      aspect_ratio: { type: 'enum', values: ['1:1', '1:2', '2:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '9:19.5', '19.5:9', '9:20', '20:9', '9:21', '21:9', 'auto'] },
+      n: { type: 'range', min: 1, max: 1 }, input_references: { type: 'range', min: 0, max: 14 }, seed: { type: 'boolean' },
+    }, max_references: 14, mask: false },
+    router_endpoint: { provider_slug: 'seed', provider_tag: 'seed', passthrough_parameters: [] },
+    asset_hosts: [], price_revision: 'seedream-catalog-2026-10-26', reservation_microusd: 18000, platform_funded: true }],
+};
 
 function requireFileSearchBindings(target) {
   const profile = JSON.parse(target.vars.FILE_SEARCH_PROFILE_JSON ?? 'null');
@@ -53,7 +67,7 @@ export function renderDeploymentConfig(input, env) {
     target.vars.HOSTED_TOOL_RUNTIMES = runtime.workerFeatures.join(',');
     if (!runtime.codeInterpreter) target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
     target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
-      version: 1, platform_images: false, platform_search: runtime.webSearch, file_search: runtime.fileSearch,
+      version: 1, platform_images: runtime.imageGeneration, platform_search: runtime.webSearch, file_search: runtime.fileSearch,
       container_memory: null, available_container_profiles: runtime.codeInterpreter ? ['1g', '4g'] : [],
       code_network_disabled: runtime.codeInterpreter, code_network_allowlist: false,
     });
@@ -70,6 +84,7 @@ export function renderDeploymentConfig(input, env) {
     }
   }
   if (runtime.fileSearch) requireFileSearchBindings(target);
+  if (runtime.imageGeneration) target.vars.IMAGE_GENERATION_PROFILE_JSON = JSON.stringify(seedreamProfile);
   for (const db of target.d1_databases) db.migrations_dir = resolve(db.migrations_dir);
   for (const container of target.containers) {
     container.image = `registry.cloudflare.com/${account}/magents-workspace:${containerSource}`;
