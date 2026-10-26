@@ -45,4 +45,3 @@ export default class extends RustWorker {
     return RustWorker.prototype.scheduled.call({ env: bindings(this.env), ctx: this.ctx }, event);
   }
 }
-

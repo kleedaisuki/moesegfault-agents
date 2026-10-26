@@ -82,7 +82,7 @@ test('compiled Rust Worker: document conversion is bounded recoverable and not b
   const makeOffice = spawnSync(process.env.PYTHON ?? 'python', ['-c',
     'import io,zipfile,sys\nb: io.BytesIO=io.BytesIO()\nwith zipfile.ZipFile(b,"w",compression=zipfile.ZIP_STORED) as z:\n z.writestr("[Content_Types].xml", \'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>\')\n z.writestr("_rels/.rels", \'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>\')\n z.writestr("word/document.xml", \'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>silver-lantern-513</w:t></w:r></w:p></w:body></w:document>\')\nsys.stdout.buffer.write(b.getvalue())']);
   assert.equal(makeOffice.status, 0, makeOffice.stderr.toString());
-  const inputs = [Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF'), makeOffice.stdout];
+  const inputs = [await readFile(path.join(root,'tests/fixtures/retrieval/text-layer.pdf')), makeOffice.stdout];
   const store = await sdk.vectorStores.create({});
   const files = [];
   for (const [index, input] of inputs.entries()) {
