@@ -179,5 +179,16 @@ It checks raw canonical SDK wire, strict nested argument denial, immutable
 same-key replay and exactly one creation/request/CPU allocation per program.
 A separate same-harness admission check removes Loader and pricing independently
 and requires zero model calls while ordinary APIs remain available.
-The first full journey is pending GHA; no deployment or final Cloudflare invoice
-verification is claimed by the component or Rust results.
+Those two admission cases passed against unchanged compiled artifact 12659282454
+from GHA 40340822807 (source `cac7d54`): both returned 422, model calls and dynamic
+charges remained zero, and ordinary agent-list requests returned 200. The source
+run itself failed its positive journey; this selective negative evidence does
+not promote the artifact or imply an overall-green run.
+
+The first full positive journey with the native-JSON and terminal-only event
+fixes is pending GHA; no deployment or final Cloudflare invoice verification is
+claimed by the component or Rust results. A temporary local diagnostic shim
+normalized only the old artifact's platform profile to locate the next boundary:
+two time calls and two dependent MCP calls actually completed, and the remaining
+strict SDK failure was the old terminal item's synthetic running phase. That
+instrumented probe is mechanism evidence, not acceptance of the repaired binary.
