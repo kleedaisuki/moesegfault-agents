@@ -88,6 +88,26 @@ impl Registry {
     }
 }
 
+fn reusable_binding(
+    resource: &Resource,
+    memory: agents_core::CodeMemory,
+    backend: &ExecutionBackend,
+) -> bool {
+    let actual = resource
+        .allocation
+        .memory_limit
+        .unwrap_or_else(|| agents_core::CodeMemory::from_core(resource.allocation.source_profile));
+    let same_backend = match (&resource.backend, backend) {
+        (ExecutionBackend::Managed, ExecutionBackend::Managed) => true,
+        (
+            ExecutionBackend::Executor { profile: left },
+            ExecutionBackend::Executor { profile: right },
+        ) => left == right,
+        _ => false,
+    };
+    actual == memory && same_backend
+}
+
 fn fail(code: &str) -> Error {
     Error::RustError(code.into())
 }
@@ -286,6 +306,9 @@ impl SessionInner {
                         resource.allocation.state,
                         ContextState::Reserved | ContextState::Ready
                     ) {
+                        if !reusable_binding(resource, options.allocated_memory, &backend) {
+                            return Err(fail("code_resource_binding_changed"));
+                        }
                         if serde_json::to_vec(&resource.policy)?
                             != serde_json::to_vec(&network_policy)?
                         {
@@ -1097,5 +1120,61 @@ mod tests {
         resource.retry_at_ms = now + 5000;
         assert!(!state.retained(now));
         assert_eq!(state.deadline(now), Some(now + 5000));
+    }
+    #[test]
+    fn code_reuse_rejects_memory_backend_and_executor_identity_changes_before_prepare() {
+        use crate::code_executor_transport::{Capabilities, ExecutorProfile, ExecutorRoute};
+        use agents_core::CodeMemory;
+        let mut state = registry(1000);
+        let resource = state.resources.get_mut("allocation").unwrap();
+        assert!(reusable_binding(
+            resource,
+            CodeMemory::OneGiB,
+            &ExecutionBackend::Managed
+        ));
+        assert!(!reusable_binding(
+            resource,
+            CodeMemory::FourGiB,
+            &ExecutionBackend::Managed
+        ));
+        let profile = ExecutorProfile {
+            route: ExecutorRoute {
+                credential_id: "owned".into(),
+                base_url: "https://executor.example.com".into(),
+            },
+            capabilities: Capabilities {
+                protocol: "workspace-daemon".into(),
+                context_scope: "instance".into(),
+                version: 1,
+                memory_limits: vec![CodeMemory::OneGiB],
+                network_disabled: true,
+                network_allowlist: false,
+                max_execution_ms: 300000,
+                max_artifact_bytes: 16 * 1024 * 1024,
+                atomic_boot_header: true,
+            },
+        };
+        assert!(!reusable_binding(
+            resource,
+            CodeMemory::OneGiB,
+            &ExecutionBackend::Executor {
+                profile: profile.clone()
+            }
+        ));
+        resource.backend = ExecutionBackend::Executor {
+            profile: profile.clone(),
+        };
+        assert!(reusable_binding(
+            resource,
+            CodeMemory::OneGiB,
+            &resource.backend
+        ));
+        let mut changed = profile;
+        changed.route.base_url = "https://different.example.com".into();
+        assert!(!reusable_binding(
+            resource,
+            CodeMemory::OneGiB,
+            &ExecutionBackend::Executor { profile: changed }
+        ));
     }
 }
