@@ -3,15 +3,15 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use worker::{
-    Env, Error, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response, Result,
-};
+use worker::{Env, Error, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Result};
 
 use crate::{
     auth::provider_keys,
     telemetry::TraceContext,
     workspace::{PythonArtifact, PythonOutcome, PythonRequest},
 };
+
+use crate::workspace::{Deadline, TimedResponse as Response};
 
 const MAX_REPLY: usize = 32 * 1024 * 1024;
 const MAX_ARTIFACT: usize = 16 * 1024 * 1024;
@@ -176,10 +176,24 @@ impl Executor {
         if let Some(body) = body {
             init.with_body(Some(body));
         }
-        let request = Request::new_with_init(&format!("{}{path}", self.route.base_url), &init)?;
-        let response = crate::provider_transport::handshake(Fetch::Request(request).send())
+        let budget = match (method, path) {
+            (Method::Post, "/v1/python") => 360_000,
+            (_, "/v1/python/contexts") => 120_000,
+            (Method::Put, _) => 120_000,
+            _ => 30_000,
+        };
+        let deadline = Deadline::new(crate::util::now_ms().saturating_add(budget))?;
+        let native = worker::web_sys::RequestInit::from(&init);
+        native.set_signal(Some(&deadline.signal()));
+        let request = Request::from(worker::web_sys::Request::new_with_str_and_init(
+            &format!("{}{path}", self.route.base_url),
+            &native,
+        )?);
+        let response = deadline
+            .wait(Fetch::Request(request).send())
             .await
             .map_err(|_| fail("code_executor_outcome_unknown"))?;
+        let response = Response { response, deadline };
         if (300..400).contains(&response.status_code()) {
             return Err(fail("code_executor_redirect_rejected"));
         }
@@ -457,16 +471,25 @@ impl Executor {
 }
 
 async fn bounded(mut response: Response, limit: usize) -> Result<Vec<u8>> {
-    let mut stream = crate::provider_transport::read(response.stream()?);
-    let mut bytes = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| fail("code_executor_outcome_unknown"))?;
-        if chunk.len() > limit.saturating_sub(bytes.len()) {
-            return Err(fail("code_executor_response_too_large"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+    let mut stream = response.response.stream()?;
+    response
+        .deadline
+        .wait(async {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                if chunk.len() > limit.saturating_sub(bytes.len()) {
+                    return Err(fail("code_executor_response_too_large"));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(bytes)
+        })
+        .await
+        .map_err(|error| match error {
+            Error::RustError(code) if code == "code_executor_response_too_large" => fail(&code),
+            _ => fail("code_executor_outcome_unknown"),
+        })
 }
 async fn decode<T: DeserializeOwned>(response: Response) -> Result<T> {
     serde_json::from_slice(&bounded(response, MAX_REPLY).await?)

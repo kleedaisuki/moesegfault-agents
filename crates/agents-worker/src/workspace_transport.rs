@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use wasm_bindgen::{JsCast, closure::Closure};
 use worker::{AbortController, Delay, Error, Response, ResponseBody, ResponseBuilder, Result};
 
-pub(super) struct Deadline {
+pub(crate) struct Deadline {
     expires_ms: u64,
     controller: Rc<RefCell<Option<AbortController>>>,
     timer: i32,
@@ -78,7 +78,7 @@ fn abort_controller(controller: &RefCell<Option<AbortController>>) {
     }
 }
 
-pub(super) struct TimedResponse {
+pub(crate) struct TimedResponse {
     pub response: Response,
     pub deadline: Deadline,
 }
