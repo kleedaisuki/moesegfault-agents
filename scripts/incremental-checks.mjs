@@ -374,14 +374,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
-    // Topic-only first execution of real request-compaction and prepaid append lifecycle.
+    // Topic-only new Conversation readonly source boundary; no accepted generations replay.
     for (const job of Object.keys(receipt.checks)) {
       receipt.checks[job] = receipt.checks[job].filter(check =>
         check.id === 'node:tests/worker/native-window.test.mjs');
       receipt.checks[job] = receipt.checks[job].map(check => {
-        const selected = { ...check, env: { MAGENTS_NATIVE_WINDOW_CASE: 'context-capacity' },
-          expected_test: 'request compaction prepays Conversation output and explicit purge preserves Response history',
-          reason: 'Only the new shared context/escrow/purge lifecycle; accepted auto-window generations remain sealed' };
+        const selected = { ...check, env: { MAGENTS_NATIVE_WINDOW_CASE: 'conversation-count' },
+          expected_test: 'Conversation readonly count selects its immutable predecessor instead of a newer Session head',
+          reason: 'One genuinely new Conversation auto-window generation, followed only by readonly counts and a zero-generation warmup' };
         return { ...selected, input_fingerprint: checkFingerprint(receipt.source_sha, selected) };
       });
     }
