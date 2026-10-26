@@ -269,6 +269,34 @@ impl ConversationOperation {
         Ok(rows.first().is_some_and(|row| row.state == "settled"))
     }
 
+    pub(crate) async fn settle_reclaimed_response(
+        &self,
+        env: &Env,
+        owner: &str,
+        response: &str,
+    ) -> Result<()> {
+        let run = response_operation_id(response)?;
+        let rows = self.query(env, owner, "reclaimed-funding", env.d1("DB")?
+            .prepare("SELECT state,request_hash,idempotency_key,session_id FROM usage_reservations WHERE id=?1 AND account_id=?2")
+            .bind(&[run.as_str().into(), owner.into()])?).await?.results::<ResponseFunding>()?;
+        let Some(row) = rows.first() else {
+            return Ok(());
+        };
+        validate_response_funding(row, owner, &run)?;
+        if row.state == "settled" {
+            return Ok(());
+        }
+        if row.state != "reserved" {
+            return Err(fail("conversation_response_funding_unavailable"));
+        }
+        // Settle only the original observed ledger. No interval is re-recorded,
+        // no old price is recomputed, and settle_run keeps any pending hold.
+        ResourceMeter::account(env, owner, &run)?
+            .settle_run()
+            .await?;
+        Ok(())
+    }
+
     fn require_open(&self) -> Result<()> {
         if self.is_finished() {
             return Err(fail("conversation_response_operation_finished"));
@@ -460,13 +488,18 @@ async fn response_funding(env: &Env, owner: &str, run: &str) -> Result<Option<St
     };
     // Reuse the original amount. A deployment's changed reservation default must
     // not require fresh credit or strand an already activated writer lease.
+    validate_response_funding(&row, owner, run)?;
+    Ok(Some(row.state))
+}
+
+fn validate_response_funding(row: &ResponseFunding, owner: &str, run: &str) -> Result<()> {
     if row.session_id.is_some()
         || row.idempotency_key != format!("maintenance:{run}")
         || row.request_hash != format!("account:{}:{owner}:{run}", owner.len())
     {
         return Err(fail("conversation_response_funding_conflict"));
     }
-    Ok(Some(row.state))
+    Ok(())
 }
 
 fn response_operation_id(response: &str) -> Result<String> {
