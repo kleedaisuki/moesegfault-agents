@@ -454,3 +454,58 @@ the CID, requires 404, and reads the unchanged ordinary File. A fresh receipt
 fences intent before submission; ambiguous accepted operations must be reconciled,
 not retried. Actual Cloudflare profile runs, application/SKU identity and scoped
 financial closure are still required before claiming managed Code delivery.
+
+## Actual managed CF startup observation (2026-10-26)
+
+Normal CI `40338717364` succeeded at `1b7f2cd09fc0be114fbbab673c85b5e0a894811f`
+(Worker artifact `12657717444`, daemon image `12658872196`, dashboard
+`12657194328`). Deployment `40339986401` enabled accepted Search/FileSearch plus
+Code without invoking legacy paid acceptance. The basic application
+`a03bce76-eb9d-4db6-a9a1-e486fab9fe60` reached version 19 with the new image;
+the new standard-1 application `a032fd91-f451-4d4b-87b9-60e12e8af304` exposed
+4096 MiB, 0.5 vCPU and 8 GB disk. The basic application's GET continued reporting
+its old configuration during its two-step rollout. The rollout completed at
+14:36:23 UTC; a later GET showed version 19, the exact new image and five healthy
+instances. A green deploy alone did not establish that intermediate convergence.
+
+Each profile received one genuinely new direct-DeepSeek Response, not a replay:
+
+| Profile | Response | Stateless count | Original tool result |
+| --- | --- | --- | --- |
+| 4g | `resp_64db734809b346039c6fc8a38f469b3b` | 474 | `code_memory_profile_mismatch` |
+| 1g | `resp_c9b4a22ebf894af79e44e9d9e2bf49fd` | 471 | `code_memory_profile_mismatch` |
+
+Both models called the correct `__agents_code_interpreter` alias. Both failed
+before a public Code item, CID, Python cell or File appeared. The 4g Session's
+actual D1 profile and saved pin were both `standard4g`, not basic; its reserved
+Code allocation had no CID. The source decoder collapsed supervisor 422 errors
+into the same mismatch code, so the error is not evidence of incorrect Session
+routing. The outer responses nevertheless completed after a second model round.
+This is an observed failure requiring repair, **not managed Code acceptance**.
+The original Sessions were archived and their temporary Agents deleted. Each
+retained a separate compute hold/pending observation requiring normal resource
+settlement, never manual SQL refunds. The 4g allocation later expired and marked
+physical release through its existing alarm, independently of that money hold.
+
+A new model-free `workspace/commit` diagnostic successfully started the same
+basic image with zero LLM calls and zero Python cells. SSH required a configured
+matching authorized key, so no key was added and no old VM was restarted. That
+new Session was normally archived. A separately authorized, single new bounded
+Bash Response then read only safe OS metadata and was normally archived:
+`resp_652bf9e5b9e24124ab6c334242a7cd76`. Its actual guest observation was:
+
+- cgroup membership: `0::/`.
+- cgroup2 mount root: `/..`, mounted at `/sys/fs/cgroup`.
+- Standard v2 `memory.max` and v1 `memory.limit_in_bytes` were not readable in
+  that guest view; they must not be invented from an application label.
+- `MemTotal=1242872 KiB`, `MemAvailable=1133584 KiB`; physical guest memory is not
+  equal to the advertised 1 GiB workload allocation and cannot simply replace a
+  missing cgroup limit.
+
+These observations distinguish a Docker cgroup assumption from the actual CF
+runtime. The repair must explicitly model the constraint source and preserve
+strict ordinary-container checks, while retiring failed reserved allocations
+and settling their real start/stop costs. The new profile-specific live behavior
+and financial closure remain required after repair. Safe metadata and original
+operation identities are retained under `.temp/code-staging/` in the integration
+checkout; the original source/run conclusions remain unchanged.

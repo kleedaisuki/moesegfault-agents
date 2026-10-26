@@ -333,3 +333,29 @@ media lifecycle or earlier compact/vision cases.
 
 Provider image transport reference:
 https://api-docs.deepseek.com/guides/vision/#using-images-with-the-anthropic-api
+
+## Actual default text compact staging closure (2026-10-26)
+
+Normal source CI `40338717364` and staging deployment `40339986401` published
+assembly/Worker/daemon `1b7f2cd09fc0be114fbbab673c85b5e0a894811f`. The separately
+tracked narrow operator then issued exactly one new default direct-DeepSeek
+compact operation and one normal Responses continuation, with no retry or replay.
+
+Operation `cmp_cc471b926db412f9689a1ab105cb74183c9cf7996a03e06a446ca822fb3128a7`
+returned one retained real user message followed by its service-sealed compaction
+item. Actual compact usage was input 220, cached input 0, cache-write 0, output 7,
+reasoning 0, total 227. The SDK 3.37 envelope and usage model validated with only
+the documented output union correction; the actual user role was not rewritten.
+The entire returned output window was passed unchanged into continuation
+`resp_21eb53b500ae4d9ea6159bc39af3b2f6`, which preserved the ongoing developer rule
+and corrected decision. Session `9698cef3-5000-4ec4-b60e-586590cc69f8` was normally
+archived and its temporary Agent deleted.
+
+The separate account-operation and Session ledger closed at **132 microUSD**,
+with zero new reserved holds and zero pending observations. The three baseline
+holds (one historical hold and two independently failing Code startup holds)
+were excluded and untouched. This is text compact acceptance, not acceptance of
+the later media/context-management source changes. Safe local receipts:
+`.temp/code-staging/live-compact-receipt.json` and
+`.temp/code-staging/compact-postflight-after-terminal.json`. The bounded metadata
+collector stopped; neither raw model windows nor credentials were retained.
