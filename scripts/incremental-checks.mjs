@@ -376,13 +376,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
     if (process.env.MAGENTS_RUNTIME_TOPIC === 'media') {
-      const selected = new Set(['node:tests/worker/hosted-image.test.mjs', 'rust:agents-worker:wrapped_credit_denials_stay_actionable_without_backend_error_disclosure']);
+      const selected = new Set(["rust:agents-worker:official_image_dimension_and_detail_corpus","rust:agents-worker:image_count_never_fetches_unprepared_urls_or_guesses_corrupt_bytes","rust:agents-worker:native_image_headers_support_gif_without_full_frame_allocation","rust:agents-worker:nullable_attachment_fields_have_the_same_meaning_as_omission","rust:agents-worker:image_preparation_covers_native_roles_custom_outputs_and_original_detail","rust:agents-worker:official_prepared_vision_reference_corpus_counts_each_image_once","rust:agents-worker:vision_count_uses_the_unchanged_final_prepared_body","rust:agents-worker:public_inputs_accept_signed_https_but_never_private_or_credential_urls","journey:DeepSeek vision exact count shares frozen PNG GIF owned files and native media slots"]);
       const deferred = receipt.checks.worker.filter(check => !selected.has(check.id));
       receipt.checks.worker = receipt.checks.worker.filter(check => selected.has(check.id));
-      for (const check of receipt.checks.worker) {
-        if (check.argv[0] === 'node') check.env.MAGENTS_HOSTED_IMAGE_CASE = 'funded_delivery';
-      }
-      receipt.topic_scope = 'media-funded-observation-regression-only';
+      receipt.topic_scope = 'media-new-vision-preparation-only';
       receipt.components.worker.validation_scope = receipt.topic_scope;
       receipt.components.worker.deferred_checks = deferred;
       receipt.diagnostic_only_components = [...new Set([...receipt.diagnostic_only_components, 'worker'])];
@@ -392,7 +389,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
     for (const [component, details] of Object.entries(receipt.components)) {
       const job = JOBS[component];
-      const required = details.action === 'build' || receipt.checks[job].length > 0 || (job === 'tooling' && receipt.checks.current_sdk.length > 0);
+      const required = (process.env.MAGENTS_RUNTIME_TOPIC !== 'media' || ['worker', 'rust'].includes(job)) && (details.action === 'build' || receipt.checks[job].length > 0 || (job === 'tooling' && receipt.checks.current_sdk.length > 0));
       const line = `${job}=${required}\n`;
       process.stdout.write(line);
       if (process.env.GITHUB_OUTPUT) {
