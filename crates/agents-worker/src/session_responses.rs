@@ -776,11 +776,30 @@ impl SessionInner {
             );
         }
         let original_items = wire::identified_input_items(&input.input_items, &create.response_id);
+        let owned_native = match self
+            .resolve_owned_native_input(
+                &config,
+                &effective_request
+                    .native_input_items()
+                    .map_err(Error::RustError)?,
+            )
+            .await
+        {
+            Ok(items) => items,
+            Err(error) if super::native_items::invalid_lookup(&error) => {
+                return util::json_error(
+                    400,
+                    "unresolved_native_item",
+                    "Referenced or opaque input must belong to this owner and pinned provider context",
+                );
+            }
+            Err(error) => return Err(error),
+        };
         let mut resolved = crate::responses_attachments::resolve(
             &self.env,
             &data.record.owner_id,
             &create.response_id,
-            &effective_request.input,
+            &Value::Array(owned_native),
             data.record.pinned.workspace,
         )
         .await?;
@@ -804,18 +823,6 @@ impl SessionInner {
         let incoming = execution_request
             .native_input_items()
             .map_err(Error::RustError)?;
-        let unsealed = incoming
-            .iter()
-            .filter(|item| item["type"] != "compaction")
-            .cloned()
-            .collect::<Vec<_>>();
-        if native::unresolved_input(&unsealed) {
-            return util::json_error(
-                400,
-                "unresolved_native_item",
-                "Referenced or opaque input must resolve to this owner's provider context",
-            );
-        }
         let expanded = match crate::responses_auxiliary::expand_for_prefix(
             &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
             &data.record.owner_id,
@@ -833,7 +840,8 @@ impl SessionInner {
                 );
             }
         };
-        execution_request.input = Value::Array(expanded.items);
+        execution_request.input =
+            Value::Array(super::native_items::validation_input(&expanded.items)?);
         let effective_instructions = execution_request
             .instructions
             .clone()
@@ -861,17 +869,7 @@ impl SessionInner {
             return util::json_error(409, "session_busy", "Session changed while resolving input");
         }
         let native_input = if config.protocol == agents_core::ProviderProtocol::Responses {
-            let items = execution_request
-                .native_input_items()
-                .map_err(Error::RustError)?;
-            if native::unresolved_input(&items) {
-                return util::json_error(
-                    400,
-                    "unresolved_native_item",
-                    "Referenced or opaque input must first resolve to this owner's provider context",
-                );
-            }
-            Some(items)
+            Some(expanded.items)
         } else {
             if input.native_only {
                 return util::json_error(
@@ -1522,7 +1520,9 @@ impl SessionInner {
             return Err(Error::RustError("response_output_limit".into()));
         }
         Self::validate_response_output(completion, &response.request, run.round == 1)?;
+        self.register_native_output(completion, false).await?;
         if self.project_native_output(completion).await? {
+            self.register_native_output(completion, true).await?;
             return Ok(());
         }
 

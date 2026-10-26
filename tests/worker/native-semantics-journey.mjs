@@ -42,10 +42,12 @@ function nativeFrames(id, model, output, status = 'completed', reportedUsage = u
     push('response.output_item.added', { output_index, item: start });
     const at = { output_index, item_id: item.id };
     if (item.type === 'reasoning') {
-      push('response.reasoning_summary_part.added', { ...at, summary_index: 0, part: { type: 'summary_text', text: '' } });
-      push('response.reasoning_summary_text.delta', { ...at, summary_index: 0, delta: summary });
-      push('response.reasoning_summary_text.done', { ...at, summary_index: 0, text: summary });
-      push('response.reasoning_summary_part.done', { ...at, summary_index: 0, part: item.summary[0] });
+      for (const [summary_index, part] of (item.summary ?? []).entries()) {
+        push('response.reasoning_summary_part.added', { ...at, summary_index, part: { type: 'summary_text', text: '' } });
+        push('response.reasoning_summary_text.delta', { ...at, summary_index, delta: part.text });
+        push('response.reasoning_summary_text.done', { ...at, summary_index, text: part.text });
+        push('response.reasoning_summary_part.done', { ...at, summary_index, part });
+      }
     }
     if (item.type === 'message') {
       for (const [content_index, part] of item.content.entries()) {
@@ -110,18 +112,29 @@ function transport(frames, gate, state) {
 export function createNativeSemanticsProvider() {
   const routes = new Map();
   return {
-    register(name, actions) {
-      const state = { baseUrl: `https://native-${name}.example.com/v1`, model: `native-${name}`,
-        key: `synthetic-native-${name}`, calls: 0, requests: [], actions, terminalSent: false, failure: null };
+    register(name, actions, options = {}) {
+      const state = { baseUrl: options.baseUrl ?? `https://native-${name}.example.com/v1`, model: options.model ?? `native-${name}`,
+        key: `synthetic-native-${name}`, calls: 0, requests: [], countCalls: 0, countRequests: [],
+        actions, terminalSent: false, failure: null };
       routes.set(`${state.baseUrl}/responses`, state);
       return state;
     },
     async handle(request) {
-      const state = routes.get(request.url);
+      const counting = request.url.endsWith('/responses/input_tokens');
+      const state = routes.get(counting ? request.url.slice(0, -'/input_tokens'.length) : request.url);
       if (!state) return undefined;
       try {
         assert.equal(request.headers.get('authorization'), `Bearer ${state.key}`);
         const body = await request.json();
+        assert.equal(body.model, state.model);
+        if (counting) {
+          assert.equal(typeof state.count, 'function', 'A native counting request requires an explicit fixture counter');
+          state.countCalls++;
+          state.countRequests.push(body);
+          const inputTokens = await state.count(body);
+          assert.ok(Number.isSafeInteger(inputTokens) && inputTokens >= 0);
+          return Response.json({ object: 'response.input_tokens', input_tokens: inputTokens });
+        }
         assert.equal(body.store, false);
         assert.equal(body.stream, true);
         assert.equal(body.model, state.model);
@@ -138,10 +151,10 @@ export function createNativeSemanticsProvider() {
   };
 }
 
-async function setup(context, name, actions) {
+async function setup(context, name, actions, options = {}) {
   const { mf, db, encryptionKey, providers, request } = context;
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: `native-${name}-owner` });
-  const state = providers.register(name, actions);
+  const state = providers.register(name, actions, options);
   const credential = await principal.browser('POST', '/v1/provider-keys', {
     protocol: 'openai', base_url: state.baseUrl, api_key: state.key,
   }, 201);
@@ -360,3 +373,5 @@ export async function runNativeKnownFailure(context) {
   await assertKnownModelReceipts(scenario, [id]);
   return { provider_calls: 1, failed_terminal_preserves_known_usage: true };
 }
+
+export { setup as createNativeSemanticsScenario, consume as collectNativeEvents, assertKnownModelReceipts };

@@ -42,6 +42,8 @@ mod image_lifecycle;
 pub(crate) mod image_observation;
 #[path = "session_native.rs"]
 mod native;
+#[path = "session_native_items.rs"]
+pub(crate) mod native_items;
 #[path = "session_native_output.rs"]
 mod native_output;
 #[path = "session_observer.rs"]
@@ -472,6 +474,8 @@ impl DurableObject for Session {
                 Response::from_json(&inner.snapshot()?.record)
             }
             (Method::Post, "/response-context") => inner.response_context(req).await,
+            (Method::Post, "/native-item") => inner.native_item_route(req).await,
+            (Method::Post, "/response-retained") => inner.response_retained_route(req).await,
             (Method::Post, "/retire-empty") => inner.retire_empty(req).await,
             (Method::Post, "/file-pins/reconcile") => inner.reconcile_file_pins().await,
             (Method::Get, "/view") => inner.lightweight_view(&req),

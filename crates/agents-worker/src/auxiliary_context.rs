@@ -72,6 +72,8 @@ pub(crate) async fn prepare(
         }
     };
     let config = provider::resolve_config(env, owner, &pinned.model).await?;
+    let item_context =
+        crate::session::native_items::ItemContext::new(owner, &request.model, &pinned, &config)?;
     let base = context_prefix::prefix(&pinned);
     let mut prior_messages = vec![];
     let mut prior_native = vec![];
@@ -98,22 +100,23 @@ pub(crate) async fn prepare(
         let conversation = crate::conversation_routes::snapshot(env, owner, id)
             .await?
             .ok_or_else(|| fail("conversation_not_found"))?;
-        if conversation.items.iter().any(unbound_item) {
-            return Err(fail("unresolved_native_item"));
-        }
-        prior_native.extend(conversation.items);
+        prior_native.extend(
+            crate::session::native_items::resolve_conversation(
+                env,
+                &item_context,
+                &conversation.items,
+                &conversation.item_provenance,
+                &base,
+            )
+            .await?,
+        );
     }
     let initial = request
         .normalize_structure()
         .map_err(|_| fail("invalid_auxiliary_request"))?;
-    if initial
-        .native_items
-        .iter()
-        .filter(|item| item["type"] != "compaction")
-        .any(unbound_item)
-    {
-        return Err(fail("unresolved_native_item"));
-    }
+    let owned_native =
+        crate::session::native_items::resolve_input(env, &item_context, &initial.native_items)
+            .await?;
     let image_file_ids = initial
         .native_items
         .iter()
@@ -131,7 +134,7 @@ pub(crate) async fn prepare(
         owner,
         &request.model,
         &pinned.prefix_hash(),
-        &initial.native_items,
+        &owned_native,
         &base,
     )?;
     if let Some(protected) = expanded.instructions {
@@ -147,7 +150,14 @@ pub(crate) async fn prepare(
         pinned.workspace,
     )
     .await?;
-    request.input = resolved.input;
+    let native_input = resolved
+        .input
+        .as_array()
+        .ok_or_else(|| fail("invalid_resolved_native_input"))?
+        .clone();
+    request.input = Value::Array(crate::session::native_items::validation_input(
+        &native_input,
+    )?);
     let normalized = request
         .normalize()
         .map_err(|_| fail("invalid_auxiliary_request"))?;
@@ -165,7 +175,7 @@ pub(crate) async fn prepare(
     let mut native = provider::responses::message_items(&[Message::text("system", prefix.clone())])
         .map_err(fail)?;
     native.append(&mut prior_native);
-    native.extend(normalized.native_items.iter().cloned());
+    native.extend(native_input);
     let mut messages = vec![Message::text("system", prefix)];
     messages.append(&mut prior_messages);
     messages.extend(normalized.messages.iter().cloned());
@@ -240,13 +250,6 @@ pub(crate) async fn prepare(
 
 fn fail(code: impl Into<String>) -> Error {
     Error::RustError(code.into())
-}
-
-fn unbound_item(item: &Value) -> bool {
-    matches!(
-        item["type"].as_str(),
-        Some("item_reference" | "reasoning" | "compaction")
-    )
 }
 
 fn reserved_tool_conflict(
