@@ -374,6 +374,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // Topic-only execution for the new owned item capability. Independent
+    // client, hosted service and storage receipts must not be replayed here.
+    const nativeItems = new Set([
+      'rust:agents-worker:handles_bind_owner_public_identity_and_effective_context',
+      'rust:agents-worker:public_reference_routing_is_exact_and_bounded',
+      'node:tests/worker/native-item-handles.test.mjs',
+    ]);
+    for (const job of Object.keys(receipt.checks)) {
+      receipt.checks[job] = receipt.checks[job].filter(check => nativeItems.has(check.id));
+    }
+    receipt.non_deployable = true;
+    receipt.diagnostic_only_components = ['worker'];
+    receipt.required_remediations = receipt.checks.worker.map(check => check.id);
+    receipt.required_jobs = ['changes', 'worker'];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
