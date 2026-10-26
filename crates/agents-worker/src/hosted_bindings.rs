@@ -456,7 +456,7 @@ fn parse_code_declaration(value: Value) -> Result<ParsedCode> {
     {
         return Err(fail("invalid_code_container"));
     }
-    let requested = match container.memory_limit.as_deref().unwrap_or("4g") {
+    let requested = match container.memory_limit.as_deref().unwrap_or("1g") {
         "1g" => MemoryTier::OneGiB,
         "4g" => MemoryTier::FourGiB,
         "16g" | "64g" => return Err(fail("code_memory_profile_unavailable")),
@@ -742,19 +742,38 @@ mod tests {
     }
 
     #[test]
-    fn omitted_memory_requires_the_actual_four_gib_default() {
-        let default = json!({"type":"code_interpreter","container":{"type":"auto"}});
-        assert!(resolve(&[default.clone()]).is_err());
+    fn omitted_public_memory_uses_one_gib_without_resizing_an_existing_profile() {
+        let declaration = json!({"type":"code_interpreter","container":{"type":"auto"}});
+        let bound = resolve(&[declaration.clone()]).unwrap();
+        let ResolvedTool::Code { options } =
+            &bound.lookup(Kind::CodeInterpreter.alias()).unwrap().tool
+        else {
+            panic!("Expected code binding");
+        };
+        assert!(options.allocated_memory == MemoryTier::OneGiB);
         let mut actual = capabilities();
         actual.container_memory = Some(MemoryTier::FourGiB);
-        let bound =
-            BoundTools::resolve(&[default], &ToolServices::default(), &actual, &[]).unwrap();
-        let binding = bound.lookup(Kind::CodeInterpreter.alias()).unwrap();
-        let ResolvedTool::Code { options } = &binding.tool else {
-            panic!("Expected code binding")
+        assert!(
+            BoundTools::resolve(&[declaration], &ToolServices::default(), &actual, &[]).is_err()
+        );
+        assert!(
+            resolve(&[
+                json!({"type":"code_interpreter","container":{"type":"auto","memory_limit":null}})
+            ])
+            .is_ok()
+        );
+        let explicit =
+            json!({"type":"code_interpreter","container":{"type":"auto","memory_limit":"4g"}});
+        let old = BoundTools::resolve(&[explicit], &ToolServices::default(), &actual, &[]).unwrap();
+        let stored = serde_json::to_vec(&old).unwrap();
+        let restored: BoundTools = serde_json::from_slice(&stored).unwrap();
+        let ResolvedTool::Code { options } =
+            &restored.lookup(Kind::CodeInterpreter.alias()).unwrap().tool
+        else {
+            panic!("Expected stored code binding");
         };
         assert!(options.allocated_memory == MemoryTier::FourGiB);
-        assert!(BoundTools::resolve(&[json!({"type":"code_interpreter","container":{"type":"auto","memory_limit":null}})], &ToolServices::default(), &actual, &[]).is_ok());
+        assert_eq!(serde_json::to_vec(&restored).unwrap(), stored);
     }
 
     #[test]
@@ -764,9 +783,7 @@ mod tests {
             MemoryTier::from_core(agents_core::RuntimeProfile::Standard4g) == MemoryTier::FourGiB
         );
         let auto = json!({"type":"code_interpreter","container":{"type":"auto"}});
-        assert!(
-            BoundTools::requested_memory(&[auto.clone()]).unwrap() == Some(MemoryTier::FourGiB)
-        );
+        assert!(BoundTools::requested_memory(&[auto.clone()]).unwrap() == Some(MemoryTier::OneGiB));
         assert!(
             BoundTools::requested_memory(&[
                 json!({"type":"code_interpreter","container":{"type":"auto","memory_limit":"1g"}})
@@ -812,7 +829,7 @@ mod tests {
         fresh.container_memory = None;
         fresh.available_container_profiles = vec![MemoryTier::OneGiB, MemoryTier::FourGiB];
         for (tool, expected) in [
-            (auto.clone(), MemoryTier::FourGiB),
+            (auto.clone(), MemoryTier::OneGiB),
             (small, MemoryTier::OneGiB),
         ] {
             let bound =
@@ -829,7 +846,7 @@ mod tests {
                 .is_err()
         );
         fresh.container_memory = Some(MemoryTier::OneGiB);
-        assert!(BoundTools::resolve(&[auto], &ToolServices::default(), &fresh, &[]).is_err());
+        assert!(BoundTools::resolve(&[auto], &ToolServices::default(), &fresh, &[]).is_ok());
         assert!(BoundTools::resolve(&[existing], &ToolServices::default(), &fresh, &[]).is_ok());
         fresh.container_memory = None;
         fresh.available_container_profiles = vec![MemoryTier::OneGiB];
@@ -840,7 +857,7 @@ mod tests {
                 &fresh,
                 &[]
             )
-            .is_err()
+            .is_ok()
         );
     }
 

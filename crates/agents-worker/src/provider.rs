@@ -300,9 +300,15 @@ impl Message {
     }
 
     pub fn tool_result(id: &str, output: impl Into<String>) -> Self {
+        Self::tool_result_content(id, Value::String(output.into()))
+    }
+
+    pub fn tool_result_content(id: &str, content: Value) -> Self {
         Self {
+            role: "tool".into(),
+            content,
             tool_call_id: Some(id.into()),
-            ..Self::text("tool", output)
+            ..Self::default()
         }
     }
 }

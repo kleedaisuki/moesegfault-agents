@@ -119,6 +119,10 @@ fn router(state: Arc<App>) -> Router {
             post(interpreter::execute).layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route(
+            "/v1/python/contexts",
+            post(interpreter::prepare_context).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
             "/v1/python/{id}",
             get(interpreter::status).delete(interpreter::cancel),
         )
@@ -573,6 +577,7 @@ mod tests {
             "/v1/exec/run-1",
             "/v1/files/file-1",
             "/v1/python",
+            "/v1/python/contexts",
             "/v1/python/cell-1",
             "/v1/python/files",
             "/v1/python/files/file-1",

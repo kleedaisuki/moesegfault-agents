@@ -1,4 +1,5 @@
 use super::*;
+use crate::response_limits::{CanonicalOutput, OutputChange, OutputPlan};
 use crate::responses_wire::{self as wire, ResponseRequest};
 use std::collections::BTreeMap;
 
@@ -26,7 +27,7 @@ pub(super) struct ResponseRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) obfuscation_seed: Option<Seed>,
     pub(super) input_items: Vec<Value>,
-    pub(super) output: Vec<Value>,
+    pub(super) output: CanonicalOutput,
     pub(super) events: Vec<Value>,
     pub(super) status: String,
     pub(super) error: Option<String>,
@@ -65,6 +66,37 @@ pub(super) struct ResponseRun {
 }
 
 impl ResponseRun {
+    pub(super) fn plan_output(&mut self) -> Result<OutputPlan> {
+        self.output
+            .plan(&self.id)
+            .map_err(|code| Error::RustError(code.into()))
+    }
+
+    pub(super) fn prepare_output(
+        &mut self,
+        index: Option<usize>,
+        item: Value,
+    ) -> Result<OutputChange> {
+        self.output
+            .prepare(&self.id, index, item)
+            .map_err(|code| Error::RustError(code.into()))
+    }
+
+    pub(super) fn prepare_output_batch(&mut self, items: Vec<Value>) -> Result<Vec<OutputChange>> {
+        let mut plan = self.plan_output()?;
+        for item in items {
+            plan.push(item)
+                .map_err(|code| Error::RustError(code.into()))?;
+        }
+        Ok(plan.finish())
+    }
+
+    pub(super) fn apply_output(&mut self, change: OutputChange) -> Result<()> {
+        self.output
+            .apply(change)
+            .map_err(|code| Error::RustError(code.into()))
+    }
+
     pub(super) fn recover_sequence(&mut self) {
         self.next_sequence = self.next_sequence.max(self.reserved_sequence_end);
         self.reserved_sequence_end = self
@@ -332,6 +364,8 @@ impl SessionInner {
                     }
                     drop(borrowed);
                     self.persist().await?;
+                    let record = self.snapshot()?.record;
+                    let _ = self.cancel_current_hosted_code(id, &record).await;
                     self.arm_alarm().await?;
                 }
                 Response::from_json(&response.value())
@@ -1010,7 +1044,7 @@ impl SessionInner {
             created_at: util::now_ms() / 1000,
             obfuscation_seed: Some(Seed::generate()),
             input_items: original_items,
-            output: vec![],
+            output: CanonicalOutput::default(),
             events: vec![],
             status: "queued".into(),
             error: None,
@@ -1354,58 +1388,41 @@ impl SessionInner {
             return Ok(());
         }
 
-        let index = response.output.len();
-        let item_id = format!("msg_{}_{}", run.id, run.round.saturating_sub(1));
-        let structured = response
-            .request
-            .text
-            .as_ref()
-            .and_then(|text| text.get("format"))
-            .and_then(|format| format.get("type"))
-            .and_then(Value::as_str)
-            .is_some_and(|kind| kind != "text");
-        if (!structured || completion.message.tool_calls.is_empty())
-            && (!text.is_empty()
-                || completion.message.tool_calls.is_empty()
-                || response.stream_item.is_some())
-        {
+        let plan = {
+            let mut data = self.data.borrow_mut();
+            data.as_mut()
+                .unwrap()
+                .run
+                .as_mut()
+                .unwrap()
+                .response
+                .as_mut()
+                .unwrap()
+                .plan_output()?
+        };
+        let (has_message, changes) = legacy_completion_plan(&response, &run, completion, plan)?;
+        let mut changes = changes.into_iter();
+        if has_message {
             if response.stream_item.is_none() {
                 self.response_delta(text)?;
             }
-            let item_id = self
-                .data
-                .borrow()
-                .as_ref()
-                .unwrap()
-                .run
-                .as_ref()
-                .unwrap()
-                .response
-                .as_ref()
-                .unwrap()
-                .stream_item
-                .clone()
-                .unwrap_or(item_id);
-            let part = json!({"type":"output_text","text":text,"annotations":[],"logprobs":[]});
-            let mut item = json!({"id":item_id,"type":"message","role":"assistant","status":"completed","content":[part]});
+            let change = changes
+                .next()
+                .ok_or_else(|| Error::RustError("canonical_output_plan_invalid".into()))?;
+            let item = change.item();
+            let item_id = item["id"].as_str().unwrap();
+            let index = change.index();
+            let part = &item["content"][0];
             self.response_event("response.output_text.done", json!({"item_id":item_id,"output_index":index,"content_index":0,"text":text,"logprobs":[]}))?;
             self.response_event(
                 "response.content_part.done",
                 json!({"item_id":item_id,"output_index":index,"content_index":0,"part":part}),
             )?;
-            if let Some(refusal) = completion
-                .message
-                .extra
-                .get("refusal")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            {
-                let refusal_part = json!({"type":"refusal","refusal":refusal});
-                self.response_event("response.content_part.added",json!({"item_id":item_id,"output_index":index,"content_index":1,"part":{"type":"refusal","refusal":""}}))?;
-                self.response_event("response.refusal.delta",json!({"item_id":item_id,"output_index":index,"content_index":1,"delta":refusal}))?;
-                self.response_event("response.refusal.done",json!({"item_id":item_id,"output_index":index,"content_index":1,"refusal":refusal}))?;
-                self.response_event("response.content_part.done",json!({"item_id":item_id,"output_index":index,"content_index":1,"part":refusal_part}))?;
-                item["content"].as_array_mut().unwrap().push(refusal_part);
+            if let Some(refusal) = item["content"].as_array().and_then(|parts| parts.get(1)) {
+                self.response_event("response.content_part.added", json!({"item_id":item_id,"output_index":index,"content_index":1,"part":{"type":"refusal","refusal":""}}))?;
+                self.response_event("response.refusal.delta", json!({"item_id":item_id,"output_index":index,"content_index":1,"delta":refusal["refusal"]}))?;
+                self.response_event("response.refusal.done", json!({"item_id":item_id,"output_index":index,"content_index":1,"refusal":refusal["refusal"]}))?;
+                self.response_event("response.content_part.done", json!({"item_id":item_id,"output_index":index,"content_index":1,"part":refusal}))?;
             }
             self.response_event(
                 "response.output_item.done",
@@ -1421,8 +1438,7 @@ impl SessionInner {
                 .response
                 .as_mut()
                 .unwrap()
-                .output
-                .push(item);
+                .apply_output(change)?;
         }
         self.data
             .borrow_mut()
@@ -1435,28 +1451,10 @@ impl SessionInner {
             .as_mut()
             .unwrap()
             .stream_item = None;
-        let mut published_calls = 0usize;
-        for call in &completion.message.tool_calls {
-            if !response
-                .request
-                .tools
-                .iter()
-                .any(|tool| tool.name == call.function.name)
-            {
-                continue;
-            }
-            let index = self
-                .snapshot()?
-                .run
-                .as_ref()
-                .unwrap()
-                .response
-                .as_ref()
-                .unwrap()
-                .output
-                .len();
-            let id = format!("fc_{}_{}", run.id, index);
-            let item = json!({"type":"function_call","id":id,"call_id":call.id,"name":call.function.name,"arguments":call.function.arguments,"status":"completed"});
+        for (published, change) in changes.enumerate() {
+            let item = change.item();
+            let index = change.index();
+            let id = item["id"].as_str().unwrap();
             let mut added = item.clone();
             added["arguments"] = json!("");
             added["status"] = json!("in_progress");
@@ -1466,9 +1464,9 @@ impl SessionInner {
             )?;
             self.response_event(
                 "response.function_call_arguments.delta",
-                json!({"item_id":id,"output_index":index,"delta":call.function.arguments}),
+                json!({"item_id":id,"output_index":index,"delta":item["arguments"]}),
             )?;
-            self.response_event("response.function_call_arguments.done", json!({"item_id":id,"output_index":index,"arguments":call.function.arguments,"name":call.function.name}))?;
+            self.response_event("response.function_call_arguments.done", json!({"item_id":id,"output_index":index,"arguments":item["arguments"],"name":item["name"]}))?;
             self.response_event(
                 "response.output_item.done",
                 json!({"output_index":index,"item":item}),
@@ -1483,12 +1481,8 @@ impl SessionInner {
                 .response
                 .as_mut()
                 .unwrap()
-                .output
-                .push(item);
-            published_calls += 1;
-            if published_calls.is_multiple_of(2) {
-                // A ready provider stream or a parallel handoff can otherwise
-                // fill the observer queue before even a fast JS reader is polled.
+                .apply_output(change)?;
+            if (published + 1).is_multiple_of(2) {
                 worker::Delay::from(std::time::Duration::ZERO).await;
             }
         }
@@ -1517,25 +1511,6 @@ impl SessionInner {
                 .as_mut()
                 .unwrap()
                 .incomplete_reason = Some("max_output_tokens".into());
-        }
-        let output_bytes = {
-            let borrowed = self.data.borrow();
-            serde_json::to_vec(
-                &borrowed
-                    .as_ref()
-                    .unwrap()
-                    .run
-                    .as_ref()
-                    .unwrap()
-                    .response
-                    .as_ref()
-                    .unwrap()
-                    .output,
-            )?
-            .len()
-        };
-        if output_bytes > MAX_RESPONSE_OUTPUT_BYTES {
-            return Err(Error::RustError("response_output_limit".into()));
         }
         Ok(())
     }
@@ -1870,6 +1845,64 @@ fn send_response_event(
         .is_ok()
 }
 
+fn legacy_completion_plan(
+    response: &ResponseRun,
+    run: &RunState,
+    completion: &Completion,
+    mut plan: OutputPlan,
+) -> Result<(bool, Vec<OutputChange>)> {
+    let mut has_message = false;
+    let text = completion.message.content.as_str().unwrap_or("");
+    let structured = response
+        .request
+        .text
+        .as_ref()
+        .and_then(|text| text.get("format"))
+        .and_then(|format| format.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "text");
+    if (!structured || completion.message.tool_calls.is_empty())
+        && (!text.is_empty()
+            || completion.message.tool_calls.is_empty()
+            || response.stream_item.is_some())
+    {
+        let id = response
+            .stream_item
+            .clone()
+            .unwrap_or_else(|| format!("msg_{}_{}", run.id, run.round));
+        let mut parts =
+            vec![json!({"type":"output_text","text":text,"annotations":[],"logprobs":[]})];
+        if let Some(refusal) = completion
+            .message
+            .extra
+            .get("refusal")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            parts.push(json!({"type":"refusal","refusal":refusal}));
+        }
+        plan.push(json!({"id":id,"type":"message","role":"assistant","status":"completed","content":parts})).map_err(|code| Error::RustError(code.into()))?;
+        has_message = true;
+    }
+    for call in &completion.message.tool_calls {
+        if !response
+            .request
+            .tools
+            .iter()
+            .any(|tool| tool.name == call.function.name)
+        {
+            continue;
+        }
+        let index = plan.next_index();
+        plan.push(
+            json!({"type":"function_call","id":format!("fc_{}_{}",run.id,index),"call_id":call.id,
+            "name":call.function.name,"arguments":call.function.arguments,"status":"completed"}),
+        )
+        .map_err(|code| Error::RustError(code.into()))?;
+    }
+    Ok((has_message, plan.finish()))
+}
+
 fn terminal_status(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "incomplete" | "cancelled")
 }
@@ -2003,7 +2036,7 @@ mod tests {
             created_at: 10,
             obfuscation_seed: Some(Seed::generate()),
             input_items: vec![],
-            output: vec![],
+            output: CanonicalOutput::default(),
             events: vec![],
             status: "queued".into(),
             error: None,
@@ -2067,6 +2100,45 @@ mod tests {
         assert!(legacy.obfuscation_seed.is_none());
     }
 
+    #[test]
+    fn output_turn_is_preflighted_before_any_item_or_event_is_published() {
+        let mut run = response();
+        let first = json!({"id":format!("fc_{}_0",run.id),"type":"function_call","call_id":"one","name":"local","arguments":"{}"});
+        let second = json!({"id":format!("msg_{}_1",run.id),"type":"message","content":"x".repeat(MAX_RESPONSE_OUTPUT_BYTES)});
+        assert!(run.prepare_output_batch(vec![first, second]).is_err());
+        assert!(run.output.is_empty());
+        assert!(run.events.is_empty());
+    }
+
+    #[test]
+    fn output_replacement_replay_and_clear_keep_one_exact_capacity_charge() {
+        let mut run = response();
+        let id = format!("hosted_{}", "f".repeat(64));
+        let initial =
+            json!({"id":id,"type":"code_interpreter_call","status":"in_progress","outputs":[]});
+        let change = run.prepare_output(None, initial).unwrap();
+        run.apply_output(change).unwrap();
+        let done = json!({"id":id,"type":"code_interpreter_call","status":"completed","outputs":[{"type":"logs","logs":"雪"}]});
+        let change = run.prepare_output(Some(0), done.clone()).unwrap();
+        run.apply_output(change).unwrap();
+        let bytes = serde_json::to_vec(&run.output).unwrap().len();
+        let change = run.prepare_output(Some(0), done).unwrap();
+        run.apply_output(change).unwrap();
+        assert_eq!(run.output.len(), 1);
+        assert_eq!(serde_json::to_vec(&run.output).unwrap().len(), bytes);
+        assert!(
+            serde_json::to_value(&run)
+                .unwrap()
+                .get("output_budget")
+                .is_none()
+        );
+        run.output.clear();
+        let item = json!({"id":format!("msg_{}_0",run.id),"type":"message","content":[]});
+        let change = run.prepare_output(None, item).unwrap();
+        run.apply_output(change).unwrap();
+        assert_eq!(run.output.len(), 1);
+    }
+
     fn call(id: &str) -> provider::ToolCall {
         provider::ToolCall {
             id: id.into(),
@@ -2083,7 +2155,7 @@ mod tests {
         let mut run = response();
         run.output = vec![
             json!({"type":"code_interpreter_call","id":"ci_1","outputs":[{"type":"logs","logs":"private-result"}]}),
-        ];
+        ].into();
         let public = run.value();
         assert!(public["output"][0]["outputs"].is_null());
         let event = run

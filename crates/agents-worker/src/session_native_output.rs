@@ -477,7 +477,7 @@ impl SessionInner {
         {
             response.effective_service_tier = turn.effective_service_tier.clone();
         }
-        let (response_id, request, mut index, mut output_bytes) = {
+        let (response_id, request, mut index) = {
             let data = self.data.borrow();
             let Some(response) = data
                 .as_ref()
@@ -490,9 +490,21 @@ impl SessionInner {
                 response.id.clone(),
                 response.request.clone(),
                 response.output.len(),
-                serde_json::to_vec(&response.output)?.len(),
             )
         };
+        let mut plan = {
+            let mut data = self.data.borrow_mut();
+            data.as_mut()
+                .unwrap()
+                .run
+                .as_mut()
+                .unwrap()
+                .response
+                .as_mut()
+                .unwrap()
+                .plan_output()?
+        };
+        let mut streams = vec![];
         for (ordinal, raw) in turn.output.iter().enumerate() {
             let is_call = matches!(
                 raw["type"].as_str(),
@@ -515,12 +527,6 @@ impl SessionInner {
                 ordinal
             );
             let item = canonical_item(raw, &id)?;
-            output_bytes = output_bytes
-                .saturating_add(serde_json::to_vec(&item)?.len())
-                .saturating_add(usize::from(index > 0));
-            if output_bytes > super::responses::MAX_RESPONSE_OUTPUT_BYTES {
-                return Err(Error::RustError("response_output_limit".into()));
-            }
             let streamed = {
                 let data = self.data.borrow();
                 let run = data.as_ref().unwrap().run.as_ref().unwrap();
@@ -531,12 +537,19 @@ impl SessionInner {
                     None
                 }
             };
-            if let Some(streamed) = streamed {
-                if !streamed.done || streamed.index != index || streamed.id != id {
-                    return Err(Error::RustError("native_stream_output_mismatch".into()));
-                }
-            } else {
-                for (kind, value) in events(&item, index) {
+            if streamed.as_ref().is_some_and(|streamed| {
+                !streamed.done || streamed.index != plan.next_index() || streamed.id != id
+            }) {
+                return Err(Error::RustError("native_stream_output_mismatch".into()));
+            }
+            plan.push(item)
+                .map_err(|code| Error::RustError(code.into()))?;
+            streams.push(streamed);
+        }
+        for (change, streamed) in plan.finish().into_iter().zip(streams) {
+            let item = change.item();
+            if streamed.is_none() {
+                for (kind, value) in events(item, index) {
                     self.response_event(kind, value)?;
                 }
             }
@@ -551,12 +564,12 @@ impl SessionInner {
                     .response
                     .as_mut()
                     .unwrap();
-                if let Some(call) = GeneralPendingCall::from_item(&item)
-                    .filter(|_| complete_call(&item, turn.status))
+                if let Some(call) =
+                    GeneralPendingCall::from_item(item).filter(|_| complete_call(item, turn.status))
                 {
                     response.general_pending_calls.push(call);
                 }
-                response.output.push(item);
+                response.apply_output(change)?;
             }
             index += 1;
             worker::Delay::from(std::time::Duration::ZERO).await;

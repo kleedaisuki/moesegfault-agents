@@ -20,7 +20,7 @@ execution payload and the mature Jupyter client inside the existing container.
   groups and background writers, are stopped through pidfds. Artifact hashing and
   copying happen only after this barrier. The kernel is resumed for the next cell.
   User code cannot signal root/Bash or restart itself while the entire UID is stopped.
-- A timeout, cancellation or broken kernel protocol kills that UID and expires the
+- A timeout, cancellation of a running cell or broken kernel protocol kills that UID and expires the
   logical context. A stale explicit ID returns 404; it never silently starts a fresh
   namespace under the old identity. A subsequent auto context has a new ID.
   After the all-UID kill barrier and child reaping, root retires the expired
@@ -73,6 +73,7 @@ All endpoints use the existing session-scoped supervisor bearer token.
 | Method/path | Result |
 | --- | --- |
 | `POST /v1/python` | `{id, container_id?, code, timeout_ms?, max_output_bytes?}`; one accepted cell, detached from HTTP lifetime |
+| `POST /v1/python/contexts` | Prepare and pause the actual kernel under the admitted memory/network policy, returning its real `container_id` without executing a cell |
 | `GET /v1/python/{id}` | Exact known result, 202 while active, or 404 |
 | `DELETE /v1/python/{id}` | Signals only this active code execution; resets its logical kernel |
 | `PUT /v1/python/files/{id}` | Known-length/SHA-256 input import; optional `X-Code-Container` selects an existing context |
@@ -80,6 +81,19 @@ All endpoints use the existing session-scoped supervisor bearer token.
 | `GET /v1/python/source/{cursor}` | Capability-safe immutable export of one listed file |
 | `GET /v1/python/artifacts/{id}` | Known-length immutable bytes plus `X-Content-Sha256` |
 | `DELETE /v1/python/artifacts/{id}` | Idempotent publication acknowledgement |
+
+Preparing a context lets the Worker durably publish the actual native item,
+`code.delta`/`code.done` and interpreting phase before executing user code. The
+context is paused on return; retries select the same live auto namespace. This
+does not run a dummy cell or create a fabricated public container identity.
+
+Cancellation also records an authenticated pre-dispatch receipt. A DELETE that
+arrives before its POST prevents that cell from running; GET and delayed POST
+return the same empty cancelled result, without inventing a created context or
+destroying an existing healthy namespace. Cancellation and execution share the
+supervisor's bounded 128-identity window. The DO's durable dispatch journal remains
+the authority against older replays. Observing an existing dispatch never boots
+a replacement VM first.
 
 Code requests permit 1–65,536 source bytes, 1–300,000 ms execution timeout and
 1–4,194,304 retained log bytes. The same gate covers startup and capture; caller
@@ -160,3 +174,29 @@ reported length and SHA-256 with a streaming 16 MiB cap. Filenames never form
 transport URLs or R2 keys. Session publishes using the existing idempotent Space
 publisher and original logical container/artifact identity, then acknowledges the
 root spool. Neither side receives the other's provider or R2 credentials.
+
+### Cancellation and known-result drainage
+
+The endpoint persists the Response cancellation flag, then invokes
+`SessionInner::cancel_current_hosted_code` outside the long-running step gate.
+That hook derives the existing unresolved tool execution, reads its operation and
+only records/sends cancellation; it never restores a VM, imports or submits code.
+The root step must redispatch this unresolved Code operation before terminalizing
+the cancelled run, keeping its resource reservation open for artifact publication.
+
+An unsubmitted operation returns a durable cancelled result without imports or a
+new cell. An already submitted operation with no known outcome sends cancellation
+and polls exactly that execution; missing status is not permission to replay. Once
+a terminal outcome is known, cancellation does not bypass its Space publications,
+reference commits, spool acknowledgements or publication-fence cleanup. Response
+deletion suppresses canonical output publication only after this cleanup; it does
+not trap the operation permanently in `Pending`.
+
+The Workspace stores `workspace:python-cancel:<hashed-id>` before best-effort daemon
+DELETE, including while bootstrap is in flight. Submission checks it after startup
+and immediately before POST. A durable `cancelled_before_dispatch` receipt records
+local proof that a reserved dispatch never POSTed; legacy/unknown dispatch records
+never acquire that classification merely because cancellation was requested.
+The supervisor must additionally retain preadmission cancellation tombstones for
+unknown stable IDs: remote DELETE can beat the final HTTP POST after the Worker's
+last local check. A local flag alone cannot make remote admission atomic.

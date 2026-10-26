@@ -100,7 +100,8 @@ pub async fn publish_bytes(
     }
     let key = identity.key()?;
     let file =
-        space::save_bytes_idempotent(env, owner, &key, filename, content_type, bytes).await?;
+        space::save_artifact_bytes_idempotent(env, owner, &key, filename, content_type, bytes)
+            .await?;
     Ok(ArtifactRef {
         file_id: file.id,
         filename: file.filename,

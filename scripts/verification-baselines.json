@@ -1827,7 +1827,27 @@
     "evidence": {
       "job_conclusion": "success",
       "tests_reexecuted_current": false
-    }
+    },
+    "unresolved_checks": [
+      {
+        "id": "python:tests/test_hosted_file_publication_sql.py",
+        "argv": [
+          "python3",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests",
+          "-p",
+          "test_hosted_file_publication_sql.py",
+          "-k",
+          "additive_index_migration",
+          "-v"
+        ],
+        "env": {},
+        "reason": "New additive schema upgrade test; earlier eight publication SQL contracts already passed locally and are not repeated"
+      }
+    ]
   },
   {
     "source_sha": "8578792f1ce0cc06504165b98dbf8a471f3dafd3",
@@ -1937,18 +1957,13 @@
         "executed_tests": 2
       }
     ],
-    "unresolved_checks": [
+    "unresolved_checks": [],
+    "resolved_checks": [
       {
         "id": "journey:Responses auxiliary compact and count",
-        "argv": [
-          "node",
-          "--test",
-          "tests/worker/http.test.mjs"
-        ],
-        "env": {
-          "MAGENTS_WORKER_CASE": "Responses auxiliary compact and count"
-        },
-        "reason": "Only remaining failed native count/compact fixture; redirect taxonomy expectation corrected without changing Worker binary"
+        "source_sha": "bcaf47958e9f4f923c0d621dda16d118e5d73afb",
+        "run_id": "40273126912",
+        "receipt_path": "worker-journeys.json"
       }
     ]
   },
@@ -2035,7 +2050,23 @@
       "earlier_1g_source": "e1b0ede4a695c567348c29136a23525960c493a7",
       "earlier_1g_run": "40214782486",
       "cloudflare_4g_provisioned": false
-    }
+    },
+    "unresolved_checks": [
+      {
+        "id": "pytest:tests/e2e/test_workspace_interpreter.py",
+        "argv": [
+          ".cache/e2e-venv/bin/python",
+          "-m",
+          "pytest",
+          "tests/e2e/test_workspace_interpreter.py::test_prepare_context_pins_the_live_kernel_before_any_cell",
+          "tests/e2e/test_workspace_interpreter.py::test_cancel_before_post_is_a_known_receipt_without_running_the_cell",
+          "-ra",
+          "-rP"
+        ],
+        "env": {},
+        "reason": "Two new real-daemon Code prepare/cancel behaviors; do not rerun previously accepted interpreter cases"
+      }
+    ]
   },
   {
     "source_sha": "bcaf47958e9f4f923c0d621dda16d118e5d73afb",
@@ -2085,6 +2116,24 @@
         "env": {},
         "expected_test": "both apps load and publish the artifact original immutable source without rebuilding",
         "reason": "Actual first staging loader failure: GITHUB_SHA is runner-owned; use explicit verified source argument"
+      }
+    ]
+  },
+  {
+    "source_sha": "db58d1ed78e5d20e122a2f4a0bb72fcfeee5d807",
+    "run_id": "40274281397",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "verified_checks": [
+      {
+        "id": "node:scripts/deploy-workflow.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "0a42a56868d1883a5f184b090b92688aba89e291ef4da3bf66a110469bedadc1",
+        "receipt_path": "tooling.json",
+        "executed_tests": 1
       }
     ]
   }

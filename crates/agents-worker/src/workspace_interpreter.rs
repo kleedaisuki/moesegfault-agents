@@ -101,10 +101,24 @@ pub struct PythonFilePage {
 struct Dispatch {
     boot: String,
     request_hash: String,
+    #[serde(default)]
+    cancelled_before_dispatch: bool,
+}
+
+fn cancellation_proves_unsubmitted(cancelled: bool, dispatch: Option<&Dispatch>) -> bool {
+    cancelled && dispatch.is_none_or(|dispatch| dispatch.cancelled_before_dispatch)
 }
 
 fn fail(code: &str) -> Error {
     Error::RustError(code.into())
+}
+
+fn import_rejection(status: u16) -> Option<&'static str> {
+    match status {
+        404 => Some("code_container_not_found"),
+        400 | 413 | 422 => Some("code_input_rejected"),
+        _ => None,
+    }
 }
 
 fn component(value: &str) -> bool {
@@ -200,6 +214,63 @@ async fn decode<T: DeserializeOwned>(response: TimedResponse) -> Result<T> {
 }
 
 impl Workspace<'_> {
+    /// Establish the real kernel identity before publishing a native tool item.
+    /// This starts no cell; a lost reply can safely observe the same auto context.
+    pub async fn prepare_python_context(&self, request: &PythonRequest) -> Result<String> {
+        request.validate()?;
+        let expected = match request.memory_limit {
+            PythonMemoryTier::OneGiB => agents_core::RuntimeProfile::Basic1g,
+            PythonMemoryTier::FourGiB => agents_core::RuntimeProfile::Standard4g,
+        };
+        if self.runtime_profile != expected {
+            return Err(fail("code_memory_profile_mismatch"));
+        }
+        self.restore_if_needed().await?;
+        let value = json!({"container_id":request.container_id,
+            "network_policy":request.network_policy,"memory_limit":request.memory_limit});
+        let response = self
+            .request_until(
+                Method::Post,
+                "/v1/python/contexts",
+                Some(JsValue::from_str(&value.to_string())),
+                &[("Content-Type", "application/json")],
+                crate::util::now_ms().saturating_add(120_000),
+            )
+            .await?;
+        if response.status_code() == 404 {
+            return Err(fail("code_container_not_found"));
+        }
+        if response.status_code() == 422 {
+            return Err(fail("code_memory_profile_mismatch"));
+        }
+        if response.status_code() == 409 {
+            let error: Value = decode(response).await?;
+            return Err(fail(if error["error"] == "code_network_policy_conflict" {
+                "code_network_policy_conflict"
+            } else {
+                "code_context_prepare_unavailable"
+            }));
+        }
+        if response.status_code() != 200 {
+            return Err(fail("code_context_prepare_unavailable"));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Prepared {
+            container_id: String,
+        }
+        let result: Prepared = decode(response).await?;
+        if !container_id(&result.container_id)
+            || request
+                .container_id
+                .as_ref()
+                .is_some_and(|id| *id != result.container_id)
+        {
+            return Err(fail("code_protocol_error"));
+        }
+        Ok(result.container_id)
+    }
+
     /// The caller selects the physical profile before this method. Restoration
     /// acquires/renews the ordinary compute lease even when Bash is not exposed.
     pub async fn execute_python(
@@ -218,23 +289,40 @@ impl Workspace<'_> {
         if execution_id.is_empty() || execution_id.len() > 512 {
             return Err(fail("invalid_code_execution_id"));
         }
-        self.restore_if_needed().await?;
         let id = digest_key(execution_id);
         let dispatch_key = format!("workspace:python-dispatch:{id}");
-        let boot = self
-            .state
-            .storage()
-            .get::<String>("workspace:boot")
-            .await?
-            .ok_or_else(|| fail("workspace_boot_missing"))?;
         let mut wire = serde_json::to_value(request)?;
         wire["id"] = json!(id);
         let request_hash = digest_key(&wire.to_string());
         let previous = self.state.storage().get::<Dispatch>(&dispatch_key).await?;
         if previous
             .as_ref()
-            .is_some_and(|old| old.boot != boot || old.request_hash != request_hash)
+            .is_some_and(|old| old.request_hash == request_hash && old.cancelled_before_dispatch)
         {
+            self.complete_python_publication(execution_id).await?;
+            return Err(fail("code_cancelled_before_dispatch"));
+        }
+        if previous
+            .as_ref()
+            .is_some_and(|old| old.request_hash != request_hash)
+        {
+            return Err(fail("code_outcome_unknown"));
+        }
+        // An accepted dispatch belongs to its original live incarnation.
+        // Observation must not restore a replacement VM before finding that
+        // its predecessor's Python state/result has been lost.
+        if previous.is_none() {
+            self.restore_if_needed().await?;
+        } else if !self.container()?.running() {
+            return Err(fail("code_outcome_unknown"));
+        }
+        let boot = self
+            .state
+            .storage()
+            .get::<String>("workspace:boot")
+            .await?
+            .ok_or_else(|| fail("workspace_boot_missing"))?;
+        if previous.as_ref().is_some_and(|old| old.boot != boot) {
             return Err(fail("code_outcome_unknown"));
         }
         let end = crate::util::now_ms()
@@ -248,11 +336,39 @@ impl Workspace<'_> {
             200 => probe,
             202 => self.wait_python(&id, end).await?,
             404 if previous.is_none() => {
+                if self.python_cancel_requested(&id).await? {
+                    return Err(fail("code_cancelled_before_dispatch"));
+                }
                 self.python_pending_add(&id).await?;
                 self.state
                     .storage()
-                    .put(&dispatch_key, Dispatch { boot, request_hash })
+                    .put(
+                        &dispatch_key,
+                        Dispatch {
+                            boot: boot.clone(),
+                            request_hash: request_hash.clone(),
+                            cancelled_before_dispatch: false,
+                        },
+                    )
                     .await?;
+                // Bootstrap and durable writes yield to cancellation requests.
+                // This local path has not POSTed: commit that proof before
+                // removing its empty publication fence.
+                if self.python_cancel_requested(&id).await? {
+                    self.state
+                        .storage()
+                        .put(
+                            &dispatch_key,
+                            Dispatch {
+                                boot,
+                                request_hash,
+                                cancelled_before_dispatch: true,
+                            },
+                        )
+                        .await?;
+                    self.complete_python_publication(execution_id).await?;
+                    return Err(fail("code_cancelled_before_dispatch"));
+                }
                 match self
                     .request_until(
                         Method::Post,
@@ -306,6 +422,18 @@ impl Workspace<'_> {
     /// Polling never boots a replacement VM or replays an accepted cell.
     pub async fn poll_python(&self, execution_id: &str) -> Result<Option<PythonOutcome>> {
         let id = digest_key(execution_id);
+        let dispatch = self
+            .state
+            .storage()
+            .get::<Dispatch>(&format!("workspace:python-dispatch:{id}"))
+            .await?;
+        if cancellation_proves_unsubmitted(
+            self.python_cancel_requested(&id).await?,
+            dispatch.as_ref(),
+        ) {
+            self.complete_python_publication(execution_id).await?;
+            return Err(fail("code_cancelled_before_dispatch"));
+        }
         let response = self
             .request(Method::Get, &format!("/v1/python/{id}"), None, &[])
             .await?;
@@ -317,20 +445,27 @@ impl Workspace<'_> {
         Ok(Some(result))
     }
 
+    async fn python_cancel_requested(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .state
+            .storage()
+            .get::<bool>(&format!("workspace:python-cancel:{id}"))
+            .await?
+            .unwrap_or(false))
+    }
+
+    /// Record cancellation even while the original call is bootstrapping. The
+    /// root daemon DELETE is best effort; status reconciliation owns the result.
     pub async fn cancel_python(&self, execution_id: &str) -> Result<()> {
-        let response = self
-            .request(
-                Method::Delete,
-                &format!("/v1/python/{}", digest_key(execution_id)),
-                None,
-                &[],
-            )
+        let id = digest_key(execution_id);
+        self.state
+            .storage()
+            .put(&format!("workspace:python-cancel:{id}"), true)
             .await?;
-        if matches!(response.status_code(), 204 | 404) {
-            Ok(())
-        } else {
-            Err(fail("code_cancel_failed"))
-        }
+        let _ = self
+            .request(Method::Delete, &format!("/v1/python/{id}"), None, &[])
+            .await;
+        Ok(())
     }
 
     async fn python_pending_add(&self, id: &str) -> Result<()> {
@@ -422,6 +557,12 @@ impl Workspace<'_> {
                 crate::util::now_ms().saturating_add(120_000),
             )
             .await?;
+        if let Some(code) = import_rejection(response.status_code()) {
+            return Err(fail(code));
+        }
+        if response.status_code() != 200 {
+            return Err(fail("code_input_unavailable"));
+        }
         let result: PythonInput = decode(response).await?;
         if !container_id(&result.container_id)
             || context.is_some_and(|id| id != result.container_id)
@@ -554,6 +695,16 @@ impl Workspace<'_> {
 }
 
 fn validate_outcome(outcome: &PythonOutcome, id: &str, context: Option<&str>) -> Result<()> {
+    let cancelled_before_dispatch = outcome.cancelled
+        && outcome.error.as_deref() == Some("code_cancelled_before_dispatch")
+        && outcome.container_id.is_none()
+        && outcome.outputs.is_empty()
+        && outcome.artifacts.is_empty()
+        && outcome.artifact_error.is_none()
+        && !outcome.python_error
+        && !outcome.timed_out
+        && !outcome.truncated
+        && outcome.duration_ms == 0;
     if outcome.id != id
         || outcome.outputs.len() > 128
         || outcome.artifacts.len() > 128
@@ -561,7 +712,8 @@ fn validate_outcome(outcome: &PythonOutcome, id: &str, context: Option<&str>) ->
             .container_id
             .as_deref()
             .is_some_and(|value| !container_id(value))
-        || context.is_some_and(|context| outcome.container_id.as_deref() != Some(context))
+        || (!cancelled_before_dispatch
+            && context.is_some_and(|context| outcome.container_id.as_deref() != Some(context)))
     {
         return Err(fail("code_protocol_error"));
     }
@@ -580,6 +732,80 @@ fn validate_outcome(outcome: &PythonOutcome, id: &str, context: Option<&str>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn known_input_rejections_do_not_retry_and_busy_remains_transient() {
+        for status in [400, 413, 422] {
+            assert_eq!(import_rejection(status), Some("code_input_rejected"));
+        }
+        assert_eq!(import_rejection(404), Some("code_container_not_found"));
+        for status in [200, 409, 429, 500, 503] {
+            assert!(import_rejection(status).is_none());
+        }
+    }
+
+    #[test]
+    fn pre_dispatch_cancellation_receipt_does_not_claim_a_container_was_created() {
+        let mut result = PythonOutcome {
+            id: "known_cancel".into(),
+            container_id: None,
+            outputs: vec![],
+            artifacts: vec![],
+            artifact_error: None,
+            error: Some("code_cancelled_before_dispatch".into()),
+            python_error: false,
+            timed_out: false,
+            cancelled: true,
+            truncated: false,
+            duration_ms: 0,
+        };
+        assert!(
+            validate_outcome(
+                &result,
+                "known_cancel",
+                Some("cntr_0123456789abcdef0123456789abcdef")
+            )
+            .is_ok()
+        );
+        result
+            .outputs
+            .push(json!({"type":"logs","logs":"unproven execution"}));
+        assert!(
+            validate_outcome(
+                &result,
+                "known_cancel",
+                Some("cntr_0123456789abcdef0123456789abcdef")
+            )
+            .is_err()
+        );
+        result.outputs.clear();
+        result.error = Some("code_outcome_unknown".into());
+        assert!(
+            validate_outcome(
+                &result,
+                "known_cancel",
+                Some("cntr_0123456789abcdef0123456789abcdef")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cancellation_during_bootstrap_cannot_reclassify_an_unknown_post() {
+        assert!(cancellation_proves_unsubmitted(true, None));
+        assert!(!cancellation_proves_unsubmitted(false, None));
+        let mut dispatch = Dispatch {
+            boot: "physical".into(),
+            request_hash: "request".into(),
+            cancelled_before_dispatch: false,
+        };
+        assert!(!cancellation_proves_unsubmitted(true, Some(&dispatch)));
+        dispatch.cancelled_before_dispatch = true;
+        assert!(cancellation_proves_unsubmitted(true, Some(&dispatch)));
+        let legacy: Dispatch =
+            serde_json::from_str(r#"{"boot":"old","request_hash":"request"}"#).unwrap();
+        assert!(!cancellation_proves_unsubmitted(true, Some(&legacy)));
+    }
 
     #[test]
     fn private_request_rejects_unsupported_memory_and_unknown_fields() {

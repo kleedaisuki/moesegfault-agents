@@ -373,6 +373,12 @@ fn decode_sha(value: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Publication {
+    Input,
+    Artifact,
+}
+
 struct Upload {
     filename: String,
     purpose: String,
@@ -381,6 +387,7 @@ struct Upload {
     sha256: String,
     body: web_sys::ReadableStream,
     inline_key: Option<String>,
+    publication: Publication,
 }
 
 fn method(target: &JsValue, name: &str) -> Result<Function> {
@@ -465,6 +472,7 @@ async fn multipart(req: &Request, length: u64) -> Result<Upload> {
         sha256,
         body,
         inline_key: None,
+        publication: Publication::Input,
     })
 }
 
@@ -509,6 +517,7 @@ async fn parse_upload(req: &Request) -> Result<Upload> {
         sha256,
         body,
         inline_key: None,
+        publication: Publication::Input,
     })
 }
 
@@ -565,10 +574,19 @@ async fn store_upload(env: &Env, owner: &str, upload: Upload) -> Result<Response
     let run = format!("space-upload:{id}");
     let now = util::now_ms();
     let db = env.d1("DB")?;
-    let inserted: Option<Value>=db.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,inline_key) SELECT ?1,?2,?3,?4,?5,?6,?7,CAST(?8 AS INTEGER),?9,'uploading',?10,CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),CAST(?11 AS INTEGER)+150000,?14 WHERE (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?2 GROUP BY object_key))<=CAST(?12 AS INTEGER)-CAST(?8 AS INTEGER) AND (SELECT COUNT(*) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))<CAST(?13 AS INTEGER) AND (?14 IS NULL OR NOT EXISTS(SELECT 1 FROM space_files WHERE account_id=?2 AND inline_key=?14 AND status IN ('uploading','processed'))) ON CONFLICT DO NOTHING RETURNING id")
-        .bind(&[text(&id),text(owner),text(&space.id),text(&upload.filename),text(&upload.purpose),text(&upload.content_type),text(&key),text(&upload.bytes.to_string()),text(&upload.sha256),text(&run),text(&now.to_string()),text(&limit.bytes.to_string()),text(&limit.files.to_string()),upload.inline_key.as_deref().map(text).unwrap_or(JsValue::NULL)])?.first(None).await?;
+    let inserted: Option<Value>=db.prepare("INSERT INTO space_files(id,account_id,space_id,filename,purpose,content_type,object_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms,recovery_at_ms,inline_key) SELECT ?1,?2,?3,?4,?5,?6,?7,CAST(?8 AS INTEGER),?9,'uploading',?10,CAST(?11 AS INTEGER),CAST(?11 AS INTEGER),CAST(?11 AS INTEGER)+150000,?14 WHERE (SELECT COALESCE(SUM(bytes),0) FROM (SELECT MAX(bytes) AS bytes FROM space_storage_capacity WHERE account_id=?2 GROUP BY object_key))<=CAST(?12 AS INTEGER)-CAST(?8 AS INTEGER) AND (SELECT COUNT(*) FROM space_files WHERE account_id=?2 AND status IN ('uploading','processed','deleting'))<CAST(?13 AS INTEGER) AND (?14 IS NULL OR NOT EXISTS(SELECT 1 FROM space_files WHERE account_id=?2 AND inline_key=?14 AND status IN ('uploading','processed'))) AND (CAST(?15 AS INTEGER)=0 OR NOT EXISTS(SELECT 1 FROM space_files WHERE account_id=?2 AND inline_key=?14 AND upload_outcome='stored' AND status IN ('deleting','deleted'))) ON CONFLICT DO NOTHING RETURNING id")
+        .bind(&[text(&id),text(owner),text(&space.id),text(&upload.filename),text(&upload.purpose),text(&upload.content_type),text(&key),text(&upload.bytes.to_string()),text(&upload.sha256),text(&run),text(&now.to_string()),text(&limit.bytes.to_string()),text(&limit.files.to_string()),upload.inline_key.as_deref().map(text).unwrap_or(JsValue::NULL),text(if upload.publication == Publication::Artifact { "1" } else { "0" })])?.first(None).await?;
     if inserted.is_none() {
         if let Some(key) = &upload.inline_key {
+            if upload.publication == Publication::Artifact
+                && artifact_publication_deleted(env, owner, key).await?
+            {
+                return util::json_error(
+                    409,
+                    "file_publication_deleted",
+                    "The published artifact was deleted; it will not be recreated",
+                );
+            }
             if let Some(file) = inline_file(env, owner, key).await? {
                 if file.status == "processed" {
                     return Response::from_json(&file.public());
@@ -624,11 +642,59 @@ pub async fn save_bytes_idempotent(
     content_type: &str,
     bytes: &[u8],
 ) -> Result<OwnedFile> {
+    save_bytes_with_policy(
+        env,
+        owner,
+        key,
+        filename,
+        content_type,
+        bytes,
+        Publication::Input,
+    )
+    .await
+}
+
+/// Hosted-result retries acknowledge a user's deletion instead of recreating a
+/// file. Failed unpublished uploads remain recoverable under the same key.
+pub(crate) async fn save_artifact_bytes_idempotent(
+    env: &Env,
+    owner: &str,
+    key: &str,
+    filename: &str,
+    content_type: &str,
+    bytes: &[u8],
+) -> Result<OwnedFile> {
+    save_bytes_with_policy(
+        env,
+        owner,
+        key,
+        filename,
+        content_type,
+        bytes,
+        Publication::Artifact,
+    )
+    .await
+}
+
+async fn save_bytes_with_policy(
+    env: &Env,
+    owner: &str,
+    key: &str,
+    filename: &str,
+    content_type: &str,
+    bytes: &[u8],
+    publication: Publication,
+) -> Result<OwnedFile> {
     if bytes.len() as u64 > MULTIPART_LIMIT {
         return Err(fail("file_too_large"));
     }
-    let sha256 = format!("{:x}", Sha256::digest(bytes));
     let inline_key = format!("{:x}", Sha256::digest(key.as_bytes()));
+    if publication == Publication::Artifact
+        && artifact_publication_deleted(env, owner, &inline_key).await?
+    {
+        return Err(fail("file_publication_deleted"));
+    }
+    let sha256 = format!("{:x}", Sha256::digest(bytes));
     if let Some(file) = inline_file(env, owner, &inline_key).await? {
         if file.sha256 != sha256
             || file.bytes != bytes.len() as u64
@@ -655,6 +721,7 @@ pub async fn save_bytes_idempotent(
             sha256,
             body,
             inline_key: Some(inline_key),
+            publication,
         },
     )
     .await?;
@@ -690,6 +757,7 @@ fn local_upload_error_code(status: u16, body: &[u8]) -> &'static str {
         (402, Some("insufficient_credits")) => "insufficient_credits",
         (409, Some("space_limit_exceeded")) => "space_limit_exceeded",
         (409, Some("file_upload_pending")) => "file_upload_pending",
+        (409, Some("file_publication_deleted")) => "file_publication_deleted",
         (413, Some("file_too_large")) => "file_too_large",
         _ => "file_upload_failed",
     }
@@ -764,6 +832,11 @@ async fn image_link_file(env: &Env, owner: &str, key: &str) -> Result<Option<Own
 async fn inline_file(env: &Env, owner: &str, key: &str) -> Result<Option<OwnedFile>> {
     env.d1("DB")?.prepare(format!("SELECT {FILE_COLUMNS} FROM space_files WHERE account_id=? AND inline_key=? AND status IN ('uploading','processed')"))
         .bind(&[text(owner),text(key)])?.first(None).await
+}
+
+async fn artifact_publication_deleted(env: &Env, owner: &str, key: &str) -> Result<bool> {
+    Ok(env.d1("DB")?.prepare("SELECT id FROM space_files WHERE account_id=? AND inline_key=? AND upload_outcome='stored' AND status IN ('deleting','deleted') LIMIT 1")
+        .bind(&[text(owner),text(key)])?.first::<Value>(None).await?.is_some())
 }
 
 async fn set_upload_outcome(

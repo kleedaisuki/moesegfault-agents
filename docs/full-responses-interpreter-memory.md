@@ -39,8 +39,10 @@ Keep the existing Session application and namespace on `basic`. Add a 4 GiB
 delegates to the **same Rust Session implementation**, not a second harness.
 Each session still has one actor and one physical Container. Store an immutable
 allocation/profile routing choice with new-session admission; absence means the
-legacy basic profile. Select a 4 GiB session for a new default-memory Code
-Interpreter request. A continuation cannot relabel a live basic actor as 4 GiB;
+legacy basic profile. A new public auto Code Interpreter request defaults to
+1 GiB; select 4 GiB only when explicitly requested and actually provisioned.
+Existing bound allocations are read unchanged, not recomputed from this default.
+A continuation cannot relabel a live basic actor as 4 GiB;
 an explicitly independent fork may use the established owner-bound branch and
 workspace transfer protocol.
 

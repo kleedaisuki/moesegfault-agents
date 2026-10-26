@@ -151,6 +151,20 @@ pub(super) struct CodeRequest {
     pub max_output_bytes: usize,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ContextRequest {
+    pub container_id: Option<String>,
+    pub network_policy: Option<crate::interpreter_egress::NetworkPolicy>,
+    pub memory_limit: Option<crate::interpreter_limits::MemoryLimit>,
+}
+
+enum PreparationFailure {
+    Missing,
+    PolicyConflict,
+    Unavailable,
+}
+
 fn timeout() -> u64 {
     120_000
 }
@@ -252,6 +266,76 @@ impl CodeResult {
             duration_ms: 0,
         }
     }
+
+    fn cancelled_before_dispatch(id: &str) -> Self {
+        let mut result = Self::new(id);
+        result.cancelled = true;
+        result.error = Some("code_cancelled_before_dispatch".into());
+        result
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Admission {
+    Accepted,
+    Duplicate,
+    Cancelled,
+}
+
+struct ExecutionAdmission {
+    id: String,
+    accepted: bool,
+    cancelled: bool,
+}
+
+#[derive(Default)]
+struct Admissions(VecDeque<ExecutionAdmission>);
+
+impl Admissions {
+    fn accept(&mut self, id: &str) -> Admission {
+        if let Some(entry) = self.0.iter().find(|entry| entry.id == id) {
+            return if entry.accepted {
+                Admission::Duplicate
+            } else {
+                Admission::Cancelled
+            };
+        }
+        self.push(ExecutionAdmission {
+            id: id.into(),
+            accepted: true,
+            cancelled: false,
+        });
+        Admission::Accepted
+    }
+
+    fn cancel(&mut self, id: &str) {
+        if let Some(entry) = self.0.iter_mut().find(|entry| entry.id == id) {
+            entry.cancelled = true;
+            return;
+        }
+        self.push(ExecutionAdmission {
+            id: id.into(),
+            accepted: false,
+            cancelled: true,
+        });
+    }
+
+    fn cancelled(&self, id: &str) -> bool {
+        self.0.iter().any(|entry| entry.id == id && entry.cancelled)
+    }
+
+    fn unsubmitted_cancel(&self, id: &str) -> bool {
+        self.0
+            .iter()
+            .any(|entry| entry.id == id && entry.cancelled && !entry.accepted)
+    }
+
+    fn push(&mut self, entry: ExecutionAdmission) {
+        self.0.push_back(entry);
+        if self.0.len() > 128 {
+            self.0.pop_front();
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -306,7 +390,7 @@ pub(super) struct Interpreter {
     spool: PathBuf,
     context: Mutex<Option<ContextState>>,
     active: Mutex<Option<String>>,
-    seen: Mutex<VecDeque<String>>,
+    admissions: Mutex<Admissions>,
     completed: Mutex<VecDeque<CodeResult>>,
     artifacts: std::sync::Mutex<BTreeMap<String, StoredArtifact>>,
 }
@@ -322,23 +406,19 @@ impl Interpreter {
             spool,
             context: Mutex::new(None),
             active: Mutex::new(None),
-            seen: Mutex::new(VecDeque::new()),
+            admissions: Mutex::new(Admissions::default()),
             completed: Mutex::new(VecDeque::new()),
             artifacts: std::sync::Mutex::new(BTreeMap::new()),
         })
     }
 
-    async fn accept(&self, id: &str) -> bool {
-        let mut seen = self.seen.lock().await;
-        if seen.iter().any(|entry| entry == id) {
-            return false;
-        }
-        seen.push_back(id.into());
-        if seen.len() > 128 {
-            seen.pop_front();
+    async fn accept(&self, id: &str) -> Admission {
+        let result = self.admissions.lock().await.accept(id);
+        if result != Admission::Accepted {
+            return result;
         }
         *self.active.lock().await = Some(id.into());
-        true
+        result
     }
 
     async fn finish(&self, result: CodeResult) {
@@ -510,9 +590,50 @@ impl Interpreter {
         Ok(())
     }
 
+    async fn prepare(&self, request: &ContextRequest) -> Result<String, PreparationFailure> {
+        let mut slot = self.context.lock().await;
+        if slot.as_ref().is_some_and(|context| context.expired) {
+            self.retire(&mut slot)
+                .await
+                .map_err(|_| PreparationFailure::Unavailable)?;
+        }
+        if slot.is_none() {
+            if request.container_id.is_some() {
+                return Err(PreparationFailure::Missing);
+            }
+            *slot = Some(
+                self.create_context()
+                    .map_err(|_| PreparationFailure::Unavailable)?,
+            );
+        }
+        let context = slot.as_mut().unwrap();
+        if request
+            .container_id
+            .as_ref()
+            .is_some_and(|id| id != &context.id)
+        {
+            return Err(PreparationFailure::Missing);
+        }
+        self.configure_network(context, request.network_policy.as_ref())
+            .map_err(|_| PreparationFailure::PolicyConflict)?;
+        if self
+            .ensure_bridge(context)
+            .await
+            .and_then(|()| sandbox::pause())
+            .is_err()
+        {
+            let _ = self.retire(&mut slot).await;
+            return Err(PreparationFailure::Unavailable);
+        }
+        Ok(context.id.clone())
+    }
+
     async fn execute(&self, request: CodeRequest, cancel: CancellationToken) -> CodeResult {
         let started = Instant::now();
         let mut result = CodeResult::new(&request.id);
+        if cancel.is_cancelled() {
+            return CodeResult::cancelled_before_dispatch(&request.id);
+        }
         let mut slot = self.context.lock().await;
         if slot.as_ref().is_some_and(|context| context.expired)
             && self.retire(&mut slot).await.is_err()
@@ -763,6 +884,15 @@ pub(super) async fn execute(
     if let Err(message) = request.validate() {
         return error(StatusCode::BAD_REQUEST, message);
     }
+    if state
+        .interpreter
+        .admissions
+        .lock()
+        .await
+        .unsubmitted_cancel(&request.id)
+    {
+        return Json(CodeResult::cancelled_before_dispatch(&request.id)).into_response();
+    }
     if let Err(message) = crate::interpreter_limits::verify(request.memory_limit) {
         return error(StatusCode::UNPROCESSABLE_ENTITY, message);
     }
@@ -774,14 +904,27 @@ pub(super) async fn execute(
     {
         return error(StatusCode::NOT_FOUND, "code container not found");
     }
-    if !state.interpreter.accept(&request.id).await {
-        return error(StatusCode::CONFLICT, "execution id already exists");
+    match state.interpreter.accept(&request.id).await {
+        Admission::Accepted => {}
+        Admission::Duplicate => return error(StatusCode::CONFLICT, "execution id already exists"),
+        Admission::Cancelled => {
+            return Json(CodeResult::cancelled_before_dispatch(&request.id)).into_response();
+        }
     }
     let cancel = CancellationToken::new();
     *state.active.lock().await = Some(Active {
         id: request.id.clone(),
         cancel: cancel.clone(),
     });
+    if state
+        .interpreter
+        .admissions
+        .lock()
+        .await
+        .cancelled(&request.id)
+    {
+        cancel.cancel();
+    }
     let task = tokio::spawn(async move {
         let _guard = guard;
         let result = state.interpreter.execute(request, cancel).await;
@@ -792,6 +935,47 @@ pub(super) async fn execute(
     match task.await {
         Ok(result) => Json(result).into_response(),
         Err(error) => internal(error),
+    }
+}
+
+pub(super) async fn prepare_context(
+    State(state): State<Arc<App>>,
+    Json(request): Json<ContextRequest>,
+) -> Response {
+    if request
+        .container_id
+        .as_deref()
+        .is_some_and(|id| !context_id(id))
+        || request
+            .network_policy
+            .as_ref()
+            .is_some_and(|policy| policy.validate().is_err())
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid code context request");
+    }
+    if let Err(message) = crate::interpreter_limits::verify(request.memory_limit) {
+        return error(StatusCode::UNPROCESSABLE_ENTITY, message);
+    }
+    let Ok(_guard) = state.gate.clone().try_lock_owned() else {
+        return error(StatusCode::CONFLICT, "workspace busy");
+    };
+    if let Some(id) = &request.container_id
+        && !state.interpreter.has_context(id).await
+    {
+        return error(StatusCode::NOT_FOUND, "code container not found");
+    }
+    match state.interpreter.prepare(&request).await {
+        Ok(id) => Json(serde_json::json!({"container_id":id})).into_response(),
+        Err(PreparationFailure::Missing) => {
+            error(StatusCode::NOT_FOUND, "code container not found")
+        }
+        Err(PreparationFailure::PolicyConflict) => {
+            error(StatusCode::CONFLICT, "code_network_policy_conflict")
+        }
+        Err(PreparationFailure::Unavailable) => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "code_context_prepare_failed",
+        ),
     }
 }
 
@@ -814,19 +998,30 @@ pub(super) async fn status(State(state): State<Arc<App>>, Path(id): Path<String>
         )
             .into_response();
     }
+    if state
+        .interpreter
+        .admissions
+        .lock()
+        .await
+        .unsubmitted_cancel(&id)
+    {
+        return Json(CodeResult::cancelled_before_dispatch(&id)).into_response();
+    }
     error(StatusCode::NOT_FOUND, "code execution not found")
 }
 
 pub(super) async fn cancel(State(state): State<Arc<App>>, Path(id): Path<String>) -> Response {
-    if state.interpreter.active.lock().await.as_deref() != Some(id.as_str()) {
-        return error(StatusCode::NOT_FOUND, "code execution not running");
+    if !opaque_id(&id) {
+        return error(StatusCode::BAD_REQUEST, "invalid code execution id");
     }
+    // The request may reach this authenticated supervisor before its POST.
+    // Keep cancellation under the same bounded admission identity as execution.
+    state.interpreter.admissions.lock().await.cancel(&id);
     let active = state.active.lock().await;
     if let Some(active) = active.as_ref().filter(|entry| entry.id == id) {
         active.cancel.cancel();
-        return StatusCode::NO_CONTENT.into_response();
     }
-    error(StatusCode::NOT_FOUND, "code execution not running")
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub(super) async fn artifact(State(state): State<Arc<App>>, Path(id): Path<String>) -> Response {
@@ -1120,6 +1315,46 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_before_post_cannot_become_an_accepted_execution() {
+        let mut admissions = Admissions::default();
+        admissions.cancel("late_post");
+        assert_eq!(admissions.accept("late_post"), Admission::Cancelled);
+        assert_eq!(admissions.accept("late_post"), Admission::Cancelled);
+        assert!(admissions.unsubmitted_cancel("late_post"));
+        let result = CodeResult::cancelled_before_dispatch("late_post");
+        assert!(result.cancelled && result.container_id.is_none());
+        assert!(result.outputs.is_empty() && result.artifacts.is_empty());
+        assert_eq!(result.duration_ms, 0);
+    }
+
+    #[test]
+    fn cancellation_after_admission_keeps_the_original_execution_identity() {
+        let mut admissions = Admissions::default();
+        assert_eq!(admissions.accept("running"), Admission::Accepted);
+        admissions.cancel("running");
+        assert!(admissions.cancelled("running"));
+        assert!(!admissions.unsubmitted_cancel("running"));
+        assert_eq!(admissions.accept("running"), Admission::Duplicate);
+        admissions.cancel("other");
+        assert_eq!(admissions.accept("running"), Admission::Duplicate);
+        assert_eq!(admissions.accept("independent"), Admission::Accepted);
+    }
+
+    #[test]
+    fn execution_and_cancellation_share_one_bounded_receipt_window() {
+        let mut admissions = Admissions::default();
+        admissions.cancel("old");
+        for ordinal in 0..128 {
+            let id = format!("run_{ordinal}");
+            assert_eq!(admissions.accept(&id), Admission::Accepted);
+            admissions.cancel(&id);
+        }
+        assert_eq!(admissions.0.len(), 128);
+        assert!(!admissions.cancelled("old"));
+        assert_eq!(admissions.accept("run_127"), Admission::Duplicate);
+    }
 
     #[test]
     fn startup_diagnostics_accept_only_fixed_machine_labels() {

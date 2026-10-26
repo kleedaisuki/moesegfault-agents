@@ -29,6 +29,24 @@ def logs(result: dict[str, Any]) -> str:
     return "".join(output["logs"] for output in result["outputs"] if output["type"] == "logs")
 
 
+def test_prepare_context_pins_the_live_kernel_before_any_cell(daemon: DockerDaemon) -> None:
+    request: dict[str, Any] = {"container_id": None, "network_policy": {"type": "disabled"}}
+    prepared: dict[str, Any] = daemon.json("POST", "/v1/python/contexts", request, timeout=90)
+    assert prepared["container_id"].startswith("cntr_")
+    assert daemon.json("POST", "/v1/python/contexts", request) == prepared
+    assert daemon.json("POST", "/v1/python/contexts", {**request, **prepared}) == prepared
+    listing: dict[str, Any] = daemon.json("GET", "/v1/python/files")
+    assert listing["container_id"] == prepared["container_id"]
+    assert listing["files"] == []
+    result: dict[str, Any] = cell(daemon, "prepared_namespace = 42\nprint(prepared_namespace)", prepared["container_id"])
+    assert logs(result) == "42\n"
+    assert daemon.json("POST", "/v1/python/contexts", request) == prepared
+    assert logs(cell(daemon, "print(prepared_namespace)", prepared["container_id"])) == "42\n"
+    unknown: str = "cntr_" + uuid.uuid4().hex
+    assert daemon.request("POST", "/v1/python/contexts", {**request, "container_id": unknown})[0] == 404
+    assert logs(cell(daemon, "print(prepared_namespace)", prepared["container_id"])) == "42\n"
+
+
 def test_kernel_namespace_and_credential_boundary_survive_bash_and_snapshot(daemon: DockerDaemon) -> None:
     marker = "value_" + uuid.uuid4().hex
     first = cell(daemon, f"import os, resource\n{marker} = 40\nprint(str(os.getuid()) + '|' + os.environ.get('MAGENTS_DAEMON_TOKEN', 'unset'))\nprint(resource.getrlimit(resource.RLIMIT_NPROC)[0])")
@@ -153,6 +171,36 @@ def test_python_timeout_starts_a_new_explicit_logical_container(daemon: DockerDa
     assert result["timed_out"] and not result["cancelled"] and result["duration_ms"] < 10000
     fresh = cell(daemon, "print('before_timeout' in globals())")
     assert fresh["container_id"] != warm["container_id"] and "False" in logs(fresh)
+
+
+def test_cancel_before_post_is_a_known_receipt_without_running_the_cell(daemon: DockerDaemon) -> None:
+    warm: dict[str, Any] = cell(daemon, "kept_before_late_post = 41")
+    execution_id: str = "late_" + uuid.uuid4().hex
+    path: str = "/v1/python/" + execution_id
+    assert daemon.request("DELETE", path)[0] == 204
+    assert daemon.request("DELETE", path)[0] == 204
+    receipt: dict[str, Any] = daemon.json("GET", path)
+    assert receipt["cancelled"] is True
+    assert receipt["error"] == "code_cancelled_before_dispatch"
+    assert receipt["container_id"] is None
+    assert receipt["outputs"] == [] and receipt["artifacts"] == []
+    assert receipt["duration_ms"] == 0
+    payload: dict[str, Any] = {
+        "id": execution_id,
+        "container_id": warm["container_id"],
+        "code": "late_post_must_not_run = True\nkept_before_late_post = -1",
+    }
+    assert daemon.json("POST", "/v1/python", payload) == receipt
+    assert daemon.json("POST", "/v1/python", payload) == receipt
+    assert daemon.json("POST", "/v1/python", {**payload, "container_id": "cntr_" + uuid.uuid4().hex}) == receipt
+    assert daemon.json("GET", path) == receipt
+    verified: dict[str, Any] = cell(
+        daemon,
+        "print(kept_before_late_post)\nprint('late_post_must_not_run' in globals())",
+        warm["container_id"],
+    )
+    assert verified["container_id"] == warm["container_id"]
+    assert logs(verified) == "41\nFalse\n"
 
 
 def test_repeated_resets_reclaim_contexts_but_preserve_unpublished_artifacts(daemon: DockerDaemon) -> None:

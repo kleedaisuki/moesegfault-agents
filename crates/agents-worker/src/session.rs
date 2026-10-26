@@ -55,6 +55,8 @@ use responses::{ResponseObserver, ResponseRun};
 
 #[path = "session_hosted.rs"]
 mod hosted;
+#[path = "session_hosted_publication.rs"]
+mod hosted_publication;
 #[path = "session_tool_budget.rs"]
 mod tool_budget;
 
@@ -1061,9 +1063,22 @@ impl SessionInner {
             && run.pending_completion.is_none()
             && run.pending_compaction.is_none()
         {
-            return Ok(self.response_terminal_value(run));
+            if self.drain_cancelled_code().await? {
+                return Ok(None);
+            }
+            let current = self.snapshot()?;
+            return Ok(current
+                .run
+                .as_ref()
+                .and_then(|run| self.response_terminal_value(run)));
         }
-        meter.preflight(record.pinned.workspace)?;
+        meter.preflight(
+            record.pinned.workspace
+                || run
+                    .response
+                    .as_ref()
+                    .is_some_and(|response| response.bound_tools.requires_container()),
+        )?;
         if !run.admitted {
             self.activate_conversation_run(run).await?;
             if record.pinned.model.provider == agents_core::Provider::Byok {
@@ -1317,9 +1332,10 @@ impl SessionInner {
             let execution_id = execution_key(&run.id, run.round, &call.id);
             let output = self.dispatch_tool(record, &execution_id, &call).await;
             let output = match output {
-                Ok(output) => output,
+                Ok(hosted_publication::HostedDispatch::Ready(output)) => output,
+                Ok(hosted_publication::HostedDispatch::Pending) => return Ok(None),
                 Err(error) => match correctable_tool_error(&error) {
-                    Some(result) => result.to_string(),
+                    Some(result) => Value::String(result.to_string()),
                     None => {
                         let failure = tool_infrastructure_error(&error);
                         let tool = if record
@@ -1350,7 +1366,7 @@ impl SessionInner {
             {
                 let mut current = self.data.borrow_mut();
                 let current = current.as_mut().unwrap();
-                let message = Message::tool_result(&call.id, output);
+                let message = Message::tool_result_content(&call.id, output);
                 current.messages.push(message.clone());
                 current.journal.push(message);
             }
@@ -1827,7 +1843,7 @@ impl SessionInner {
         record: &SessionRecord,
         execution_id: &str,
         call: &provider::ToolCall,
-    ) -> Result<String> {
+    ) -> Result<hosted_publication::HostedDispatch> {
         let name = &call.function.name;
         let trace = crate::telemetry::TraceContext::from_traceparent(
             self.snapshot()?
@@ -1837,8 +1853,25 @@ impl SessionInner {
         );
         let _span = crate::telemetry::NativeSpan::start("session.tool", Some(&trace));
         if !self.admit_tool_dispatch(record, execution_id, name).await? {
-            return Ok(tool_budget::exhausted_result());
+            return Ok(hosted_publication::HostedDispatch::Ready(
+                tool_budget::exhausted_result().into(),
+            ));
         }
+        if let Some(result) = self.dispatch_code_tool(record, execution_id, call).await? {
+            return Ok(result);
+        }
+        self.dispatch_pinned_tool(record, execution_id, call)
+            .await
+            .map(|result| hosted_publication::HostedDispatch::Ready(result.into()))
+    }
+
+    async fn dispatch_pinned_tool(
+        &self,
+        record: &SessionRecord,
+        execution_id: &str,
+        call: &provider::ToolCall,
+    ) -> Result<String> {
+        let name = &call.function.name;
         if !record.pinned.tools.iter().any(|t| t.name == *name) {
             return Err(Error::RustError("tool_not_pinned".into()));
         }
