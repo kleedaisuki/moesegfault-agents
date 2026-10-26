@@ -1,6 +1,6 @@
 //! Freeze public image input through native Worker global Fetch, not a VPC or
-//! service binding. Caller publishes the verified bytes under its owner before
-//! model admission and retains the original URL separately for input_items.
+//! service binding. Preparation retains verified bytes in its execution view
+//! before model admission, without creating Files or starting a workspace.
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use worker::Result;

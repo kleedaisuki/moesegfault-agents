@@ -16,6 +16,7 @@ mod context_prefix;
 mod conversation_meter;
 mod conversation_routes;
 mod conversation_state;
+mod deepseek_image_tokens;
 mod deepseek_tokenizer;
 mod execution_leases;
 mod exports;
