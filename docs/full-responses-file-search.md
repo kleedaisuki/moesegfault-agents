@@ -240,3 +240,48 @@ are not compiled/live acceptance of this independent clock increment.
 - [Document conversion behavior](https://developers.cloudflare.com/workers-ai/features/markdown-conversion/how-it-works/)
 - [Conversion options](https://developers.cloudflare.com/workers-ai/features/markdown-conversion/conversion-options/)
 - [Fallible upstream text splitter](https://github.com/benbrandt/text-splitter/tree/v0.33.1)
+
+## Staging native service profile
+
+The scoped operator configuration pins `@cf/baai/bge-m3`, revision
+`workers-ai-bge-m3-2026-10-26`, 1024 dimensions and an 8192-byte per-input cap.
+Bindings are `AI` and `VECTORIZE`, with fixed namespace `agents-staging`.
+The dedicated `moesegfault-agents-file-search-staging-v1` native index was created
+with 1024 dimensions/cosine; actual subsequent metadata readback confirmed string
+indexes for `owner_hash`, `store_id`, `file_id` and `chunk_id`, before any vectors
+were inserted. Immediate post-create readback was empty while native index
+mutations propagated; no creation was repeated. This is provisioning evidence,
+not a real embedding/retrieval acceptance claim.
+
+Snapshot `2026-10-26-platform-retrieval-v1` preserves existing numerical resource
+rates and uses the same new price revision for all its tariffs. These four
+**platform allocation** tariffs use the existing `worker` resource bucket:
+
+| Unit | MicroUSD numerator / quantity denominator | Meaning |
+| --- | --- | --- |
+| `embedding_input_bytes` | 12 / 1000 | Actual submitted UTF-8 bytes; not estimated provider tokens or neurons |
+| `queried_dimensions` | 1 / 100 | Actual query dimensions |
+| `written_dimensions` | 1 / 100 | Actual native written dimensions |
+| `allocated_vector_dimension_ms` | 50000 / 259200000000000000 | Reserved capacity over a fixed platform 30-day period; not a vendor per-ms invoice |
+
+[Cloudflare's BGE-M3 model page](https://developers.cloudflare.com/workers-ai/models/bge-m3/)
+describes the native embedding service and its separately token-priced vendor
+rate; it does not authorize converting UTF-8 bytes into vendor token usage.
+[Vectorize pricing](https://developers.cloudflare.com/vectorize/platform/pricing/)
+lists queried/stored dimensions and account-level included allocations. The
+operator snapshot above is explicit platform pricing, not an assertion of the
+account's exact marginal Cloudflare invoice or unused free allowance.
+
+Deployment selects `runtime_features=web_search,file_search` explicitly so the
+previously accepted Search remains available without rerunning it. Code, images
+and 4 GiB remain disabled. FileSearch-only also has an explicit allowlist value;
+when FileSearch is unselected, its AI/Vectorize bindings and service profile are
+removed from the limited deployment rather than leaving management routes
+silently active. Production configuration is unchanged. Schema scope is 0017 and
+0024; this profile does not claim 0025 document formats are deployed.
+
+The provisioning receipt is `.temp/file-search-staging/provision.json` in the
+clean integration checkout. It records zero embedding, vector-upload and
+language-model data calls. The next acceptance is exactly the existing small
+UTF-8 native SDK journey after the integration owner supplies a deployable green
+source; diagnostic-only Wasm is not a promotion candidate.

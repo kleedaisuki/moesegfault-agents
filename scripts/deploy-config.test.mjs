@@ -8,6 +8,40 @@ const account = '0123456789abcdef0123456789abcdef';
 const target = () => ({ vars: { EXISTING: 'retained', BUILD_ID: 'stale' }, d1_databases: [{ migrations_dir: 'migrations' }], containers: [{ image: 'container/Dockerfile', image_build_context: '.' }] });
 const input = () => ({ main: 'build/worker/shim.mjs', assets: { directory: 'apps/dashboard/dist' }, build: { command: 'unused' }, env: { staging: target(), production: target() } });
 
+test('native FileSearch runtime binds the staging 1024 profile and retains explicit existing Search only', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const env = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, ACCEPTANCE_PROFILE: 'none', RUNTIME_FEATURES: 'web_search,file_search' };
+  const rendered = renderDeploymentConfig(source, env), stage = rendered.env.staging;
+  assert.equal(stage.vars.HOSTED_TOOL_RUNTIMES, 'web_search,file_search');
+  assert.deepEqual(stage.ai, { binding: 'AI' });
+  assert.deepEqual(stage.vectorize, [{ binding: 'VECTORIZE', index_name: 'moesegfault-agents-file-search-staging-v1' }]);
+  assert.equal(stage.containers.some(container => container.class_name === 'Session4G'), false);
+  const capabilities = JSON.parse(stage.vars.HOSTED_TOOL_CAPABILITIES_JSON);
+  assert.equal(capabilities.file_search, true); assert.equal(capabilities.platform_search, true);
+  assert.equal(capabilities.platform_images, false); assert.deepEqual(capabilities.available_container_profiles, []);
+  const profile = JSON.parse(stage.vars.FILE_SEARCH_PROFILE_JSON);
+  assert.deepEqual(profile.embedding, { model: '@cf/baai/bge-m3', revision: 'workers-ai-bge-m3-2026-10-26', dimensions: 1024, input_byte_limit: 8192 });
+  assert.equal(profile.namespace, 'agents-staging');
+  assert.deepEqual(rendered.env.production, source.env.production);
+});
+
+test('native FileSearch tariffs are explicit byte/dimension allocations and unavailable modes drop their bindings', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const env = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, ACCEPTANCE_PROFILE: 'none', RUNTIME_FEATURES: 'file_search' };
+  const stage = renderDeploymentConfig(source, env).env.staging;
+  assert.equal(JSON.parse(stage.vars.HOSTED_TOOL_CAPABILITIES_JSON).platform_search, false);
+  const pricing = JSON.parse(stage.vars.RESOURCE_PRICING_JSON);
+  for (const [unit, numerator, denominator] of [['embedding_input_bytes', 12, 1000], ['queried_dimensions', 1, 100], ['written_dimensions', 1, 100], ['allocated_vector_dimension_ms', 50000, 259200000000000000]]) {
+    assert.deepEqual(pricing.tariffs.find(tariff => tariff.unit === unit), { resource: 'worker', unit, microusd_numerator: numerator, quantity_denominator: denominator, price_version: pricing.version });
+  }
+  assert.ok(pricing.tariffs.every(tariff => tariff.price_version === pricing.version));
+  const off = renderDeploymentConfig(source, { ...env, RUNTIME_FEATURES: 'web_search' }).env.staging;
+  assert.equal(off.ai, undefined); assert.equal(off.vectorize, undefined); assert.equal(off.vars.FILE_SEARCH_PROFILE_JSON, undefined);
+  assert.throws(() => renderDeploymentConfig(source, { ...env, DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
+  delete source.env.staging.ai;
+  assert.throws(() => renderDeploymentConfig(source, env), /explicit staging FileSearch/);
+});
+
 test('runtime feature allowlist enables only Worker search independently of acceptance', () => {
   const source = input();
   source.env.staging.containers.push({ class_name: 'Session4G', image: 'unbuilt-4g' });
@@ -24,7 +58,7 @@ test('runtime feature allowlist enables only Worker search independently of acce
 
 test('runtime feature overrides cannot enable unverified tools or change production defaults', () => {
   const base = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, ACCEPTANCE_PROFILE: 'none' };
-  for (const features of ['code_interpreter', 'image_generation', 'file_search', 'web_search,code_interpreter', '', 'all']) {
+  for (const features of ['code_interpreter', 'image_generation', 'web_search,code_interpreter', '', 'all']) {
     assert.throws(() => renderDeploymentConfig(input(), { ...base, RUNTIME_FEATURES: features }), /allowlist/);
   }
   assert.throws(() => renderDeploymentConfig(input(), { ...base, DEPLOY_ENVIRONMENT: 'production', RUNTIME_FEATURES: 'web_search' }), /staging-only/);

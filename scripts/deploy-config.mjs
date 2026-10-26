@@ -13,10 +13,25 @@ export function requireDistinctEnvironmentDatabases(input) {
 
 export function deploymentRuntime(env) {
   const features = env.RUNTIME_FEATURES ?? 'configured';
-  if (!['configured', 'none', 'web_search'].includes(features)) throw new Error('Invalid runtime feature allowlist');
+  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search'].includes(features)) throw new Error('Invalid runtime feature allowlist');
   if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
   const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
-  return { features, limited, webSearch: limited && features === 'web_search' };
+  const workerFeatures = limited && features !== 'none' && features !== 'configured' ? features.split(',') : [];
+  return { features, limited, workerFeatures, webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search') };
+}
+
+function requireFileSearchBindings(target) {
+  const profile = JSON.parse(target.vars.FILE_SEARCH_PROFILE_JSON ?? 'null');
+  const vector = target.vectorize?.find(binding => binding.binding === 'VECTORIZE');
+  if (target.ai?.binding !== 'AI' || vector?.index_name !== 'moesegfault-agents-file-search-staging-v1'
+    || profile?.ai_binding !== 'AI' || profile.vector_binding !== 'VECTORIZE' || profile.namespace !== 'agents-staging'
+    || profile.embedding?.model !== '@cf/baai/bge-m3' || profile.embedding.dimensions !== 1024
+    || profile.embedding.revision !== 'workers-ai-bge-m3-2026-10-26' || profile.embedding.input_byte_limit !== 8192) throw new Error('Missing explicit staging FileSearch profile/bindings');
+  const pricing = JSON.parse(target.vars.RESOURCE_PRICING_JSON ?? 'null');
+  for (const unit of ['embedding_input_bytes', 'queried_dimensions', 'written_dimensions', 'allocated_vector_dimension_ms']) {
+    const tariffs = pricing?.tariffs?.filter(tariff => tariff.resource === 'worker' && tariff.unit === unit) ?? [];
+    if (tariffs.length !== 1 || tariffs[0].price_version !== pricing.version || [tariffs[0].microusd_numerator, tariffs[0].quantity_denominator].some(value => !Number.isInteger(value) || value <= 0)) throw new Error('Missing explicit FileSearch allocation tariff');
+  }
 }
 
 export function renderDeploymentConfig(input, env) {
@@ -35,14 +50,20 @@ export function renderDeploymentConfig(input, env) {
   const target = config.env[environment];
   target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha };
   if (runtime.limited) {
-    target.vars.HOSTED_TOOL_RUNTIMES = runtime.webSearch ? 'web_search' : '';
+    target.vars.HOSTED_TOOL_RUNTIMES = runtime.workerFeatures.join(',');
     target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
     target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
-      version: 1, platform_images: false, platform_search: runtime.webSearch, file_search: false,
+      version: 1, platform_images: false, platform_search: runtime.webSearch, file_search: runtime.fileSearch,
       container_memory: null, available_container_profiles: [],
       code_network_disabled: false, code_network_allowlist: false,
     });
+    if (!runtime.fileSearch) {
+      delete target.ai;
+      delete target.vectorize;
+      delete target.vars.FILE_SEARCH_PROFILE_JSON;
+    }
   }
+  if (runtime.fileSearch) requireFileSearchBindings(target);
   for (const db of target.d1_databases) db.migrations_dir = resolve(db.migrations_dir);
   for (const container of target.containers) {
     container.image = `registry.cloudflare.com/${account}/magents-workspace:${containerSource}`;

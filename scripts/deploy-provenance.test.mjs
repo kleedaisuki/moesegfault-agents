@@ -2,6 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { verifyDeploymentEvidence } from './deploy-provenance.mjs';
 
+test('native FileSearch proof records both Worker services without promoting unverified compute', () => {
+  const value = coreCompatibleFixture();
+  value.workerRuntimeFeatures = ['web_search', 'file_search'];
+  const proof = verifyDeploymentEvidence(value);
+  assert.deepEqual(proof.worker_runtime_features, ['web_search', 'file_search']);
+  assert.equal(proof.artifacts.container.source_sha, 'b1edf97746d3902373dbb05e224799f03d9a3a10');
+  assert.equal(proof.staging_acceptance, 'not_executed');
+  for (const features of [['file_search', 'file_search'], ['file_search', 'code_interpreter']]) {
+    assert.throws(() => verifyDeploymentEvidence({ ...value, workerRuntimeFeatures: features }), /unverified_runtime_feature/);
+  }
+});
+
 test('runtime feature proof retains the actual old daemon only for a bounded Worker search scope', () => {
   const value = coreCompatibleFixture();
   value.workerRuntimeFeatures = ['web_search'];

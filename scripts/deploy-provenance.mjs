@@ -124,7 +124,7 @@ export function verifyReusedChecks({ plan, catalog, source, repository, metadata
 }
 
 export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun, repository, metadata, verification, hash, checkHash, reusedVerification, coreContainer = false, workerRuntimeFeatures = [] }, now = Date.now()) {
-  need(Array.isArray(workerRuntimeFeatures) && workerRuntimeFeatures.length <= 1 && workerRuntimeFeatures.every(feature => feature === 'web_search') && (!workerRuntimeFeatures.length || coreContainer), 'unverified_runtime_feature');
+  need(Array.isArray(workerRuntimeFeatures) && new Set(workerRuntimeFeatures).size === workerRuntimeFeatures.length && workerRuntimeFeatures.every(feature => ['web_search', 'file_search'].includes(feature)) && (!workerRuntimeFeatures.length || coreContainer), 'unverified_runtime_feature');
   need(SHA.test(source ?? '') && ID.test(String(sourceRun)) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? ''), 'invalid_candidate_identity');
   requirePromotionScope(plan, coreContainer);
   need(plan?.schema_version === 1 && plan.policy === 'incremental-only' && plan.planned_checks_are_not_results === true && plan.source_sha === source && same(plan, expectedPlan), 'candidate_plan_not_recomputed');
@@ -233,7 +233,7 @@ async function main() {
     need(Object.values(FILES).flat().includes(check.receipt_path), 'invalid_reused_receipt_path');
     reusedVerification[key].files[check.receipt_path] = parse(path.join(directory, 'reused', `${check.run_id}-${check.artifact_name}`, check.receipt_path));
   }
-  const receipt = verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun: values.run, repository, metadata, verification, hash: module.fingerprint, checkHash: module.checkFingerprint, reusedVerification, coreContainer, workerRuntimeFeatures: runtime.webSearch ? ['web_search'] : [] });
+  const receipt = verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, sourceRun: values.run, repository, metadata, verification, hash: module.fingerprint, checkHash: module.checkFingerprint, reusedVerification, coreContainer, workerRuntimeFeatures: runtime.workerFeatures });
   mkdirSync(directory, { recursive: true });
   writeFileSync(path.join(directory, 'deployment-provenance.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   for (const [name, artifact] of Object.entries(receipt.artifacts)) if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}_artifact_run=${artifact.run_id}\n${name}_artifact_sha=${artifact.source_sha}\n`);
