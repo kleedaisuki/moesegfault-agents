@@ -1,0 +1,65 @@
+name: Programmatic Session increment
+on:
+  push:
+    branches: [codex/programmatic-runtime]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: programmatic-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  programmatic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c
+        with:
+          shared-key: worker
+          cache-all-crates: true
+          cache-on-failure: true
+      - run: cargo fmt --check
+      - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
+      - name: Run only newly registered programmatic Rust contracts
+        run: cargo test --locked -p agents-worker --lib programmatic_ -- --nocapture
+      - run: cargo install --locked worker-build --version 0.8.7
+      - run: worker-build --release
+        working-directory: crates/agents-worker
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/bundle-worker.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: worker
+          path: crates/agents-worker/build
+          retention-days: 7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - run: |
+          python3 -m venv .temp/programmatic-sdk-venv
+          .temp/programmatic-sdk-venv/bin/pip install -r tests/e2e/requirements-current.lock
+      - name: Actual Rust Session, Dynamic Worker and current SDK journey
+        run: |
+          set -o pipefail
+          mkdir -p .temp/programmatic-verification
+          node --test --test-reporter=tap tests/worker/programmatic.test.mjs 2>&1 | tee .temp/programmatic-verification/journeys.log
+        env:
+          MAGENTS_CURRENT_SCHEMA_PYTHON: .temp/programmatic-sdk-venv/bin/python
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: programmatic-verification
+          path: |
+            .temp/programmatic-verification
+            .temp/programmatic-actor-*/receipt.json
+
+          retention-days: 14
