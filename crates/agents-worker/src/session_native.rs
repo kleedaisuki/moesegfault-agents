@@ -52,11 +52,15 @@ fn key(parts: &[&str]) -> String {
     format!("{:x}", hash.finalize())
 }
 
-fn binding(record: &SessionRecord, config: &ProviderConfig) -> Result<String> {
+pub(super) fn provider_binding(record: &SessionRecord, config: &ProviderConfig) -> Result<String> {
     let value = json!({"owner":record.owner_id,"provider":record.pinned.model.provider,
         "protocol":config.protocol,"base_url":config.base_url,"model":config.model,
         "credential_id":record.pinned.model.credential_id});
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+}
+
+fn binding(record: &SessionRecord, config: &ProviderConfig) -> Result<String> {
+    provider_binding(record, config)
 }
 
 fn validate_items(items: &[Value]) -> Result<()> {
@@ -82,7 +86,8 @@ fn validate_items(items: &[Value]) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn unresolved_input(items: &[Value]) -> bool {
+#[cfg(test)]
+fn unresolved_input(items: &[Value]) -> bool {
     // These identifiers/ciphertexts need our owner-bound resolver, not the
     // platform provider account's broader upstream item namespace.
     items.iter().any(|item| {
@@ -232,7 +237,7 @@ fn portable_projection(items: &[Value]) -> bool {
     })
 }
 
-fn conversation_projection(
+pub(super) fn conversation_projection(
     items: &[Value],
     provenance: &std::collections::BTreeMap<
         String,
@@ -286,6 +291,17 @@ fn conversation_projection(
     Ok(adapted)
 }
 
+pub(super) fn summary_projection(item: &Value) -> Option<Value> {
+    let text = item["summary"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then(|| json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":text,"annotations":[]}]}))
+}
+
 impl SessionInner {
     pub(super) async fn native_conversation_import(
         &self,
@@ -305,11 +321,24 @@ impl SessionInner {
             .clone();
         let config = self.provider_config(&record).await?;
         let provider_binding = binding(&record, &config)?;
-        let adapted = conversation_projection(items, provenance, &provider_binding)?;
+        let context = super::native_items::ItemContext::new(
+            &record.owner_id,
+            &record.agent_id,
+            &record.pinned,
+            &config,
+        )?;
+        let adapted = super::native_items::resolve_local_conversation(
+            self,
+            &context,
+            items,
+            provenance,
+            &system_prefix(&record),
+        )
+        .await?;
         let reference = self
             .native_import(&adapted, &provider_binding, operation)
             .await?;
-        Ok((adapted, reference))
+        Ok((super::native_items::validation_input(&adapted)?, reference))
     }
 
     pub(super) async fn warm_native_input(&self) -> Result<()> {

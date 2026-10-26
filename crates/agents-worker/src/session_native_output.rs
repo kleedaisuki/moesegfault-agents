@@ -707,6 +707,9 @@ impl SessionInner {
                 ordinal
             );
             let mut item = canonical_item(raw, &id)?;
+            if raw["type"] == "reasoning" {
+                item["encrypted_content"] = json!(self.native_item_token(&id).await?);
+            }
             self.annotate_search_message(&mut item);
             let streamed = {
                 let data = self.data.borrow();

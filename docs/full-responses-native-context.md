@@ -107,3 +107,27 @@ https://developers.openai.com/api/reference/resources/responses/methods/create
 Local verification remains rustfmt and diff checks. Pure projector/policy tests
 and the controlled actual-Worker native streaming/fork journey belong to the
 incremental Actions gate; no live model execution is implied by this change.
+
+## Owner-bound stateless native item handles
+
+`session_native_items.rs` resolves an item reference or sealed reasoning handle
+back to its exact immutable native-log entry. A handle binds the owner, agent,
+pinned prefix, provider origin/transport/model/credential identity, public ID,
+log generation/index and content digest. It contains no upstream reasoning or
+provider ciphertext. AES-GCM sealing reuses the existing account-data key and
+purpose-specific associated data; one ciphertext is persisted before canonical
+publication so retries cannot reseal an item into different response/event bytes.
+
+Creation, read-only count and Conversation imports use the same resolver. The
+provider receives authoritative private native bytes, not caller-edited summaries
+or a platform proxy token. Public Message projection remains separate. Bare
+references require a retained owned Response; a valid encrypted capability can
+resolve its source independently of Response retention, without turning a vendor
+ID into authorization. Same-Session resolution stays local to avoid self-RPC.
+
+This slice does not include native auto-window fitting, programmatic origin
+rights, MCP or discovery. Existing future WIP for those boundaries is excluded.
+The new controlled journey covers actual create/count/stateless continuation,
+foreign/tampered rejection before dispatch, current SDK raw response/events and
+byte-identical SSE retrieval. Source and syntax checks are not execution receipts;
+compiled results are recorded only after the new Worker artifact runs.
