@@ -14,7 +14,7 @@ const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-
 const cases = [
   { id: 'server', name: 'server tool discovery preserves static prefix and namespace handoff through replay', run: runServerDiscovery },
   { id: 'strict_invalid', name: 'disobedient discovered strict arguments fail with known usage and zero completed handoff', run: runInvalidDiscoveryArguments },
-  { id: 'native', name: 'native-capable transport preserves tool search outputs and resumes qualified calls', run: runNativeDiscovery },
+  { id: 'native', name: 'native-capable transport keeps local discovery authority and resumes qualified calls', run: runNativeDiscovery },
   { id: 'client_invalid', name: 'client search arguments cannot publish completed handoff before validation', run: runInvalidClientSearch },
   { id: 'callers', name: 'ordinary function caller permissions reject direct and forged program handoffs', run: runCallerAuthority },
 ];
