@@ -21,6 +21,26 @@ function changedToken(token) {
   return token.slice(0, position) + (token[position] === 'A' ? 'B' : 'A') + token.slice(position + 1);
 }
 
+export async function runInvalidNativeCountJourney(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'invalid-native-count', []);
+  for (const item of [
+    reasoning,
+    { type: 'reasoning', id: 'item_resp_missing_0_0', summary: [], encrypted_content: 'mnri1.invalid' },
+    { type: 'item_reference', id: 'item_resp_missing_0_0' },
+    { type: 'reasoning', id: 'item_resp_missing_0_0', summary: [], encrypted_content: 'mnri1.' + 'x'.repeat(8193) },
+  ]) {
+    await assert.rejects(scenario.client.responses.inputTokens.count({ model: scenario.agent.id, input: [item] }), error => {
+      assert.equal(error.status, 400);
+      assert.equal(error.error.code, 'unresolved_native_item');
+      assertPrivate(error.error);
+      return true;
+    });
+  }
+  assert.equal(scenario.state.calls, 0);
+  assert.equal(scenario.state.countCalls, 0);
+  return { invalid_contexts: 4, model_calls: 0, provider_counter_calls: 0 };
+}
+
 export async function runSealedNativeContextJourney(context) {
   const firstMessage = message('The retained native message.');
   const scenario = await createNativeSemanticsScenario(context, 'sealed-context', [

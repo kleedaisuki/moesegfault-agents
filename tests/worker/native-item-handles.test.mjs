@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { runSealedNativeContextJourney } from './native-item-handles-journey.mjs';
+import { runInvalidNativeCountJourney, runSealedNativeContextJourney } from './native-item-handles-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -81,7 +81,8 @@ test('compiled Rust Worker: owner-bound native item handles count and continue',
     return JSON.parse(text);
   }
   const context = { mf, db, encryptionKey, request, providers };
-  const receipts = await runSealedNativeContextJourney(context);
+  const receipts = process.env.MAGENTS_NATIVE_HANDLE_CASE === 'negative_count'
+    ? await runInvalidNativeCountJourney(context) : await runSealedNativeContextJourney(context);
   await mkdir(path.join(root, '.cache/v0.3-ci'), { recursive: true });
   await writeFile(path.join(root, '.cache/v0.3-ci/native-item-handles.json'), JSON.stringify({
     fixture: 'actual-compiled-rust-worker',

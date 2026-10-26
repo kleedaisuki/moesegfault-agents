@@ -140,6 +140,13 @@ fn invalid() -> worker::Error {
 }
 
 fn error_response(error: &worker::Error) -> Result<Response> {
+    if crate::session::native_items::invalid_lookup(error) {
+        return util::json_error(
+            400,
+            "unresolved_native_item",
+            "Referenced or opaque input must belong to this owner and pinned provider context",
+        );
+    }
     let code = match error {
         worker::Error::RustError(code) => code.as_str(),
         _ => return crate::routes::error_response(error),
