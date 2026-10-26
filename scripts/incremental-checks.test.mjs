@@ -289,3 +289,10 @@ test('operator usage scope never implies platform acceptance', () => {
     assert.equal(actual.components[component].artifact, null);
   }
 });
+
+test('direct unittest scripts count the selected case without rerunning it', () => {
+  const argv=['python3','tests/test_file_batch_funding_sql.py','BatchFundingTests.test_public_failed_admission_preserves_internal_generation_and_standard_counts','-v'];
+  assert.equal(executedTests(argv,'Ran 1 test in 0.004s\nOK'),1);
+  assert.equal(executedTests(argv,'Ran 0 tests in 0.000s\nOK'),0);
+  assert.equal(executedTests(argv,'unrelated command output'),0);
+});
