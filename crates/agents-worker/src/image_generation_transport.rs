@@ -121,7 +121,7 @@ async fn read_json(response: &mut Response) -> worker::Result<Value> {
 
 pub(super) fn parse_buffered(
     mut value: Value,
-    requested: Format,
+    requested: Option<Format>,
     request_id: Option<String>,
 ) -> worker::Result<ImageResult> {
     let items = value
@@ -136,13 +136,17 @@ pub(super) fn parse_buffered(
 fn parse_result(
     value: Value,
     mut item: Value,
-    requested: Format,
+    requested: Option<Format>,
     request_id: Option<String>,
 ) -> worker::Result<ImageResult> {
     if value.get("error").is_some_and(|value| !value.is_null()) {
         return Err(invalid("image_generation_upstream_error"));
     }
     let source = image_source(&mut item, requested)?;
+    let output_format = match &source {
+        ImageSource::Inline { image } => Some(image.format()),
+        ImageSource::Remote { .. } => requested,
+    };
     let provider_request_id = value
         .get("id")
         .and_then(Value::as_str)
@@ -177,7 +181,7 @@ fn parse_result(
         provider_request_id,
         created_at,
         revised_prompt,
-        output_format: Some(requested),
+        output_format,
         background,
         quality,
         requested_size: None,
@@ -185,7 +189,7 @@ fn parse_result(
     })
 }
 
-fn image_source(item: &mut Value, requested: Format) -> worker::Result<ImageSource> {
+fn image_source(item: &mut Value, requested: Option<Format>) -> worker::Result<ImageSource> {
     let declared = item
         .get("media_type")
         .and_then(Value::as_str)
@@ -199,7 +203,7 @@ fn image_source(item: &mut Value, requested: Format) -> worker::Result<ImageSour
             return Err(invalid("image_generation_protocol_error"));
         };
         let image = Raster::from_encoded(encoded)?;
-        if image.format() != requested
+        if requested.is_some_and(|format| image.format() != format)
             || declared
                 .as_deref()
                 .is_some_and(|mime| Format::from_mime(mime) != Some(image.format()))
@@ -225,7 +229,7 @@ fn valid_request_id(value: &str) -> bool {
 
 async fn consume_stream<F, Fut>(
     response: &mut Response,
-    format: Format,
+    format: Option<Format>,
     request_id: Option<String>,
     maximum_partials: u8,
     partial: &mut F,
@@ -253,7 +257,7 @@ where
 
 async fn decode_stream<S, F, Fut>(
     source: S,
-    format: Format,
+    format: Option<Format>,
     request_id: Option<String>,
     maximum_partials: u8,
     partial: &mut F,
@@ -479,7 +483,7 @@ mod tests {
         let raster = image();
         let mut value:Value=serde_json::from_str(r#"{"id":"img_known","created":123,"usage":{"cost":0.000000000123,"input_tokens":12,"output_tokens":34,"total_tokens":46},"data":[]}"#).unwrap();
         value["data"] = json!([{"b64_json":raster.encoded(),"media_type":"IMAGE/PNG","revised_prompt":"Revised private prompt"}]);
-        let result = parse_buffered(value, Format::Png, None).unwrap();
+        let result = parse_buffered(value, Some(Format::Png), None).unwrap();
         assert_eq!(result.provider_request_id.as_deref(), Some("img_known"));
         assert_eq!(
             result.reported_cost().unwrap().to_string(),
@@ -494,7 +498,7 @@ mod tests {
 
     #[test]
     fn url_outputs_are_known_but_never_fetched_by_response_parsing() {
-        let result=parse_buffered(json!({"data":[{"b64_json":null,"url":"https://cdn.example.com/output.png?opaque=signature","media_type":"image/png"}],"usage":{"cost":"0.05"}}),Format::Png,Some("request_header".into())).unwrap();
+        let result=parse_buffered(json!({"data":[{"b64_json":null,"url":"https://cdn.example.com/output.png?opaque=signature","media_type":"image/png"}],"usage":{"cost":"0.05"}}),Some(Format::Png),Some("request_header".into())).unwrap();
         assert_eq!(
             result.provider_request_id.as_deref(),
             Some("request_header")
@@ -523,16 +527,16 @@ mod tests {
         assert!(
             parse_buffered(
                 json!({"data":[{"b64_json":raster.encoded()}]}),
-                Format::Jpeg,
+                Some(Format::Jpeg),
                 None
             )
             .is_err()
         );
-        assert!(parse_buffered(json!({"data":[]}), Format::Png, None).is_err());
+        assert!(parse_buffered(json!({"data":[]}), Some(Format::Png), None).is_err());
         assert!(
             parse_buffered(
                 json!({"data":[{"b64_json":raster.encoded()},{"b64_json":raster.encoded()}]}),
-                Format::Png,
+                Some(Format::Png),
                 None
             )
             .is_err()
@@ -540,7 +544,7 @@ mod tests {
         assert!(
             parse_buffered(
                 json!({"data":[{"b64_json":raster.encoded(),"media_type":"image/svg+xml"}]}),
-                Format::Png,
+                Some(Format::Png),
                 None
             )
             .is_err()
@@ -563,7 +567,7 @@ mod tests {
         };
         let result = block_on(decode_stream(
             stream::iter(chunks),
-            Format::Png,
+            Some(Format::Png),
             None,
             1,
             &mut sink,
@@ -585,7 +589,7 @@ mod tests {
         assert!(
             block_on(decode_stream(
                 stream::iter([Ok(preview)]),
-                Format::Png,
+                Some(Format::Png),
                 None,
                 1,
                 &mut sink
@@ -598,7 +602,7 @@ mod tests {
         assert!(
             block_on(decode_stream(
                 stream::iter([Ok(bad)]),
-                Format::Png,
+                Some(Format::Png),
                 None,
                 1,
                 &mut sink
@@ -608,7 +612,7 @@ mod tests {
         let error = frame(json!({"type":"error","error":{"message":"private upstream body"}}));
         let error = block_on(decode_stream(
             stream::iter([Ok(error)]),
-            Format::Png,
+            Some(Format::Png),
             None,
             1,
             &mut sink,

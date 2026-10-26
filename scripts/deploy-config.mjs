@@ -25,11 +25,11 @@ export function deploymentRuntime(env) {
 export const seedreamProfile = {
   version: 1, profiles: [{ api: 'openrouter', base_url: 'https://openrouter.ai/api/v1',
     model: 'bytedance-seed/seedream-5-0-flash', public_model: null,
-    capabilities: { streaming: false, parameters: {
+    capabilities: { streaming: false, omit_default_output_format: true, parameters: {
       resolution: { type: 'enum', values: ['1K', '2K'] },
       aspect_ratio: { type: 'enum', values: ['1:1', '1:2', '2:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '9:19.5', '19.5:9', '9:20', '20:9', '9:21', '21:9', 'auto'] },
       n: { type: 'range', min: 1, max: 1 }, input_references: { type: 'range', min: 0, max: 14 }, seed: { type: 'boolean' },
-      size: { type: 'boolean' }, output_format: { type: 'enum', values: ['png', 'jpeg', 'webp'] },
+      size: { type: 'boolean' },
     }, max_references: 14, mask: false },
     router_endpoint: { provider_slug: 'seed', provider_tag: 'seed', passthrough_parameters: [] },
     asset_hosts: [], price_revision: 'seedream-catalog-2026-10-26', reservation_microusd: 18000, platform_funded: true }],

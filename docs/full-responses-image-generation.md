@@ -1,5 +1,41 @@
 # Image generation service boundary
 
+## Real provider-default raster boundary
+
+The first real Seedream Flash operation returned provider HTTP 200 and completed
+at USD 0.018, while the local producer classified its error as an unknown provider
+outcome. This revealed an independently reproducible codec boundary: the local
+prepared request always retained `Format::Png`, even when a minimal service profile
+deliberately omitted `output_format`. A successful JPEG response was rejected by
+`image_source` before request identity and usage were returned to the producer.
+
+The format preference now represents what was actually sent: `Some(format)` is an
+explicit format contract; `None` is the provider default. Inline results derive
+their published format from validated raster bytes. Declared MIME must still match
+those bytes even for a provider-default request. A remote default result remains
+format-unknown until its authenticated, origin-pinned materialization supplies the
+actual raster; it is never labeled PNG merely because a request omitted a field.
+
+The Seed endpoint's public capability record was read without credentials or paid
+generation on 2026-10-27. It advertises resolution, aspect ratio, count, references
+and seed, but no output-format selector. The staging profile therefore omits the
+default format and rejects explicitly requested unsupported formats before spend,
+rather than manufacturing PNG/JPEG/WebP capabilities. OpenRouter documents the
+actual response MIME and the distinction between advertised endpoint capabilities
+and provider defaults:
+
+- [Image API contract and endpoint capabilities](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)
+- [Seedream Flash endpoint record](https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints)
+- [OpenRouter's measured raster-format differences](https://openrouter.ai/blog/insights/image-generation-models-compared/)
+
+The new pure regression creates a tiny genuine JPEG, parses a completed inline
+response with identity and exact USD 0.018 usage, materializes it without changing
+bytes or format, and rejects a forged PNG MIME and an explicit PNG constraint.
+It also verifies that a service-default remote result has no fabricated format.
+No new provider generation, model request or old six-case image journey is needed
+to establish this mechanism. It does not claim that the original unretained body
+has been recovered; structured transport/receipt recovery remains a separate fix.
+
 ## Session producer
 
 `session_hosted_image.rs` is the single Session harness producer. Its operation
