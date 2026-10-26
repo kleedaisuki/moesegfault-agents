@@ -82,8 +82,14 @@ test('compiled Rust Worker: native auto window preserves source and historical t
   }
   const context = { mf, db, encryptionKey, request, providers };
   const receipts = {};
-  if (!process.env.MAGENTS_NATIVE_WINDOW_CASE || process.env.MAGENTS_NATIVE_WINDOW_CASE === 'history') receipts.history = await runNativeWindowJourney(context);
-  if (!process.env.MAGENTS_NATIVE_WINDOW_CASE || process.env.MAGENTS_NATIVE_WINDOW_CASE === 'tools') receipts.tools = await runNativeWindowToolsJourney(context);
+  if (!process.env.MAGENTS_NATIVE_WINDOW_CASE || process.env.MAGENTS_NATIVE_WINDOW_CASE === 'history') {
+    await t.test('history windows and default historical forks', async () => { receipts.history = await runNativeWindowJourney(context); });
+  }
+  if (!process.env.MAGENTS_NATIVE_WINDOW_CASE || process.env.MAGENTS_NATIVE_WINDOW_CASE === 'tools') {
+    await t.test('closed tool pairs and pending historical forks', async () => { receipts.tools = await runNativeWindowToolsJourney(context); });
+  }
+  assert.equal(Object.keys(receipts).length, process.env.MAGENTS_NATIVE_WINDOW_CASE ? 1 : 2,
+    'Do not write a passing receipt if an independent new window case failed');
   await mkdir(path.join(root, '.cache/v0.3-ci'), { recursive: true });
   await writeFile(path.join(root, '.cache/v0.3-ci/native-window.json'), JSON.stringify({
     fixture: 'actual-compiled-rust-worker',
