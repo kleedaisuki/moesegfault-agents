@@ -87,7 +87,18 @@ export async function runDeepSeekVisionCountJourney({ mf, db, encryptionKey, req
     assert.equal(upload.status, 200);
     file = await upload.json();
     const fileSet = await request('GET', '/v1/files', undefined, 200, principal.apiKey);
-    for (const fixture of corpus.fixtures) await invoke(fixture.body, fixture.name, fixture.public_input_tokens);
+    for (const fixture of corpus.fixtures) {
+      if (fixture.count_supported === false) {
+        const refused = await invoke(fixture.body, fixture.name, undefined, 422);
+        assert.equal(refused.error.code, 'token_count_input_unsupported');
+      } else {
+        await invoke(fixture.body, fixture.name, fixture.public_input_tokens);
+      }
+    }
+    for (const fixture of corpus.counterexamples) {
+      const refused = await invoke(fixture.body, fixture.name, undefined, 422);
+      assert.equal(refused.error.code, 'token_count_input_unsupported');
+    }
     const fromFile = structuredClone(corpus.fixtures[0].body);
     fromFile.input[0].content[1] = { type: 'input_image', file_id: file.id, image_url: null, detail: 'original' };
     await invoke(fromFile, 'owned-file-original', corpus.fixtures[0].public_input_tokens);
@@ -131,7 +142,8 @@ export async function runDeepSeekVisionCountJourney({ mf, db, encryptionKey, req
     assert.equal(media.length, 1);
     assert.equal(media[0].image_url, `data:image/gif;base64,${corpus.assets.small_gif.base64}`);
     assert.equal(media[0].detail, 'auto');
-    assert.equal(created.usage.input_tokens, samples.find(sample => sample.label === 'frozen-https-gif').input_tokens);
+    assert.equal(created.usage, null, 'Unknown cache creation stays unknown, never fabricated as zero');
+    assert.equal(created.agents_usage.input_tokens, samples.find(sample => sample.label === 'frozen-https-gif').input_tokens);
     assert.ok(process.env.MAGENTS_CURRENT_SCHEMA_PYTHON, 'Strict current SDK validation must not be optional');
     const strict = spawnSync(process.env.MAGENTS_CURRENT_SCHEMA_PYTHON, ['-c',
       'import json,sys; from openai.types.responses import Response; Response.model_validate(json.load(sys.stdin), strict=True)'],

@@ -332,6 +332,22 @@ fn validate_input(body: &Value) -> Result<bool, String> {
             }
         }
     }
+    if has_images {
+        let user = input
+            .iter()
+            .position(|item| item["role"] == "user")
+            .ok_or("token_count_input_unsupported")?;
+        if input[..user].iter().any(|item| {
+            item["role"] == "assistant"
+                || matches!(
+                    item["type"].as_str(),
+                    Some("function_call" | "custom_tool_call")
+                )
+        }) {
+            // The pinned Python and Rust recipes differ without a user-led turn.
+            return Err("token_count_input_unsupported".into());
+        }
+    }
     Ok(has_images)
 }
 
@@ -347,12 +363,29 @@ mod tests {
         ))
         .unwrap();
         for fixture in corpus["fixtures"].as_array().unwrap() {
+            if fixture["count_supported"] == false {
+                assert_eq!(
+                    count_body("deepseek-flash", fixture["body"].clone())
+                        .err()
+                        .as_deref(),
+                    Some("token_count_input_unsupported")
+                );
+                continue;
+            }
             let count = count_body("deepseek-flash", fixture["body"].clone()).unwrap();
             assert_eq!(
                 count.input_tokens,
                 fixture["input_tokens"].as_u64().unwrap(),
                 "{}",
                 fixture["name"]
+            );
+        }
+        for fixture in corpus["counterexamples"].as_array().unwrap() {
+            assert_eq!(
+                count_body("deepseek-flash", fixture["body"].clone())
+                    .err()
+                    .as_deref(),
+                Some("token_count_input_unsupported")
             );
         }
         let mut pro = corpus["fixtures"][0]["body"].clone();
