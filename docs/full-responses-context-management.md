@@ -91,3 +91,25 @@ It checks typed item events, native-window replacement, reusable encrypted state
 and retained prior input identities. Pure tests cover exact/estimated distinction,
 boundary idempotency and independent threshold ordering. These tests are wired
 but not reported as compiled/passed before the next Actions run.
+
+## Compiled shared-lifecycle checkpoint
+
+Actions `40339011992`, source `192078d`, built Worker artifact `12657473101`
+and passed the `context-capacity` lifecycle through the actual Rust Worker and
+current Node SDK. Only one summary and one answer generation executed against
+the controlled native provider; no external provider was called. The fixture
+observed reserved output escrow inside both provider callbacks, terminal
+`converted` state with zero remaining reservation, refund of unused capacity,
+and exactly two settled known-usage BYOK model rows.
+
+The same lifecycle preserved fixed server, current custom and historical
+developer instructions after native replacement; emitted one sealed item with
+canonical added/done events; retained Conversation items and logical bytes on
+standard metadata DELETE; physically purged body/admission/chunk storage before
+refunding body allocations; retained header/identity charges; and cold-read the
+independent retained Response/input items plus its exact count after purge.
+Actions `40338678726` failed compilation on an accidentally retained independent
+workspace-import caller, before any generation. The subsequent pure repair
+removed that unused hook; no accepted generations or nine SQL cases were
+replayed. This is compiled controlled-provider proof, not real-provider staging
+or a claim that an integrated Code/media artifact has identical source inputs.
