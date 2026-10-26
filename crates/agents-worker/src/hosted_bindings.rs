@@ -391,6 +391,7 @@ impl BoundTools {
                 ResolvedTool::FileSearch { options } => {
                     for id in &options.vector_store_ids {
                         validate_store_owner(env, owner, id).await?;
+                        crate::file_index::storage::require_paid_store(env, owner, id).await?;
                     }
                 }
             }

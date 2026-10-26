@@ -1385,7 +1385,7 @@ impl SessionInner {
             let execution_id = execution_key(&run.id, run.round, &call.id);
             let output = self.dispatch_tool(record, &execution_id, &call).await;
             let output = match output {
-                Ok(hosted_publication::HostedDispatch::Ready(output)) => output,
+                Ok(hosted_publication::HostedDispatch::Ready(output)) => Value::from(output),
                 Ok(hosted_publication::HostedDispatch::Pending) => return Ok(None),
                 Err(error) => match correctable_tool_error(&error) {
                     Some(result) => Value::String(result.to_string()),

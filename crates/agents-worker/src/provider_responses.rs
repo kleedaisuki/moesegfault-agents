@@ -122,7 +122,7 @@ impl PreparedRequest {
             return Err("invalid native Responses context".into());
         }
         for tool in tools {
-            validate_tool(tool)?;
+            validate_tool(config, tool)?;
         }
         let mut body = json!({"model":config.model,"input":input,"tools":tools,"store":false});
         if !controls.is_null() {
@@ -183,7 +183,14 @@ impl PreparedRequest {
     }
 }
 
-fn validate_tool(tool: &Value) -> Result<(), String> {
+fn validate_tool(config: &ProviderConfig, tool: &Value) -> Result<(), String> {
+    if crate::client_tool_items::declaration(tool) {
+        crate::client_tool_items::validate_declaration(tool)?;
+        if super::is_deepseek(config) {
+            return Err("DeepSeek does not support this caller-executed native tool".into());
+        }
+        return Ok(());
+    }
     match tool.get("type").and_then(Value::as_str) {
         Some("function" | "custom") => Ok(()),
         Some("namespace") => {
@@ -613,7 +620,7 @@ pub(crate) fn public_item(value: &Value) -> Result<Option<Value>, String> {
             "async",
         ],
         // Hosted tools have a separate service authority and public projection.
-        _ => return Ok(None),
+        _ => return crate::client_tool_items::public_item(value),
     };
     let mut item = select_fields(value, fields);
     if matches!(

@@ -27,6 +27,14 @@ export class Session extends RustSession {
 
 export default class extends RustWorker {
   async fetch(request) {
+    if (new URL(request.url).pathname === '/__test/retrieval-maintenance') {
+      const pending = [];
+      const ctx = { waitUntil(promise) { pending.push(promise); } };
+      await RustWorker.prototype.scheduled.call({ env: bindings(this.env), ctx },
+        { scheduledTime: Date.now(), cron: '* * * * *', noRetry() {} });
+      await Promise.all(pending);
+      return Response.json({ completed: true });
+    }
     return RustWorker.prototype.fetch.call({ env: bindings(this.env), ctx: this.ctx }, request);
   }
   async scheduled(event) {

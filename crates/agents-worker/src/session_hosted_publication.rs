@@ -12,8 +12,22 @@ mod image;
 mod search;
 
 pub(super) enum HostedDispatch {
-    Ready(Value),
+    Ready(ToolOutput),
     Pending,
+}
+
+pub(super) struct ToolOutput(String);
+
+impl From<String> for ToolOutput {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ToolOutput> for Value {
+    fn from(value: ToolOutput) -> Self {
+        Self::String(value.0)
+    }
 }
 
 pub(super) fn hosted_item_id(execution: &str) -> String {
@@ -193,7 +207,7 @@ impl SessionInner {
             None => Ok(false),
             Some(HostedDispatch::Pending) => Ok(true),
             Some(HostedDispatch::Ready(output)) => {
-                let message = Message::tool_result_content(&call.id, output);
+                let message = Message::tool_result_content(&call.id, output.into());
                 {
                     let mut slot = self.data.borrow_mut();
                     let current = slot
@@ -282,6 +296,16 @@ impl SessionInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    proptest::proptest! {
+        #[test]
+        fn hosted_results_always_translate_as_native_text(text in ".{0,4096}") {
+            let output = ToolOutput::from(text.clone());
+            let message = Message::tool_result_content("call", output.into());
+            let items = provider::responses::message_items(&[message]).unwrap();
+            proptest::prop_assert_eq!(items[0]["output"][0]["text"].as_str(), Some(text.as_str()));
+        }
+    }
 
     #[test]
     fn interpreting_code_accepts_one_terminal_transition_not_another_execution() {

@@ -707,15 +707,15 @@ impl SessionInner {
         }
         let mut config = self.provider_config(&data.record).await?;
         if config.protocol != agents_core::ProviderProtocol::Responses
-            && request
-                .tools
-                .iter()
-                .any(|tool| matches!(tool.kind.as_str(), "custom" | "namespace"))
+            && request.tools.iter().any(|tool| {
+                matches!(tool.kind.as_str(), "custom" | "namespace")
+                    || crate::client_tool_items::declaration(&tool.to_wire_value())
+            })
         {
             return util::json_error(
                 400,
                 "unsupported_native_request",
-                "Custom and namespace tools require a native Responses provider",
+                "These caller-executed tools require a native Responses provider",
             );
         }
         let mut options = request.generation_options();

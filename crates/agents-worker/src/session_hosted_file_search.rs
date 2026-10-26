@@ -65,7 +65,7 @@ impl SessionInner {
             return Err(Error::RustError("file_search_operation_conflict".into()));
         }
         if operation.finished {
-            return Ok(HostedDispatch::Ready(search_result(&operation)));
+            return Ok(HostedDispatch::Ready(search_result(&operation).into()));
         }
         let resource = format!("file-search:{}", hosted_item_id(execution));
         let meter = ResourceMeter::with_account_pricing(
@@ -81,7 +81,9 @@ impl SessionInner {
         if !operation.started && self.file_search_cancelled() {
             release_empty_budget(&self.env, &record.owner_id, &resource).await?;
             return Ok(HostedDispatch::Ready(
-                json!({"error":{"code":"file_search_cancelled"}}),
+                json!({"error":{"code":"file_search_cancelled"}})
+                    .to_string()
+                    .into(),
             ));
         }
         if !operation.started {
@@ -146,7 +148,7 @@ impl SessionInner {
         self.publish_hosted_item(&item, true).await?;
         operation.finished = true;
         write_chunks(&storage, &key, &serde_json::to_vec(&operation)?).await?;
-        Ok(HostedDispatch::Ready(search_result(&operation)))
+        Ok(HostedDispatch::Ready(search_result(&operation).into()))
     }
 
     fn file_search_cancelled(&self) -> bool {
@@ -167,13 +169,47 @@ async fn release_empty_budget(env: &Env, owner: &str, resource: &str) -> Result<
     Ok(())
 }
 
-fn search_result(operation: &SearchOperation) -> Value {
-    match &operation.hits {
+fn search_result(operation: &SearchOperation) -> String {
+    let result = match &operation.hits {
         Some(hits) => {
             json!({"results":file_ingest::evidence(hits),"citation_instructions":"Append the exact citation_marker after each supported statement. Never invent a marker or cite a different file."})
         }
         None => {
             json!({"error":{"code":operation.error.as_deref().unwrap_or("file_search_failed")}})
         }
+    };
+    result.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_search_private_result_is_json_text_for_native_continuation() {
+        let mut operation = SearchOperation {
+            digest: "fixture".into(),
+            queries: vec!["source".into()],
+            pricing: ResourcePricing {
+                version: "unused-fixture".into(),
+                tariffs: vec![],
+            },
+            started: true,
+            hits: Some(vec![]),
+            error: None,
+            finished: true,
+        };
+        let message =
+            provider::Message::tool_result_content("call", search_result(&operation).into());
+        let items = provider::responses::message_items(&[message]).unwrap();
+        let text = items[0]["output"][0]["text"].as_str().unwrap();
+        assert!(serde_json::from_str::<Value>(text).unwrap()["results"].is_array());
+        operation.hits = None;
+        operation.error = Some("file_search_outcome_unknown".into());
+        let result = search_result(&operation);
+        assert_eq!(
+            serde_json::from_str::<Value>(&result).unwrap()["error"]["code"],
+            "file_search_outcome_unknown"
+        );
     }
 }

@@ -566,4 +566,19 @@ mod tests {
         assert!(images.admit_final(16 * 1024 * 1024).is_err());
         assert_eq!(encoded_len(16 * 1024 * 1024).unwrap(), 22_369_624);
     }
+
+    #[test]
+    fn admission_includes_the_actual_request_metadata_instead_of_a_fixed_allowance() {
+        let images = ResponseImages::default();
+        assert!(
+            images
+                .admit_final_with_metadata(16 * 1024 * 1024, 2 * 1024 * 1024)
+                .is_ok()
+        );
+        assert!(
+            images
+                .admit_final_with_metadata(16 * 1024 * 1024, 12 * 1024 * 1024)
+                .is_err()
+        );
+    }
 }

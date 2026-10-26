@@ -52,8 +52,9 @@ async fn cleanup(env: &Env, job: &Job) -> Result<()> {
     let result=env.d1("DB")?.prepare("UPDATE file_search_cleanup_jobs SET lease_id=NULL,lease_until=0,retry_at=CAST(?6 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND lease_id=?5")
         .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into(),lease.as_str().into(),(util::now_ms()+30000).to_string().into()])?.run().await?;
     meter.record_d1("release", &result).await?;
+    let settled = meter.settle_run().await;
     if outcome.is_ok() {
-        meter.settle_run().await?;
+        settled?;
     }
     outcome
 }
@@ -115,10 +116,20 @@ async fn cleanup_batch(env: &Env, job: &Job, lease: &str, meter: &ResourceMeter<
             .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into(),serde_json::to_string(&removable)?.into(),lease.into()])?.run().await?;
         meter.record_d1("forget", &result).await?;
     }
-    Ok(())
+    finish_job(env, job, lease, meter).await
 }
 
 async fn finish_job(env: &Env, job: &Job, lease: &str, meter: &ResourceMeter<'_>) -> Result<()> {
+    crate::file_index::storage::close(
+        env,
+        &job.account_id,
+        &job.vector_store_id,
+        &job.file_id,
+        &job.generation,
+        meter,
+        "storage-close",
+    )
+    .await?;
     meter.require_d1("finish").await?;
     let result=env.d1("DB")?.prepare("DELETE FROM file_search_cleanup_jobs WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND lease_id=?5 AND NOT EXISTS(SELECT 1 FROM file_search_chunks c WHERE c.account_id=?1 AND c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4)")
         .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into(),lease.into()])?.run().await?;
