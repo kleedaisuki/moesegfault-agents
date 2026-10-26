@@ -325,5 +325,11 @@ allocation reservation rather than bypassing it through `from_decoder`. The
 additional orientation contract is separate from the accepted media journey;
 the latter is not rerun solely for this bounded transformation correction.
 
+Actions `40339692424`, source `d59d4870c083add6832392027124eee8dbbd8f02`,
+passed the new orientation contract with a real JPEG EXIF entry and produced
+Worker artifact `12658363089` / verification artifact `12658952375`. It rebuilt
+the changed Wasm and executed only that new contract, not the already accepted
+media lifecycle or earlier compact/vision cases.
+
 Provider image transport reference:
 https://api-docs.deepseek.com/guides/vision/#using-images-with-the-anthropic-api
