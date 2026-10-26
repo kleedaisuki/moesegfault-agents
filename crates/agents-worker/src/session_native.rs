@@ -488,6 +488,12 @@ impl SessionInner {
                             .response
                             .as_ref()
                             .and_then(|response| response.discovery.as_ref()),
+                        programmatic: request.is_some_and(|request| {
+                            request
+                                .tools
+                                .iter()
+                                .any(|tool| tool.kind == "programmatic_tool_calling")
+                        }),
                     },
                     definitions,
                     run.tool_budget_exhausted(),
@@ -529,6 +535,11 @@ impl SessionInner {
                     hosted: &response.bound_tools,
                     mcp: &response.mcp_bindings,
                     discovery: response.discovery.as_ref(),
+                    programmatic: response
+                        .request
+                        .tools
+                        .iter()
+                        .any(|tool| tool.kind == "programmatic_tool_calling"),
                 }
                 .rewrite_choice(choice.clone(), provider::is_deepseek(config))?;
             }
@@ -753,6 +764,7 @@ fn native_tools(
     let mut declared = bindings.render_native(
         &request.native_tool_items().map_err(Error::RustError)?,
         bridge,
+        definitions.iter().any(|tool| tool.function.name == "time"),
     )?;
     if exhausted {
         declared.retain(|tool| {

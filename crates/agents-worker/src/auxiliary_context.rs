@@ -286,8 +286,15 @@ pub(crate) async fn prepare(
         hosted: &bound,
         mcp: &mcp,
         discovery: discovery.as_ref(),
+        programmatic: declarations
+            .iter()
+            .any(|tool| tool["type"] == "programmatic_tool_calling"),
     };
-    tools.extend(bindings.render_native(&declarations, true)?);
+    tools.extend(bindings.render_native(
+        &declarations,
+        true,
+        pinned.tools.iter().any(|tool| tool.name == "time"),
+    )?);
     let mut controls = request.native_controls();
     if let Some(choice) = controls.get_mut("tool_choice") {
         *choice = bindings.rewrite_choice(choice.clone(), true)?;

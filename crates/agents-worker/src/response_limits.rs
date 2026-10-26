@@ -6,7 +6,17 @@ use std::ops::Deref;
 
 pub(crate) const OUTPUT_MAX_BYTES: usize = 4 * 1024 * 1024;
 const INTEGER_DIGITS: usize = 20;
-const HASH_PREFIXES: &[&str] = &["hosted", "discovery", "mcp", "mcpr", "mcpl"];
+const HASH_PREFIXES: &[&str] = &[
+    "hosted",
+    "discovery",
+    "mcp",
+    "mcpr",
+    "mcpl",
+    "prog",
+    "progout",
+    "pcall",
+    "presult",
+];
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OutputLimits {

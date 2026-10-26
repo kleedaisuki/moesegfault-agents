@@ -774,6 +774,19 @@ impl SessionInner {
             }
             Err(error) => return util::json_error(400, "invalid_hosted_tool", &error.to_string()),
         };
+        let programmatic = match super::programmatic::prepare_programmatic_policy(
+            &self.env,
+            &request,
+            &data.record,
+        ) {
+            Ok(policy) => policy,
+            Err(error) => {
+                return util::json_error(422, "programmatic_unavailable", &error.to_string());
+            }
+        };
+        if let Some(policy) = &programmatic {
+            definitions.push(policy.definition());
+        }
         let local = request.function_definitions().map_err(Error::RustError)?;
         definitions.extend(local);
         definitions.extend(bound_tools.definitions()?);
@@ -807,6 +820,7 @@ impl SessionInner {
                     hosted: &bound_tools,
                     mcp: &mcp_bindings,
                     discovery: discovery.as_ref(),
+                    programmatic: programmatic.is_some(),
                 },
                 &definitions,
                 &mut options,
@@ -1016,6 +1030,7 @@ impl SessionInner {
                         hosted: &bound_tools,
                         mcp: &mcp_bindings,
                         discovery: Some(registry),
+                        programmatic: programmatic.is_some(),
                     },
                     &definitions,
                     &mut options,

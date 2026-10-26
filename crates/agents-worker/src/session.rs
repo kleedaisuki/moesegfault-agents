@@ -70,6 +70,8 @@ mod hosted_publication;
 use hosted_publication as hosted_dispatch;
 #[path = "session_mcp.rs"]
 mod mcp;
+#[path = "session_programmatic.rs"]
+mod programmatic;
 #[path = "session_tool_budget.rs"]
 mod tool_budget;
 #[path = "session_tool_discovery.rs"]
@@ -1560,9 +1562,18 @@ impl SessionInner {
                     .map_err(Error::RustError)?,
             );
             definitions.extend(response.bound_tools.definitions()?);
+            if let Some(policy) =
+                programmatic::prepare_programmatic_policy(&self.env, &response.request, record)?
+            {
+                definitions.push(policy.definition());
+            }
             options = response.request.generation_options();
             if let Some(choice) = options.tool_choice.take() {
-                options.tool_choice = Some(response.bound_tools.rewrite_choice(choice)?);
+                options.tool_choice = Some(
+                    crate::programmatic_tools::ProgramPolicy::default()
+                        .rewrite_choice(response.bound_tools.rewrite_choice(choice)?)
+                        .map_err(Error::RustError)?,
+                );
             }
             if run.round > 0
                 && options
@@ -1944,6 +1955,12 @@ impl SessionInner {
                 .and_then(|r| r.traceparent.as_deref()),
         );
         let _span = crate::telemetry::NativeSpan::start("session.tool", Some(&trace));
+        if let Some(output) = self
+            .dispatch_programmatic(record, execution_id, call)
+            .await?
+        {
+            return Ok(output);
+        }
         let dispatch_name = self.resolved_mcp_call(call)?.function.name;
         if !self
             .admit_tool_dispatch(record, execution_id, &dispatch_name)
