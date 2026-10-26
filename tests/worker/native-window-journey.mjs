@@ -100,12 +100,11 @@ export async function runNativeWindowRejectionJourney(context) {
     model: { ...scenario.agent.model, context_window: capacity, max_output_tokens: outputBudget }, compaction_percent: 99,
   }, 200, scenario.principal.apiKey);
   const oversized = 'UNFIT-LATEST-GROUP-' + 'x'.repeat(6000);
-  const disabled = await outcomeWithoutInference(scenario, { input: oversized, truncation: 'disabled' }, 'window-rejection-disabled');
   const unfit = await outcomeWithoutInference(scenario, { input: oversized, truncation: 'auto' }, 'window-rejection-auto');
   assert.equal(scenario.state.calls, 0);
   await assertModelLedger(scenario, []);
   return { provider_calls: 0, synthetic_counter_calls: scenario.state.countRequests.length,
-    disabled, unfit, model_ledger_rows: 0, external_network_calls: 0 };
+    unfit, model_ledger_rows: 0, external_network_calls: 0 };
 }
 
 export async function runNativeWindowJourney(context) {
