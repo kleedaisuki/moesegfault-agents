@@ -228,3 +228,37 @@ unresolved. The exact Worker and dashboard artifacts are reused from their real
 sources. The daemon is rebuilt because its tracked test-file fingerprint changed;
 normal native lint/type checking remains required. No passing CLI/capacity/tooling
 case, old Worker journey or provider request is replayed for the repair.
+
+## Recovery-source composition after actual managed Code delivery
+
+Selection `35676de` composes the separately accepted zero-generation quota/count
+negative scopes, private native-source serialization, remote/cache metadata,
+legacy MCP negotiation, live programmatic client continuation, and real slow-I/O/
+lost-ACK Conversation recovery receipts. Original failed aggregate conclusions
+and exact-artifact local tails stay explicit. These are selection receipts, not
+a claim that the combined source or a public remote server was already exercised.
+
+The next normal plan builds only the changed Worker and runs the four new cheap
+native-release selector contracts. Native/daemon `3539c1c` and dashboard `1b7f2cd`
+retain their exact artifact identities. No accepted Code cell, old CLI binary
+case, native-window generation, compaction, MCP or programmatic model journey is
+replayed. The original failed Conversation response is recovered only through
+its existing standard metadata DELETE/purge and canonical never-activated fence;
+its old resource scope settles from its original observed ledger, never from a
+new model request or invented refund.
+
+### Structured diagnosis survives collection
+
+Future owned metadata collectors preserve `conversation.phase` and bounded
+operation/conversation/request/grant/span identifiers, phase and route, lock-wait,
+D1 funding/RPC/observation durations, pending/activated/deadline/generation, and
+upstream status/request/generation identifiers plus byte counts, codec and image
+dimensions. Same-invocation records keep the already-sanitized structured fields
+instead of reducing them to Session/run IDs. Merge identity includes phase,
+operation and span so distinct phases in the same millisecond do not collapse.
+The process-local reducer extension leaves old captures and the shared classifier
+unchanged. Its offline actual reduction/correlation probe retained all 21 expected
+structured fields and no Authorization/prompt fields, with zero network clients.
+Full sensitive execution bodies belong in authorized encrypted short-retention
+receipts, not plaintext global tail output. Missing source-emitted upstream detail
+cannot be reconstructed by pretending that a generic error is sufficiently precise.
