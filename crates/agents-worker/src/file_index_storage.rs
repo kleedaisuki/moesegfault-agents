@@ -222,6 +222,8 @@ async fn reconcile_claimed(env: &Env, clock: &Clock, lease: &str) -> Result<()> 
 }
 
 async fn charge(env: &Env, clock: &Clock, tick: &Tick, pricing: ResourcePricing) -> Result<()> {
+    // Retained indexes outlive interactive requests and their allowance period.
+    crate::allowances::sync(env, &clock.account_id).await?;
     let tariff = pricing.tariff(&Resource::Worker, UNIT)?;
     let amount = tariff
         .charge(tick.quantity)
