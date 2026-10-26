@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { runNativeWindowJourney, runNativeWindowToolsJourney, runNativeWindowRejectionJourney, runContextCapacityJourney } from './native-window-journey.mjs';
+import { runNativeWindowJourney, runNativeWindowToolsJourney, runNativeWindowRejectionJourney, runContextCapacityJourney, runConversationWindowCountJourney } from './native-window-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -82,6 +82,11 @@ test('compiled Rust Worker: native auto window preserves source and historical t
   }
   const context = { mf, db, encryptionKey, request, providers };
   const receipts = {};
+  if (process.env.MAGENTS_NATIVE_WINDOW_CASE === 'conversation-count') {
+    await t.test('Conversation readonly count selects its immutable predecessor instead of a newer Session head', async () => {
+      receipts.conversation_count = await runConversationWindowCountJourney(context);
+    });
+  }
   if (process.env.MAGENTS_NATIVE_WINDOW_CASE === 'context-capacity') {
     await t.test('request compaction prepays Conversation output and explicit purge preserves Response history', async () => {
       receipts.context_capacity = await runContextCapacityJourney(context);

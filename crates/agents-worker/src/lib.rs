@@ -2,6 +2,7 @@ mod allowances;
 mod auth;
 mod auxiliary_context;
 mod auxiliary_routes;
+mod auxiliary_source;
 mod chat_relay;
 mod checkpoint_gc;
 mod cleanup;

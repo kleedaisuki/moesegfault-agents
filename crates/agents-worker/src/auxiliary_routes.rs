@@ -180,7 +180,7 @@ fn error_response(error: &worker::Error) -> Result<Response> {
             code,
             "This model input does not have a supported exact-count capability",
         ),
-        "compaction_context_mismatch" => util::json_error(
+        "response_context_mismatch" | "compaction_context_mismatch" => util::json_error(
             400,
             code,
             "Compaction belongs to a different owner, agent, or pinned context",
