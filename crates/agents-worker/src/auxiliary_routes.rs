@@ -152,6 +152,18 @@ fn error_response(error: &worker::Error) -> Result<Response> {
         _ => return crate::routes::error_response(error),
     };
     match code {
+        "mcp_discovery_failed" => util::json_error(
+            503,
+            code,
+            "MCP discovery failed; no zero-schema count was returned",
+        ),
+        code if code.starts_with("invalid_mcp_") || code == "mcp_authorization_required" => {
+            util::json_error(
+                400,
+                code,
+                "Invalid MCP declaration or missing current authorization",
+            )
+        }
         "invalid_auxiliary_request" | "invalid_agent_configuration" | "unresolved_native_item" => {
             util::json_error(
                 400,

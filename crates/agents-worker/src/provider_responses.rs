@@ -124,6 +124,7 @@ impl PreparedRequest {
         for tool in tools {
             validate_tool(config, tool)?;
         }
+        crate::custom_tool_formats::validate_provider(config, tools)?;
         let mut body = json!({"model":config.model,"input":input,"tools":tools,"store":false});
         if !controls.is_null() {
             let controls = controls
@@ -184,6 +185,13 @@ impl PreparedRequest {
 }
 
 fn validate_tool(config: &ProviderConfig, tool: &Value) -> Result<(), String> {
+    if tool["type"] == "tool_search" {
+        if super::is_deepseek(config) || config.protocol != agents_core::ProviderProtocol::Responses
+        {
+            return Err("tool search requires a resolved bridge or native Responses".into());
+        }
+        return Ok(());
+    }
     if crate::client_tool_items::declaration(tool) {
         crate::client_tool_items::validate_declaration(tool)?;
         if super::is_deepseek(config) {
@@ -192,8 +200,14 @@ fn validate_tool(config: &ProviderConfig, tool: &Value) -> Result<(), String> {
         return Ok(());
     }
     match tool.get("type").and_then(Value::as_str) {
+        Some("custom") if super::is_deepseek(config) && tool["name"] != "apply_patch" => {
+            Err("DeepSeek custom input requires the resolved function bridge".into())
+        }
         Some("function" | "custom") => Ok(()),
         Some("namespace") => {
+            if super::is_deepseek(config) {
+                return Err("DeepSeek namespaces require the resolved function bridge".into());
+            }
             let nested = tool
                 .get("tools")
                 .and_then(Value::as_array)
@@ -619,8 +633,13 @@ pub(crate) fn public_item(value: &Value) -> Result<Option<Value>, String> {
             "input",
             "async",
         ],
-        // Hosted tools have a separate service authority and public projection.
-        _ => return crate::client_tool_items::public_item(value),
+        // Caller-executed families use their own typed action/result schema.
+        _ => {
+            if let Some(item) = crate::client_tool_items::public_item(value)? {
+                return Ok(Some(item));
+            }
+            return crate::tool_discovery::public_item(value);
+        }
     };
     let mut item = select_fields(value, fields);
     if matches!(

@@ -7,7 +7,7 @@ members = [
   "crates/workspace-daemon",
   "crates/magents",
 ]
-exclude = ["third_party/deepseek-recipe"]
+exclude = ["third_party/deepseek-recipe", "third_party/llguidance"]
 
 [workspace.package]
 version = "0.3.0"

@@ -192,6 +192,9 @@ impl ResponseTool {
 
     pub fn public_value(&self) -> Value {
         let mut value = self.to_wire_value();
+        if self.kind == "namespace" && !value["description"].is_string() {
+            value["description"] = json!("");
+        }
         if self.kind == "mcp"
             && let Some(fields) = value.as_object_mut()
         {
@@ -320,6 +323,23 @@ fn bounded_text(value: &str, limit: usize, label: &str) -> Result<(), String> {
 }
 
 impl ResponseRequest {
+    pub(crate) fn validate_discovered_tool_choice(
+        &self,
+        definitions: &[ToolDefinition],
+        discovered: &[Value],
+    ) -> Result<(), String> {
+        let Some(choice) = &self.tool_choice else {
+            return Ok(());
+        };
+        let mut tools = self.tools.clone();
+        for value in discovered {
+            tools.push(
+                serde_json::from_value(value.clone()).map_err(|_| "invalid_discovered_tool")?,
+            );
+        }
+        controls::resolved_tool_choice(choice, &tools, definitions)
+    }
+
     pub fn validate_resolved_tool_choice(
         &self,
         definitions: &[ToolDefinition],
@@ -2565,6 +2585,15 @@ mod tests {
         assert!(frame.starts_with("event: response.output_text.delta\ndata: {"));
         assert!(frame.ends_with("\n\n"));
         assert_eq!(frame.matches('\n').count(), 3);
+    }
+
+    #[test]
+    fn public_namespace_description_default_preserves_raw_request_identity() {
+        let raw = json!({"type":"namespace","name":"crm","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]});
+        let tool: ResponseTool = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&tool).unwrap(), raw);
+        assert_eq!(tool.public_value()["description"], "");
+        assert!(tool.to_wire_value().get("description").is_none());
     }
 
     proptest! {

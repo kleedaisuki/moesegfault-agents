@@ -189,6 +189,16 @@ async fn mutate_history(
             &serde_json::to_vec(item)?,
         )
         .await?;
+        storage
+            .put(
+                &format!(
+                    "native:origin:{}:{}",
+                    history.generation,
+                    crate::tool_discovery::output_digest(item).map_err(Error::RustError)?
+                ),
+                history.end,
+            )
+            .await?;
         history.end = history
             .end
             .checked_add(1)
@@ -359,7 +369,7 @@ impl SessionInner {
     pub(super) fn validate_native_generation(
         config: &ProviderConfig,
         request: &crate::responses_wire::ResponseRequest,
-        bindings: &crate::hosted_bindings::BoundTools,
+        bindings: &crate::tool_rendering::ToolBindings<'_>,
         definitions: &[tools::ToolDefinition],
         options: &mut provider::GenerationOptions,
     ) -> Result<()> {
@@ -368,13 +378,19 @@ impl SessionInner {
         }
         let mut controls = request.native_controls();
         if let Some(choice) = controls.get_mut("tool_choice") {
-            *choice = bindings.rewrite_choice(choice.clone())?;
+            *choice = bindings.rewrite_choice(choice.clone(), provider::is_deepseek(config))?;
         }
         options.native = Some(
             provider::responses::PreparedRequest::new_with_effects(
                 config,
                 &[],
-                &native_tools(Some(request), bindings, definitions, false)?,
+                &native_tools(
+                    Some(request),
+                    bindings,
+                    definitions,
+                    false,
+                    provider::is_deepseek(config),
+                )?,
                 &controls,
                 provider::controls::HarnessControlEffects {
                     max_tool_calls: true,
@@ -457,12 +473,25 @@ impl SessionInner {
                     .unwrap_or_else(|| provider::responses::option_controls(options)),
                 native_tools(
                     request,
-                    run.response
-                        .as_ref()
-                        .map(|response| &response.bound_tools)
-                        .unwrap_or(&crate::hosted_bindings::BoundTools::default()),
+                    &crate::tool_rendering::ToolBindings {
+                        hosted: run
+                            .response
+                            .as_ref()
+                            .map(|response| &response.bound_tools)
+                            .unwrap_or(&crate::hosted_bindings::BoundTools::default()),
+                        mcp: run
+                            .response
+                            .as_ref()
+                            .map(|response| &response.mcp_bindings)
+                            .unwrap_or(&crate::mcp_runtime::McpBindings::default()),
+                        discovery: run
+                            .response
+                            .as_ref()
+                            .and_then(|response| response.discovery.as_ref()),
+                    },
                     definitions,
                     run.tool_budget_exhausted(),
+                    provider::is_deepseek(config),
                 )?,
             )
         };
@@ -488,6 +517,21 @@ impl SessionInner {
         }
         if let Some(limit) = config.max_output_tokens {
             controls["max_output_tokens"] = json!(limit);
+        }
+        if let Some(choice) = controls.get_mut("tool_choice") {
+            let data = self.data.borrow();
+            if let Some(response) = data
+                .as_ref()
+                .and_then(|data| data.run.as_ref())
+                .and_then(|run| run.response.as_ref())
+            {
+                *choice = crate::tool_rendering::ToolBindings {
+                    hosted: &response.bound_tools,
+                    mcp: &response.mcp_bindings,
+                    discovery: response.discovery.as_ref(),
+                }
+                .rewrite_choice(choice.clone(), provider::is_deepseek(config))?;
+            }
         }
         options.native = Some(
             provider::responses::PreparedRequest::new_with_effects(
@@ -687,9 +731,10 @@ impl SessionInner {
 
 fn native_tools(
     request: Option<&crate::responses_wire::ResponseRequest>,
-    bindings: &crate::hosted_bindings::BoundTools,
+    bindings: &crate::tool_rendering::ToolBindings<'_>,
     definitions: &[tools::ToolDefinition],
     exhausted: bool,
+    bridge: bool,
 ) -> Result<Vec<Value>> {
     let Some(request) = request else {
         return provider::responses::tool_items(definitions).map_err(Error::RustError);
@@ -697,7 +742,7 @@ fn native_tools(
     let retained = definitions
         .iter()
         .filter(|definition| {
-            bindings.lookup(&definition.function.name).is_none()
+            !bindings.is_server_alias(&definition.function.name)
                 && !request
                     .function_tools()
                     .any(|tool| tool.name == definition.function.name)
@@ -705,13 +750,15 @@ fn native_tools(
         .cloned()
         .collect::<Vec<_>>();
     let mut tools = provider::responses::tool_items(&retained).map_err(Error::RustError)?;
-    let mut declared =
-        bindings.render_native(&request.native_tool_items().map_err(Error::RustError)?)?;
+    let mut declared = bindings.render_native(
+        &request.native_tool_items().map_err(Error::RustError)?,
+        bridge,
+    )?;
     if exhausted {
         declared.retain(|tool| {
             !tool["name"]
                 .as_str()
-                .is_some_and(|name| bindings.lookup(name).is_some())
+                .is_some_and(|name| bindings.is_server_alias(name))
         });
     }
     tools.extend(declared);
@@ -728,7 +775,14 @@ pub(super) fn completion_failure(completion: &Completion) -> Option<&'static str
             !crate::client_tool_items::is_call(item)
                 && !matches!(
                     item["type"].as_str(),
-                    Some("message" | "reasoning" | "function_call" | "custom_tool_call")
+                    Some(
+                        "message"
+                            | "reasoning"
+                            | "function_call"
+                            | "custom_tool_call"
+                            | "tool_search_call"
+                            | "tool_search_output"
+                    )
                 )
         }) =>
         {

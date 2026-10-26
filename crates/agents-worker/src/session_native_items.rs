@@ -448,6 +448,34 @@ pub(super) async fn register(storage: &Storage, reference: &ItemRef) -> Result<(
     storage.put(&key, reference).await
 }
 
+pub(super) async fn authorized_origins(
+    storage: &Storage,
+    reference: &branch::NativeHistoryRef,
+    candidates: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<String>> {
+    let mut authorized = std::collections::BTreeSet::new();
+    let candidates = candidates.iter().collect::<Vec<_>>();
+    for batch in candidates.chunks(128) {
+        let keys = batch
+            .iter()
+            .map(|hash| format!("native:origin:{}:{hash}", reference.generation))
+            .collect::<Vec<_>>();
+        let values = storage.get_multiple(keys.clone()).await?;
+        for (hash, key) in batch.iter().zip(keys) {
+            let value = values.get(&key.into());
+            if value.is_undefined() {
+                continue;
+            }
+            let index: usize = serde_wasm_bindgen::from_value(value)
+                .map_err(|_| Error::RustError("native_origin_corrupt".into()))?;
+            if index < reference.end {
+                authorized.insert(hash.as_str().to_owned());
+            }
+        }
+    }
+    Ok(authorized)
+}
+
 impl SessionInner {
     pub(super) async fn register_native_output(
         &self,

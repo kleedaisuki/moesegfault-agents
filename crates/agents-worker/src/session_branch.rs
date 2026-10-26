@@ -37,6 +37,8 @@ pub(crate) struct BranchPoint {
     pub workspace: WorkspaceSeed,
     #[serde(default)]
     pub native: Option<NativeHistoryRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<crate::tool_discovery::ToolRegistry>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -338,6 +340,7 @@ impl SessionInner {
                 WorkspaceSeed::Empty
             },
             native,
+            discovery: response.discovery.clone(),
         });
         Ok(())
     }
@@ -591,6 +594,7 @@ impl SessionInner {
         imported.journal = seed.messages;
         imported.pending_client_tools = seed.point.pending_calls;
         imported.pending_general_tools = seed.point.general_pending_calls;
+        imported.inherited_discovery = seed.point.discovery;
         imported.response_head = Some(seed.point.response_id.clone());
         imported.imported_parent = Some(ImportedParent {
             response_id: seed.point.response_id,

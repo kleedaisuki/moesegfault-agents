@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 pub(super) fn call_item(item: &Value) -> bool {
     matches!(
         item["type"].as_str(),
-        Some("function_call" | "custom_tool_call")
+        Some("function_call" | "custom_tool_call" | "tool_search_call")
     ) || crate::client_tool_items::is_call(item)
 }
 
@@ -155,7 +155,37 @@ impl std::fmt::Debug for GeneralPendingCall {
 }
 
 impl GeneralPendingCall {
+    pub(crate) fn native_call_id(&self) -> &str {
+        self.details
+            .as_ref()
+            .and_then(|details| details.pointer("/__agents_mcp/native_call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or(&self.call_id)
+    }
+
     pub(crate) fn from_item(item: &Value) -> Option<Self> {
+        if item["type"] == "tool_search_call" && item["execution"] == "client" {
+            return Some(Self {
+                item_id: item["id"].as_str()?.into(),
+                call_id: item["call_id"].as_str()?.into(),
+                name: "tool_search".into(),
+                namespace: None,
+                kind: "tool_search".into(),
+                input: String::new(),
+                details: None,
+            });
+        }
+        if let Some((call_id, name, details)) = crate::mcp_items::pending(item) {
+            return Some(Self {
+                item_id: item["id"].as_str()?.into(),
+                call_id,
+                name,
+                namespace: None,
+                kind: "mcp_approval".into(),
+                input: String::new(),
+                details: Some(details),
+            });
+        }
         if let Some(family) = item["type"]
             .as_str()
             .and_then(crate::client_tool_items::Family::call)
@@ -205,6 +235,16 @@ impl GeneralPendingCall {
                     json!({"type":"function_call_output","call_id":self.call_id,"name":self.name}),
                 );
             }
+            "mcp_approval" => {
+                return Some(
+                    json!({"type":"mcp_approval_response","approval_request_id":self.call_id}),
+                );
+            }
+            "tool_search" => {
+                return Some(
+                    json!({"type":"tool_search_output","execution":"client","call_id":self.call_id}),
+                );
+            }
             "custom" => "custom_tool_call_output",
             "computer" => "computer_call_output",
             "shell" => "shell_call_output",
@@ -215,7 +255,7 @@ impl GeneralPendingCall {
     }
 }
 
-fn complete_call(item: &Value, status: provider::responses::TerminalStatus) -> bool {
+pub(super) fn complete_call(item: &Value, status: provider::responses::TerminalStatus) -> bool {
     item["status"] == "completed"
         || (item["status"].is_null() && status == provider::responses::TerminalStatus::Completed)
 }
@@ -230,8 +270,12 @@ pub(crate) fn validate_returns(
             item["type"].as_str(),
             Some("function_call_output" | "custom_tool_call_output")
         ) || crate::client_tool_items::is_output(item)
+            || item["type"] == "tool_search_output"
+            || item["type"] == "mcp_approval_response"
     }) {
-        let id = if crate::client_tool_items::is_output(item) {
+        let id = if item["type"] == "mcp_approval_response" {
+            item["approval_request_id"].as_str()
+        } else if crate::client_tool_items::is_output(item) {
             crate::client_tool_items::result_id(item)
         } else {
             item["call_id"].as_str()
@@ -244,6 +288,26 @@ pub(crate) fn validate_returns(
             .iter()
             .find(|call| call.call_id == id)
             .ok_or("unexpected_tool_output")?;
+        if call.kind == "tool_search" {
+            if item["type"] != "tool_search_output"
+                || item["execution"] != "client"
+                || item["tools"]
+                    .as_array()
+                    .is_none_or(|tools| tools.len() > 128)
+            {
+                return Err("invalid_tool_search_output");
+            }
+            continue;
+        }
+        if call.kind == "mcp_approval" {
+            crate::mcp_items::validate_result(
+                call.details
+                    .as_ref()
+                    .ok_or("invalid_mcp_approval_context")?,
+                item,
+            )?;
+            continue;
+        }
         if let Some(details) = call
             .details
             .as_ref()
@@ -274,6 +338,13 @@ pub(crate) fn declared(request: &crate::responses_wire::ResponseRequest, item: &
     let Ok(tools) = request.native_tool_items() else {
         return false;
     };
+    if item["type"] == "tool_search_call" {
+        return tools.iter().any(|tool| {
+            tool["type"] == "tool_search"
+                && tool["execution"].as_str().unwrap_or("server")
+                    == item["execution"].as_str().unwrap_or("")
+        });
+    }
     if crate::client_tool_items::is_call(item) {
         return tools
             .iter()
@@ -304,12 +375,54 @@ pub(super) fn validate_policy(
     request: &crate::responses_wire::ResponseRequest,
     first_round: bool,
 ) -> Result<()> {
+    let items = &completion
+        .native
+        .as_ref()
+        .ok_or_else(|| Error::RustError("native_turn_missing".into()))?
+        .output;
+    validate_policy_items(completion, request, first_round, items)
+}
+
+pub(super) fn validate_policy_items(
+    completion: &Completion,
+    request: &crate::responses_wire::ResponseRequest,
+    first_round: bool,
+    items: &[Value],
+) -> Result<()> {
+    let declarations = request.native_tool_items().map_err(Error::RustError)?;
+    validate_policy_declarations(completion, request, first_round, items, &declarations)
+}
+
+pub(super) fn validate_policy_declarations(
+    completion: &Completion,
+    request: &crate::responses_wire::ResponseRequest,
+    first_round: bool,
+    items: &[Value],
+    declarations: &[Value],
+) -> Result<()> {
+    validate_policy_routes(
+        completion,
+        request,
+        first_round,
+        items,
+        declarations,
+        &BTreeMap::new(),
+    )
+}
+
+pub(super) fn validate_policy_routes(
+    completion: &Completion,
+    request: &crate::responses_wire::ResponseRequest,
+    first_round: bool,
+    items: &[Value],
+    declarations: &[Value],
+    server_choices: &BTreeMap<String, crate::tool_rendering::ServerChoice>,
+) -> Result<()> {
     let turn = completion
         .native
         .as_ref()
         .ok_or_else(|| Error::RustError("native_turn_missing".into()))?;
-    let calls = turn
-        .output
+    let calls = items
         .iter()
         .filter(|item| call_item(item))
         .collect::<Vec<_>>();
@@ -326,7 +439,7 @@ pub(super) fn validate_policy(
         {
             return false;
         }
-        if choice == "required" {
+        if crate::tool_discovery::requires_call(Some(choice)) {
             return calls.is_empty();
         }
         if matches!(choice["type"].as_str(), Some("function" | "custom")) {
@@ -361,9 +474,28 @@ pub(super) fn validate_policy(
         ));
     }
     let mut ids = BTreeMap::new();
-    let declarations = request.native_tool_items().map_err(Error::RustError)?;
     for call in &calls {
         direct_caller(call)?;
+        let policy_view = call["call_id"]
+            .as_str()
+            .and_then(|id| server_choices.get(id))
+            .filter(|route| route.matches(call))
+            .map(|route| &route.choice);
+        if policy_view.is_none()
+            && call["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("__agents_"))
+        {
+            return Err(Error::RustError("undeclared_native_tool_call".into()));
+        }
+        if request.tool_choice.as_ref().is_some_and(|choice| {
+            choice["type"] == "allowed_tools"
+                && !crate::tool_discovery::allowed(Some(choice), policy_view.unwrap_or(call))
+        }) {
+            return Err(Error::RustError(
+                "provider_tool_choice_policy_violation".into(),
+            ));
+        }
         let call_id = call["call_id"]
             .as_str()
             .filter(|id| !id.is_empty())
@@ -372,6 +504,15 @@ pub(super) fn validate_policy(
             return Err(Error::RustError("duplicate_native_call_id".into()));
         }
         if !complete_call(call, turn.status) {
+            continue;
+        }
+        if call["type"] == "tool_search_call" {
+            if !request.tools.iter().any(|tool| tool.kind == "tool_search") {
+                return Err(Error::RustError("undeclared_tool_search_call".into()));
+            }
+            crate::tool_discovery::public_item(call)
+                .map_err(Error::RustError)?
+                .ok_or_else(|| Error::RustError("invalid_tool_search_call".into()))?;
             continue;
         }
         if crate::client_tool_items::is_call(call) {
@@ -413,6 +554,13 @@ pub(super) fn validate_policy(
         if kind == "custom" {
             if !call["input"].is_string() {
                 return Err(Error::RustError("invalid_custom_tool_input".into()));
+            }
+            if let Some(tool) = declaration {
+                crate::custom_tool_formats::validate_completed_input(
+                    tool,
+                    call["input"].as_str().unwrap(),
+                )
+                .map_err(Error::RustError)?;
             }
             continue;
         }
@@ -595,6 +743,10 @@ impl SessionInner {
     }
 
     fn publish_native_delta(&self, kind: &str, payload: &Value) -> Result<()> {
+        let Some(restored) = self.restore_native_event(kind, payload)? else {
+            return Ok(());
+        };
+        let payload = &restored;
         let mapped = {
             let mut data = self.data.borrow_mut();
             let Some(run) = data.as_mut().and_then(|data| data.run.as_mut()) else {
@@ -690,7 +842,17 @@ impl SessionInner {
         };
         let mut streams = vec![];
         for (ordinal, raw) in turn.output.iter().enumerate() {
-            if call_item(raw) && !declared(&request, raw) {
+            if self.discovery_complete_identity(raw) && !complete_call(raw, turn.status) {
+                continue;
+            }
+            if self.mcp_native_call(raw)?
+                || self.discovery_server_alias(raw["name"].as_str().unwrap_or_default())
+            {
+                continue;
+            }
+            let restored = self.restore_native_item(raw)?;
+            let raw = &restored;
+            if call_item(raw) && !declared(&request, raw) && !self.discovery_declared(raw) {
                 continue;
             }
             let id = format!(
@@ -759,10 +921,13 @@ impl SessionInner {
                     .response
                     .as_mut()
                     .unwrap();
-                if let Some(call) =
-                    GeneralPendingCall::from_item(item).filter(|_| complete_call(item, turn.status))
-                {
-                    response.general_pending_calls.push(call);
+                if complete_call(item, turn.status) {
+                    if let Some(registry) = response.discovery.as_mut() {
+                        registry.remember_call(item).map_err(Error::RustError)?;
+                    }
+                    if let Some(call) = GeneralPendingCall::from_item(item) {
+                        response.general_pending_calls.push(call);
+                    }
                 }
                 response.apply_output(change)?;
             }
@@ -793,6 +958,49 @@ impl SessionInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_search_completion_waits_for_final_schema_validation() {
+        let request: crate::responses_wire::ResponseRequest = serde_json::from_value(json!({
+            "model":"agent","input":"search","tools":[{"type":"tool_search","execution":"client",
+            "parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}}]
+        })).unwrap();
+        request.validate().unwrap();
+        let invalid = json!({"id":"search","type":"tool_search_call","call_id":"call","execution":"client","arguments":{},"status":"completed"});
+        let registry =
+            crate::tool_discovery::ToolRegistry::compile(&request.native_tool_items().unwrap())
+                .unwrap()
+                .unwrap();
+        assert!(registry.validate_call(&invalid, None).is_err());
+        let mut stream = NativeStream::default();
+        let mut started = invalid.clone();
+        started["status"] = json!("in_progress");
+        assert!(
+            stream
+                .map(
+                    0,
+                    0,
+                    "resp_ours",
+                    &request,
+                    "response.output_item.added",
+                    &json!({"output_index":0,"item":started})
+                )
+                .unwrap()
+                .visible
+        );
+        let observed = stream
+            .map(
+                0,
+                0,
+                "resp_ours",
+                &request,
+                "response.output_item.done",
+                &json!({"output_index":0,"item":invalid}),
+            )
+            .unwrap();
+        assert!(observed.done);
+        assert!(observed.deferred_done);
+    }
 
     #[test]
     fn every_native_item_family_uses_the_validated_completion_boundary() {
