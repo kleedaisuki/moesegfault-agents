@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createNativeSemanticsScenario } from './native-semantics-journey.mjs';
+import { createNativeSemanticsScenario, collectNativeEvents } from './native-semantics-journey.mjs';
 
 export const mcpTool = authorization => ({ type: 'mcp', server_label: 'owned', server_url: 'https://mcp.example.com/mcp', authorization, require_approval: 'always' });
 export const mcpSchema = { additionalProperties: false, properties: { value: { type: 'string', 'x-mcp-header': 'Value' } }, required: ['value'], type: 'object' };
@@ -50,7 +50,13 @@ export function createMcpTransport(native) {
       assert.deepEqual(body.params.arguments, { value: '雪' });
       assert.equal(request.headers.get('mcp-name'), 'echo');
       assert.equal(request.headers.get('mcp-param-value'), '=?base64?6Zuq?=');
-      const result = { resultType: 'complete', content: [{ type: 'text', text: 'echo:雪' }], structuredContent: { echo: '雪' } };
+      if (state.invalidCallReply) return new Response('{truncated', { headers: { 'Content-Type': 'application/json' } });
+      const content = [{ type: 'text', text: 'echo:雪' }];
+      if (state.richCallResult) content.push(
+        { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOSkAAAAASUVORK5CYII=' },
+        { type: 'text', text: 'USER-ONLY-MCP-CONTENT', annotations: { audience: ['user'] } },
+        { type: 'resource', resource: { uri: 'memo:owned', text: 'Controlled MCP memo' } });
+      const result = { resultType: 'complete', content, structuredContent: { echo: '雪' } };
       // Use the real native SSE parser, including a request-scoped progress event.
       const events = [{ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: body.id, progress: 1 } }, { jsonrpc: '2.0', id: body.id, result }];
       return new Response(': heartbeat\n\n' + events.map(value => `event: message\ndata: ${JSON.stringify(value)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
@@ -152,4 +158,104 @@ export async function runMcpApprovalJourney(context, reference) {
   return { model_calls: 2, remote_tool_calls: 1, approval_requires_fresh_credentials: true, count_before_model: counted.input_tokens,
     count_schema_reference: reference.reference_sha256, failed_discovery_is_not_zero_schema_count: true,
     idempotent_side_effect: true, parent_immutable: true, private_terminal_credentials_cleared: true };
+}
+export async function runMcpDeferredJourney(context) {
+  const state = context.providers.state;
+  state.listFailure = false;
+  state.expectedAuth = 'MCP-DEFERRED-SECRET';
+  state.richCallResult = true;
+  const before = state.calls;
+  const search = '__agents_tool_search';
+  const invoke = '__agents_invoke_discovered';
+  const call = (id, name, args) => ({ type: 'function_call', id: `private-${id}`, call_id: id, name, arguments: JSON.stringify(args), status: 'completed' });
+  const final = { type: 'message', id: 'private-deferred-final', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Deferred MCP completed.', annotations: [] }] };
+  const scenario = await createNativeSemanticsScenario(context, 'mcp-deferred', [
+    { output: [call('mcp-search', search, { paths: ['owned'] })], check(body) {
+      assert.ok(body.tools.some(tool => tool.name === search));
+      assert.ok(body.tools.some(tool => tool.name === invoke));
+      assert.ok(!JSON.stringify(body.tools).includes('"required":["value"]'));
+      assert.ok(!JSON.stringify(body).includes(state.expectedAuth));
+    } },
+    { output: [call('mcp-deferred-call', invoke, { tool: 'owned.echo', arguments: { value: '雪' } })], check(body) {
+      const output = body.input.find(item => item.type === 'function_call_output' && item.call_id === 'mcp-search');
+      assert.ok(output);
+      assert.ok(JSON.stringify(output.output).includes('allowed_callers'));
+      assert.ok(JSON.stringify(output.output).includes('parameters'));
+      assert.ok(!JSON.stringify(body).includes(state.expectedAuth));
+    } },
+    { output: [final], check(body) {
+      assert.ok(body.input.some(item => item.type === 'function_call_output' && item.call_id === 'mcp-deferred-call' && JSON.stringify(item.output).includes('echo:雪')));
+      assert.ok(!body.input.some(item => item.type === 'mcp_approval_response'));
+      const parts = body.input.find(item => item.type === 'function_call_output' && item.call_id === 'mcp-deferred-call').output;
+      assert.ok(parts.some(part => part.type === 'input_image' && part.image_url.startsWith('data:image/png;base64,')));
+      assert.ok(parts.filter(part => part.type === 'input_text').every(part => !part.text.includes('iVBOR') && !part.text.includes('USER-ONLY-MCP-CONTENT')));
+    } },
+  ]);
+  await scenario.principal.browser('GET', '/v1/account');
+  const tools = [{ ...mcpTool(state.expectedAuth), defer_loading: true, server_description: 'Echo tools' }, { type: 'tool_search' }];
+  const events = await collectNativeEvents(await scenario.invoke({ input: 'Discover and use owned echo.', tools, stream: true, reasoning: { effort: 'none' } }));
+  const pending = events.findLast(event => event.type === 'response.completed')?.response;
+  assert.ok(pending, 'Deferred discovery must finish with a canonical streamed handoff');
+  const wire = context.validateWire(pending, events);
+  assert.equal(pending.status, 'completed');
+  assert.deepEqual(pending.output.map(item => item.type), ['mcp_list_tools', 'tool_search_call', 'tool_search_output', 'mcp_approval_request']);
+  assert.equal(state.calls, before, 'Loading schemas and requesting approval cannot execute MCP');
+  const approval = pending.output.at(-1);
+  const approved = await scenario.client.responses.create({ model: scenario.agent.id, previous_response_id: pending.id,
+    tools, input: [{ type: 'mcp_approval_response', approval_request_id: approval.id, approve: true }], reasoning: { effort: 'none' } },
+  { headers: { 'Idempotency-Key': 'deferred-mcp-once' } });
+  assert.equal(approved.status, 'completed');
+  assert.equal(approved.output.find(item => item.type === 'mcp_call')?.name, 'echo');
+  assert.equal(state.calls, before + 1);
+  assert.equal(scenario.state.calls, 3);
+  assert.deepEqual(await scenario.read(approved.id), approved);
+  context.validateWire(approved, []);
+  assert.ok(!JSON.stringify(approved).includes('__agents_'));
+  assert.ok(!JSON.stringify(approved).includes(state.expectedAuth));
+  state.richCallResult = false;
+  return { strict_wire: wire, typed_image_native_input: true, user_only_content_filtered: true, model_calls: 3, remote_tool_calls: 1, actual_deferred_schema_loaded: true, qualified_permissions_loaded: true, raw_get_matches_sdk: true };
+}
+
+export async function runMcpDeniedAndUnknown(context) {
+  const state = context.providers.state;
+  state.listFailure = false;
+  state.expectedAuth = 'MCP-NEGATIVE-SECRET';
+  const before = state.calls;
+  const action = { type: 'function_call', id: 'private-negative-call', call_id: 'mcp-negative-call', name: 'assigned', arguments: '{"value":"雪"}', status: 'completed' };
+  const final = { type: 'message', id: 'private-negative-final', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'MCP failure handled without retry.', annotations: [] }] };
+  const denial = await createNativeSemanticsScenario(context, 'mcp-denial', [
+    { output: [action], check(body) { action.name = body.tools.find(tool => tool.name?.startsWith('__agents_mcp_')).name; } },
+    { output: [final], check(body) { assert.ok(body.input.some(item => item.type === 'function_call_output' && JSON.stringify(item.output).includes('mcp_approval_denied'))); } },
+  ]);
+  await denial.principal.browser('GET', '/v1/account');
+  const pending = (await denial.invoke({ input: 'Plan echo.', tools: [mcpTool(state.expectedAuth)], reasoning: { effort: 'none' } })).value;
+  const approval = pending.output.find(item => item.type === 'mcp_approval_request');
+  assert.ok(approval);
+  const denied = (await denial.invoke({ previous_response_id: pending.id,
+    input: [{ type: 'mcp_approval_response', approval_request_id: approval.id, approve: false }], reasoning: { effort: 'none' } })).value;
+  assert.equal(denied.status, 'completed');
+  context.validateWire(denied, []);
+  assert.equal(denied.output.find(item => item.type === 'mcp_call')?.status, 'failed');
+  assert.equal(state.calls, before, 'Deny never obtains permission for a remote call');
+  assert.equal(denial.state.calls, 2);
+
+  state.invalidCallReply = true;
+  const unknownCall = { ...action, name: 'assigned' };
+  const unknown = await createNativeSemanticsScenario(context, 'mcp-unknown', [
+    { output: [unknownCall], check(body) { unknownCall.name = body.tools.find(tool => tool.name?.startsWith('__agents_mcp_')).name; } },
+    { output: [final], check(body) { assert.ok(body.input.some(item => item.type === 'function_call_output' && JSON.stringify(item.output).includes('outcome_unknown'))); } },
+  ]);
+  await unknown.principal.browser('GET', '/v1/account');
+  const body = { input: 'Execute without approval only because this owner explicitly opts out.', tools: [{ ...mcpTool(state.expectedAuth), require_approval: 'never' }], reasoning: { effort: 'none' } };
+  const result = (await unknown.invoke(body, 200, 'unknown-mcp-once')).value;
+  assert.equal(result.status, 'completed');
+  context.validateWire(result, []);
+  assert.equal(result.output.find(item => item.type === 'mcp_call')?.status, 'failed');
+  assert.equal(state.calls, before + 1);
+  const replay = (await unknown.invoke(body, 200, 'unknown-mcp-once')).value;
+  assert.equal(replay.id, result.id);
+  assert.equal(state.calls, before + 1, 'Unknown HTTP outcomes never grant permission to replay a side effect');
+  assert.equal(unknown.state.calls, 2);
+  state.invalidCallReply = false;
+  return { model_calls: 4, denied_remote_calls: 0, unknown_remote_calls: 1, unknown_http_not_replayed: true };
 }
