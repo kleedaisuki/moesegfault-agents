@@ -273,3 +273,16 @@ test('core-compatible staging cannot waive core failures or promote an unverifie
   const ordinary = coreCompatibleFixture(); ordinary.coreContainer = false;
   assert.throws(() => verifyDeploymentEvidence(ordinary), /not_promotable/);
 });
+
+test('core-compatible staging excludes only pending checks for its disabled candidate container', () => {
+  const value = coreCompatibleFixture();
+  const pending = [{ id: 'interpreter-memory' }, { id: 'interpreter-network' }];
+  value.catalog.at(-1).unresolved_checks = pending;
+  value.plan.components.container.baseline.unresolved_checks = pending;
+  value.plan.required_remediations.push(...pending.map(check => check.id));
+  value.expectedPlan = structuredClone(value.plan);
+  assert.equal(verifyDeploymentEvidence(value).runtime_scope, 'core-compatible/disabled-runtime');
+  value.plan.required_remediations.push('unproven-core-repair');
+  value.expectedPlan = structuredClone(value.plan);
+  assert.throws(() => verifyDeploymentEvidence(value), /missing_declared_remediation/);
+});

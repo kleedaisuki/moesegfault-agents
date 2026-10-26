@@ -1828,5 +1828,213 @@
       "job_conclusion": "success",
       "tests_reexecuted_current": false
     }
+  },
+  {
+    "source_sha": "8578792f1ce0cc06504165b98dbf8a471f3dafd3",
+    "run_id": "40272443641",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12629180312,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12629033404,
+    "verified_phases": [
+      "wasm_build",
+      "rust_lib_compile",
+      "changed_rust_checks"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs",
+      "Compile changed Worker tests without replaying accepted cases",
+      "Run node scripts/incremental-checks.mjs run worker-rust"
+    ],
+    "verified_checks": [
+      {
+        "id": "rust:agents-worker:persisted_entropy_keeps_same_sequence_frames_identical_without_public_seed",
+        "status": "passed_current",
+        "input_fingerprint": "cf99235aca7b6c1af7f8ced5b05d666a90aa750a2f1d79c283b9a4b0c88b07d1",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:replay_is_stable_but_response_seed_and_sequence_are_independent",
+        "status": "passed_current",
+        "input_fingerprint": "49189698e13290a334ee05a0f9dbeba87dfb9997983c2f47e81adf79c9ff5c39",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:legacy_padding_is_retained_and_disabled_observers_are_independent",
+        "status": "passed_current",
+        "input_fingerprint": "b8287a399b64eb668d540909b94190e0d621bc72f50b10a94a713ddc4523b03a",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:seed_debug_is_redacted_and_entropy_is_not_public_event_data",
+        "status": "passed_current",
+        "input_fingerprint": "85ea5aeddee6de868ded3193e1a2082e0f9d3d0e5ff78553637f957a8d588258",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:usage_requires_authoritative_reasoning_and_cache_write_for_the_standard_shape",
+        "status": "passed_current",
+        "input_fingerprint": "10f4b501bb4698f975887c498fd372393e80624206e3d1b65100fa608af23785",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:terminal_recovery_retains_answer_usage_and_never_dispatches_another_round",
+        "status": "passed_current",
+        "input_fingerprint": "63f380086ce2c96338dd11e29ff3f898c6420f4f876fcb6425cfc21f2574b32d",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:native_items_require_typed_objects_and_portable_context_is_explicit",
+        "status": "passed_current",
+        "input_fingerprint": "4b8a974ed7dea747e633ca251bd2ec9f2d98b90aa5703a643b267e0f0119a033",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:observer_projection_is_per_request_and_keeps_private_replay_complete",
+        "status": "passed_current",
+        "input_fingerprint": "464ba9fc43a728859136f0b3a13055de30a9f249d72866f92dcfd7ba6651e28e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:observer_obfuscation_does_not_change_replay_identity_or_other_observers",
+        "status": "passed_current",
+        "input_fingerprint": "d93fb00fddc821c18dfc7274370d513c0f3ee13c9939db20c4560cb6665759e2",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:namespaces_are_exact_and_custom_policy_uses_native_calls",
+        "status": "passed_current",
+        "input_fingerprint": "74c8267ec3173797bb3a1908020145a9c243d03841ec0b7664dc5c220e631514",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:tests/worker/conversation-responses.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "c037f049fceca386b295475109ce23b19327db91cca9caedc0593feeb63b7108",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 3
+      },
+      {
+        "id": "journey:Responses actual Node SDK streams, recovers and returns local function results",
+        "status": "passed_current",
+        "input_fingerprint": "ff776483c3bda03e7492fee5fd2c9a96559a4bf343610ff8fcdb691bde30bd89",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "journey:Responses auxiliary compact and count",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Responses auxiliary compact and count"
+        },
+        "reason": "Only remaining failed native count/compact fixture; redirect taxonomy expectation corrected without changing Worker binary"
+      }
+    ]
+  },
+  {
+    "source_sha": "8578792f1ce0cc06504165b98dbf8a471f3dafd3",
+    "run_id": "40272443641",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12628469415,
+    "verified_checks": [
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "a37b5c56094edb7f8751af97714143b1f487dd4265cbecd7f593db548b6d85a6",
+        "receipt_path": "tooling.json",
+        "executed_tests": 3
+      },
+      {
+        "id": "node:tests/e2e/test_full_responses_sdk_contract.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "69cc09c5d3d2373d5f1e3031c047d5637ad906004a7a1ccbdfe76d2dddc87047",
+        "receipt_path": "tooling.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "pytest:tests/e2e/test_responses_contract.py",
+        "status": "passed_current",
+        "input_fingerprint": "88f396587434b08d38a74a8178d0c861c7776f28c0f961075ccdfb71abbf7204",
+        "receipt_path": "tooling.json",
+        "executed_tests": 10
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "^core-compatible staging excludes only pending checks for its disabled candidate container$",
+          "scripts/deploy-provenance.test.mjs"
+        ],
+        "env": {},
+        "expected_test": "core-compatible staging excludes only pending checks for its disabled candidate container",
+        "reason": "One newly changed core assembly gate case with ordinary release negative control"
+      }
+    ]
+  },
+  {
+    "source_sha": "8578792f1ce0cc06504165b98dbf8a471f3dafd3",
+    "run_id": "40272443641",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12628634798,
+    "receipt_artifact": "verification-container",
+    "receipt_artifact_id": 12629013538,
+    "verified_checks": [
+      {
+        "id": "pytest:tests/e2e/test_workspace_interpreter_memory.py",
+        "status": "passed_current",
+        "input_fingerprint": "5128ae7dc188c360357594dc9282aca0e665ab482659ad2fee5bdfcdaca82d5e",
+        "receipt_path": "container.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "pytest:tests/e2e/test_workspace_interpreter_network.py",
+        "status": "passed_current",
+        "input_fingerprint": "b4034dc96b91fdfb097c83643e31c54d7536d42130e635e95998845f32c95c38",
+        "receipt_path": "container.json",
+        "executed_tests": 5
+      }
+    ],
+    "evidence": {
+      "memory_cases": [
+        "4g",
+        "omitted"
+      ],
+      "network_cases": 5,
+      "earlier_1g_source": "e1b0ede4a695c567348c29136a23525960c493a7",
+      "earlier_1g_run": "40214782486",
+      "cloudflare_4g_provisioned": false
+    }
   }
 ]

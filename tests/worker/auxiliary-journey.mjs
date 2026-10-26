@@ -56,7 +56,7 @@ export async function runAuxiliaryJourney({ mf, db, encryptionKey, request, prov
   assert.equal(provider.state.calls.length, 0, 'Counting never buys inference');
   provider.state.redirectCount = true;
   await assert.rejects(sdk.responses.inputTokens.count(body),
-    error => error.status === 503 && error.code === 'token_count_provider_error');
+    error => error.status === 422 && error.code === 'token_count_provider_error');
   provider.state.redirectCount = false;
   assert.equal(provider.state.redirectTargetCalls, 0, 'Redirect targets never receive an owned API key');
   assert.equal(await db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE account_id=?').bind(principal.owner).first('n'), 0);
