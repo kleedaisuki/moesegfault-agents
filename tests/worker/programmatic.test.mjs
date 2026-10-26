@@ -90,8 +90,13 @@ test('compiled Rust Worker: a real isolated program calls pinned time and never 
     });
   }
   const context = { mf, db, encryptionKey, providers, request, validateWire, configureProgramCapability };
-  const receipt = { time: await runProgrammaticTime(context), mcp: await runProgrammaticMcp(context),
-    admission: await runProgrammaticAdmissionFailures(context) };
+  const cases = { time: runProgrammaticTime, mcp: runProgrammaticMcp, admission: runProgrammaticAdmissionFailures };
+  const selected = process.env.MAGENTS_PROGRAMMATIC_CASE?.split(",") ?? Object.keys(cases);
+  const receipt = {};
+  for (const name of selected) {
+    assert.ok(Object.hasOwn(cases, name), `Unknown programmatic journey: ${name}`);
+    receipt[name] = await cases[name](context);
+  }
   await writeFile(path.join(directory, 'receipt.json'), JSON.stringify({
     source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? process.env.GITHUB_SHA ?? null,
     fixture: 'actual-compiled-rust-worker-and-native-loader', external_network_calls: 0, ...receipt,

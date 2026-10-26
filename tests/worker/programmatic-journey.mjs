@@ -55,7 +55,7 @@ export async function runProgrammaticTime(context) {
   const output = first.value.output.find(item => item.type === 'program_output');
   assert.ok(instruction?.fingerprint);
   assert.equal(output.call_id, instruction.call_id);
-  assert.equal(output.status, 'completed');
+  assert.equal(output.status, 'completed', output.result);
   const nested = first.value.output.filter(item => item.type === 'function_call');
   const nestedResults = first.value.output.filter(item => item.type === 'function_call_output');
   assert.equal(nested.length, 2);
@@ -111,7 +111,7 @@ export async function runProgrammaticMcp(context) {
   const value = events.findLast(event => event.type === 'response.completed')?.response;
   assert.ok(value);
   const output = value.output.find(item => item.type === 'program_output');
-  assert.equal(output?.status, 'completed');
+  assert.equal(output?.status, 'completed', output?.result);
   assert.deepEqual(JSON.parse(output.result), { a: { echo: '雪' }, b: { echo: '雪' } });
   assert.equal(remote.calls, before + 2);
   assert.equal(scenario.state.calls, 2);
