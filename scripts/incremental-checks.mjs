@@ -374,14 +374,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
-    // Topic-only new Conversation readonly source boundary; no accepted generations replay.
+    // Topic-only new rejected-admission cleanup boundary; zero model work.
     for (const job of Object.keys(receipt.checks)) {
       receipt.checks[job] = receipt.checks[job].filter(check =>
         check.id === 'node:tests/worker/native-window.test.mjs');
       receipt.checks[job] = receipt.checks[job].map(check => {
-        const selected = { ...check, env: { MAGENTS_NATIVE_WINDOW_CASE: 'conversation-count' },
-          expected_test: 'Conversation readonly count selects its immutable predecessor instead of a newer Session head',
-          reason: 'One genuinely new Conversation auto-window generation, followed only by readonly counts and a zero-generation warmup' };
+        const selected = { ...check, env: { MAGENTS_NATIVE_WINDOW_CASE: 'capacity-rejection' },
+          expected_test: 'known capacity rejection immediately reclaims its writer and permits explicit purge without model work',
+          reason: 'Only new definite capacity reject to immediate writer/resource closure and delete/purge; zero provider or counter dispatch' };
         return { ...selected, input_fingerprint: checkFingerprint(receipt.source_sha, selected) };
       });
     }
