@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks, rustTestArguments, operatorUsagePlan, plan } from './incremental-checks.mjs';
 mkdirSync('.temp', { recursive: true });
@@ -49,8 +50,17 @@ test('retained remediation commands preserve exactly one Node reporter', () => {
 });
 
 test('composed selection never changes the actual artifact identity or revives old unresolved work', () => {
-  const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const artifact = '76d6c9fb7bbb8fc948cc28455b46e172b9d0ff73';
+  const previous = process.cwd(), repository = mkdtempSync(path.join(previous, directory, 'selection-repository-'));
+  const git = (...args) => execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim();
+  git('init', '--quiet');
+  git('config', 'user.name', 'Selection fixture'); git('config', 'user.email', 'fixture@example.invalid');
+  writeFileSync(path.join(repository, 'Cargo.toml'), '[workspace]\nmembers=[]\n');
+  git('add', 'Cargo.toml'); git('commit', '--quiet', '-m', 'artifact');
+  const artifact = git('rev-parse', 'HEAD');
+  mkdirSync(path.join(repository, 'crates/agents-worker/src'), { recursive: true });
+  writeFileSync(path.join(repository, 'crates/agents-worker/src/lib.rs'), 'pub fn composed() {}\n');
+  git('add', '.'); git('commit', '--quiet', '-m', 'composed selection');
+  const revision = git('rev-parse', 'HEAD');
   const base = { source_sha: artifact, run_id: '40309533230',
     components: ['worker', 'native', 'container', 'dashboard', 'tooling'],
     unresolved_checks: [{ id: 'must-not-replay-accepted-work', argv: ['node', '--test', 'missing.mjs'] }],
@@ -58,14 +68,17 @@ test('composed selection never changes the actual artifact identity or revives o
       receipts: [{ source_sha: artifact, run_id: '40309533230', reference: 'docs/full-responses-native-context.md' }],
       unresolved_checks: [] },
   };
-  const selected = plan(revision, [base]);
-  assert.equal(selected.components.worker.baseline.source_sha, artifact);
-  assert.equal(selected.components.worker.baseline.run_id, '40309533230');
-  assert.equal(selected.components.worker.action, 'build');
-  assert.equal(selected.components.worker.baseline.selection_base.source_sha, revision);
-  assert.deepEqual(selected.required_remediations, []);
-  assert.equal(Object.values(selected.checks).flat().length, 0);
-  assert.throws(() => plan(revision, [{ ...base, selection_base: { ...base.selection_base, receipts: [] } }]), /Invalid composed/);
+  try {
+    process.chdir(repository);
+    const selected = plan(revision, [base]);
+    assert.equal(selected.components.worker.baseline.source_sha, artifact);
+    assert.equal(selected.components.worker.baseline.run_id, '40309533230');
+    assert.equal(selected.components.worker.action, 'build');
+    assert.equal(selected.components.worker.baseline.selection_base.source_sha, revision);
+    assert.deepEqual(selected.required_remediations, []);
+    assert.equal(Object.values(selected.checks).flat().length, 0);
+    assert.throws(() => plan(revision, [{ ...base, selection_base: { ...base.selection_base, receipts: [] } }]), /Invalid composed/);
+  } finally { process.chdir(previous); }
 });
 test('new auxiliary and tokenizer increments select exact public journeys', () => {
   const selected = selections(source, baseline, ['tests/worker/auxiliary-journey.mjs', 'tests/worker/deepseek-tokenizer-journey.mjs']);
