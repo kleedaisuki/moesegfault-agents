@@ -6,8 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import OpenAI from 'openai';
-import { assertCanonicalEvents, assertExecutionWorkspace, assertServingWorkerHealth, countRootWithoutAdmission, nativeAcceptanceModel, requireLiveDeploymentProvenance, tracedFetch, verifyWorkerIdentity } from './full-responses-sdk.mjs';
-import { archiveCompletedSession } from './remaining-responses-sdk.mjs';
+import { archiveCompletedSession, assertCanonicalEvents, assertExecutionWorkspace, assertServingWorkerHealth, countRootWithoutAdmission, nativeAcceptanceModel, requireLiveDeploymentProvenance, tracedFetch, verifyWorkerIdentity } from './full-responses-sdk.mjs';
 import * as policy from './paid-route-policy.mjs';
 
 const origin = 'https://agents-staging.moesegfault.dev';

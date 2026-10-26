@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { main, searchRequest, summarizeSearch, verifySearchPriceSource } from './hosted-search-sdk.mjs';
+import { archiveCompletedSession } from './full-responses-sdk.mjs';
+
+test('shared Session archive helper preserves the active-run fence without an uncommitted runner import', async () => {
+  const calls = [];
+  await archiveCompletedSession(async method => { calls.push(method); return { status: calls.length === 1 ? 'idle' : 'closed', run_id: null }; }, 'owned');
+  assert.deepEqual(calls, ['GET', 'DELETE', 'GET']);
+  const active = [];
+  await assert.rejects(archiveCompletedSession(async method => { active.push(method); return { status: 'running', run_id: 'accepted' }; }, 'owned'), /never_archive/);
+  assert.deepEqual(active, ['GET']);
+});
 
 test('new live Search body permits one official-source search and no compute or follow-up fetch', () => {
   const body = searchRequest('owned-agent');

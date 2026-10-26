@@ -41,6 +41,19 @@ export function tracedFetch(fetcher, seed) {
   return (url, init = {}) => fetcher(url, { ...init, headers: new Headers({ ...Object.fromEntries(new Headers(init.headers)), ...traceHeaders(seed) }) });
 }
 
+export async function archiveCompletedSession(request, session) {
+  const before = await request('GET', `/v1/sessions/${session}`);
+  if (before.status === 'closed') return;
+  assert.equal(before.run_id ?? null, null, 'never_archive_an_unobserved_active_execution');
+  await request('DELETE', `/v1/sessions/${session}`, undefined, [200, 202, 404]);
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
+    if ((await request('GET', `/v1/sessions/${session}`)).status === 'closed') return;
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  throw Error('archive_observer_timeout_no_reexecution');
+}
+
 export async function createManagedConversation(client, body, { begin, remember, complete }) {
   const key = begin('conversation-create', { bodySha256: digest(body) });
   const conversation = await client.conversations.create(body, { maxRetries: 0, headers: { 'Idempotency-Key': key } });
