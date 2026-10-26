@@ -607,7 +607,8 @@ impl SessionInner {
                 .details
                 .as_ref()
                 .ok_or_else(|| mcp_fault("invalid_mcp_approval_context"))?;
-            crate::mcp_items::validate_result(details, decision).map_err(Error::RustError)?;
+            crate::mcp_items::validate_result(details, decision)
+                .map_err(|code| Error::RustError(code.into()))?;
             let token = details
                 .pointer("/__agents_mcp/capability")
                 .and_then(Value::as_str)

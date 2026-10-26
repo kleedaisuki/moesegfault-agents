@@ -48,7 +48,7 @@ impl ToolBindings<'_> {
         }
     }
 
-    pub(crate) fn rewrite_choice(&self, choice: Value, bridge: bool) -> Result<Value> {
+    pub(crate) fn rewrite_choice(&self, choice: Value, _bridge: bool) -> Result<Value> {
         let choice = self.hosted.rewrite_choice(choice)?;
         let choice = self.mcp.rewrite_choice(choice)?;
         match self.discovery {
