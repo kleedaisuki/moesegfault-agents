@@ -394,6 +394,13 @@ impl SessionInner {
         if response.deleted || (!response.request.store && !leased) {
             return util::json_error(404, "not_found", "Response not retained");
         }
+        if response.programmatic.is_some() {
+            return util::json_error(
+                409,
+                "program_live_continuation_required",
+                "A live JavaScript program cannot be cloned into a historical branch",
+            );
+        }
         if !matches!(
             response.status.as_str(),
             "completed" | "failed" | "incomplete" | "cancelled"

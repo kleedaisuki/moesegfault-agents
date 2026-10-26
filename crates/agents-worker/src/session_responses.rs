@@ -62,6 +62,12 @@ pub(super) struct ResponseRun {
     pub(super) mcp_lists_published: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) discovery: Option<crate::tool_discovery::ToolRegistry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) programmatic: Option<super::programmatic::ProgramPause>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) usage_base: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) model_round_base: Option<u64>,
     #[serde(default)]
     pub(super) effective_service_tier: Option<String>,
     pub(super) usage: Usage,
@@ -88,6 +94,28 @@ pub(super) struct ResponseRun {
 }
 
 impl ResponseRun {
+    pub(super) fn usage_since_start(&self, total: &Usage) -> Usage {
+        let Some(base) = &self.usage_base else {
+            return total.clone();
+        };
+        Usage {
+            prompt_tokens: total.prompt_tokens.saturating_sub(base.prompt_tokens),
+            completion_tokens: total
+                .completion_tokens
+                .saturating_sub(base.completion_tokens),
+            total_tokens: total.total_tokens.saturating_sub(base.total_tokens),
+            cached_tokens: total.cached_tokens.saturating_sub(base.cached_tokens),
+            reasoning_tokens: total
+                .reasoning_tokens
+                .map(|n| n.saturating_sub(base.reasoning_tokens.unwrap_or(0))),
+            cache_write_tokens: total
+                .cache_write_tokens
+                .map(|n| n.saturating_sub(base.cache_write_tokens.unwrap_or(0))),
+            provider_request_id: total.provider_request_id.clone(),
+            reported: total.reported,
+            cost: None,
+        }
+    }
     pub(super) fn plan_output(&mut self) -> Result<OutputPlan> {
         self.output
             .plan(&self.id)
@@ -387,13 +415,34 @@ impl SessionInner {
                         "Only background responses can be cancelled",
                     );
                 }
+                if response.programmatic.is_some() && terminal_status(&response.status) {
+                    if let Some(current) = self
+                        .data
+                        .borrow_mut()
+                        .as_mut()
+                        .and_then(|data| data.run.as_mut())
+                        .and_then(|run| run.response.as_mut())
+                        .filter(|current| current.id == *id)
+                    {
+                        current.cancel_requested = true;
+                    }
+                    let mut saved = self.snapshot()?;
+                    save_state(&self.state.storage(), &mut saved).await?;
+                    drop(cancellation);
+                    self.persist().await?;
+                    return Response::from_json(&self.public_response_value(&response, &[]).await?);
+                }
                 if !terminal_status(&response.status) {
                     let accepted = {
                         let mut borrowed = self.data.borrow_mut();
                         borrowed
                             .as_mut()
                             .and_then(|data| data.run.as_mut())
-                            .filter(|run| run.id == *id)
+                            .filter(|run| {
+                                run.response
+                                    .as_ref()
+                                    .is_some_and(|response| response.id == *id)
+                            })
                             .map(super::conversations::request_response_cancel)
                     };
                     if accepted == Some(false) {
@@ -635,6 +684,13 @@ impl SessionInner {
         }
         let previous_response_id =
             super::conversations::previous(&request, create.execution.conversation.as_ref());
+        let programmatic_resume = match self
+            .programmatic_continuation(&data, previous_response_id.as_deref())
+            .await
+        {
+            Ok(pause) => pause,
+            Err(error) => return util::json_error(409, "program_not_active", &error.to_string()),
+        };
         let requested_profile = match crate::runtime_profiles::requested_tools_for(
             &request.tools,
             &data.record.pinned.tool_services,
@@ -652,7 +708,7 @@ impl SessionInner {
             && (requested_profile.is_some_and(|profile| profile != data.record.runtime_profile)
                 || previous_response_id != data.response_head
                 || request.model != data.record.agent_id
-                || data.run.is_some()
+                || !super::programmatic::accepts_run(&data, &programmatic_resume)
                 || self.closing.get()
                 || data.archive_preparing
                 || data.archive_pending)
@@ -898,7 +954,7 @@ impl SessionInner {
                 "Readmit the archived session before continuing",
             );
         }
-        if current.run.is_some()
+        if !super::programmatic::accepts_run(&current, &programmatic_resume)
             || current.response_head != data.response_head
             || current.record.input_revision != data.record.input_revision
         {
@@ -1014,6 +1070,22 @@ impl SessionInner {
                 &mcp_bindings,
             )
             .await?;
+        let programmatic_inputs = match &programmatic_resume {
+            Some(pause) => match self
+                .programmatic_inputs(pause, &data.record, &expanded.items)
+                .await
+            {
+                Ok(inputs) => inputs,
+                Err(error) => {
+                    return util::json_error(
+                        400,
+                        "invalid_programmatic_output",
+                        &error.to_string(),
+                    );
+                }
+            },
+            None => vec![],
+        };
         let current = self.snapshot()?;
         if current.archive_preparing || current.archive_pending || self.closing.get() {
             return util::json_error(409, "session_busy", "Session archival is still in progress");
@@ -1026,13 +1098,13 @@ impl SessionInner {
                 "Readmit the archived session before continuing",
             );
         }
-        if current.run.is_some()
+        if !super::programmatic::accepts_run(&current, &programmatic_resume)
             || current.response_head != data.response_head
             || current.record.input_revision != data.record.input_revision
         {
             return util::json_error(409, "session_busy", "Session changed while resolving input");
         }
-        let native_input = if config.protocol == agents_core::ProviderProtocol::Responses {
+        let mut native_input = if config.protocol == agents_core::ProviderProtocol::Responses {
             let mut execution_items = expanded.items;
             if discovery.is_none() {
                 discovery = self
@@ -1099,6 +1171,17 @@ impl SessionInner {
             }
             None
         };
+        if programmatic_resume.is_some() {
+            input.messages.retain(|message| message.role != "tool");
+            if let Some(items) = native_input.as_mut() {
+                items.retain(|item| {
+                    !matches!(
+                        item["type"].as_str(),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    )
+                });
+            }
+        }
         let mut prefix = system_prefix(&data.record);
         if config.protocol != agents_core::ProviderProtocol::Responses {
             for instruction in data
@@ -1138,13 +1221,13 @@ impl SessionInner {
             );
         }
         let before_pins = self.snapshot()?;
-        if before_pins.run.is_some()
+        if !super::programmatic::accepts_run(&before_pins, &programmatic_resume)
             || before_pins.archive_pending
             || before_pins.archive_preparing
             || self.closing.get()
             || before_pins.response_head != data.response_head
             || before_pins.record.input_revision != data.record.input_revision
-            || before_pins.record.status != SessionStatus::Idle
+            || !super::programmatic::accepts_status(&before_pins, &programmatic_resume)
         {
             drop(acceptance);
             if before_pins.record.status == SessionStatus::Closed {
@@ -1170,13 +1253,13 @@ impl SessionInner {
         )
         .await?;
         let after_pins = self.snapshot()?;
-        if after_pins.run.is_some()
+        if !super::programmatic::accepts_run(&after_pins, &programmatic_resume)
             || after_pins.archive_pending
             || after_pins.archive_preparing
             || self.closing.get()
             || after_pins.response_head != data.response_head
             || after_pins.record.input_revision != data.record.input_revision
-            || after_pins.record.status != SessionStatus::Idle
+            || !super::programmatic::accepts_status(&after_pins, &programmatic_resume)
         {
             crate::space::release_response_files(
                 &self.env,
@@ -1206,10 +1289,10 @@ impl SessionInner {
             let unchanged = {
                 let current = self.data.borrow();
                 current.as_ref().is_some_and(|current| {
-                    current.run.is_none()
+                    super::programmatic::accepts_run(current, &programmatic_resume)
                         && current.record.input_revision == data.record.input_revision
                         && current.response_head == data.response_head
-                        && current.record.status == SessionStatus::Idle
+                        && super::programmatic::accepts_status(current, &programmatic_resume)
                         && !current.archive_pending
                         && !current.archive_preparing
                         && !self.closing.get()
@@ -1259,10 +1342,10 @@ impl SessionInner {
             }
         };
         let ready = self.snapshot()?;
-        if ready.run.is_some()
+        if !super::programmatic::accepts_run(&ready, &programmatic_resume)
             || ready.record.input_revision != data.record.input_revision
             || ready.response_head != data.response_head
-            || ready.record.status != SessionStatus::Idle
+            || !super::programmatic::accepts_status(&ready, &programmatic_resume)
             || ready.archive_pending
             || ready.archive_preparing
             || self.closing.get()
@@ -1280,7 +1363,9 @@ impl SessionInner {
             !create.execution.suppress_observer && (!request.background || request.stream),
         );
         let mut admission = current.record.clone();
-        if admission.append_user_input(util::now_ms()).is_err() || admission.start_run().is_err() {
+        if admission.append_user_input(util::now_ms()).is_err()
+            || (programmatic_resume.is_none() && admission.start_run().is_err())
+        {
             return util::json_error(
                 409,
                 "session_busy",
@@ -1309,7 +1394,7 @@ impl SessionInner {
             &create.execution,
             input.messages,
         )?;
-        {
+        if programmatic_resume.is_none() {
             let mut borrowed = self.data.borrow_mut();
             let current = borrowed.as_mut().unwrap();
             project_response_input(
@@ -1318,7 +1403,9 @@ impl SessionInner {
                 data.has_pending_client_tools(),
             );
         }
-        self.start_run_with_id(create.response_id.clone())?;
+        if programmatic_resume.is_none() {
+            self.start_run_with_id(create.response_id.clone())?;
+        }
         let mcp_request_proof = request
             .tools
             .iter()
@@ -1351,7 +1438,12 @@ impl SessionInner {
             images: ResponseImages::default(),
             image_lifecycle: None,
             events: vec![],
-            status: "queued".into(),
+            status: if programmatic_resume.is_some() {
+                "in_progress"
+            } else {
+                "queued"
+            }
+            .into(),
             error: None,
             incomplete_reason: None,
             cancel_requested: false,
@@ -1365,6 +1457,16 @@ impl SessionInner {
             mcp_operation_keys: vec![],
             mcp_lists_published: false,
             discovery,
+            programmatic: programmatic_resume.clone().map(|mut pause| {
+                pause.inputs = programmatic_inputs;
+                pause
+            }),
+            usage_base: programmatic_resume
+                .as_ref()
+                .and_then(|_| data.run.as_ref().map(|run| run.total.clone())),
+            model_round_base: programmatic_resume
+                .as_ref()
+                .and_then(|_| data.run.as_ref().map(|run| run.round)),
             effective_service_tier: None,
             usage: Usage::default(),
             next_sequence: 0,
@@ -1380,21 +1482,45 @@ impl SessionInner {
             execution: create.execution.persisted(),
         };
         response.event("response.created", json!({"response":response.value()}))?;
+        if programmatic_resume.is_some() {
+            response.event("response.in_progress", json!({"response":response.value()}))?;
+        }
         {
             let mut borrowed = self.data.borrow_mut();
             let current = borrowed.as_mut().unwrap();
             current.response_head = Some(create.response_id.clone());
             let run = current.run.as_mut().unwrap();
             run.worker_attached = !request.background;
+            if programmatic_resume.is_some() {
+                run.worker_segment_started_at_ms = run.worker_attached.then(util::now_ms);
+                run.tool_dispatches.clear();
+            }
             run.traceparent = traceparent;
             run.response = Some(response.clone());
             if let Some(items) = native_input {
-                run.native_input = Some(native::NativeInputBatch {
-                    items: native::ordered_input(items, data.has_pending_client_tools()),
-                    message_begin: data.messages.len(),
-                    message_end: current.messages.len(),
-                    history_begin: data.history_instructions.len(),
-                });
+                if programmatic_resume.is_some() {
+                    match run.native_input.as_mut() {
+                        Some(batch) => {
+                            batch.items.extend(items);
+                            batch.message_end = current.messages.len() + 1 + current.pending.len();
+                        }
+                        None => {
+                            run.native_input = Some(native::NativeInputBatch {
+                                items,
+                                message_begin: current.messages.len() + 1,
+                                message_end: current.messages.len() + 1 + current.pending.len(),
+                                history_begin: data.history_instructions.len(),
+                            })
+                        }
+                    }
+                } else {
+                    run.native_input = Some(native::NativeInputBatch {
+                        items: native::ordered_input(items, data.has_pending_client_tools()),
+                        message_begin: data.messages.len(),
+                        message_end: current.messages.len(),
+                        history_begin: data.history_instructions.len(),
+                    });
+                }
             }
         }
         {
@@ -1436,7 +1562,7 @@ impl SessionInner {
         .await
     }
 
-    async fn observe_response(
+    pub(super) async fn observe_response(
         &self,
         response: &ResponseRun,
         stream: bool,
@@ -2138,7 +2264,7 @@ impl SessionInner {
 
     pub(super) fn response_terminal_value(&self, run: &RunState) -> Option<Value> {
         let mut response = run.response.clone()?;
-        response.usage = run.total.clone();
+        response.usage = response.usage_since_start(&run.total);
         response.status = if response.cancel_requested {
             "cancelled"
         } else if response.incomplete_reason.is_some() {
@@ -2158,7 +2284,7 @@ impl SessionInner {
         let Some(mut response) = run.response.clone() else {
             return Ok(None);
         };
-        response.usage = run.total.clone();
+        response.usage = response.usage_since_start(&run.total);
         response.status = if response.cancel_requested {
             "cancelled"
         } else if result.is_err() {
@@ -2640,6 +2766,9 @@ mod tests {
             mcp_operation_keys: vec![],
             mcp_lists_published: false,
             discovery: None,
+            programmatic: None,
+            usage_base: None,
+            model_round_base: None,
             effective_service_tier: None,
             usage: Usage::default(),
             next_sequence: 0,

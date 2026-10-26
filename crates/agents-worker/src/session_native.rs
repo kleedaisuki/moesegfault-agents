@@ -683,12 +683,38 @@ impl SessionInner {
             if batch.message_end > data.messages.len() || batch.message_begin > batch.message_end {
                 return Err(fault("native_context_message_boundary"));
             }
+            if context.messages_end < batch.message_begin {
+                let prior = provider::responses::message_items(
+                    &data.messages[context.messages_end..batch.message_begin],
+                )
+                .map_err(Error::RustError)?;
+                context.history = mutate_history(
+                    &self.state.storage(),
+                    &data.record.id,
+                    Some(&context.history),
+                    &provider_binding,
+                    &format!(
+                        "before-input:{}",
+                        run.response
+                            .as_ref()
+                            .map_or(run.id.as_str(), |response| response.id.as_str())
+                    ),
+                    Mutation::Append,
+                    &prior,
+                )
+                .await?;
+            }
             context.history = mutate_history(
                 &self.state.storage(),
                 &data.record.id,
                 Some(&context.history),
                 &provider_binding,
-                &format!("input:{}", run.id),
+                &format!(
+                    "input:{}",
+                    run.response
+                        .as_ref()
+                        .map_or(run.id.as_str(), |response| response.id.as_str())
+                ),
                 Mutation::Append,
                 &batch.items,
             )

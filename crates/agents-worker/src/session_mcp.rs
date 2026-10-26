@@ -167,7 +167,10 @@ impl SessionInner {
         for id in ids {
             let busy = self.mcp_preparing.borrow().contains_key(&id)
                 || self.data.borrow().as_ref().is_some_and(|data| {
-                    data.run.as_ref().is_some_and(|run| run.id == id)
+                    data.run
+                        .as_ref()
+                        .and_then(|run| run.response.as_ref())
+                        .is_some_and(|response| response.id == id)
                         || data
                             .steering_queue
                             .iter()

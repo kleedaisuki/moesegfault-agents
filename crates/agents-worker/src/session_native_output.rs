@@ -224,7 +224,10 @@ impl GeneralPendingCall {
             }]
             .as_str()?
             .into(),
-            details: None,
+            details: item
+                .get("caller")
+                .filter(|caller| caller["type"] == "program")
+                .map(|caller| json!({"caller":caller})),
         })
     }
 
