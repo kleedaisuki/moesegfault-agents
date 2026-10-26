@@ -8,6 +8,23 @@ const account = '0123456789abcdef0123456789abcdef';
 const target = () => ({ vars: { EXISTING: 'retained', BUILD_ID: 'stale' }, d1_databases: [{ migrations_dir: 'migrations' }], containers: [{ image: 'container/Dockerfile', image_build_context: '.' }] });
 const input = () => ({ main: 'build/worker/shim.mjs', assets: { directory: 'apps/dashboard/dist' }, build: { command: 'unused' }, env: { staging: target(), production: target() } });
 
+test('Code staging explicitly retains both real profile apps and the accepted search services', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const env = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha,
+    CONTAINER_SOURCE_SHA: 'd'.repeat(40), ACCEPTANCE_PROFILE: 'none', RUNTIME_FEATURES: 'web_search,file_search,code_interpreter' };
+  const rendered = renderDeploymentConfig(source, env), stage = rendered.env.staging;
+  assert.equal(deploymentRuntime(env).codeInterpreter, true);
+  assert.equal(stage.vars.HOSTED_TOOL_RUNTIMES, env.RUNTIME_FEATURES);
+  assert.deepEqual(stage.containers.map(app => [app.class_name, app.instance_type]), [['Session', 'basic'], ['Session4G', 'standard-1']]);
+  assert.ok(stage.containers.every(app => app.image.endsWith(`:${env.CONTAINER_SOURCE_SHA}`)));
+  assert.deepEqual(JSON.parse(stage.vars.HOSTED_TOOL_CAPABILITIES_JSON), { version: 1, platform_images: false,
+    platform_search: true, file_search: true, container_memory: null, available_container_profiles: ['1g', '4g'],
+    code_network_disabled: true, code_network_allowlist: false });
+  assert.deepEqual(rendered.env.production, source.env.production);
+  source.env.staging.containers.pop();
+  assert.throws(() => renderDeploymentConfig(source, env), /explicit Code executor profile app/);
+});
+
 test('native FileSearch runtime binds the staging 1024 profile and retains explicit existing Search only', async () => {
   const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
   const env = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, ACCEPTANCE_PROFILE: 'none', RUNTIME_FEATURES: 'web_search,file_search' };

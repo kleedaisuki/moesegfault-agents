@@ -2,6 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { verifyDeploymentEvidence } from './deploy-provenance.mjs';
 
+test('Code staging requires the normal verified daemon and preserves its explicit runtime scope', () => {
+  const value = fixture();
+  value.workerRuntimeFeatures = ['web_search', 'file_search', 'code_interpreter'];
+  const proof = verifyDeploymentEvidence(value);
+  assert.deepEqual(proof.worker_runtime_features, value.workerRuntimeFeatures);
+  assert.notEqual(proof.artifacts.container.status, 'core_compatible_disabled_runtime');
+  const incompatible = coreCompatibleFixture();
+  incompatible.workerRuntimeFeatures = value.workerRuntimeFeatures;
+  assert.throws(() => verifyDeploymentEvidence(incompatible), /code_requires_verified_container/);
+});
+
 test('native FileSearch proof records both Worker services without promoting unverified compute', () => {
   const value = coreCompatibleFixture();
   value.workerRuntimeFeatures = ['web_search', 'file_search'];

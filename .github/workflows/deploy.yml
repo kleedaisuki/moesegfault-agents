@@ -20,7 +20,7 @@ on:
       runtime_features:
         description: Runtime feature allowlist, independent of whether a journey runs
         type: choice
-        options: [configured, none, web_search, file_search, 'web_search,file_search']
+        options: [configured, none, web_search, file_search, 'web_search,file_search', 'web_search,file_search,code_interpreter']
         default: configured
         required: true
 
@@ -45,7 +45,7 @@ jobs:
           node --input-type=module <<'REQUEST'
           const profile=process.env.ACCEPTANCE_PROFILE, environment=process.env.DEPLOY_ENVIRONMENT;
           const features=process.env.RUNTIME_FEATURES ?? 'configured';
-          if (!['configured','none','web_search','file_search','web_search,file_search'].includes(features)) throw Error('Invalid runtime feature allowlist');
+          if (!['configured','none','web_search','file_search','web_search,file_search','web_search,file_search,code_interpreter'].includes(features)) throw Error('Invalid runtime feature allowlist');
           if (environment!=='staging' && features!=='configured') throw Error('Runtime feature overrides are staging-only');
           if (!['staging','production'].includes(environment) || !['none','direct-deepseek-usage-probe','responses-increment'].includes(profile)) throw Error('Invalid finite operation scope');
           if (!/^[1-9][0-9]{0,14}$/.test(process.env.SOURCE_RUN ?? '')) throw Error('Invalid source CI identity');

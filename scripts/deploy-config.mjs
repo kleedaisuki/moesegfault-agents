@@ -13,11 +13,11 @@ export function requireDistinctEnvironmentDatabases(input) {
 
 export function deploymentRuntime(env) {
   const features = env.RUNTIME_FEATURES ?? 'configured';
-  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search'].includes(features)) throw new Error('Invalid runtime feature allowlist');
+  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter'].includes(features)) throw new Error('Invalid runtime feature allowlist');
   if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
   const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
   const workerFeatures = limited && features !== 'none' && features !== 'configured' ? features.split(',') : [];
-  return { features, limited, workerFeatures, webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search') };
+  return { features, limited, workerFeatures, webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter') };
 }
 
 function requireFileSearchBindings(target) {
@@ -51,16 +51,22 @@ export function renderDeploymentConfig(input, env) {
   target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha };
   if (runtime.limited) {
     target.vars.HOSTED_TOOL_RUNTIMES = runtime.workerFeatures.join(',');
-    target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
+    if (!runtime.codeInterpreter) target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
     target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
       version: 1, platform_images: false, platform_search: runtime.webSearch, file_search: runtime.fileSearch,
-      container_memory: null, available_container_profiles: [],
-      code_network_disabled: false, code_network_allowlist: false,
+      container_memory: null, available_container_profiles: runtime.codeInterpreter ? ['1g', '4g'] : [],
+      code_network_disabled: runtime.codeInterpreter, code_network_allowlist: false,
     });
     if (!runtime.fileSearch) {
       delete target.ai;
       delete target.vectorize;
       delete target.vars.FILE_SEARCH_PROFILE_JSON;
+    }
+  }
+  if (runtime.codeInterpreter) {
+    for (const [className, instanceType] of [['Session', 'basic'], ['Session4G', 'standard-1']]) {
+      const apps = target.containers.filter(container => container.class_name === className);
+      if (apps.length !== 1 || apps[0].instance_type !== instanceType) throw new Error('Missing explicit Code executor profile app');
     }
   }
   if (runtime.fileSearch) requireFileSearchBindings(target);
