@@ -182,7 +182,11 @@ Published header/intents, numeric quota coordination and unknown-money fences
 are unchanged. A new zero-model actual-Worker test inserts one real 33-second
 asynchronous D1 delay and overlaps two metadata writers; it checks final order,
 no regular `blockConcurrencyWhile` use and real measured long actor time.
-Compiled execution is pending until its focused Actions artifact runs.
+Actions `40363780747`, source `00b6db05`, Worker artifact `12669457980`,
+passed that one new actual-Worker case in 35,788 ms. It observed real actor time
+above 33 seconds, preserved the second writer's final metadata, used zero
+regular platform guards, and left no pending resource observations or model
+ledger entries. No external service or model was called.
 
 Structured operational events preserve Conversation/request/operation/grant IDs,
 trace/span correlation, lock waiting, RPC duration, grant checking, individual
