@@ -14,7 +14,7 @@ import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const contextId = `cntr_${'a'.repeat(32)}`;
+const defaultContextId = `cntr_${'a'.repeat(32)}`;
 const artifactId = `pyart_${'b'.repeat(64)}`;
 const source = "retained_value = 42\nprint(retained_value)\n";
 const artifact = Buffer.from('value\n42\n');
@@ -36,12 +36,17 @@ test('compiled Rust Worker: lost Code VM releases capacity while preserving unkn
 test('compiled Rust Worker: owned CID reuses the archived source kernel with fresh guest context and no second VM', { timeout: 90000 }, t => codeJourney(t, 'borrowed'));
 test('compiled Rust Worker: late owned-CID use funds its full new twenty-minute idle window', { timeout: 90000 }, t => codeJourney(t, 'late'));
 test('compiled Rust Worker: BYOK Code executor uses its own key and real memory without a local VM', { timeout: 90000 }, t => codeJourney(t, 'executor'));
+test('compiled Rust Worker: real BYOK executor Python and artifact cross the owned service boundary', { timeout: 90000 }, t => codeJourney(t, 'executor_real'));
 
 async function codeJourney(t, lifecycle) {
   const borrowed=lifecycle==='borrowed'||lifecycle==='late';
-  const external=lifecycle==='executor';
+  const realExecutor=lifecycle==='executor_real';
+  const external=lifecycle==='executor'||realExecutor;
+  let contextId=defaultContextId;
+  const cellSource=realExecutor?"from pathlib import Path\nretained_value = 42\nPath('result.csv').write_bytes(b'value\\n42\\n')\nprint(retained_value)\n":source;
+  if (realExecutor) assert.ok(process.env.MAGENTS_CODE_EXECUTOR_ORIGIN&&process.env.MAGENTS_CODE_EXECUTOR_TOKEN);
   const executorOrigin='https://owned-executor.example.com';
-  const executorKey='synthetic-executor-only-key';
+  const executorKey=realExecutor?process.env.MAGENTS_CODE_EXECUTOR_TOKEN:'synthetic-executor-only-key';
   const encryptionKey = randomBytes(32), identity = createIdentityFixture(), providers = createNativeSemanticsProvider();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   await mkdir(path.join(root, '.temp'), { recursive: true });
@@ -77,6 +82,21 @@ async function codeJourney(t, lifecycle) {
         assert.notEqual(response, undefined, `Unexpected fixture origin ${url.origin}`);
         return response;
       }
+      if (realExecutor) {
+        assert.equal(url.origin,executorOrigin,'a real executor path must never allocate or call the local supervisor');
+        assert.equal(request.headers.get('authorization'),`Bearer ${executorKey}`);
+        order.push(`${request.method} ${url.pathname}`);
+        if (url.pathname==='/v1/python/capabilities') capabilitiesCalls++;
+        if (request.method==='POST'&&url.pathname==='/v1/python') posts++;
+        if (request.method==='DELETE'&&url.pathname.startsWith('/v1/python/artifacts/')) acknowledgements++;
+        if (request.method==='DELETE'&&url.pathname.startsWith('/v1/python/contexts/')) releases++;
+        const body=['GET','HEAD'].includes(request.method)?undefined:new Uint8Array(await request.arrayBuffer());
+        const forwarded=await fetch(`${process.env.MAGENTS_CODE_EXECUTOR_ORIGIN}${url.pathname}${url.search}`,{method:request.method,headers:request.headers,body,redirect:'manual'});
+        if (request.method==='POST'&&url.pathname==='/v1/python/contexts'&&forwarded.status===200) {
+          preparations++;contextId=(await forwarded.clone().json()).container_id;
+        }
+        return forwarded;
+      }
       if (external) assert.equal(request.headers.get('authorization'),`Bearer ${executorKey}`);
       else assert.ok(request.headers.get('authorization')?.startsWith('Bearer '));
       order.push(`${request.method} ${url.pathname}`);
@@ -102,7 +122,7 @@ async function codeJourney(t, lifecycle) {
       if (url.pathname === '/v1/python' && request.method === 'POST') {
         const body = await request.json();
         const borrowedCell = borrowed && body.code === guestSource;
-        assert.ok(body.code === source || borrowedCell);
+        assert.ok(body.code === cellSource || borrowedCell);
         assert.equal(body.container_id, contextId);
         assert.equal(body.memory_limit, external?'4g':'1g');
         assert.ok(!results.has(body.id), 'No accepted cell may be POSTed twice');
@@ -133,7 +153,7 @@ async function codeJourney(t, lifecycle) {
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'hosted-code-auto' });
   const model = providers.register('hosted-code-auto', [
     { output: [{ id: 'native-code', type: 'function_call', name: '__agents_code_interpreter', call_id: 'code-call',
-      arguments: JSON.stringify({ code: source }), status: 'completed' }] },
+      arguments: JSON.stringify({ code: cellSource }), status: 'completed' }] },
     { output: [{ id: 'native-answer', type: 'message', role: 'assistant', status: 'completed',
       content: [{ type: 'output_text', text: '42', annotations: [], logprobs: [] }] }] },
   ]);
@@ -168,12 +188,12 @@ async function codeJourney(t, lifecycle) {
   const item = response.output.find(item => item.type === 'code_interpreter_call');
   assert.ok(item, 'A completed model reply is not evidence that hosted Python executed');
   assert.equal(item.container_id, contextId);
-  assert.equal(item.code, source);
+  assert.equal(item.code, cellSource);
   assert.deepEqual(item.outputs, [{ type: 'logs', logs: '42\n' }]);
   const phases = events.filter(event => event.item_id === item.id).map(event => event.type);
   assert.deepEqual(phases, ['response.code_interpreter_call.in_progress', 'response.code_interpreter_call_code.delta',
     'response.code_interpreter_call_code.done', 'response.code_interpreter_call.interpreting', 'response.code_interpreter_call.completed']);
-  assert.equal(events.find(event => event.type === 'response.code_interpreter_call_code.done').code, source);
+  assert.equal(events.find(event => event.type === 'response.code_interpreter_call_code.done').code, cellSource);
   assert.equal(model.calls, 2); assert.equal(posts, 1); assert.equal(preparations, 1); assert.equal(acknowledgements, 1);
   const files = await client.files.list();
   const file = files.data.find(file => file.filename === 'result.csv');
@@ -309,7 +329,7 @@ async function codeJourney(t, lifecycle) {
   assert.equal(replayEvents.find(event => event.type === 'response.completed')?.response.id, response.id);
   assert.deepEqual(replayEvents, events);
   assert.equal(posts, borrowed ? 2 : 1); assert.equal(preparations, 1); assert.equal(acknowledgements, 1); assert.equal(model.calls, 2);
-  const getAt = order.indexOf(`GET /v1/python/artifacts/${artifactId}`), ackAt = order.indexOf(`DELETE /v1/python/artifacts/${artifactId}`);
+  const getAt = order.findIndex(value=>value.startsWith('GET /v1/python/artifacts/')), ackAt = order.findIndex(value=>value.startsWith('DELETE /v1/python/artifacts/'));
   assert.ok(getAt >= 0 && ackAt > getAt);
   if (process.env.MAGENTS_CURRENT_SCHEMA_PYTHON) {
     const checked = spawnSync(process.env.MAGENTS_CURRENT_SCHEMA_PYTHON, ['tests/e2e/current_responses_sdk.py', 'response-wire', '--input', '-'],
@@ -317,7 +337,7 @@ async function codeJourney(t, lifecycle) {
     assert.equal(checked.status, 0, checked.stdout || checked.stderr);
   }
   await writeFile(path.join(directory, 'receipt.json'), JSON.stringify({ source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? null,
-    wasm_sha256: hash(await readFile(path.join(build, 'index_bg.wasm'))), fixture: 'real-rust-worker-controlled-supervisor',
-    real_python: false, external_network_calls: 0, model_calls: model.calls, code_posts: posts,
+    wasm_sha256: hash(await readFile(path.join(build, 'index_bg.wasm'))), fixture: realExecutor?'real-rust-worker-real-docker-executor-controlled-origin-bridge':'real-rust-worker-controlled-supervisor',
+    real_python: realExecutor, external_network_calls: 0, model_calls: model.calls, code_posts: posts,
     preparations, acknowledgements, releases, lifecycle, artifact_bytes: artifact.length, phases }, null, 2));
 }

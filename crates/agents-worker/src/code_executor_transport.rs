@@ -169,6 +169,12 @@ impl Executor {
         if let Some(trace) = &self.trace {
             trace.child().inject(&headers)?;
         }
+        let budget = match (&method, path) {
+            (&Method::Post, "/v1/python") => 360_000,
+            (_, "/v1/python/contexts") => 120_000,
+            (&Method::Put, _) => 120_000,
+            _ => 30_000,
+        };
         let mut init = RequestInit::new();
         init.with_method(method)
             .with_headers(headers)
@@ -176,12 +182,6 @@ impl Executor {
         if let Some(body) = body {
             init.with_body(Some(body));
         }
-        let budget = match (method, path) {
-            (Method::Post, "/v1/python") => 360_000,
-            (_, "/v1/python/contexts") => 120_000,
-            (Method::Put, _) => 120_000,
-            _ => 30_000,
-        };
         let deadline = Deadline::new(crate::util::now_ms().saturating_add(budget))?;
         let native = worker::web_sys::RequestInit::from(&init);
         native.set_signal(Some(&deadline.signal()));
