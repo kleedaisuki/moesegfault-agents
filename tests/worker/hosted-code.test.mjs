@@ -38,6 +38,7 @@ test('compiled Rust Worker: late owned-CID use funds its full new twenty-minute 
 test('compiled Rust Worker: BYOK Code executor uses its own key and real memory without a local VM', { timeout: 90000 }, t => codeJourney(t, 'executor'));
 test('compiled Rust Worker: real BYOK executor Python and artifact cross the owned service boundary', { timeout: 90000 }, t => codeJourney(t, 'executor_real'));
 test('compiled Rust Worker: real BYOK owned-CID guest reuses the archived source heap without local allocation', { timeout: 90000 }, t => codeJourney(t, 'executor_real_borrowed'));
+test('compiled Rust Worker: rejected managed prepare fails before another inference and retires its funded VM', { timeout: 90000 }, t => codeJourney(t, 'prepare_rejected'));
 
 async function codeJourney(t, lifecycle) {
   const borrowed=lifecycle==='borrowed'||lifecycle==='late'||lifecycle==='executor_real_borrowed';
@@ -117,7 +118,9 @@ async function codeJourney(t, lifecycle) {
         assert.equal(body.memory_limit, external?'4g':'1g');
         assert.deepEqual(body.network_policy, { type: 'disabled' });
         assert.equal(body.container_id, null);
-        preparations++; contextLive = true;
+      preparations++;
+      if (lifecycle === 'prepare_rejected') return Response.json({ error: 'code_memory_profile_unavailable' }, { status: 422 });
+      contextLive = true;
         return Response.json({ container_id: contextId },{headers:{'X-Code-Boot-Id':'supervisor-known-boot'}});
       }
       if (url.pathname === '/v1/python' && request.method === 'POST') {
@@ -185,6 +188,30 @@ async function codeJourney(t, lifecycle) {
   for await (const event of await client.responses.create({ ...input, stream: true }, { headers: { 'Idempotency-Key': 'known-code-auto' } })) events.push(event);
   const response = events.find(event => event.type === 'response.completed')?.response;
   clearTimeout(diagnostics);
+  if (lifecycle === 'prepare_rejected') {
+    const failed = events.find(event => event.type === 'response.failed')?.response;
+    assert.ok(failed, 'a rejected real allocation must fail the Response, not let another model claim completion');
+    assert.equal(failed.agents_error_code, 'code_memory_profile_unavailable');
+    assert.equal(model.calls, 1); assert.equal(posts, 0); assert.equal(preparations, 1);
+    const route = await db.prepare('SELECT session_id FROM response_routes WHERE account_id=? AND id=?').bind(principal.owner, failed.id).first();
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const session = await (await mf.dispatchFetch(`https://agents.test/v1/sessions/${route.session_id}`, { headers: { Authorization: `Bearer ${principal.apiKey}` } })).json();
+      if (!session.run_id) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    const namespace = await mf.getDurableObjectNamespace('SESSIONS');
+    const actor = namespace.get(namespace.idFromName(`${principal.owner}:${route.session_id}`));
+    const state = await (await actor.fetch('https://session.internal/__test/code-inspect')).json();
+    assert.equal(state.running, false); assert.equal(state.lease_present, false);
+    const allocation = await db.prepare('SELECT state,container_id,allocation_released_at_ms FROM code_contexts WHERE account_id=? AND source_session_id=?').bind(principal.owner, route.session_id).first();
+    assert.equal(allocation.state, 'expired'); assert.equal(allocation.container_id, null); assert.ok(allocation.allocation_released_at_ms > 0);
+    const lease = await db.prepare("SELECT id,state FROM usage_reservations WHERE account_id=? AND session_id=? AND idempotency_key LIKE 'workspace:%'").bind(principal.owner, route.session_id).first();
+    assert.equal(lease.state, 'settled', 'known real start/stop time must be charged, not fabricated as a zero refund');
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM resource_observations WHERE account_id=? AND run_id=? AND status='pending'").bind(principal.owner, lease.id).first()).n, 0);
+    assert.equal((await db.prepare("SELECT COUNT(*) n FROM usage_ledger WHERE reservation_id=? AND resource='container' AND unit='wall_ms'").bind(lease.id).first()).n, 1);
+    await writeFile(path.join(directory, 'receipt.json'), JSON.stringify({ source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? null, lifecycle, model_calls: model.calls, code_posts: posts, preparations, rejected_prepare_financially_closed: true }, null, 2));
+    return;
+  }
   assert.ok(response, 'Code must reach a genuine completed response');
   const item = response.output.find(item => item.type === 'code_interpreter_call');
   assert.ok(item, 'A completed model reply is not evidence that hosted Python executed');

@@ -2461,6 +2461,8 @@ fn safe_error_code(error: &Error) -> String {
         "workspace_unavailable",
         "workspace_startup_timeout",
         "workspace_startup_unavailable",
+        "code_memory_profile_mismatch",
+        "code_memory_profile_unavailable",
         "resource_tariff_missing",
         "model_price_unconfigured",
         "provider_outcome_unknown",
@@ -2587,7 +2589,11 @@ fn tool_infrastructure_error(error: &Error) -> Error {
     let tokens = text
         .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .collect::<Vec<_>>();
-    let code = if tokens.contains(&"workspace_startup_timeout") {
+    let code = if tokens.contains(&"code_memory_profile_mismatch") {
+        "code_memory_profile_mismatch"
+    } else if tokens.contains(&"code_memory_profile_unavailable") {
+        "code_memory_profile_unavailable"
+    } else if tokens.contains(&"workspace_startup_timeout") {
         "workspace_startup_timeout"
     } else if tokens.contains(&"workspace_startup_unavailable") {
         "workspace_startup_unavailable"
