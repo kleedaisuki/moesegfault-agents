@@ -4200,5 +4200,36 @@
         "reason": "Actual Worker journey failed; compiled Wasm is reusable, runtime acceptance remains unresolved"
       }
     ]
+  },
+  {
+    "source_sha": "d5273099d7357b9ae57eeedd14f8a632d8d06901",
+    "run_id": "40313866981",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12645633027,
+    "verified_checks": [
+      {
+        "id": "python:tests/test_file_document_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "667f32ffa4bba505ebf47842e462ba371c019f1764a918d8fa90662fe7d18b7b",
+        "executed_tests": 6,
+        "receipt_path": "rust.json"
+      }
+    ]
+  },
+  {
+    "source_sha": "d5273099d7357b9ae57eeedd14f8a632d8d06901",
+    "run_id": "40313866981",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12645871964,
+    "receipt_artifact": "verification-container",
+    "receipt_artifact_id": 12646575711,
+    "verified_checks": []
   }
 ]

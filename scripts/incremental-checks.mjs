@@ -374,6 +374,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // Non-promoting topic probe: only the new bounded-funding workload and
+    // actual SQL invariants run. Accepted text/PDF/citation families stay sealed.
+    const fundingChecks=new Set(['python:tests/test_file_batch_funding_sql.py','node:tests/worker/file-batch-funding.test.mjs']);
+    for(const job of Object.keys(receipt.checks))receipt.checks[job]=receipt.checks[job].filter(check=>fundingChecks.has(check.id));
+    receipt.non_deployable=true;
+    receipt.diagnostic_only_components=['worker'];
+    receipt.required_remediations=[...fundingChecks];
+    receipt.required_jobs=['changes','rust','worker'];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
