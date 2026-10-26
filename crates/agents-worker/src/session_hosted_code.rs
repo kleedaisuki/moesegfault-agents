@@ -117,6 +117,7 @@ fn permanent(error: &Error) -> Option<&'static str> {
         "file_not_found" => Some("file_not_found"),
         "code_resource_execution_already_published" => Some("code_result_already_published"),
         "code_memory_profile_mismatch" => Some("code_memory_profile_mismatch"),
+        "code_memory_profile_unavailable" => Some("code_memory_profile_unavailable"),
         "code_network_policy_conflict" => Some("code_network_policy_conflict"),
         "invalid_code_input" | "code_input_rejected" => Some("code_input_rejected"),
         "invalid_code_request" | "invalid_code_execution_id" | "code_request_rejected" => {
@@ -222,6 +223,9 @@ impl SessionInner {
             .await
         {
             Ok(dispatch) => Ok(dispatch),
+            Err(error) if matches!(&error, Error::RustError(code) if matches!(code.as_str(), "code_memory_profile_mismatch" | "code_memory_profile_unavailable")) => {
+                Err(error)
+            }
             Err(error) if super::permanent_publication_error(&error) => Err(error),
             Err(error) if permanent(&error).is_some() => Ok(HostedDispatch::Ready(
                 json!({"error":permanent(&error).unwrap(),"outputs":[],"files":[]})
@@ -466,6 +470,16 @@ impl SessionInner {
             }
         }
         if let Some(result) = operation.result.clone() {
+            if !operation.prepared && operation.context.is_none() {
+                if let Some(code) = operation.failure.as_deref().filter(|code| {
+                    matches!(
+                        *code,
+                        "code_memory_profile_mismatch" | "code_memory_profile_unavailable"
+                    )
+                }) {
+                    return Err(fail(code));
+                }
+            }
             let outcome = read_chunks(&storage, &format!("{key}:outcome"))
                 .await?
                 .map(|bytes| {

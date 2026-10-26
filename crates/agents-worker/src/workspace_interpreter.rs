@@ -240,7 +240,16 @@ impl Workspace<'_> {
             return Err(fail("code_container_not_found"));
         }
         if response.status_code() == 422 {
-            return Err(fail("code_memory_profile_mismatch"));
+            let rejection: Value = decode(response).await?;
+            let code = match rejection["error"].as_str() {
+                Some("code_memory_profile_mismatch") => "code_memory_profile_mismatch",
+                _ => "code_memory_profile_unavailable",
+            };
+            crate::util::emit(
+                "code.profile_rejected",
+                json!({"session_id":self.session,"requested_memory":request.memory_limit,"error_code":code}),
+            );
+            return Err(fail(code));
         }
         if response.status_code() == 409 {
             let error: Value = decode(response).await?;

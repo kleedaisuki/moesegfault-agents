@@ -199,8 +199,18 @@ impl SessionInner {
                     })
         });
         if check {
-            self.code_deadline
-                .set(self.read_code_registry().await?.deadline(util::now_ms()));
+            let registry = self.read_code_registry().await?;
+            let inactive = self.snapshot()?.run.is_none();
+            let abandoned = inactive
+                && registry
+                    .resources
+                    .values()
+                    .any(|resource| resource.allocation.state == ContextState::Reserved);
+            self.code_deadline.set(if abandoned {
+                Some(util::now_ms())
+            } else {
+                registry.deadline(util::now_ms())
+            });
             self.arm_alarm().await?;
         }
         Ok(())
@@ -511,67 +521,25 @@ impl SessionInner {
         {
             return Ok(());
         }
-        let record = self
-            .data
-            .borrow()
+        let registry = self.read_code_registry().await?;
+        let pending = registry
+            .current
             .as_ref()
-            .ok_or_else(|| fail("session_not_initialized"))?
-            .record
-            .clone();
-        let unprepared = !self.workspace(&record).physical_workspace_running().await?;
-        let unused = self
-            .update_code_registry(|registry| {
-                let Some(id) = registry.current.as_ref() else {
-                    return Ok(None);
-                };
-                let resource = registry
-                    .resources
-                    .get_mut(id)
-                    .ok_or_else(|| fail("code_resource_state_corrupt"))?;
-                if resource.allocation.state == ContextState::Reserved
-                    && (!resource.preparation_started
-                        || (unprepared && resource.backend.is_managed()))
-                    && resource.allocation.funding_run_id == run
-                {
-                    resource.allocation.state = ContextState::Expired;
-                    resource.allocation.ended_at_ms = Some(util::now_ms());
-                    return Ok(Some(resource.allocation.allocation_id.clone()));
-                }
-                Ok(None)
-            })
-            .await?;
-        if let Some(id) = unused {
-            let meter = ResourceMeter::new(&self.env, &record.owner_id, &record.id, run)?;
-            catalog::end(
-                &self.env,
-                &record.owner_id,
-                &id,
-                false,
-                util::now_ms(),
-                &meter,
-            )
-            .await?;
-            catalog::release_allocation(&self.env, &record.owner_id, &id, util::now_ms(), &meter)
-                .await?;
-            let cleanup = self
-                .read_code_registry()
-                .await?
-                .resources
-                .get(&id)
-                .and_then(|resource| resource.cleanup.clone());
-            if let Some(cleanup) = cleanup {
-                crate::code_executor_state::finish_cleanup(&self.env, &record.owner_id, &cleanup)
-                    .await?;
-            }
-            self.update_code_registry(|registry| {
-                registry.resources.remove(&id);
-                if registry.current.as_ref() == Some(&id) {
-                    registry.current = None;
-                }
-                Ok(())
-            })
-            .await?;
-        }
+            .and_then(|id| registry.resources.get(id));
+        let Some(resource) = pending.filter(|resource| {
+            resource.allocation.state == ContextState::Reserved
+                && resource.allocation.funding_run_id == run
+        }) else {
+            return Ok(());
+        };
+        let record = self.snapshot()?.record;
+        let meter = ResourceMeter::new(&self.env, &record.owner_id, &record.id, run)?;
+        self.retire_code_resource(
+            &resource.allocation.allocation_id,
+            Retirement::ConfirmedLoss,
+            &meter,
+        )
+        .await?;
         Ok(())
     }
 
@@ -834,14 +802,16 @@ impl SessionInner {
         let workspace = self.workspace(&record);
         let warm = workspace.cleanup_funding().await?;
         let registry = self.read_code_registry().await?;
+        let inactive = self.snapshot()?.run.is_none();
         let due = registry
             .resources
             .iter()
             .filter(|(_, resource)| {
-                matches!(
-                    resource.allocation.state,
-                    ContextState::Expired | ContextState::Deleted
-                ) && resource.retry_at_ms <= util::now_ms()
+                (inactive && resource.allocation.state == ContextState::Reserved)
+                    || matches!(
+                        resource.allocation.state,
+                        ContextState::Expired | ContextState::Deleted
+                    ) && resource.retry_at_ms <= util::now_ms()
                     || matches!(
                         resource.allocation.state,
                         ContextState::Reserved | ContextState::Ready
