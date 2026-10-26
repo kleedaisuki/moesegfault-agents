@@ -374,13 +374,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
-    // One non-promoting integration probe: independent topic receipts already
-    // cover the caller families, Code resources, capacity clock and projections.
+    // The retained retrieval Session already completed its paid-effect fixture;
+    // its owner will use this binary for GET/schema/replay only, not resubmit it.
     const continuationChecks = new Set([
-      'rust:agents-worker:hosted_results_always_translate_as_native_text',
-      'rust:agents-worker:file_search_private_result_is_json_text_for_native_continuation',
-      'node:tests/worker/hosted-image.test.mjs',
-      'node:tests/worker/file-search.test.mjs',
+      'rust:agents-worker:persisted_tagged_tools_restore_response_and_cold_session',
     ]);
     for (const job of Object.keys(receipt.checks)) {
       receipt.checks[job] = receipt.checks[job].filter(check => continuationChecks.has(check.id));
