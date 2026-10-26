@@ -136,7 +136,8 @@ rendering/token counting, provider choice validation, dispatch and canonical
 publication. Missing Loader binding or tariffs reject declared programmatic
 execution before inference; ordinary API calls acquire no new requirement.
 
-The supported verticals are pinned server time and owner-bound MCP capabilities.
+The supported verticals are pinned server time, owner-bound MCP capabilities,
+and live caller-owned function/custom handoffs.
 MCP permission is not inferred from a name: `AuthorizedInvocation` is minted
 after the write-ahead journal, the existing loaded registry validates the
 programmatic caller, the shared allowance admits that execution identity once,
@@ -156,9 +157,9 @@ is terminal-only: its added event carries completed/incomplete already. It uses
 the existing canonical publisher directly, not the hosted tools' synthetic
 in_progress projection.
 
-A human-approval-required MCP call produces an incomplete program without
-remote execution. Client-owned function/custom handoff and program image
-publication are not enabled: a lost original request is not transparently
+A human-approval-required MCP call remains the next increment after the accepted
+client path; its suspension is not claimed by the server-only proof. Program
+image publication is not enabled. A lost original request is not transparently
 replayed, and no second JavaScript agent harness exists. Independent accepted
 operations get fresh opaque contexts. Cancellation interrupts the pending native
 read without allocating another request or granting a later nested effect.
@@ -198,12 +199,21 @@ loss of the original future produces an incomplete continuation instead of
 rerunning arbitrary source. Closed/cancelled execution cannot acquire new tool
 authority.
 
-This increment is under compiled-Worker verification. The new `client` journey
-crosses function and custom handoffs through three public Responses, checks a
-native heap nonce, original caller/schema checks, immutable parent snapshots,
-one funded Run and one creation/request/CPU allocation. MCP approval suspension
-and additional hosted adapters remain the next implementation increment, not a
-claim covered by the initial accepted server-only evidence below.
+The new `client` journey passed against the unmodified compiled Worker in
+[GHA 40364842376](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40364842376),
+source `be5f44d777de5ff4be96f5bbcd763b98a05ae201`, Worker artifact `12669158434`,
+verification artifact `12669353330`. It crosses function and custom handoffs
+through three public Responses, checks a native heap nonce, original caller
+checks, immutable raw parent snapshots, usage segments of 150/0/150 tokens,
+same-key mailbox observation, one still-reserved-then-settled funding Run and
+exactly one creation/request/CPU allocation. This did not rerun the accepted
+time/MCP, isolation or Rust contracts. The function output schema remains
+validated before mailbox acceptance; the official custom result's `caller`
+field is now admitted and checked against its actual pending call.
+
+Conversation-specific execution, MCP approval suspension and additional hosted
+adapters remain the following verification/implementation increments; their
+readiness is not inferred from this non-Conversation client journey.
 
 ## Verification boundary
 
