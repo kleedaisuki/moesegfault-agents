@@ -10,6 +10,7 @@ import { createIdentityFixture, runAuthJourney, runClientAssertionJourney, runIn
 import { createBrowserPrincipal } from './browser-principal.mjs';
 import { createGenericProviderFixture, runGenericByokJourney } from './generic-byok-journey.mjs';
 import { runExportJourney } from './export-journey.mjs';
+import { runExecutionLeaseJourney } from './execution-lease-journey.mjs';
 import { createCompactionProviderFixture, runCompactionJourney } from './compaction-journey.mjs';
 import { createObserverProviderFixture, runProjectionFaultJourney } from './observer-journey.mjs';
 import { createResponsesProviderFixture, runResponsesNodeSdkJourney, runResponsesLocalToolsJourney,
@@ -67,6 +68,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     modulesRoot: build,
     modules: [
       { type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
+        contents: await readFile(new URL('./execution-lease-shim.mjs', import.meta.url), 'utf8') },
+      { type: 'ESModule', path: path.join(build, 'worker/workspace-blob-shim.mjs'),
         contents: await readFile(new URL('./workspace-blob-shim.mjs', import.meta.url), 'utf8') },
       { type: 'ESModule', path: path.join(build, 'worker/chat-recovery-shim.mjs'),
         contents: await readFile(new URL('./chat-recovery-shim.mjs', import.meta.url), 'utf8') },
@@ -523,6 +526,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     runResponsesToolBudgetJourney(responseContext()));
   await selected(t, 'Responses auxiliary compact and count', { timeout: 60000 }, () =>
     runAuxiliaryJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
+  await selected(t, 'ModelOperation execution lease cold loss and terminal admission rejection', { timeout: 30000 }, () =>
+    runExecutionLeaseJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
   await selected(t, 'DeepSeek exact count-only tokenizer cold warm and profile replacement', { timeout: 60000 }, () =>
     runDeepSeekTokenizerJourney(responseContext()));
   await selected(t, 'Responses prompt templates preserve version owner variables and replay identity', { timeout: 40000 }, () =>

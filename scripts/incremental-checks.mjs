@@ -104,7 +104,9 @@ export function selections(source, base, files) {
     if (/^(scripts\/.*\.test\.mjs|tests\/e2e\/.*(?:\.test|_contract)\.mjs)$/.test(file)) checks.tooling.push(command(`node:${file}`, ['node', '--test', file], `Changed tooling contract ${file}`));
     if (/^tests\/worker\/.*\.test\.mjs$/.test(file) && !file.endsWith('/http.test.mjs')) checks.worker.push(command(`node:${file}`, ['node', '--test', file], `Changed real Worker/SDK contract ${file}`));
   }
+  const executionLease = files.some(file => /execution[-_]lease/.test(file));
   const journeys = [
+    [/execution[-_]lease/, 'ModelOperation execution lease cold loss and terminal admission rejection'],
     [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
     [/context_management/, 'Responses request context management emits sealed item and continues'],
@@ -112,6 +114,8 @@ export function selections(source, base, files) {
     [/deepseek[_-]tokenizer/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
   ];
   for (const [pattern, name] of journeys) {
+    // Lease fixture controls belong to the new actor journey, not the accepted endpoint baseline.
+    if (executionLease && name === 'Responses auxiliary compact and count') continue;
     if (files.some(file => pattern.test(file))) checks.worker.push(command(`journey:${name}`,
       ['node', '--test', 'tests/worker/http.test.mjs'], 'Changed behavior: bounded compiled-Worker journey', { MAGENTS_WORKER_CASE: name }));
   }

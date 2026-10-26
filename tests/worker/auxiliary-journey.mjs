@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { createBrowserPrincipal } from './browser-principal.mjs';
 
 export function createAuxiliaryProviderFixture() {
-  const state = { calls: [], counts: [], missingDetail: false, redirectCount: false, redirectTargetCalls: 0 };
+  const state = { calls: [], counts: [], missingDetail: false, omitUsage: false, pause: null, redirectCount: false, redirectTargetCalls: 0 };
   return { state, async handle(request) {
     const url = new URL(request.url);
     if (url.hostname === 'auxiliary-redirect.example.com') {
@@ -24,6 +24,7 @@ export function createAuxiliaryProviderFixture() {
     assert.equal(input.stream, true);
     assert.equal(input.store, false);
     state.calls.push(input);
+    if (state.pause) await state.pause;
     const terminal = 'completed';
     const usage = { input_tokens: 12, output_tokens: 3, total_tokens: 15,
       input_tokens_details: { cached_tokens: 2, ...(state.missingDetail ? {} : { cache_write_tokens: 0 }) },
@@ -31,7 +32,7 @@ export function createAuxiliaryProviderFixture() {
     const response = { id: `upstream-aux-${state.calls.length}`, object: 'response', model: input.model,
       status: terminal, error: null,
       output: [{ id: 'upstream-message', type: 'message', role: 'assistant', status: 'completed',
-        content: [{ type: 'output_text', text: 'Preserved goal and evidence 雪.', annotations: [] }] }], usage };
+        content: [{ type: 'output_text', text: 'Preserved goal and evidence 雪.', annotations: [] }] }], usage: state.omitUsage ? undefined : usage };
     const created = { ...response, status: 'in_progress', output: [], usage: null, error: null };
     return new Response(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', sequence_number: 0, response: created })}\n\n`
       + `event: response.${terminal}\ndata: ${JSON.stringify({ type: `response.${terminal}`, sequence_number: 1, response })}\n\n`,

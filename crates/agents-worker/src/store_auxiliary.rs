@@ -37,8 +37,10 @@ impl Store<'_> {
         owner: &str,
         run: &str,
         model: &ModelConfig,
+        generation: Option<&str>,
     ) -> Result<bool> {
-        self.scoped_admit_run(owner, None, run, model).await
+        self.scoped_admit_run_with_lease(owner, None, run, model, generation)
+            .await
     }
 
     pub(crate) async fn reserve_operation_completion(
@@ -72,6 +74,18 @@ impl Store<'_> {
         run: &str,
         model: &ModelConfig,
     ) -> Result<bool> {
+        self.scoped_admit_run_with_lease(owner, session, run, model, None)
+            .await
+    }
+
+    async fn scoped_admit_run_with_lease(
+        &self,
+        owner: &str,
+        session: Option<&str>,
+        run: &str,
+        model: &ModelConfig,
+        generation: Option<&str>,
+    ) -> Result<bool> {
         self.ensure_unblocked(owner).await?;
         crate::allowances::sync(self.env, owner).await?;
         if let Some(session) = session {
@@ -102,18 +116,35 @@ impl Store<'_> {
         let limit = self.account_plan(owner).await?.limits().max_concurrent_runs;
         let key = format!("run:{run}");
         let hash = run_hash(owner, session, model)?;
-        let reservation = crate::metering::reserve_run(
-            &self.env.d1("DB")?,
-            owner,
-            session,
-            run,
-            &key,
-            &hash,
-            amount,
-            now_seconds(),
-            limit,
-        )
-        .await?;
+        let db = self.env.d1("DB")?;
+        let reservation = if generation.is_some() {
+            crate::metering::reserve_run_with_lease(
+                &db,
+                owner,
+                session,
+                run,
+                &key,
+                &hash,
+                amount,
+                now_seconds(),
+                limit,
+                generation,
+            )
+            .await?
+        } else {
+            crate::metering::reserve_run(
+                &db,
+                owner,
+                session,
+                run,
+                &key,
+                &hash,
+                amount,
+                now_seconds(),
+                limit,
+            )
+            .await?
+        };
         if reservation.state != ReservationState::Reserved {
             return Err(fail("run_already_finalized"));
         }

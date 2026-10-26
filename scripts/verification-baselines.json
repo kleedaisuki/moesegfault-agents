@@ -2919,16 +2919,31 @@
         "executed_tests": 1
       }
     ],
-    "unresolved_checks": [
+    "unresolved_checks": [],
+    "evidence": {
+      "resolved_fixture": {
+        "source_sha": "8210ff4aecf409bc0d73aa90febabe39c8e68c6e",
+        "run_id": "40282093344",
+        "id": "node:tests/worker/hosted-code.test.mjs",
+        "receipt_artifact_id": 12632571604,
+        "artifact_source_sha": "53c170ab30da77830ca410615cbcf8218570da75"
+      }
+    }
+  },
+  {
+    "source_sha": "8210ff4aecf409bc0d73aa90febabe39c8e68c6e",
+    "run_id": "40282093344",
+    "components": [],
+    "status": "verified",
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12632571604,
+    "verified_checks": [
       {
         "id": "node:tests/worker/hosted-code.test.mjs",
-        "argv": [
-          "node",
-          "--test",
-          "tests/worker/hosted-code.test.mjs"
-        ],
-        "env": {},
-        "reason": "Only failed controlled Code journey; fixture supplies daemon dirty status and requests outputs include"
+        "status": "passed_current",
+        "input_fingerprint": "5ec058a2ab0d5c59a404a6753c5867a0acf66c203dc8a24cff4a623568636f9b",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 1
       }
     ]
   }
