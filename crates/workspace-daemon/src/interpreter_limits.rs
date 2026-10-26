@@ -379,7 +379,7 @@ mod tests {
     fn process_fixture() -> tempfile::TempDir {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.temp/code-cgroup");
         fs::create_dir_all(&root).unwrap();
-        tempfile::tempdir_in(root).unwrap()
+        tempfile::tempdir_in(root.canonicalize().unwrap()).unwrap()
     }
 
     fn group(root: &Path, name: &str, pid: u32, limit: &str) -> PathBuf {
