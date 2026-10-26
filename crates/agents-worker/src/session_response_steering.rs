@@ -149,17 +149,10 @@ fn prepare_steering(
             "The response is ending",
         ));
     }
-    if response.request.conversation.is_some()
-        || response
-            .request
-            .context_management
-            .as_ref()
-            .and_then(Value::as_array)
-            .is_some_and(|entries| !entries.is_empty())
-    {
+    if response.request.conversation.is_some() {
         return Err(rejection(
             "steering_not_supported",
-            "Conversation-bound and automatic-compaction requests do not support steering",
+            "Conversation-bound requests do not support steering",
         ));
     }
     if response

@@ -23,7 +23,7 @@ import { runSpaceJourney } from './space-journey.mjs';
 import { runWorkspaceBlobJourney } from './workspace-blob-journey.mjs';
 import { runJsonObserverJourney } from './json-observer-journey.mjs';
 import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
-import { createAuxiliaryProviderFixture, runAuxiliaryJourney } from './auxiliary-journey.mjs';
+import { createAuxiliaryProviderFixture, runAuxiliaryJourney, runContextManagementJourney } from './auxiliary-journey.mjs';
 import { runDeepSeekTokenizerJourney } from './deepseek-tokenizer-journey.mjs';
 import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
 import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
@@ -524,6 +524,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
   await selected(t, 'response-wide server tool allowance survives disobedient calls and cold retrieval', { timeout: 40000 }, () =>
     runResponsesToolBudgetJourney(responseContext()));
+  await selected(t, 'Responses request context management emits sealed item and continues', { timeout: 60000 }, () =>
+    runContextManagementJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
   await selected(t, 'Responses auxiliary compact and count', { timeout: 60000 }, () =>
     runAuxiliaryJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
   await selected(t, 'ModelOperation execution lease cold loss and terminal admission rejection', { timeout: 30000 }, () =>
