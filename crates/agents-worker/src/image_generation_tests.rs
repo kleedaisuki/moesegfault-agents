@@ -263,7 +263,8 @@ fn seedream_dedicated_api_inline_contract_needs_no_cdn_origin_or_format_selector
     assert_eq!(request.endpoint, "https://openrouter.ai/api/v1/images");
     let body: Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(body["provider"]["only"], json!(["seed"]));
-    assert_eq!(body["output_format"], "png");
+    assert!(body.get("output_format").is_none());
+    assert_eq!(request.requested_format, None);
     // The dedicated Image API documents inline bytes as its response contract,
     // not a response_format parameter inherited from legacy OpenAI DALL-E.
     assert!(body.get("response_format").is_none());
@@ -273,7 +274,7 @@ fn seedream_dedicated_api_inline_contract_needs_no_cdn_origin_or_format_selector
             "created":123,"data":[{"b64_json":expected.encoded(),"media_type":"image/png"}],
             "usage":{"cost":0.018}
         }),
-        Format::Png,
+        None,
         None,
     )
     .unwrap();
@@ -281,6 +282,53 @@ fn seedream_dedicated_api_inline_contract_needs_no_cdn_origin_or_format_selector
     let actual = futures::executor::block_on(materialize(&config, &known)).unwrap();
     assert_eq!(actual.sha256(), expected.sha256());
     assert_eq!(known.reported_cost().unwrap().to_string(), "0.018");
+}
+
+#[test]
+fn service_default_jpeg_keeps_completed_identity_cost_and_real_format() {
+    let endpoint = json!({"provider_slug":"seed","provider_tag":"seed","allowed_passthrough_parameters":[],"supports_streaming":false,
+        "supported_parameters":{"resolution":{"type":"enum","values":["1K","2K"]},"input_references":{"type":"range","min":0,"max":14}}});
+    let mut config = config(ImageApi::Openrouter);
+    config.base_url = "https://openrouter.ai/api/v1".into();
+    config.model = "bytedance-seed/seedream-5-0-flash".into();
+    config.capabilities = Capabilities::from_openrouter_endpoint(&endpoint).unwrap();
+    config.router_endpoint = Some(RouterEndpoint::from_catalog(&endpoint).unwrap());
+    let request = prepare(&config, &input()).unwrap();
+    assert!(
+        serde_json::from_slice::<Value>(&request.body)
+            .unwrap()
+            .get("output_format")
+            .is_none()
+    );
+    assert_eq!(request.requested_format, None);
+    let mut bytes = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 3, image::Rgb([7, 11, 13])))
+        .write_to(&mut bytes, CodecFormat::Jpeg)
+        .unwrap();
+    let jpeg = Raster::from_bytes(bytes.get_ref()).unwrap();
+    let wire = json!({"id":"img_seed_known","created":123,"data":[{"b64_json":jpeg.encoded(),"media_type":"image/jpeg"}],"usage":{"cost":0.018}});
+    let known = transport::parse_buffered(wire.clone(), request.requested_format, None).unwrap();
+    assert_eq!(known.output_format, Some(Format::Jpeg));
+    assert_eq!(known.provider_request_id.as_deref(), Some("img_seed_known"));
+    assert_eq!(known.reported_cost().unwrap().to_string(), "0.018");
+    let actual = futures::executor::block_on(materialize(&config, &known)).unwrap();
+    assert_eq!(actual.format(), Format::Jpeg);
+    assert_eq!(actual.bytes(), jpeg.bytes());
+    assert!(transport::parse_buffered(wire.clone(), Some(Format::Png), None).is_err());
+    let mut wrong_mime = wire;
+    wrong_mime["data"][0]["media_type"] = json!("image/png");
+    assert!(transport::parse_buffered(wrong_mime, None, None).is_err());
+    let mut explicit = input();
+    explicit.options.output_format = Some(Format::Png);
+    assert!(
+        prepare(&config, &explicit).is_err(),
+        "unsupported format must reject before payment"
+    );
+    let remote = transport::parse_buffered(json!({"data":[{"url":"https://cdn.example.com/result.jpg","media_type":"image/jpeg"}],"usage":{"cost":0.018}}), None, None).unwrap();
+    assert_eq!(
+        remote.output_format, None,
+        "a service-default remote result has no fabricated PNG metadata"
+    );
 }
 
 proptest! {
