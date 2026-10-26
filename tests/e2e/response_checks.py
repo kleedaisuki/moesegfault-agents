@@ -38,9 +38,17 @@ def checked_response(value: Response | dict[str, Any]) -> Response:
         assert type(reported["input_tokens"]) is int and reported["input_tokens"] >= 0
         assert type(reported["output_tokens"]) is int and reported["output_tokens"] >= 0
         assert reported["total_tokens"] == reported["input_tokens"] + reported["output_tokens"]
-        cached = reported["input_tokens_details"]["cached_tokens"]
+        input_details: dict[str, Any] = reported["input_tokens_details"]
+        assert isinstance(input_details, dict)
+        assert {"cached_tokens"} <= set(input_details) <= {"cached_tokens", "cache_write_tokens"}
+        cached: Any = input_details["cached_tokens"]
         assert type(cached) is int and 0 <= cached <= reported["input_tokens"]
-        assert reported["output_tokens_details"] == {"reasoning_tokens": None}, "unknown reasoning is not a fabricated zero"
+        written: Any = input_details.get("cache_write_tokens")
+        assert written is None or type(written) is int and 0 <= written <= reported["input_tokens"]
+        output_details: dict[str, Any] = reported["output_tokens_details"]
+        assert isinstance(output_details, dict) and set(output_details) == {"reasoning_tokens"}
+        reasoning: Any = output_details["reasoning_tokens"]
+        assert reasoning is None or type(reasoning) is int and 0 <= reasoning <= reported["output_tokens"]
     return response
 
 

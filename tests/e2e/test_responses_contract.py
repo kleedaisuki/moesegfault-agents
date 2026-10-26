@@ -390,6 +390,41 @@ def test_unknown_reasoning_preserves_exact_counts_without_invalid_standard_schem
     }
 
 
+@pytest.mark.parametrize("reasoning,written", [(0, None), (3, None), (None, None), (None, 0)])
+def test_partial_usage_retains_each_known_detail_independently(
+    reasoning: int | None, written: int | None,
+) -> None:
+    value: dict[str, Any] = response_fixture()
+    reported: dict[str, Any] = value["usage"]
+    reported["input_tokens_details"]["cache_write_tokens"] = written
+    reported["output_tokens_details"]["reasoning_tokens"] = reasoning
+    value["usage"] = None
+    value["agents_usage"] = reported
+    response: Response = checked_response(value)
+    assert response.usage is None
+    assert response.model_extra is not None
+    assert response.model_extra["agents_usage"] == reported
+
+
+@pytest.mark.parametrize("detail,invalid", [
+    ("reasoning_tokens", -1), ("reasoning_tokens", 6), ("reasoning_tokens", True),
+    ("cache_write_tokens", -1), ("cache_write_tokens", 41), ("cache_write_tokens", True),
+])
+def test_partial_usage_rejects_invalid_known_detail(
+    detail: str, invalid: int | bool,
+) -> None:
+    value: dict[str, Any] = response_fixture()
+    reported: dict[str, Any] = value["usage"]
+    reported["input_tokens_details"]["cache_write_tokens"] = None
+    reported["output_tokens_details"]["reasoning_tokens"] = 0
+    details: str = "output_tokens_details" if detail == "reasoning_tokens" else "input_tokens_details"
+    reported[details][detail] = invalid
+    value["usage"] = None
+    value["agents_usage"] = reported
+    with pytest.raises(AssertionError):
+        checked_response(value)
+
+
 @pytest.mark.parametrize("status", ["failed", "incomplete", "cancelled"])
 def test_terminal_statuses_validate_the_real_sdk_schema(status: str) -> None:
     value = response_fixture(status=status)

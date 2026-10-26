@@ -193,7 +193,9 @@ pub(crate) async fn snapshot(
 }
 
 pub(crate) async fn admit(env: &Env, owner: &str, id: &str, response_id: &str) -> Result<Response> {
-    let operation = ConversationOperation::response(env, owner, response_id).await?;
+    // Admission is one edge I/O attempt, not the accepted execution lifetime.
+    // Activation creates/reuses the persistent cleanup hold before model work.
+    let operation = ConversationOperation::account(env, owner).await?;
     let result = Dispatch {
         env,
         owner,

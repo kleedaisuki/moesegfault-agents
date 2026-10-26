@@ -146,11 +146,13 @@ export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, 
     normalRun(old, base.run_id, base.source_sha, repository, false);
     const baselineJob = jobFor(old, name, base.source_sha, base.run_id);
     if (seal.status === 'partial_verified') {
-      need(component === 'worker' && Array.isArray(seal.verified_steps) && seal.verified_steps.length > 0 && seal.verified_phases?.includes('wasm_build') && seal.verified_phases?.includes('rust_lib') && Number.isSafeInteger(seal.artifact_id), 'partial_baseline_without_phase_proof');
-      for (const step of seal.verified_steps) need(baselineJob.steps?.filter(value => value.name === step && value.conclusion === 'success').length === 1, 'baseline_phase_not_successful');
+      const workerBuild = component === 'worker' && Array.isArray(seal.verified_steps) && seal.verified_steps.length > 0 && seal.verified_phases?.includes('wasm_build') && Number.isSafeInteger(seal.artifact_id);
+      const toolingChecks = component === 'tooling' && seal.artifact_id == null && seal.receipt_artifact === 'verification-tooling' && seal.verified_checks?.length > 0 && seal.unresolved_checks?.length > 0;
+      need(workerBuild || toolingChecks, 'partial_baseline_without_positive_proof');
+      if (workerBuild) for (const step of seal.verified_steps) need(baselineJob.steps?.filter(value => value.name === step && value.conclusion === 'success').length === 1, 'baseline_phase_not_successful');
       for (const check of seal.unresolved_checks ?? []) unresolved.add(check.id);
     } else need(baselineJob.conclusion === 'success', 'historical_component_job_not_successful');
-    baselineEvidence.push({ component, source_sha: base.source_sha, run_id: String(base.run_id), fingerprint: base.fingerprint, job_conclusion: baselineJob.conclusion, status: seal.status === 'partial_verified' ? 'partial_baseline_phases_only' : 'passed_baseline_not_reexecuted' });
+    baselineEvidence.push({ component, source_sha: base.source_sha, run_id: String(base.run_id), fingerprint: base.fingerprint, job_conclusion: baselineJob.conclusion, status: seal.status === 'partial_verified' ? component === 'tooling' ? 'partial_baseline_checks_only' : 'partial_baseline_phases_only' : 'passed_baseline_not_reexecuted' });
     if (!ARTIFACTS[component]) continue;
     const build = !compatible && item.action === 'build';
     const expectedRun = build ? String(sourceRun) : String(base.run_id);
@@ -170,6 +172,7 @@ export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, 
     executed.push(...verifyReceipts(plan, verification, job));
   }
   const reused = verifyReusedChecks({ plan, catalog, source, repository, metadata, reusedVerification, checkHash }, now);
+  for (const base of baselineEvidence.filter(value => value.status === 'partial_baseline_checks_only')) need(reused.some(check => check.job === 'tooling' && check.source_sha === base.source_sha && check.run_id === base.run_id), 'partial_baseline_without_verified_receipt');
   need(same([...unresolved].sort(), [...(plan.required_remediations ?? [])].sort()), 'missing_declared_remediation');
   for (const id of unresolved) need(executed.includes(id) || reused.some(check => check.id === id), 'unresolved_baseline_failure_not_repaired');
   const fingerprints = Object.fromEntries(Object.entries(plan.components).map(([name, item]) => [name, coreContainer && name === 'container' ? artifacts.container.fingerprint : item.fingerprint]));

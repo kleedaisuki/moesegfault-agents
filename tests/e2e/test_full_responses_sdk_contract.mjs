@@ -333,7 +333,9 @@ test('incremental evidence-only aggregation reuses sealed source and dependencie
   const originalFetch = globalThis.fetch; let requests = 0;
   globalThis.fetch = async () => { requests++; throw Error('aggregation_must_be_offline'); };
   try {
-    await main(['--aggregate-only', '--source', source, '--core-receipt', corePath, '--external-evidence', externalPath, '--output', output], {});
+    await main(['--aggregate-only', '--source', source, '--core-receipt', corePath, '--external-evidence', externalPath, '--output', output], {
+      GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'kleedaisuki/moesegfault-agents', GITHUB_SHA: source, GITHUB_WORKSPACE: root,
+    });
     const result = JSON.parse(fs.readFileSync(output, 'utf8'));
     assert.equal(result.newModelRuns, 0); assert.equal(result.servingSourceRechecked, false); assert.equal(requests, 0);
     assert.equal(result.dependencyBaseline.status, 'sealed_core_not_retested');

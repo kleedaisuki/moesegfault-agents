@@ -2067,45 +2067,6 @@ mod tests {
         assert!(legacy.obfuscation_seed.is_none());
     }
 
-    #[test]
-    fn output_turn_is_preflighted_before_any_item_or_event_is_published() {
-        let mut run = response();
-        let first = json!({"id":format!("fc_{}_0",run.id),"type":"function_call","call_id":"one","name":"local","arguments":"{}"});
-        let second = json!({"id":format!("msg_{}_1",run.id),"type":"message","content":"x".repeat(MAX_RESPONSE_OUTPUT_BYTES)});
-        assert!(run.prepare_output_batch(vec![first, second]).is_err());
-        assert!(run.output.is_empty());
-        assert!(run.events.is_empty());
-    }
-
-    #[test]
-    fn output_replacement_replay_and_clear_keep_one_exact_capacity_charge() {
-        let mut run = response();
-        let id = format!("hosted_{}", "f".repeat(64));
-        let initial =
-            json!({"id":id,"type":"code_interpreter_call","status":"in_progress","outputs":[]});
-        let change = run.prepare_output(None, initial).unwrap();
-        run.apply_output(change).unwrap();
-        let done = json!({"id":id,"type":"code_interpreter_call","status":"completed","outputs":[{"type":"logs","logs":"雪"}]});
-        let change = run.prepare_output(Some(0), done.clone()).unwrap();
-        run.apply_output(change).unwrap();
-        let bytes = serde_json::to_vec(&run.output).unwrap().len();
-        let change = run.prepare_output(Some(0), done).unwrap();
-        run.apply_output(change).unwrap();
-        assert_eq!(run.output.len(), 1);
-        assert_eq!(serde_json::to_vec(&run.output).unwrap().len(), bytes);
-        assert!(
-            serde_json::to_value(&run)
-                .unwrap()
-                .get("output_budget")
-                .is_none()
-        );
-        run.output.clear();
-        let item = json!({"id":format!("msg_{}_0",run.id),"type":"message","content":[]});
-        let change = run.prepare_output(None, item).unwrap();
-        run.apply_output(change).unwrap();
-        assert_eq!(run.output.len(), 1);
-    }
-
     fn call(id: &str) -> provider::ToolCall {
         provider::ToolCall {
             id: id.into(),

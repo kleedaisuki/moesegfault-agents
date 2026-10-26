@@ -238,6 +238,10 @@ async function runConversationWriterFence(context) {
       return true;
     });
     assert.equal(scenario.state.calls, 1, 'Conversation contention must reject before another paid request');
+    const strayCleanup = await context.db.prepare(`SELECT id FROM usage_reservations
+      WHERE account_id=? AND state='reserved' AND id LIKE 'conv-response:%' AND id<>?`)
+      .bind(scenario.principal.owner, `conv-response:${first.data.id}`).all();
+    assert.deepEqual(strayCleanup.results, [], 'Rejected admission must not strand execution cleanup funding');
     release();
     await waitUntil(async () => (await scenario.read(first.data.id)).status === 'completed');
     const firstCompleted = await client.responses.retrieve(first.data.id);

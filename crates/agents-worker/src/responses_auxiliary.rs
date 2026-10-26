@@ -512,7 +512,7 @@ async fn send_count(
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_headers(headers)
-        .with_redirect(RequestRedirect::Error)
+        .with_redirect(RequestRedirect::Manual)
         .with_body(Some(body.to_string().into()));
     let mut request =
         Request::new_with_init(&format!("{}/{suffix}", base.trim_end_matches('/')), &init)?;

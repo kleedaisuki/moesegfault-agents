@@ -53,6 +53,18 @@ test('same-source/dependency Worker artifact may be reused only after current fa
   assert.equal(proof.artifacts.worker.status, 'reused_identical_artifact');
 });
 
+test('partial Worker build does not claim an unsuccessful historical library compile passed', () => {
+  const value = fixture(true);
+  value.catalog[0].verified_phases = ['wasm_build'];
+  value.catalog[0].verified_steps = ['wasm'];
+  value.metadata['41'].jobs.jobs.find(job => job.name === 'worker').steps[1].conclusion = 'failure';
+  const proof = verifyDeploymentEvidence(value);
+  assert.equal(proof.artifacts.worker.id, 77);
+  assert.equal(proof.baseline_evidence.find(item => item.component === 'worker').job_conclusion, 'failure');
+  value.metadata['42'].jobs.jobs.find(job => job.name === 'worker').conclusion = 'failure';
+  assert.throws(() => verifyDeploymentEvidence(value), /required_current_job_not_successful/);
+});
+
 for (const [name, change] of [
   ['candidate failure', value => { value.metadata['42'].run.conclusion = 'failure'; }],
   ['foreign repository', value => { value.metadata['41'].run.head_repository.full_name = 'attacker/fork'; }],
@@ -138,6 +150,47 @@ function reusedFixture() {
   value.reusedVerification = { '43:verification-worker': { plan: { source_sha: historical, checks: { worker: [original] } }, files: { 'worker-journeys.json': { source_sha: historical, job: 'worker-journeys', results: [{ ...original, status: 'passed_current', executed_tests: 2 }] } } } };
   return value;
 }
+
+function partialToolingFixture() {
+  const value = fixture(), input = 'e'.repeat(64), original = check('tooling-old');
+  const record = { id: original.id, status: 'passed_current', input_fingerprint: input, executed_tests: 2, receipt_path: 'tooling.json' };
+  const seal = { source_sha: base, run_id: '41', components: ['tooling'], status: 'partial_verified', receipt_artifact: 'verification-tooling', receipt_artifact_id: 179, verified_checks: [record], unresolved_checks: [{ id: 'tooling-new' }] };
+  value.catalog[1].components = value.catalog[1].components.filter(component => component !== 'tooling');
+  value.catalog.push(seal);
+  value.plan.components.tooling.baseline = { ...seal, job: 'tooling', fingerprint: digest, matches: false };
+  value.plan.required_remediations.push('tooling-new');
+  value.plan.reused_checks = [{ ...original, ...record, source_sha: base, run_id: '41', job: 'tooling', artifact_name: 'verification-tooling', artifact_id: 179, status: 'reused_verified' }];
+  value.expectedPlan = structuredClone(value.plan);
+  value.metadata['41'].jobs.jobs.find(job => job.name === 'tooling').conclusion = 'failure';
+  value.metadata['41'].artifacts.artifacts.push({ name: 'verification-tooling', id: 179, expired: false, expires_at: '2099-01-01T00:00:00Z', size_in_bytes: 123, workflow_run: { id: 41, head_sha: base } });
+  value.metadata['41'].artifacts.total_count++;
+  value.checkHash = () => input;
+  value.reusedVerification = { '41:verification-tooling': { plan: { source_sha: base, checks: { tooling: [original], current_sdk: [] } }, files: { 'tooling.json': { source_sha: base, job: 'tooling', results: [{ ...original, status: 'passed_current', executed_tests: 2 }] } } } };
+  return value;
+}
+
+test('partial Tooling job reuses actual positive selectors without a successful job or build claim', () => {
+  const proof = verifyDeploymentEvidence(partialToolingFixture());
+  const baseline = proof.baseline_evidence.find(item => item.component === 'tooling');
+  assert.equal(baseline.status, 'partial_baseline_checks_only');
+  assert.equal(baseline.job_conclusion, 'failure');
+  assert.equal(proof.reused_verified_checks[0].job, 'tooling');
+  assert.equal(proof.reused_verified_checks[0].executed_tests, 2);
+  assert.equal(proof.passed_current_checks.includes('tooling-old'), false);
+  assert.equal(proof.passed_current_checks.includes('tooling-new'), true);
+  assert.equal(Object.hasOwn(proof.artifacts, 'tooling'), false);
+});
+
+test('partial Tooling job cannot use missing or failed historical receipts or waive its current repair', () => {
+  for (const change of [
+    value => { value.plan.reused_checks = []; value.expectedPlan = structuredClone(value.plan); },
+    value => { value.reusedVerification['41:verification-tooling'].files['tooling.json'].results[0].status = 'failed_current'; },
+    value => { value.verification.tooling.files['tooling.json'].results[0].status = 'failed_current'; },
+  ]) {
+    const value = partialToolingFixture(); change(value);
+    assert.throws(() => verifyDeploymentEvidence(value));
+  }
+});
 
 test('bounded reused check proof satisfies an already-fixed leaf without relabeling it current', () => {
   const proof = verifyDeploymentEvidence(reusedFixture());

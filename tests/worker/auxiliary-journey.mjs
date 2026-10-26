@@ -3,14 +3,20 @@ import OpenAI from 'openai';
 import { createBrowserPrincipal } from './browser-principal.mjs';
 
 export function createAuxiliaryProviderFixture() {
-  const state = { calls: [], counts: [], missingDetail: false };
+  const state = { calls: [], counts: [], missingDetail: false, redirectCount: false, redirectTargetCalls: 0 };
   return { state, async handle(request) {
     const url = new URL(request.url);
+    if (url.hostname === 'auxiliary-redirect.example.com') {
+      state.redirectTargetCalls++;
+      throw new Error('Counting must never forward owned credentials to a redirect');
+    }
     if (url.hostname !== 'auxiliary-provider.example.com') return undefined;
     assert.equal(request.headers.get('authorization'), 'Bearer synthetic-auxiliary-owned-key');
     const input = await request.json();
     assert.equal(input.model, 'fixture-native-model');
     if (url.pathname === '/v1/responses/input_tokens') {
+      if (state.redirectCount) return new Response(null, { status: 302,
+        headers: { Location: 'https://auxiliary-redirect.example.com/v1/responses/input_tokens' } });
       state.counts.push(input);
       return Response.json({ object: 'response.input_tokens', input_tokens: 42 });
     }
@@ -18,13 +24,17 @@ export function createAuxiliaryProviderFixture() {
     assert.equal(input.stream, true);
     assert.equal(input.store, false);
     state.calls.push(input);
+    const terminal = 'completed';
     const usage = { input_tokens: 12, output_tokens: 3, total_tokens: 15,
       input_tokens_details: { cached_tokens: 2, ...(state.missingDetail ? {} : { cache_write_tokens: 0 }) },
       output_tokens_details: { reasoning_tokens: 1 } };
     const response = { id: `upstream-aux-${state.calls.length}`, object: 'response', model: input.model,
-      status: 'completed', output: [{ id: 'upstream-message', type: 'message', role: 'assistant', status: 'completed',
+      status: terminal, error: null,
+      output: [{ id: 'upstream-message', type: 'message', role: 'assistant', status: 'completed',
         content: [{ type: 'output_text', text: 'Preserved goal and evidence 雪.', annotations: [] }] }], usage };
-    return new Response(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\n`,
+    const created = { ...response, status: 'in_progress', output: [], usage: null, error: null };
+    return new Response(`event: response.created\ndata: ${JSON.stringify({ type: 'response.created', sequence_number: 0, response: created })}\n\n`
+      + `event: response.${terminal}\ndata: ${JSON.stringify({ type: `response.${terminal}`, sequence_number: 1, response })}\n\n`,
       { headers: { 'Content-Type': 'text/event-stream' } });
   } };
 }
@@ -44,6 +54,11 @@ export async function runAuxiliaryJourney({ mf, db, encryptionKey, request, prov
   const body = { model: agent.id, input, instructions: 'One-response scope.', tools };
   assert.deepEqual(await sdk.responses.inputTokens.count(body), { object: 'response.input_tokens', input_tokens: 42 });
   assert.equal(provider.state.calls.length, 0, 'Counting never buys inference');
+  provider.state.redirectCount = true;
+  await assert.rejects(sdk.responses.inputTokens.count(body),
+    error => error.status === 503 && error.code === 'token_count_provider_error');
+  provider.state.redirectCount = false;
+  assert.equal(provider.state.redirectTargetCalls, 0, 'Redirect targets never receive an owned API key');
   assert.equal(await db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE account_id=?').bind(principal.owner).first('n'), 0);
   assert.equal(await db.prepare('SELECT COUNT(*) AS n FROM space_files WHERE account_id=?').bind(principal.owner).first('n'), 0);
   const made = await sdk.responses.create({ ...body, store: true }).withResponse();

@@ -25,7 +25,36 @@
       "dashboard",
       "tooling"
     ],
-    "status": "verified"
+    "status": "verified",
+    "unresolved_checks": [
+      {
+        "id": "pytest:tests/e2e/test_workspace_interpreter_memory.py",
+        "argv": [
+          ".cache/e2e-venv/bin/python",
+          "-m",
+          "pytest",
+          "tests/e2e/test_workspace_interpreter_memory.py::test_physical_memory_guard_precedes_kernel_and_execution_id_acceptance[4g]",
+          "tests/e2e/test_workspace_interpreter_memory.py::test_physical_memory_guard_precedes_kernel_and_execution_id_acceptance[None]",
+          "-ra",
+          "-rP"
+        ],
+        "env": {},
+        "reason": "Only never-passed 4g and omitted-memory cases; e1 actual 1g passed and is not rerun"
+      },
+      {
+        "id": "pytest:tests/e2e/test_workspace_interpreter_network.py",
+        "argv": [
+          ".cache/e2e-venv/bin/python",
+          "-m",
+          "pytest",
+          "tests/e2e/test_workspace_interpreter_network.py",
+          "-ra",
+          "-rP"
+        ],
+        "env": {},
+        "reason": "Changed real-container journey tests/e2e/test_workspace_interpreter_network.py"
+      }
+    ]
   },
   {
     "source_sha": "b1edf97746d3902373dbb05e224799f03d9a3a10",
@@ -1387,6 +1416,417 @@
       "passed_checks": 136,
       "executed_tests": 139,
       "failed_checks": 9
+    }
+  },
+  {
+    "source_sha": "e1b0ede4a695c567348c29136a23525960c493a7",
+    "run_id": "40214782486",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12607660114,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12607098372,
+    "verified_phases": [
+      "wasm_build"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "verified_checks": [
+      {
+        "id": "node:tests/worker/responses-sdk.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "9c7a19d34ffc7bd3773101029672d3c132ed45d829cee7b9c94ef77ea2f896a7",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "node:tests/worker/responses-websocket.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "81d7066cdc2bd857c953ef9727eb981f051f8b8f1df56f37c5c85bfa19141f03",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 3
+      },
+      {
+        "id": "journey:Responses prompt templates preserve version owner variables and replay identity",
+        "status": "passed_current",
+        "input_fingerprint": "0e103942f75f5fcbe23eaa9119230ac429846f39f205c344d7d71f864e5035cf",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "journey:DeepSeek exact count-only tokenizer cold warm and profile replacement",
+        "status": "passed_current",
+        "input_fingerprint": "715fd4396e0d94551c42a7199c4fd19141976411b8e2dca8101cb65106b1c504",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "node:tests/worker/native-semantics.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "ebd8ccdc5d76a8255c42364a299c51bb3dce3261ad3eebfd4d5e03f410db052a",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 4
+      },
+      {
+        "id": "regression:conversation-create-idempotency",
+        "status": "passed_current",
+        "input_fingerprint": "7d7a2d7a20502620185232114a25c913bcbe180ea161a895d2d0f0e696591b37",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "journey:Responses auxiliary compact and count",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Responses auxiliary compact and count"
+        },
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior"
+      },
+      {
+        "id": "node:tests/worker/conversation-responses.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/conversation-responses.test.mjs"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior"
+      },
+      {
+        "id": "journey:Responses actual Node SDK streams, recovers and returns local function results",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Responses actual Node SDK streams, recovers and returns local function results"
+        },
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "expected_test": "Responses actual Node SDK streams, recovers and returns local function results"
+      },
+      {
+        "id": "rust:agents-worker:replay_is_stable_but_response_seed_and_sequence_are_independent",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "replay_is_stable_but_response_seed_and_sequence_are_independent",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/response_obfuscation.rs"
+      },
+      {
+        "id": "rust:agents-worker:legacy_padding_is_retained_and_disabled_observers_are_independent",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "legacy_padding_is_retained_and_disabled_observers_are_independent",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/response_obfuscation.rs"
+      },
+      {
+        "id": "rust:agents-worker:seed_debug_is_redacted_and_entropy_is_not_public_event_data",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "seed_debug_is_redacted_and_entropy_is_not_public_event_data",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/response_obfuscation.rs"
+      },
+      {
+        "id": "rust:agents-worker:usage_requires_authoritative_reasoning_and_cache_write_for_the_standard_shape",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "usage_requires_authoritative_reasoning_and_cache_write_for_the_standard_shape",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/responses_wire.rs"
+      },
+      {
+        "id": "rust:agents-worker:terminal_recovery_retains_answer_usage_and_never_dispatches_another_round",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "terminal_recovery_retains_answer_usage_and_never_dispatches_another_round",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/session.rs"
+      },
+      {
+        "id": "rust:agents-worker:native_items_require_typed_objects_and_portable_context_is_explicit",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "native_items_require_typed_objects_and_portable_context_is_explicit",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/session_native.rs"
+      },
+      {
+        "id": "rust:agents-worker:persisted_entropy_keeps_same_sequence_frames_identical_without_public_seed",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "persisted_entropy_keeps_same_sequence_frames_identical_without_public_seed",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/session_responses.rs"
+      },
+      {
+        "id": "rust:agents-worker:observer_projection_is_per_request_and_keeps_private_replay_complete",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "observer_projection_is_per_request_and_keeps_private_replay_complete",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/session_responses.rs"
+      },
+      {
+        "id": "rust:agents-worker:observer_obfuscation_does_not_change_replay_identity_or_other_observers",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "observer_obfuscation_does_not_change_replay_identity_or_other_observers",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "source_file": "crates/agents-worker/src/session_responses.rs"
+      },
+      {
+        "id": "rust:agents-worker:namespaces_are_exact_and_custom_policy_uses_native_calls",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "namespaces_are_exact_and_custom_policy_uses_native_calls",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior"
+      }
+    ],
+    "evidence": {
+      "passed_checks": 6,
+      "failed_journeys": 3,
+      "rust_lib_compile": "failed",
+      "deferred_unregistered_tests": [
+        "output_turn_is_preflighted_before_any_item_or_event_is_published",
+        "output_replacement_replay_and_clear_keep_one_exact_capacity_charge"
+      ]
+    }
+  },
+  {
+    "source_sha": "e1b0ede4a695c567348c29136a23525960c493a7",
+    "run_id": "40214782486",
+    "components": [
+      "tooling"
+    ],
+    "status": "partial_verified",
+    "verified_phases": [
+      "individual_checks"
+    ],
+    "verified_steps": [],
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12607510195,
+    "verified_checks": [
+      {
+        "id": "node:scripts/deploy-config.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "d8d0f3fcfaa3f03eb919d59666bf2cb7afac31f894e48edf514a8d68381487f5",
+        "receipt_path": "tooling.json",
+        "executed_tests": 9
+      },
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "d9952a7d3a84f41cf86986c1cdb0c3c2829b7d9cbeb8f81e827e5117788cc552",
+        "receipt_path": "tooling.json",
+        "executed_tests": 35
+      },
+      {
+        "id": "node:scripts/deploy-workflow.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "6cdbbbdcbc2cbda10763d1adbbe63eeadbd78a5134b6c26df2ad660e940c5409",
+        "receipt_path": "tooling.json",
+        "executed_tests": 12
+      },
+      {
+        "id": "node:scripts/incremental-checks.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "9d0416a0a449293a505756aa3981c6f5c05379bc52f296c89fcc32e338e3e8f9",
+        "receipt_path": "tooling.json",
+        "executed_tests": 28
+      },
+      {
+        "id": "node:scripts/operator-usage-provenance.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "b23c9650a85b0ffa3a0a6e10555a17be835f535a395eb704f21c9ed009727a41",
+        "receipt_path": "tooling.json",
+        "executed_tests": 34
+      },
+      {
+        "id": "pytest:tests/e2e/test_python_kernel_bridge.py",
+        "status": "passed_current",
+        "input_fingerprint": "beb4bf79e9aacf33adca3e699fd1f17c1e94f499bdb5e6e94062de1bd8dcb9d1",
+        "receipt_path": "tooling.json",
+        "executed_tests": 16
+      },
+      {
+        "id": "pytest:tests/e2e/test_current_responses_sdk_contract.py",
+        "status": "passed_current",
+        "input_fingerprint": "6b03dca1b66211e58a5cdcc7d1a10633a4cfc67eb577ff3f4dfec3e2a666c14d",
+        "receipt_path": "current_sdk.json",
+        "executed_tests": 60
+      }
+    ],
+    "unresolved_checks": [
+      {
+        "id": "node:tests/e2e/test_full_responses_sdk_contract.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "^incremental evidence-only aggregation reuses sealed source and dependencies with zero network$",
+          "tests/e2e/test_full_responses_sdk_contract.mjs"
+        ],
+        "env": {},
+        "reason": "Unresolved actual e1 failure or never-executed changed behavior",
+        "expected_test": "incremental evidence-only aggregation reuses sealed source and dependencies with zero network"
+      },
+      {
+        "id": "pytest:tests/e2e/test_responses_contract.py",
+        "argv": [
+          ".cache/e2e-venv/bin/python",
+          "-m",
+          "pytest",
+          "tests/e2e/test_responses_contract.py",
+          "-k",
+          "partial_usage",
+          "-ra"
+        ],
+        "env": {},
+        "reason": "New focused regression for e1 actual known-reasoning/unknown-cache-write schema failure"
+      },
+      {
+        "id": "node:scripts/deploy-config.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "scripts/deploy-config.test.mjs"
+        ],
+        "env": {},
+        "reason": "Required unchanged e1 deployment-renderer evidence; reuse exact recorded receipt, do not rerun"
+      },
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "^partial (?:Worker build|Tooling job)",
+          "scripts/deploy-provenance.test.mjs"
+        ],
+        "env": {},
+        "reason": "Only three new partial-baseline guard positive/negative regressions"
+      }
+    ],
+    "evidence": {
+      "historical_job_conclusion": "failure",
+      "aggregate_fixture_passed": 22,
+      "aggregate_fixture_failed": 1
+    }
+  },
+  {
+    "source_sha": "e1b0ede4a695c567348c29136a23525960c493a7",
+    "run_id": "40214782486",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "evidence": {
+      "job_conclusion": "success",
+      "tests_reexecuted_current": false
     }
   }
 ]
