@@ -140,7 +140,8 @@ export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, 
     const base = compatible ? { ...CORE_CONTAINER, job: 'container', fingerprint: hash(CORE_CONTAINER.source_sha, 'container') } : item?.baseline;
     need(item && ['build', 'reuse'].includes(item.action) && DIGEST.test(item.fingerprint ?? '') && item.fingerprint === hash(source, component), 'component_fingerprint_mismatch');
     need(SHA.test(base?.source_sha ?? '') && ID.test(String(base.run_id)) && base.job === name && base.fingerprint === hash(base.source_sha, component), 'baseline_fingerprint_mismatch');
-    const seal = catalog.find(value => value.source_sha === base.source_sha && String(value.run_id) === String(base.run_id) && value.components.includes(component));
+    const seal = catalog.find(value => value.source_sha === base.source_sha && String(value.run_id) === String(base.run_id) && value.components.includes(component)
+      && (!base.selection_base || same(value.selection_base, base.selection_base)));
     need(seal, 'baseline_not_sealed');
     need(seal.status == null || ['verified', 'partial_verified'].includes(seal.status), 'baseline_status_not_promotable');
     requirePromotionScope({ components: { [component]: seal } });
@@ -154,8 +155,9 @@ export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, 
       need(workerBuild || toolingChecks, 'partial_baseline_without_positive_proof');
       if (workerBuild) for (const step of seal.verified_steps) need(baselineJob.steps?.filter(value => value.name === step && value.conclusion === 'success').length === 1, 'baseline_phase_not_successful');
     } else need(baselineJob.conclusion === 'success', 'historical_component_job_not_successful');
-    if (!compatible) for (const check of seal.unresolved_checks ?? []) unresolved.add(check.id);
-    baselineEvidence.push({ component, source_sha: base.source_sha, run_id: String(base.run_id), fingerprint: base.fingerprint, job_conclusion: baselineJob.conclusion, status: seal.status === 'partial_verified' ? component === 'tooling' ? 'partial_baseline_checks_only' : 'partial_baseline_phases_only' : 'passed_baseline_not_reexecuted' });
+    if (!compatible) for (const check of (seal.selection_base ?? seal).unresolved_checks ?? []) unresolved.add(check.id);
+    baselineEvidence.push({ component, source_sha: base.source_sha, run_id: String(base.run_id), fingerprint: base.fingerprint, job_conclusion: baselineJob.conclusion, status: seal.status === 'partial_verified' ? component === 'tooling' ? 'partial_baseline_checks_only' : 'partial_baseline_phases_only' : 'passed_baseline_not_reexecuted',
+      ...(seal.selection_base ? { selection_base: seal.selection_base } : {}) });
     if (!ARTIFACTS[component]) continue;
     const build = !compatible && item.action === 'build';
     const expectedRun = build ? String(sourceRun) : String(base.run_id);

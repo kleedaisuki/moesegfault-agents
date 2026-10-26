@@ -74,6 +74,33 @@ test('incremental gate preserves partial baseline and skipped-job truth while ve
   assert.equal(proof.production_authorized, false);
 });
 
+test('composed selection remains distinct from the immutable compiled artifact proof', () => {
+  const value = fixture();
+  const selection = { source_sha: source, status: 'composed_accepted',
+    receipts: [{ source_sha: base, run_id: '41', reference: 'docs/accepted-scoped-results.md' }], unresolved_checks: [] };
+  value.catalog.push({ ...value.catalog[0], selection_base: selection });
+  value.plan.components.worker.baseline.selection_base = selection;
+  value.plan.required_remediations = [];
+  value.plan.checks.worker = [];
+  value.verification.worker.files['worker-journeys.json'] = { schema_version: 1, source_sha: source,
+    job: 'worker-journeys', status: 'no_selected_tests', results: [] };
+  value.expectedPlan = structuredClone(value.plan);
+  const proof = verifyDeploymentEvidence(value);
+  const worker = proof.baseline_evidence.find(item => item.component === 'worker');
+  assert.equal(worker.source_sha, base);
+  assert.equal(worker.job_conclusion, 'failure');
+  assert.deepEqual(worker.selection_base, selection);
+  assert.equal(proof.artifacts.worker.source_sha, source);
+  assert.equal(proof.artifacts.worker.id, 88);
+  const { hash, ...data } = value;
+  const forged = structuredClone(data);
+  forged.plan.components.worker.baseline.selection_base = {
+    ...forged.plan.components.worker.baseline.selection_base, source_sha: 'd'.repeat(40),
+  };
+  forged.expectedPlan = structuredClone(forged.plan);
+  assert.throws(() => verifyDeploymentEvidence({ ...forged, hash }), /baseline_not_sealed/);
+});
+
 test('same-source/dependency Worker artifact may be reused only after current failed-leaf repairs', () => {
   const proof = verifyDeploymentEvidence(fixture(true));
   assert.equal(proof.artifacts.worker.id, 77);

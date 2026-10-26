@@ -285,18 +285,24 @@ export function plan(source, baselines, containerScope = 'incremental', verifica
   let nativePackages = [];
   for (const component of Object.keys(COMPONENTS)) {
     const baseline = baselineFor(source, component, baselines);
-    const files = changed(source, baseline.source_sha);
+    const selection = baseline.selection_base ?? baseline;
+    if (baseline.selection_base && (selection.status !== 'composed_accepted'
+        || !SHA.test(selection.source_sha) || !Array.isArray(selection.receipts) || !selection.receipts.length
+        || selection.receipts.some(receipt => !SHA.test(receipt.source_sha) || !/^[1-9][0-9]{0,14}$/.test(String(receipt.run_id)) || !receipt.reference)
+        || git('merge-base', selection.source_sha, source) !== selection.source_sha)) throw Error('Invalid composed selection baseline');
+    const files = changed(source, selection.source_sha);
+    const artifactFiles = changed(source, baseline.source_sha);
     if (component === 'native') {
-      nativePackages = files.some(file => /^(Cargo\.(lock|toml)|rust-toolchain\.toml)$/.test(file))
+      nativePackages = artifactFiles.some(file => /^(Cargo\.(lock|toml)|rust-toolchain\.toml)$/.test(file))
         ? ['agents-core', 'agents-auth', 'magents', 'workspace-daemon']
-        : [...new Set(files.map(file => /^crates\/(agents-core|agents-auth|magents|workspace-daemon)\//.exec(file)?.[1]).filter(Boolean))].sort();
+        : [...new Set(artifactFiles.map(file => /^crates\/(agents-core|agents-auth|magents|workspace-daemon)\//.exec(file)?.[1]).filter(Boolean))].sort();
     }
-    for (const file of files) changedFiles.add(file);
-    const selected = selections(source, baseline.source_sha, files);
+    for (const file of artifactFiles) changedFiles.add(file);
+    const selected = selections(source, selection.source_sha, files);
     const jobs = component === 'tooling' ? ['tooling', 'current_sdk'] : [JOBS[component]];
     for (const job of jobs) checks[job].push(...selected[job]);
-    for (const check of baseline.unresolved_checks ?? []) {
-      const repair = remediation(source, {...check, baseline_sha: baseline.source_sha});
+    for (const check of selection.unresolved_checks ?? []) {
+      const repair = remediation(source, {...check, baseline_sha: selection.source_sha});
       if (repair.nested_file) checks[JOBS[component]] = checks[JOBS[component]].filter(item => item.id !== `node:${repair.nested_file}`);
       checks[JOBS[component]].push(repair);
     }
@@ -317,7 +323,7 @@ export function plan(source, baselines, containerScope = 'incremental', verifica
   }
   const requiredJobs = ['changes', ...Object.entries(components).filter(([component, details]) => details.action === 'build' || checks[JOBS[component]].length > 0 || (component === 'tooling' && checks.current_sdk.length > 0)).map(([component]) => JOBS[component])];
   return { schema_version: 1, source_sha: source, policy: 'incremental-only', diagnostic_only_components: containerScope === 'startup-1g' ? ['container'] : [], planned_checks_are_not_results: true,
-    required_jobs: requiredJobs, reused_checks: reusedChecks, required_remediations: [...new Set(Object.values(components).flatMap(component => (component.baseline.unresolved_checks ?? []).map(check => check.id)))], receipt_paths: { rust: ['rust.json', 'native-build.json'], worker: ['worker-rust.json', 'worker-journeys.json'], dashboard: ['dashboard.json'], container: ['container.json'], tooling: ['tooling.json', 'current_sdk.json'] },
+    required_jobs: requiredJobs, reused_checks: reusedChecks, required_remediations: [...new Set(Object.values(components).flatMap(component => ((component.baseline.selection_base ?? component.baseline).unresolved_checks ?? []).map(check => check.id)))], receipt_paths: { rust: ['rust.json', 'native-build.json'], worker: ['worker-rust.json', 'worker-journeys.json'], dashboard: ['dashboard.json'], container: ['container.json'], tooling: ['tooling.json', 'current_sdk.json'] },
     changed_files: [...changedFiles].sort(), native_packages: nativePackages, components, checks };
 }
 

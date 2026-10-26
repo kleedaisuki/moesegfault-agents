@@ -47,6 +47,26 @@ test('retained remediation commands preserve exactly one Node reporter', () => {
   assert.equal(selected.checks.worker.length, 1);
   assert.equal(selected.checks.worker[0].argv.filter(arg => arg.startsWith('--test-reporter=')).length, 1);
 });
+
+test('composed selection never changes the actual artifact identity or revives old unresolved work', () => {
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const artifact = '76d6c9fb7bbb8fc948cc28455b46e172b9d0ff73';
+  const base = { source_sha: artifact, run_id: '40309533230',
+    components: ['worker', 'native', 'container', 'dashboard', 'tooling'],
+    unresolved_checks: [{ id: 'must-not-replay-accepted-work', argv: ['node', '--test', 'missing.mjs'] }],
+    selection_base: { source_sha: revision, status: 'composed_accepted',
+      receipts: [{ source_sha: artifact, run_id: '40309533230', reference: 'docs/full-responses-native-context.md' }],
+      unresolved_checks: [] },
+  };
+  const selected = plan(revision, [base]);
+  assert.equal(selected.components.worker.baseline.source_sha, artifact);
+  assert.equal(selected.components.worker.baseline.run_id, '40309533230');
+  assert.equal(selected.components.worker.action, 'build');
+  assert.equal(selected.components.worker.baseline.selection_base.source_sha, revision);
+  assert.deepEqual(selected.required_remediations, []);
+  assert.equal(Object.values(selected.checks).flat().length, 0);
+  assert.throws(() => plan(revision, [{ ...base, selection_base: { ...base.selection_base, receipts: [] } }]), /Invalid composed/);
+});
 test('new auxiliary and tokenizer increments select exact public journeys', () => {
   const selected = selections(source, baseline, ['tests/worker/auxiliary-journey.mjs', 'tests/worker/deepseek-tokenizer-journey.mjs']);
   assert.deepEqual(selected.worker.filter(check => check.env.MAGENTS_WORKER_CASE).map(check => check.env.MAGENTS_WORKER_CASE).sort(), ['DeepSeek exact count-only tokenizer cold warm and profile replacement', 'Responses auxiliary compact and count']);
