@@ -67,7 +67,11 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     receipt.resources.conversation = conversation.id; receipt.pending = null; save();
     const body = contextCapacityRequest(agent.id, conversation.id);
     const { model, input, instructions, reasoning } = body;
+    const beforeCount = await request('GET', `/v1/agents/${agent.id}/sessions`);
+    assert.deepEqual(beforeCount.data, [], 'new_context_agent_has_no_admitted_session');
     const count = await client.responses.inputTokens.count({ model, input, instructions, reasoning });
+    assert.deepEqual((await request('GET', `/v1/agents/${agent.id}/sessions`)).data, beforeCount.data,
+      'count_only_must_not_admit_a_session');
     assert.ok(Number.isSafeInteger(count.input_tokens) && count.input_tokens > 1);
     receipt.checks.exactReadOnlyInputCount = count.input_tokens;
     receipt.phase = 'response_intent'; receipt.submissions++;

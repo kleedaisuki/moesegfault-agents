@@ -113,3 +113,31 @@ workspace-import caller, before any generation. The subsequent pure repair
 removed that unused hook; no accepted generations or nine SQL cases were
 replayed. This is compiled controlled-provider proof, not real-provider staging
 or a claim that an integrated Code/media artifact has identical source inputs.
+
+## Narrow real-provider operator
+
+`tests/e2e/context-capacity-sdk.mjs` reuses the existing deployment-provenance,
+owned-intent, direct-DeepSeek, current SDK and Session-cleanup helpers. Select it
+only after deploying a coherent context candidate, with its exact assembly SHA,
+actual deployment manifest, current SDK Python path, one unique trace seed and
+`--allow-model-calls`. It makes one new public Response submission; that shared
+harness performs the new summary and answer. No accepted synthetic, standalone
+compact, vision, Code or historical-window case is replayed.
+
+Independent marker values originate in fixed server, current custom and
+historical developer instructions. Before paid submission, exact read-only count
+must not admit a Session. The operator checks one sealed compaction item, actual
+SDK response/events, metadata DELETE retaining items, explicit purge and
+independent Response/count survival. Its receipt deliberately ends at
+`financial_postflight_pending`: use its exact owner/Conversation/Response IDs to
+inspect model/resource reservations and ledger, `conversation_response_capacity`
+(`converted`, zero `remaining_bytes`), removed body allocations
+(`released/content_removed`) and still-retained header allocations. It does not
+infer backend capacity counters from client JSON.
+
+The first request uses text and disabled reasoning. It is not evidence that
+unknown vendor ciphertext is portable across protocols. Harness native
+compaction keeps the same owner/provider binding and native transport; it does
+not expose or decode ciphertext. Standalone purpose-transport restrictions remain
+separate. Existing intent files require inspection of original operations, never
+a new paid POST. The operator is prepared, not live-executed at this checkpoint.
