@@ -37,10 +37,11 @@ test('compiled Rust Worker: owned CID reuses the archived source kernel with fre
 test('compiled Rust Worker: late owned-CID use funds its full new twenty-minute idle window', { timeout: 90000 }, t => codeJourney(t, 'late'));
 test('compiled Rust Worker: BYOK Code executor uses its own key and real memory without a local VM', { timeout: 90000 }, t => codeJourney(t, 'executor'));
 test('compiled Rust Worker: real BYOK executor Python and artifact cross the owned service boundary', { timeout: 90000 }, t => codeJourney(t, 'executor_real'));
+test('compiled Rust Worker: real BYOK owned-CID guest reuses the archived source heap without local allocation', { timeout: 90000 }, t => codeJourney(t, 'executor_real_borrowed'));
 
 async function codeJourney(t, lifecycle) {
-  const borrowed=lifecycle==='borrowed'||lifecycle==='late';
-  const realExecutor=lifecycle==='executor_real';
+  const borrowed=lifecycle==='borrowed'||lifecycle==='late'||lifecycle==='executor_real_borrowed';
+  const realExecutor=lifecycle==='executor_real'||lifecycle==='executor_real_borrowed';
   const external=lifecycle==='executor'||realExecutor;
   let contextId=defaultContextId;
   const cellSource=realExecutor?"from pathlib import Path\nretained_value = 42\nPath('result.csv').write_bytes(b'value\\n42\\n')\nprint(retained_value)\n":source;
