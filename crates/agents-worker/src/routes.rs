@@ -366,6 +366,26 @@ fn attachment_input_error(text: &str) -> Option<(u16, &'static str, &'static str
             400,
             "Provide exactly one supported file source",
         ),
+        (
+            "invalid_file_url",
+            400,
+            "Use a public HTTPS file URL without credentials or redirects",
+        ),
+        (
+            "remote_file_unavailable",
+            422,
+            "The public file could not be read within the bounded input capability",
+        ),
+        (
+            "remote_file_outcome_unknown",
+            409,
+            "File preparation is interrupted or in progress; this response intent will not download it again",
+        ),
+        (
+            "file_detail_unavailable",
+            422,
+            "This adapter supports file text extraction with auto detail, not PDF page-image rendering",
+        ),
         ("invalid_file_id", 400, "The file ID is invalid"),
         (
             "invalid_file_name",
