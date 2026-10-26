@@ -3922,5 +3922,26 @@
         "input_fingerprint": "4de80f445cb35f7e3f56fb98f4f11e02aa217131e8870623d635702e12f80a75"
       }
     ]
+  },
+  {
+    "source_sha": "86a7e7a7c4e258a8cc14c464c14a3f326436c4e1",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12643824385,
+    "status": "verified",
+    "run_id": "40310608529",
+    "components": [
+      "native"
+    ]
+  },
+  {
+    "source_sha": "86a7e7a7c4e258a8cc14c464c14a3f326436c4e1",
+    "receipt_artifact": "verification-container",
+    "receipt_artifact_id": 12645370109,
+    "status": "verified",
+    "artifact_id": 12644268498,
+    "run_id": "40310608529",
+    "components": [
+      "container"
+    ]
   }
 ]
