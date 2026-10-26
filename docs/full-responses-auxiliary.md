@@ -469,5 +469,21 @@ function arguments and tool schemas are user data, not cache directives.
 The new `image-metadata` fragment in the existing compiled-Worker fixture covers
 BYOK image/count fidelity and DeepSeek count/create rejection with zero model
 submissions and zero remote-image requests. Existing vision, remote-file and
-retrieval cases remain sealed. This addition requires its new exact Worker
-compilation and fragment receipt; no older journey is repeated for it.
+retrieval cases remain sealed. Actions `40357053617`, source
+`47289e05a5dcd25f09cf8e2c865ccfaf273796b6`, built Worker artifact `12667840590`
+and passed both new Rust contracts (1/1 each). Its new SDK front passed BYOK
+image/count marker fidelity and both DeepSeek 422 boundaries, but the aggregate
+job failed only at the final fixture SQL query: ledger ownership belongs to
+`usage_reservations`, not a nonexistent `usage_ledger.account_id`.
+
+Test-only correction `5ac7cc2` uses that established ownership join. The same
+unchanged artifact then passed the complete failed `image-metadata` fragment
+locally in actual workerd/OpenAI SDK (1/1, 8.0 s test duration), with zero remote
+image reads, zero generation submissions/model ledger entries and no active
+Session after rejection. Its WASM SHA-256 is
+`eee448586c7e52937a48cef84223eea2bb48f98ee1a1df90fc5f82950ddfe05a`.
+No second compilation, prior vision/remote/retrieval journey, or paid provider
+request was performed. Select this fixture with
+`MAGENTS_REMOTE_FILE_CASE=image-metadata`; the default remote-file case is
+already accepted and must not be replayed merely because this file gained a
+new fragment. The failed aggregate Actions run is not relabeled green.
