@@ -82,7 +82,7 @@ export async function runProgrammaticTime(context) {
   assert.match(failedProgram.result, /programmatic_argument_schema_violation/);
   context.validateWire(denied.value, denied.events);
   assert.equal(state.calls, 4, 'Invalid arguments do not trigger paid repair');
-  const resources = await context.db.prepare("SELECT count(*) n FROM usage_ledger WHERE account_id=? AND resource='container'").bind(principal.owner).first();
+  const resources = await context.db.prepare("SELECT count(*) n FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='container'").bind(principal.owner).first();
   assert.equal(resources.n, 0, 'A program never gains workspace or Bash authority from pinned time');
   return { provider_calls: 4, origin_fetches: 2, successful_time_calls: 2, denied_time_side_effects: 0,
     idempotent_replay: true, default_promise_protection: true };
@@ -134,10 +134,8 @@ export async function runProgrammaticAdmissionFailures(context) {
   const failures = [];
   for (const missing of ['loader', 'price']) {
     await context.configureProgramCapability(missing);
-    const response = await scenario.client.responses.create({ model: scenario.agent.id, input: 'Do not spend inference on unavailable execution.',
-      tools: [{ type: 'programmatic_tool_calling' }] }).asResponse();
-    assert.equal(response.status, 422);
-    assert.equal((await response.json()).error.code, 'programmatic_unavailable');
+    await assert.rejects(scenario.client.responses.create({ model: scenario.agent.id, input: 'Do not spend inference on unavailable execution.',
+      tools: [{ type: 'programmatic_tool_calling' }] }).asResponse(), error => error.status === 422 && error.code === 'programmatic_unavailable');
     assert.equal(scenario.state.calls, 0, 'Missing execution authority or price is rejected before any inference');
     await context.request('GET', '/v1/agents', undefined, 200, scenario.principal.apiKey);
     failures.push(missing);
@@ -147,5 +145,5 @@ export async function runProgrammaticAdmissionFailures(context) {
 }
 
 async function charges(db, owner) {
-  return (await db.prepare("SELECT unit, CAST(quantity AS TEXT) quantity, CAST(amount_microusd AS TEXT) amount_microusd FROM usage_ledger WHERE account_id=? AND unit LIKE 'dynamic_worker_%' ORDER BY unit").bind(owner).all()).results;
+  return (await db.prepare("SELECT l.unit, CAST(l.quantity AS TEXT) quantity, CAST(l.amount_microusd AS TEXT) amount_microusd FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit LIKE 'dynamic_worker_%' ORDER BY l.unit").bind(owner).all()).results;
 }
