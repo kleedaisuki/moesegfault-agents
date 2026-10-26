@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import OpenAI from 'openai';
 import { createBrowserPrincipal } from './browser-principal.mjs';
+import { collectNativeEvents, createNativeSemanticsScenario } from './native-semantics-journey.mjs';
 
 const program = code => ({ type: 'function_call', id: 'private-program-item', call_id: 'private-program-call',
   name: '__agents_program', arguments: JSON.stringify({ code }), status: 'completed' });
@@ -11,6 +12,7 @@ const answer = { type: 'message', id: 'private-answer', role: 'assistant', statu
 // wallet. Only model transport is controlled; no external service is called.
 export async function runProgrammaticTime(context) {
   const principal = await createBrowserPrincipal({ ...context, owner: 'programmatic-time-owner' });
+  await principal.browser('GET', '/v1/account');
   const state = context.providers.register('programmatic-time', [
     { output: [program('const a = await tools.time({}); const b = await tools.time({}); text(JSON.stringify({a,b}));')], check(body) {
       assert.equal(body.tools.filter(tool => tool.name === '__agents_program').length, 1);
@@ -34,14 +36,17 @@ export async function runProgrammaticTime(context) {
   const body = { model: agent.id, input: 'Run two time calls in one program.',
     tools: [{ type: 'programmatic_tool_calling' }], max_tool_calls: 4 };
   async function invoke(input, key) {
-    const events = [];
-    for await (const event of await client.responses.create({ ...input, stream: true }, {
+    const wire = await client.responses.create({ ...input, stream: true }, {
       headers: { 'Idempotency-Key': key },
-    })) events.push(event);
+    }).asResponse();
+    assert.equal(wire.status, 200, wire.status === 200 ? '' : await wire.text());
+    const events = await collectNativeEvents(wire);
     if (state.failure) throw state.failure;
     assert.ok(!JSON.stringify(events).includes('__agents_'), 'Private aliases are not public protocol');
     const terminal = events.findLast(event => ['response.completed', 'response.failed'].includes(event.type));
     assert.ok(terminal, 'Require a genuine canonical terminal');
+    const retained = await (await client.responses.retrieve(terminal.response.id).asResponse()).json();
+    assert.deepEqual(retained, terminal.response, 'Raw GET must equal raw SSE; SDK convenience fields are not wire');
     return { value: terminal.response, events };
   }
   const first = await invoke(body, 'programmatic-time-first');
@@ -81,6 +86,47 @@ export async function runProgrammaticTime(context) {
   assert.equal(resources.n, 0, 'A program never gains workspace or Bash authority from pinned time');
   return { provider_calls: 4, origin_fetches: 2, successful_time_calls: 2, denied_time_side_effects: 0,
     idempotent_replay: true, default_promise_protection: true };
+}
+
+export async function runProgrammaticMcp(context) {
+  const remote = context.providers.state;
+  const before = remote.calls;
+  const scenario = await createNativeSemanticsScenario(context, 'programmatic-mcp', [
+    { output: [program('const a = await tools.owned.echo({value:"雪"}); const b = await tools.owned.echo({value:a.echo}); text(JSON.stringify({a,b}));')], check(body) {
+      const declaration = body.tools.find(tool => tool.name === '__agents_program');
+      assert.ok(declaration?.description.includes('echo'));
+      assert.ok(!body.tools.some(tool => tool.name?.startsWith('__agents_mcp_')), 'Program-only MCP is not directly callable');
+      assert.ok(!JSON.stringify(body).includes(remote.expectedAuth));
+    } },
+    { output: [answer] },
+  ]);
+  await scenario.principal.browser('GET', '/v1/account');
+  const body = { model: scenario.agent.id, input: 'Call owned echo twice from one program.', max_tool_calls: 2,
+    tools: [{ type: 'programmatic_tool_calling' }, { type: 'mcp', server_label: 'owned', server_url: 'https://mcp.example.com/mcp',
+      authorization: remote.expectedAuth, require_approval: 'never', allowed_callers: ['programmatic'] }] };
+  const wire = await scenario.client.responses.create({ ...body, stream: true }, { headers: { 'Idempotency-Key': 'programmatic-mcp-once' } }).asResponse();
+  assert.equal(wire.status, 200, wire.status === 200 ? '' : await wire.text());
+  const events = await collectNativeEvents(wire);
+  if (scenario.state.failure) throw scenario.state.failure;
+  const value = events.findLast(event => event.type === 'response.completed')?.response;
+  assert.ok(value);
+  const output = value.output.find(item => item.type === 'program_output');
+  assert.equal(output?.status, 'completed');
+  assert.deepEqual(JSON.parse(output.result), { a: { echo: '雪' }, b: { echo: '雪' } });
+  assert.equal(remote.calls, before + 2);
+  assert.equal(scenario.state.calls, 2);
+  context.validateWire(value, events);
+  assert.deepEqual(await (await scenario.client.responses.retrieve(value.id).asResponse()).json(), value);
+  const replayEvents = await collectNativeEvents(await scenario.client.responses.create({ ...body, stream: true }, { headers: { 'Idempotency-Key': 'programmatic-mcp-once' } }).asResponse());
+  const replay = replayEvents.findLast(event => event.type === 'response.completed')?.response;
+  assert.ok(replay);
+  assert.equal(replay.id, value.id);
+  assert.equal(remote.calls, before + 2, 'An accepted program replay never repeats either MCP effect');
+  assert.equal(scenario.state.calls, 2);
+  assert.deepEqual((await charges(context.db, scenario.principal.owner)).map(row => [row.unit, Number(row.quantity), Number(row.amount_microusd)]).sort(), [
+    ['dynamic_worker_cpu_slot_100ms', 1, 2], ['dynamic_worker_creation_day', 1, 2000], ['dynamic_worker_request', 1, 1],
+  ].sort());
+  return { model_calls: 2, actual_mcp_calls: 2, same_origin_fetches: 1, program_only_caller: true, structured_result_join: true, idempotent_effects: true };
 }
 
 async function charges(db, owner) {

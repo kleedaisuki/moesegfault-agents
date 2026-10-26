@@ -252,6 +252,10 @@ impl SessionInner {
             };
             // Retain trustworthy native execution evidence before settling fees.
             operation.native_valid = true;
+            if operation.capacity_receipt.is_none() {
+                operation.metering_gap =
+                    Some(json!({"code":"programmatic_capacity_settlement_pending"}));
+            }
             save(&storage, &key, &operation).await?;
             if operation.capacity_receipt.is_none() {
                 let receipt = operation.native_receipt.as_ref().unwrap();
@@ -319,6 +323,10 @@ impl SessionInner {
                     }
                     Err(Error::RustError(code)) if code == "program_tool_allowance_exhausted" => {
                         program.fail("program_tool_allowance_exhausted");
+                        break;
+                    }
+                    Err(Error::RustError(code)) if code == "program_cancelled" => {
+                        program.cancel();
                         break;
                     }
                     Err(_) => {
@@ -398,6 +406,9 @@ impl SessionInner {
             return Err(fault("program_tool_allowance_exhausted"));
         }
         self.publish_hosted_item(&item, true).await?;
+        if self.programmatic_cancelled() {
+            return Err(fault("program_cancelled"));
+        }
         proof
             .verify_scope(&record.owner_id, &record.id, util::now_ms())
             .map_err(fault)?;
@@ -469,7 +480,7 @@ impl SessionInner {
             .ok_or_else(|| fault("program_output_missing"))?;
         self.publish_hosted_item(&output, true).await?;
         Ok(super::hosted_dispatch::HostedDispatch::Ready(
-            json!({"program_call_id":program.call_id(),"status":output["status"],"result":output["result"],"billing_pending":operation.metering_gap.is_some()}).to_string().into(),
+            json!({"program_call_id":program.call_id(),"status":output["status"],"result":output["result"],"billing_pending":operation.metering_gap.is_some() || (operation.native_receipt.is_some() && operation.capacity_receipt.is_none())}).to_string().into(),
         ))
     }
 }
