@@ -2,7 +2,7 @@
 // The authenticated operator runs this only against an approved staging profile.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import OpenAI, { toFile } from 'openai';
 
@@ -27,10 +27,19 @@ const sdk = new OpenAI({ baseURL, apiKey: process.env.FILE_SEARCH_API_KEY, maxRe
     if (trace) headers.set('traceparent', `00-${trace}-${randomUUID().replaceAll('-', '').slice(0, 16)}-00`);
     return fetch(input, { ...init, headers, redirect: 'error' });
   } });
-const marker = `retrieval-${randomUUID()}`;
+const document = process.env.FILE_SEARCH_DOCUMENT ?? 'text';
+assert.ok(['text', 'pdf'].includes(document), 'Choose only the approved text or checked-in native PDF input');
+const isPdf = document === 'pdf';
+const marker = `${isPdf ? 'native-pdf' : 'retrieval'}-${randomUUID()}`;
 const text = `${marker}\nThe project recovery code is violet-orbit-742.\n检索来源是用户上传的文件，不是遥测。\n`;
+const bytes = isPdf ? await readFile(new URL('../fixtures/retrieval/text-layer.pdf', import.meta.url)) : Buffer.from(text);
+if (isPdf) assert.equal(bytes.length, 593, 'The bounded PDF probe uses only its checked-in text-layer fixture');
+const expectedText = isPdf ? 'silver-lantern-513' : 'violet-orbit-742';
+const operatorSource = process.env.FILE_SEARCH_OPERATOR_SOURCE ?? null;
+if (operatorSource) assert.match(operatorSource, /^[a-f0-9]{40}$/);
 const started = Date.now();
-const report = { contract: 'file-search-upload-ingest-query-delete-v1', baseURL, marker,
+const report = { contract: isPdf ? 'file-search-native-pdf-text-v1' : 'file-search-upload-ingest-query-delete-v1', baseURL, marker,
+  input_kind: document, input_bytes: bytes.length, operator_source: operatorSource,
   started_at: new Date(started).toISOString(), source: process.env.FILE_SEARCH_EXPECTED_BUILD ?? null,
   trace_id: trace, language_model_submissions: 0, status: 'started', phase: 'intent', pending: null, checks: [], ids: {}, cleanup_failures: [] };
 const directory = path.resolve('.temp/file-search-journey');
@@ -47,8 +56,8 @@ try {
     const health = await response.json();
     assert.equal(health.status, 'ok'); assert.equal(health.build_id, report.source, 'Serving Worker changed before native data work');
   }
-  report.phase = 'upload_intent'; report.pending = { kind: 'source_upload', sha256: createHash('sha256').update(text).digest('hex') }; await save();
-  source = await sdk.files.create({ file: await toFile(Buffer.from(text), `${marker}.txt`, { type: 'text/plain' }), purpose: 'assistants' });
+  report.phase = 'upload_intent'; report.pending = { kind: 'source_upload', sha256: createHash('sha256').update(bytes).digest('hex') }; await save();
+  source = await sdk.files.create({ file: await toFile(bytes, `${marker}.${isPdf ? 'pdf' : 'txt'}`, { type: isPdf ? 'application/pdf' : 'text/plain' }), purpose: 'assistants' });
   report.ids.file = source.id; report.pending = null; await save();
   report.phase = 'store_create_intent'; report.pending = { kind: 'store_create' }; await save();
   store = await sdk.vectorStores.create({ name: marker, metadata: { journey: marker } });
@@ -71,22 +80,28 @@ try {
   } while (Date.now() < deadline);
   assert.equal(indexed.status, 'completed', 'Background ingestion did not become query-visible within its bounded deadline');
   report.checks.push('background_ingestion_completed'); report.phase = 'native_query_intent'; report.pending = { kind: 'native_hybrid_query' }; await save();
-  const result = await sdk.vectorStores.search(store.id, { query: 'What is the project recovery code?',
+  const result = await sdk.vectorStores.search(store.id, { query: isPdf ? expectedText : 'What is the project recovery code?',
     max_num_results: 5, filters: { type: 'eq', key: 'journey', value: marker } });
   assert.ok(result.data.some(hit => hit.file_id === source.id && hit.filename === source.filename &&
-    hit.content.some(part => part.type === 'text' && part.text.includes('violet-orbit-742'))));
+    hit.content.some(part => part.type === 'text' && part.text.includes(expectedText))));
   assert.ok(result.data.every(hit => hit.file_id === source.id));
-  report.pending = null; report.checks.push('actual_semantic_hybrid_query_with_source_identity'); await save();
+  report.pending = null; report.checks.push(isPdf ? 'native_pdf_text_conversion_index_and_lookup' : 'actual_semantic_hybrid_query_with_source_identity'); await save();
+  if (!isPdf) {
   const filtered = await sdk.vectorStores.search(store.id, { query: 'recovery code',
     filters: { type: 'eq', key: 'journey', value: 'not-this-owned-document' } });
   assert.deepEqual(filtered.data, []);
-  report.checks.push('attributes_prefilter'); report.phase = 'source_delete'; await save();
+  report.checks.push('attributes_prefilter');
+  }
+  report.phase = 'source_delete'; await save();
   const deleted = await sdk.files.delete(source.id);
   assert.equal(deleted.deleted, true);
   source = undefined;
+  if (!isPdf) {
   const after = await sdk.vectorStores.search(store.id, { query: 'project recovery code' });
   assert.deepEqual(after.data, [], 'A stale vector must not resurrect deleted source text');
-  report.checks.push('source_delete_immediately_invalidates_results'); report.phase = 'store_delete'; await save();
+  report.checks.push('source_delete_immediately_invalidates_results');
+  } else { report.checks.push('new_pdf_source_delete'); }
+  report.phase = 'store_delete'; await save();
   const removed = await sdk.vectorStores.delete(store.id);
   assert.equal(removed.deleted, true);
   store = undefined;
