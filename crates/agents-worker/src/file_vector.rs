@@ -558,7 +558,14 @@ pub async fn ingest_turn(
             .await?;
             return Ok(IngestProgress::Unavailable);
         }
-        let object = crate::space::file_object(env, owner, &source).await?;
+        let object = crate::space::file_object_with_meter(
+            env,
+            owner,
+            &source,
+            meter,
+            &format!("{attempt}:download"),
+        )
+        .await?;
         let bytes = object
             .body()
             .ok_or_else(|| fail("file_not_ready"))?
