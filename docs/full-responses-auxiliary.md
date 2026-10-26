@@ -399,6 +399,20 @@ extracted text: https://developers.openai.com/api/docs/guides/file-inputs .
 New verification is scoped to `tests/worker/remote-file-input.test.mjs`: actual
 compiled Worker + OpenAI SDK remote text/count/create equivalence, metadata,
 owner isolation, no forwarded secrets, redirect/size rejection, prepaid failure
-and stable response intent. This source addition does not claim execution until
-its new exact-artifact journey passes; prior PDF/embedding/Space/image acceptance
-is not rerun.
+and stable response intent. Actions run `40350857149`, source
+`01c2d840712d2f433c935b046781b6380a2dd557`, passed the two new Rust contracts
+and the actual compiled-Worker SDK journey (1/1). Worker artifact `12663479621`
+and receipt artifact `12665370102` bind the successful boundary; its one model
+action used the controlled native provider, not paid external inference.
+
+Follow-up source `02484f1` separates syntax acceptance from visual execution
+capability for inline/owned sources too and prevents an additional external read
+after the aggregate budget is exhausted. `2839913` retains the honest opaque ZIP
+workspace fallback. Actions `40353046769`, source
+`29dbd6c9473e8be95c96b3302647dfa25f122829`, passed the changed Rust metadata
+contract and only the new Worker metadata/aggregate fragment (1/1). The real
+count route returns 422 for legal but unsupported inline/owned visual detail;
+after sixteen 256-KiB remote text parts it rejects the exhausted aggregate
+budget without a seventeenth download, Session, File or provider count/model
+submission. It does not replay the accepted remote front or any prior
+PDF/embedding/Space/image acceptance.
