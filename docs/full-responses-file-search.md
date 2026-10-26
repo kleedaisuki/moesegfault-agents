@@ -285,6 +285,24 @@ local RAII admission guard allows one active ingestion buffer per isolate;
 durable leases and ordinary polling/maintenance still provide cross-isolate
 recovery and horizontal concurrency. Cancellation releases admission directly.
 
+## Validated increment boundaries
+
+| Increment | Actual evidence | Interpretation |
+| --- | --- | --- |
+| Text indexing and native answer | Source d527309, compiled Worker artifact 12646147267 from CI 40313866981; public Node SDK upload/attach/ready/query, owner isolation, two fixture provider rounds and Unicode citation | Real Rust/D1/R2/DO control flow with controlled two-dimensional AI/Vectorize transports, not live semantic quality |
+| Document management | Same d527309 CI; file-document Worker journey, six actual-statement extraction SQL cases and three archive Rust cases passed | PDF/DOCX bytes reach native conversion, cached text indexes, empty text has no OCR fallback, deletion clears derived extraction; estimated converter tokens are ignored |
+| Capacity accounting | Source 5318612, artifact 12644409319; retained-Wasm capacity journey passed after correcting the ledger ownership join | Confirmed native deletion, exact accumulated dimension-ms, one final carry rounding, no terminal capacity holds; fixture rate is not the public Cloudflare rate |
+| Cold archived read and replay | Source 0ce7afc, artifact 12647029371 from CI 40317203899, reading the already-completed d527309 Session | GET, current strict Python SDK wire schema, byte-identical repeated SSE and original durable event journal projection passed with zero new model/outbound calls |
+| Delete invalidation tail | Same retained source state and 0ce7afc artifact; actual public SDK source/store deletes, all AI/Vectorize methods forbidden | Search is empty while one stale derived row still exists: owner/source SQL eligibility prevents resurrection independently of provider deletion. Pending and terminal operation holds are zero; the live Session retains its legitimate 18-microUSD cleanup hold |
+
+The cold-read check uses a copied local controlled fixture state, not a new
+conversation or replacement source. It compares replay against the retained
+original journal under the original include projection. The format journey
+uses the complete text-layer fixture at tests/fixtures/retrieval/text-layer.pdf;
+XLSX container recognition is covered by Rust, not yet a real native-converter
+acceptance claim. No entry above establishes a live Cloudflare embedding index,
+production deployment, or paid-provider semantic-quality result.
+
 ## Remaining admission boundary
 
 Ingestion currently shares one generation-level maintenance reservation across
