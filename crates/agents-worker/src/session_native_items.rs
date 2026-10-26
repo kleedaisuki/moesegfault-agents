@@ -303,7 +303,7 @@ fn invalid() -> Error {
     Error::RustError("invalid_native_item_handle".into())
 }
 
-pub(super) fn invalid_lookup(error: &Error) -> bool {
+pub(crate) fn invalid_lookup(error: &Error) -> bool {
     matches!(error, Error::RustError(code) if matches!(code.as_str(),
         "invalid_native_item_handle" | "native_item_context_mismatch" | "native_item_not_found" | "response_not_retained"))
 }
