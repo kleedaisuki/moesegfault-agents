@@ -65,7 +65,10 @@ export function changedRustTests(content, ranges) {
 }
 
 function command(id, argv, reason, env = {}) {
-  if (argv[0] === 'node' && argv[1] === '--test') argv = [argv[0], argv[1], '--test-reporter=tap', ...argv.slice(2)];
+  if (argv[0] === 'node' && argv[1] === '--test'
+      && !argv.some(arg => arg === '--test-reporter' || arg.startsWith('--test-reporter='))) {
+    argv = [argv[0], argv[1], '--test-reporter=tap', ...argv.slice(2)];
+  }
   if (argv.includes('pytest')) {
     const temporary = createHash('sha256').update(id).digest('hex').slice(0, 16);
     argv = [...argv, '--basetemp=.temp/pytest-increment-' + temporary, '-o', 'cache_dir=.cache/pytest'];
