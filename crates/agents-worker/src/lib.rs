@@ -58,6 +58,7 @@ mod programmatic_runtime;
 mod programmatic_tools;
 mod prompt_templates;
 mod provider;
+mod provider_response_receipt;
 mod public_image_input;
 mod reconcile;
 mod resources;
