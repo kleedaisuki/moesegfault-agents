@@ -134,3 +134,71 @@ jobs:
           path: .temp/code-executor/*.log
           include-hidden-files: true
           retention-days: 14
+
+  real-executor-journey:
+    needs: code-runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: worker
+          path: crates/agents-worker/build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: container-image
+          path: .cache/code-executor-image
+          run-id: 40324162172
+          github-token: ${{ github.token }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/e2e/requirements-current.lock
+      - run: |
+          python3 -m venv .cache/e2e-current-venv
+          .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
+      - name: Load the accepted image without rebuilding or replaying its native test
+        run: |
+          node --input-type=module -e 'import {loadImageArtifact} from "./scripts/container-artifact.mjs"; await loadImageArtifact(".cache/code-executor-image","7c2692092e40d3a5594d57b935552c24e5080c87")'
+      - name: Start an authenticated dedicated real Python executor
+        run: |
+          set -euo pipefail
+          token=$(openssl rand -hex 32)
+          echo "::add-mask::$token"
+          echo "MAGENTS_CODE_EXECUTOR_TOKEN=$token" >> "$GITHUB_ENV"
+          docker run --detach --name code-executor --memory 4g --memory-swap 4g --publish 127.0.0.1::8080 --env "MAGENTS_DAEMON_TOKEN=$token" magents-workspace:7c2692092e40d3a5594d57b935552c24e5080c87
+          address=$(docker port code-executor 8080/tcp)
+          echo "MAGENTS_CODE_EXECUTOR_ORIGIN=http://$address" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 60); do
+            if curl --silent --fail -H "Authorization: Bearer $token" "http://$address/health" > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: New compiled Rust Worker to actual executor Python and artifact journey
+        env:
+          MAGENTS_CURRENT_SCHEMA_PYTHON: .cache/e2e-current-venv/bin/python
+          MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .temp/code-executor-real
+          node --test --test-reporter=tap --test-name-pattern='real BYOK executor Python' tests/worker/hosted-code.test.mjs 2>&1 | tee .temp/code-executor-real/worker.log
+      - name: Stop only the dedicated test instance
+        if: always()
+        run: docker rm --force code-executor || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: code-executor-real-receipts
+          path: |
+            .temp/code-executor-real/*.log
+            .temp/hosted-code-*/receipt.json
+          include-hidden-files: true
+          retention-days: 14
