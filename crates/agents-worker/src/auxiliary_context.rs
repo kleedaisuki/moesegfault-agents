@@ -78,10 +78,19 @@ pub(crate) async fn prepare(
     let mut prior_messages = vec![];
     let mut prior_native = vec![];
     let mut instructions = None;
+    let mut inherited_discovery = None;
+    let mut pending_search = Vec::new();
     if let Some(context) = source {
         if context.record.owner_id != owner {
             return Err(fail("response_not_found"));
         }
+        inherited_discovery = context.discovery;
+        pending_search = context
+            .general_pending_calls
+            .iter()
+            .filter(|call| call.kind == "tool_search")
+            .map(|call| call.call_id.clone())
+            .collect();
         prior_messages.extend(context.history_instructions);
         prior_messages.extend(context.messages.into_iter().skip(1));
         prior_native = match context.native_items {
@@ -150,7 +159,7 @@ pub(crate) async fn prepare(
         pinned.workspace,
     )
     .await?;
-    let native_input = resolved
+    let mut native_input = resolved
         .input
         .as_array()
         .ok_or_else(|| fail("invalid_resolved_native_input"))?
@@ -171,6 +180,56 @@ pub(crate) async fn prepare(
     }
     if prefix.len() > 256 * 1024 {
         return Err(fail("invalid_auxiliary_request"));
+    }
+    let declarations = request.native_tool_items().map_err(fail)?;
+    let mut mcp = if declarations.iter().any(|tool| tool["type"] == "mcp") {
+        let mut funding = crate::mcp_funding::DiscoveryFunding::start_read(
+            env,
+            owner,
+            agents_auth::billing::Resource::Worker,
+        )
+        .await?;
+        let resolved = crate::mcp_runtime::McpBindings::resolve_in_scope(
+            env,
+            owner,
+            &crate::util::id("count_mcp"),
+            &declarations,
+        )
+        .await;
+        funding.observe_end();
+        funding.finish(env, owner).await?;
+        resolved?
+    } else {
+        crate::mcp_runtime::McpBindings::default()
+    };
+    mcp.require_ready()?;
+    let mut discovery =
+        crate::tool_discovery::ToolRegistry::compile_with_input(&declarations, &native_input)
+            .map_err(fail)?;
+    if let Some(registry) = discovery.as_mut() {
+        registry.register_mcp(&mcp).map_err(fail)?;
+        registry
+            .reserve_server_names(
+                context_prefix::definitions(&pinned)
+                    .iter()
+                    .map(|definition| definition.function.name.as_str()),
+            )
+            .map_err(fail)?;
+        if let Some(previous) = &inherited_discovery {
+            let origins = prior_native
+                .iter()
+                .map(crate::tool_discovery::output_digest)
+                .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()
+                .map_err(fail)?;
+            registry.inherit_loaded_from(previous, &origins);
+        }
+        registry
+            .authorize_pending_search(pending_search.iter().map(String::as_str))
+            .map_err(fail)?;
+        native_input = registry
+            .encode_input(&native_input, true, request.tool_choice.as_ref())
+            .map_err(fail)?;
+        registry.select_choice(request.tool_choice.as_ref());
     }
     let mut native = provider::responses::message_items(&[Message::text("system", prefix.clone())])
         .map_err(fail)?;
@@ -197,9 +256,6 @@ pub(crate) async fn prepare(
     if reserved_tool_conflict(request, &definitions) {
         return Err(fail("invalid_auxiliary_request"));
     }
-    let declarations = request
-        .native_tool_items()
-        .map_err(|_| fail("invalid_auxiliary_request"))?;
     let bound = if declarations.iter().any(|tool| {
         matches!(
             tool["type"].as_str(),
@@ -226,15 +282,21 @@ pub(crate) async fn prepare(
         crate::hosted_bindings::BoundTools::default()
     };
     let mut tools = provider::responses::tool_items(&definitions).map_err(fail)?;
-    tools.extend(bound.render_native(&declarations)?);
+    let bindings = crate::tool_rendering::ToolBindings {
+        hosted: &bound,
+        mcp: &mcp,
+        discovery: discovery.as_ref(),
+    };
+    tools.extend(bindings.render_native(&declarations, true)?);
     let mut controls = request.native_controls();
     if let Some(choice) = controls.get_mut("tool_choice") {
-        *choice = bound.rewrite_choice(choice.clone())?;
+        *choice = bindings.rewrite_choice(choice.clone(), true)?;
     }
     if let Some(personality) = personality {
         controls["personality"] = personality;
     }
     let prepared = PreparedRequest::new(&config, &native, &tools, &controls).map_err(fail)?;
+    mcp.clear_credentials();
     Ok(Context {
         agent: request.model.clone(),
         pinned,
