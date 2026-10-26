@@ -6,18 +6,22 @@ The current public contract inventory is [full-responses-contract.md](full-respo
 
 ## Authority and integration
 
-- `responses_full` is the integration captain: shared index, coherent commits,
-  feature CI, and cross-subsystem interfaces. Root owns user/global decisions,
-  final production promotion and public release.
-- Only one index writer may act at a time. An explicit delegated lease permits a
-  subsystem lead to commit its complete isolated increment. Working-tree feature
-  changes remain intact; never checkout/reset merely to construct a test tree.
+- Topic owners deliver implementation, focused CI and their source integration
+  directly; there is no intermediate manager or central approval queue. Root
+  retains final production promotion and public release decisions.
+- Independent topics use separate worktrees and build/test concurrently. Shared
+  integration-index writes are briefly serialized, not whole workstreams. Each
+  owner releases that boundary after its atomic merge; unrelated WIP is preserved.
+- Pin the exact staging deployment ref and source run before dispatch. Later
+  integration can continue without changing that deployment or waiting for its
+  user journey. Only competing changes to the same live environment need a
+  deployment handoff; independent component checks do not.
 - Existing userspace contracts, user source journals, financial vintages,
   immutable results, owner checks and last-user-append clocks are invariants.
 - Heavy compilation and broad checks run in Actions. Local verification is
   limited to inexpensive probes, metadata/syntax/property setup and real journeys.
 
-## Cohesive workstreams
+## Initial workstream decomposition (historical)
 
 | Workstream | Lead / owned boundary | Next useful checkpoint |
 | --- | --- | --- |
