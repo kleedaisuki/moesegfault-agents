@@ -123,3 +123,33 @@ actual conversion, metadata deletion and explicit purge, then cold read-only
 Response survival. It does not replay accepted auto-window generations.
 Nine local actual-SQL lifecycle/concurrency/property checks passed; this is not
 a substitute for the new Worker lifecycle or subsequent real-provider staging.
+
+## Definite rejection and pending recovery
+
+`reclaim_pending` is shared by admission and explicit purge. Activated runs and
+legacy/unknown leases without a pending deadline cannot be reclaimed by elapsed
+time. A definite capacity rejection uses the exact Response/generation fence
+immediately instead of waiting for that deadline. It reloads canonical header
+state after a failed header allocation, removes only never-accepted admission
+membership and releases the writer. The response cleanup funding closes only
+after the authority confirms release and actual resource measurements settle.
+A settled rejected identity with no admission membership cannot reopen a writer;
+accepted completed/cancelled memberships retain their existing retry path.
+Unknown publication/accounting outcomes keep their holds.
+
+Actions `40348610976`, source `c1bac6f`, Worker artifact `12662202226`, passed
+only the new `capacity-rejection` lifecycle. Declared synthetic pre-existing
+logical history drove the real public conditional admission boundary without
+writing 256 MiB. The actual Worker returned capacity 409, immediately released
+the writer, settled its known resource cleanup scope, fenced the rejected-key
+retry, and accepted metadata DELETE plus irreversible purge without a TTL wait.
+Provider calls, counter calls and model ledger rows were all zero. Earlier
+successful generations and nine SQL properties were not replayed.
+
+A small subsequent call-site integration preserves idempotent writer-release
+acknowledgments after irreversible purge. No-append acknowledgments require the
+exact already-released escrow generation; admission/activation/extension/append
+remain denied. This lets a retired queued Session finish cleanup without a
+permanent purged-404 loop, without inventing zero unknown model usage. That
+terminal acknowledgment wiring remains for the next coherent artifact build;
+it is not relabeled as executed in the earlier source-bound receipt.
