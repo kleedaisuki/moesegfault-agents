@@ -1,0 +1,82 @@
+name: Code runtime increment
+on:
+  push:
+    branches: [codex/code-runtime]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: code-runtime-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CODE_RUNTIME_CASE_PATTERN: 'lost Code VM releases capacity|owned CID reuses'
+jobs:
+  code-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c
+        with:
+          shared-key: worker
+          cache-all-crates: true
+          cache-on-failure: true
+      - run: cargo fmt -p agents-worker --check
+      - name: Only the three unexecuted Rust contracts
+        run: |
+          set -euo pipefail
+          mkdir -p .temp/code-runtime
+          for test in a_borrowed_ticket_is_stable_but_cannot_change_owner_generation_or_funding borrowed_code_memory_never_selects_or_bills_a_second_local_vm code_resource_errors_preserve_owned_not_found_and_release_actions; do
+            cargo test --locked -p agents-worker --lib "$test" -- --nocapture 2>&1 | tee -a .temp/code-runtime/rust.log
+          done
+      - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
+      - run: cargo install --locked worker-build --version 0.8.7
+      - run: worker-build --release
+        working-directory: crates/agents-worker
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/bundle-worker.mjs
+        id: bundle
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        with:
+          name: worker
+          path: crates/agents-worker/build
+          retention-days: 7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/e2e/requirements-current.lock
+      - name: Locked current SDK wire schema
+        run: |
+          python3 -m venv .cache/e2e-current-venv
+          .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
+      - name: Only new lost-VM and owned-CID Worker journeys
+        env:
+          MAGENTS_CURRENT_SCHEMA_PYTHON: .cache/e2e-current-venv/bin/python
+          MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node --test --test-reporter=tap "--test-name-pattern=$CODE_RUNTIME_CASE_PATTERN" tests/worker/hosted-code.test.mjs 2>&1 | tee .temp/code-runtime/worker.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: code-runtime-receipts
+          path: |
+            .temp/code-runtime/*.log
+            .temp/hosted-code-*/receipt.json
+          retention-days: 14
+          if-no-files-found: warn
