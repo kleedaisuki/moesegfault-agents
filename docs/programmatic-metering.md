@@ -49,6 +49,27 @@ using a current tariff or fabricated actual CPU quantity. No `cpu_ms` usage or
 await wall time is recorded. Multiple independent resume fetches are not a proof
 of one cumulative 100 ms scope and cannot mint the allocation witness.
 
+## Native JavaScript configuration boundary
+
+The first actual Rust Session → Loader invocation in GHA 40340822807 exposed a
+boundary that the earlier pure-JavaScript isolation proof cannot cover:
+`serde_json` with `arbitrary_precision` represents `Number` through a private
+Serde map. Serializing a `Value` with `serde_wasm_bindgen`'s JSON-compatible
+serializer passed `limits.cpuMs` as
+`{"$serde_json::private::Number":"100"}`, not the JavaScript integer `100`.
+The Loader WebIDL conversion rejected it as "not an integer" before program
+execution. The actor correctly retained an unknown outcome instead of inventing
+creation/CPU settlement.
+
+`RuntimeSpec::worker_code` now uses `js_sys::JSON::parse(&code.to_string())` for
+this native platform configuration only. It produces the same ordinary JavaScript
+configuration as the accepted Loader component proof without a special-case
+numeric object walker. The only numeric fields here are the bounded configured
+CPU limit and zero subrequests, both exactly representable as JavaScript numbers.
+This is **not** a global serializer change: immutable wallet records, D1 integer
+quantities, owner state and persistent JSON retain their existing precision.
+Values above 2^53 must not silently traverse this profile-config boundary.
+
 ## Identity and atomic deduplication
 
 `TurnAdmission` contains trusted owner/session, opaque Worker ID, full module
