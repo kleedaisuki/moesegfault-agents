@@ -86,6 +86,69 @@ are not evidence that the compiled journey has run.
 
 ## Execution, original delivery, and terminal cache
 
+### Private paid HTTP response receipts
+
+`provider_response_receipt.rs` preserves the original received provider body
+before JSON/raster validation. It is a private execution-recovery object in the
+existing `WORKSPACES` bucket, not a public File, Space attachment, diagnostic log,
+or a second provider request. Owner/operator recovery uses the existing Rust
+harness and an authorized actor-held descriptor; knowing a hash grants no read
+authority. No public debug endpoint or new business table is introduced.
+
+The caller prepares `StoredResponse` from the first `ResponseMeta`, durably saves
+that descriptor, then calls `store_prepared` with a borrowed body. The original
+body can move back to the parser without cloning it. Only after every write
+completes may the actor mark the receipt complete. Recovery can attempt `read`
+with an incomplete descriptor after a crash; missing chunks fail explicitly and
+must never trigger another paid POST. Metadata discovered by later parsing goes
+in separate actor observations, never mutates the original descriptor/AAD.
+
+The body limit is 24 MiB. At most 24 one-MiB plaintext chunks are encrypted using
+the existing `agents_auth::seal/unseal` AES-GCM primitive and
+`DATA_ENCRYPTION_KEY`. This bounds transient encoding/cipher buffers to a chunk,
+not another base64 copy of a 22-MiB response. The descriptor binds owner and
+operation digests, body SHA-256, total bytes, chunk count, HTTP status, bounded
+allowlisted request/generation IDs, content type and measured receive duration.
+Associated data additionally binds the exact chunk index and plaintext length.
+Reads check encoded object size before allocation, authenticate each chunk in
+order, and verify the complete body length and SHA-256 before returning bytes.
+Even an empty HTTP body has one authenticated chunk. Private keys are derived
+from the descriptor; deserialization cannot substitute an arbitrary R2 key.
+
+Stable keys and create-only conditional PUT prevent overwrites. An existing
+chunk is decrypted and compared to the original plaintext; a concurrent CAS
+winner is read back and checked, not overwritten with a new random nonce.
+This follows the platform's [conditional R2 operation contract](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/#conditional-operations)
+and the existing primitive's [authenticated associated-data model](https://csrc.nist.gov/pubs/sp/800/38/d/final).
+
+Funding and lifecycle are caller-owned invariants:
+
+- Persist a new `IoAttempt` before every resumed operation. Chunk-specific GET,
+  PUT, race-read and delete-HEAD events use the existing ResourceMeter journal;
+  reusing an attempt after ambiguous I/O would undercount actual resource use.
+- Admit at most one retained receipt per image operation and fund its physical
+  storage and bounded I/O before provider dispatch. Maximum encrypted storage is
+  `MAX_ENCRYPTED_RESPONSE_BYTES` (33,555,360 bytes), distinct from image capacity.
+  `storage_bytes()` gives the exact encrypted size of a prepared descriptor.
+  Retried/recovery I/O needs its own persisted, funded attempt, not invented
+  zero-cost observations. Actual R2 object clocks are registered after writes,
+  replay reads and recovery reads using existing account storage reconciliation.
+- Persist incomplete/error state and the descriptor on any archive, parse or
+  decode failure. A partially written receipt is discoverable, not complete.
+  Failed receipts retain the only paid result for authorized recovery; elapsed
+  diagnostic TTLs and storage debt do not authorize deleting it.
+- `delete` is explicit terminal cleanup after durable canonical/blob publication
+  or authorized abandonment. Fence publication and re-store before calling it,
+  retain the descriptor until all deletions and storage-clock closures complete,
+  and fund its bounded HEAD/D1 work. R2 DELETE itself is free. Never reuse a
+  deleted physical key as a new storage generation.
+
+The pure tests cover descriptor round trips, ownership, metadata substitution,
+chunk ordering, ciphertext tampering/truncation, length/hash integrity, empty and
+maximum chunk layouts, and property-based arbitrary-byte round trips. They do
+not by themselves establish the compiled Worker/R2 journey; integration must
+exercise synthetic paid-result recovery without another provider dispatch.
+
 ### Conversation publication and public observation
 
 The image integration keeps Conversation images on the same immutable owner-blob
