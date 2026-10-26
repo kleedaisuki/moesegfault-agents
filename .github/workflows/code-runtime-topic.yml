@@ -31,13 +31,11 @@ jobs:
           cache-all-crates: true
           cache-on-failure: true
       - run: cargo fmt -p agents-worker --check
-      - name: Only the new executor authority and memory contracts
+      - name: Only the new frozen-resource identity regression
         run: |
           set -euo pipefail
           mkdir -p .temp/code-runtime
-          for test in external_executor_memory_is_not_rewritten_to_a_cloudflare_sku executor_context_and_spool_selectors_are_not_arbitrary_url_paths legacy_context_pins_keep_identity_and_ticket_bytes_across_memory_descriptors owned_executor_is_selected_before_cloudflare_memory_policy; do
-            cargo test --locked -p agents-worker --lib "$test" -- --nocapture 2>&1 | tee -a .temp/code-runtime/rust.log
-          done
+          cargo test --locked -p agents-worker --lib code_reuse_rejects_memory_backend_and_executor_identity_changes_before_prepare -- --nocapture 2>&1 | tee .temp/code-runtime/rust.log
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
