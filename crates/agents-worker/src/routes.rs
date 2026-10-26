@@ -15,15 +15,28 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 pub(crate) struct RouteContext<'a> {
     env: &'a Env,
     trace: &'a TraceContext,
+    background: Option<&'a Context>,
 }
 
 impl<'a> RouteContext<'a> {
     pub(crate) fn new(env: &'a Env, trace: &'a TraceContext) -> Self {
-        Self { env, trace }
+        Self {
+            env,
+            trace,
+            background: None,
+        }
     }
 
     pub(crate) fn trace(&self) -> &TraceContext {
         self.trace
+    }
+
+    pub(crate) fn defer(&self, task: impl std::future::Future<Output = ()> + 'static) -> bool {
+        if let Some(context) = self.background {
+            context.wait_until(task);
+            return true;
+        }
+        false
     }
 }
 
@@ -40,6 +53,7 @@ pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let route = RouteContext {
         env: &env,
         trace: &trace,
+        background: Some(&_ctx),
     };
     let _span = crate::telemetry::NativeSpan::start("agents.http", Some(&trace));
     let started_at = util::now_ms();
