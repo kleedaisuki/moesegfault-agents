@@ -1935,7 +1935,6 @@ impl SessionInner {
         execution_id: &str,
         call: &provider::ToolCall,
     ) -> Result<hosted_publication::HostedDispatch> {
-        let name = &call.function.name;
         let trace = crate::telemetry::TraceContext::from_traceparent(
             self.snapshot()?
                 .run

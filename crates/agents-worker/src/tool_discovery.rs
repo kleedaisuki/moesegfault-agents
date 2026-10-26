@@ -1430,7 +1430,7 @@ impl ToolRegistry {
             return Err("invalid_tool_search_paths".into());
         }
         Ok(self.entries.iter().filter(|entry| {
-            let item = json!({"type":if entry.key.kind == "custom" {"custom_tool_call"} else {"function_call"},"name":entry.key.name,"namespace":entry.key.namespace});
+            let item = if entry.alias().starts_with(crate::mcp_bindings::ALIAS_PREFIX) { json!({"type":"mcp_call","server_label":entry.key.namespace,"name":entry.key.name}) } else { json!({"type":if entry.key.kind == "custom" {"custom_tool_call"} else {"function_call"},"name":entry.key.name,"namespace":entry.key.namespace}) };
             if !allowed_discovery(choice, &item) { return false }
             let path = entry.key.path();
             paths.is_some_and(|paths| paths.iter().any(|candidate| candidate.as_str().is_some_and(|candidate| candidate == path || entry.key.namespace.as_deref() == Some(candidate)))) || query.as_ref().is_some_and(|query| {
