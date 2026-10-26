@@ -263,10 +263,10 @@ not change. There is no post-failure fallback or hidden repair inference.
 The native context is passed as complete JSON data rather than a lossy Chat
 projection. The exact outgoing Messages body uses the official renderer and the
 same bounded warm vocabulary for the context-window check. Existing sealing
-retains protected instructions separately. This first slice supports resolved
-text/tool context; media and vendor-opaque inputs without a portable resolution
-remain explicit pre-inference capability errors, not text placeholders. Their
-full-context integration remains required. Known partial/failed model output is
+retains protected instructions separately. Resolved text/tool context uses this
+path; the media increment below adds image-bearing input. Vendor-opaque inputs
+without a portable resolution remain explicit pre-inference capability errors,
+not text placeholders. Known partial/failed model output is
 accounted for but never installed as a successful summary.
 
 SDK 3.37.0 has a local schema inconsistency: `CompactedResponse.output` documents
@@ -278,3 +278,38 @@ the SDK's `ResponseInputMessageItem` and `ResponseCompactionItem` for this one
 union, while inheriting the SDK's unchanged envelope and usage model. It does
 not drop payload fields or claim the unmodified faulty union validated. Normal
 SDK calls and passing the entire returned window into generation remain tested.
+
+### Frozen media and owned DeepSeek credentials
+
+`provider_compaction_source` consumes the existing owner-validated, frozen
+attachment view. Text files already use the common read-only attachment renderer;
+it neither creates a workspace nor uploads a second file. Source JSON keeps roles,
+tool identities and content order, while image payloads become location markers
+plus actual ordered image blocks in the summarizer's user data message. Base64
+bytes are not accidentally billed as text tokens. Screenshot outputs and typed
+function/custom output images use that same path, not a second execution bridge.
+Original source and retained user media remain unchanged.
+
+The Messages wire has no `detail: low` control. For this purpose-specific
+transport, a low image larger than 512 pixels is actually resized to fit 512 by
+512 before request rendering and exact counting. Existing `image` codecs perform
+the bounded decode/resize, with a 16 MiB decode allocation limit; failed decoding
+is a pre-dispatch capability error, never permission to send an original image
+while billing for a fictional resize. Other detail modes preserve original bytes.
+The shared official recipe renderer counts the actual final image dimensions.
+Pro images, unresolved files/URLs and foreign opaque continuations remain explicit
+errors rather than the vendor converter's unsupported-image text placeholder.
+
+Purpose selection follows the resolved immutable DeepSeek origin, including an
+owned BYOK credential, rather than depending on the platform funding enum. This
+does not relabel generation pins or forward credentials to another origin. BYOK
+continues to have no platform model API charge; actual infrastructure is metered.
+
+New tests cover source order and immutability, real low-image materialization,
+pre-inference rejection, and an actual Rust Worker/current SDK media compact
+window followed by continuation after the original file is deleted. Existing
+text compact and budget receipts are retained, not replayed by this increment.
+Compilation and execution results are recorded after Actions, not implied here.
+
+Provider image transport reference:
+https://api-docs.deepseek.com/guides/vision/#using-images-with-the-anthropic-api

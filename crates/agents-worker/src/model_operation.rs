@@ -467,7 +467,7 @@ impl Inner {
         }
         let mut options = GenerationOptions::default();
         let mut rendered_input_tokens = None;
-        if input.model.provider == agents_core::Provider::DeepSeek {
+        if provider::is_deepseek(&config) {
             let projected;
             let source = if let Some(items) = &input.native_input {
                 items.as_slice()

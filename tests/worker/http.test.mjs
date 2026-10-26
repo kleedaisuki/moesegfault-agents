@@ -25,6 +25,7 @@ import { runJsonObserverJourney } from './json-observer-journey.mjs';
 import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
 import { createAuxiliaryProviderFixture, runAuxiliaryJourney } from './auxiliary-journey.mjs';
 import { createDeepseekCompactFixture, runDeepseekCompactJourney } from './deepseek-compact-journey.mjs';
+import { runDeepseekCompactMediaJourney } from './deepseek-compact-media-journey.mjs';
 import { runDeepSeekTokenizerJourney } from './deepseek-tokenizer-journey.mjs';
 import { createVisionInputFixture, runDeepSeekVisionCountJourney } from './deepseek-vision-count-journey.mjs';
 import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
@@ -545,6 +546,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   };
   await selected(t, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage', { timeout: 60000 }, () =>
     runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact }));
+  await selected(t, 'DeepSeek compact keeps frozen images and files through a complete continuation window', { timeout: 60000 }, () =>
+    runDeepseekCompactMediaJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact }));
   await selected(t, 'DeepSeek compact reserves the exact rendered input rather than the full model window', { timeout: 60000 }, () =>
     runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact, budgetOnly: true }));
   await selected(t, 'response-wide server tool allowance survives disobedient calls and cold retrieval', { timeout: 40000 }, () =>
