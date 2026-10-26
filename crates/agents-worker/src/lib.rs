@@ -15,6 +15,7 @@ mod code_runtime;
 mod context_management;
 mod context_prefix;
 mod conversation_meter;
+mod conversation_quota;
 mod conversation_routes;
 mod conversation_state;
 mod deepseek_tokenizer;

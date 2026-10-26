@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use worker::*;
 
+pub(crate) use crate::conversation_quota::escrow::Request as ConversationCapacityRequest;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ConversationSnapshot {
     pub id: String,
@@ -45,6 +47,10 @@ pub(crate) struct ConversationExecutionContext {
     pub pin_hash: String,
     pub accepted_revision: u64,
     pub defer_release: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capacity_generation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_provenance: Option<ConversationItemProvenance>,
     pub item_provenance: std::collections::BTreeMap<String, ConversationItemProvenance>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub image_assets: std::collections::BTreeMap<String, crate::workspace_blobs::OwnedBlobRef>,
@@ -126,13 +132,16 @@ async fn handle_inner(
     }
     let (id, suffix) = match segments.as_slice() {
         ["v1", "conversations", id] if valid_id(id) => (*id, "/metadata".to_owned()),
+        ["v1", "conversations", id, "purge"] if valid_id(id) => (*id, "/purge".to_owned()),
         ["v1", "conversations", id, "items"] if valid_id(id) => (*id, "/items".to_owned()),
         ["v1", "conversations", id, "items", item] if valid_id(id) && valid_id(item) => {
             (*id, format!("/items/{item}"))
         }
         _ => return not_found(),
     };
-    let allowed = if suffix == "/metadata" {
+    let allowed = if suffix == "/purge" {
+        method == Method::Post
+    } else if suffix == "/metadata" {
         matches!(method, Method::Get | Method::Post | Method::Delete)
     } else if suffix == "/items" {
         matches!(method, Method::Get | Method::Post)
@@ -149,6 +158,9 @@ async fn handle_inner(
         Ok(query) => format!("{suffix}{query}"),
         Err(message) => return invalid(message),
     };
+    if suffix == "/purge" {
+        return dispatch.forward(id, method, &suffix, None).await;
+    }
     let body = if method == Method::Post {
         let body: Value = match routes::body(&mut req).await {
             Ok(body) => body,
@@ -213,6 +225,81 @@ pub(crate) async fn admit(env: &Env, owner: &str, id: &str, response_id: &str) -
     )
     .await;
     operation.finish_result(env, owner, result, false).await
+}
+
+pub(crate) async fn reserve_capacity(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    session_id: &str,
+    accepted_revision: u64,
+    capacity: &ConversationCapacityRequest,
+) -> Result<Response> {
+    let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
+    let result=Dispatch {env,owner,operation:&operation}.existing(id,Method::Post,"/responses/reserve",
+        Some(json!({"response_id":response_id,"session_id":session_id,"accepted_revision":accepted_revision,"capacity":capacity}))).await;
+    operation.finish_result(env, owner, result, false).await
+}
+
+pub(crate) async fn activate_generation(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    session_id: &str,
+    accepted_revision: u64,
+    generation: &str,
+) -> Result<Response> {
+    let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
+    let result=Dispatch {env,owner,operation:&operation}.existing(id,Method::Post,"/responses/activate",
+        Some(json!({"response_id":response_id,"session_id":session_id,"accepted_revision":accepted_revision,"capacity_generation":generation}))).await;
+    operation.finish_result(env, owner, result, false).await
+}
+
+pub(crate) async fn reserve_additional_input(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    session_id: &str,
+    generation: &str,
+    submission_id: &str,
+    capacity: &ConversationCapacityRequest,
+) -> Result<Response> {
+    let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
+    let result=Dispatch {env,owner,operation:&operation}.existing(id,Method::Post,"/responses/input",
+        Some(json!({"response_id":response_id,"session_id":session_id,"capacity_generation":generation,"submission_id":submission_id,"capacity":capacity}))).await;
+    operation.finish_result(env, owner, result, false).await
+}
+
+pub(crate) async fn release_noappend_actor(
+    env: &Env,
+    owner: &str,
+    id: &str,
+    response_id: &str,
+    generation: &str,
+) -> Result<Response> {
+    let operation = ConversationOperation::response_actor(env, owner, response_id).await?;
+    if operation.is_finished() {
+        return Response::from_json(&json!({"id":id,"released":true}));
+    }
+    let result = Dispatch {
+        env,
+        owner,
+        operation: &operation,
+    }
+    .existing(
+        id,
+        Method::Post,
+        "/responses/noappend",
+        Some(json!({"response_id":response_id,"capacity_generation":generation})),
+    )
+    .await;
+    let released = result
+        .as_ref()
+        .is_ok_and(|response| response.status_code() < 300);
+    operation.finish_result(env, owner, result, released).await
 }
 
 pub(crate) async fn activate(

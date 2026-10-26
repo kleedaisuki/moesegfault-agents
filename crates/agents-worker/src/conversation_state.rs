@@ -2,6 +2,7 @@
 //! the caller; this object verifies the resulting owner binding on every operation.
 use crate::{
     conversation_meter::ConversationOperation,
+    conversation_quota::{self as quota, Body},
     conversation_routes::ConversationItemProvenance,
     session_storage::{read_chunks, read_many, write_chunks},
     util,
@@ -11,9 +12,11 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use worker::*;
 
-const IMAGE_CANDIDATES: &str = "conversation.image-candidates";
-const IMAGE_DELETE: &str = "conversation.image-delete";
+#[path = "conversation_purge.rs"]
+mod purge;
+
 const HEAD: &str = "conversation.v1";
+const IMAGE_DELETE: &str = "conversation.image-delete";
 const MAX_ITEMS: usize = 20;
 const MAX_BODY: usize = 16 * 1024 * 1024;
 const PENDING_LEASE_MS: u64 = 120_000;
@@ -39,11 +42,13 @@ struct ConversationRecord {
     #[serde(default)]
     active_activated: bool,
     #[serde(default)]
+    active_capacity_generation: Option<String>,
+    #[serde(default)]
     pending_expires_at_ms: Option<u64>,
     #[serde(default)]
     execution_hint: Option<ExecutionHint>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    image_cleanup_pending: bool,
+    #[serde(default)]
+    quota_header_blocks: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -78,6 +83,7 @@ impl ConversationRecord {
         self.active_response_id = None;
         self.active_session_id = None;
         self.active_activated = false;
+        self.active_capacity_generation = None;
         self.pending_expires_at_ms = None;
     }
 
@@ -114,7 +120,17 @@ impl DurableObject for ConversationState {
             .block_concurrency_while(async move {
                 crate::conversation_meter::actor(&env, &owner, &headers, async {
                     let operation = ConversationOperation::actor_scope(&headers)?;
-                    match handle(req, &storage, &env, &operation).await {
+                    let result = handle(req, &storage, &env, &operation).await;
+                    let result = match result {
+                        Ok(mut response) => {
+                            if !matches!(quota::has_pending(&storage).await, Ok(false)) {
+                                response.headers_mut().set("X-Agents-Conversation-Capacity-Status", "pending")?;
+                            }
+                            Ok(response)
+                        }
+                        error => error,
+                    };
+                    match result {
                         Err(Error::RustError(code)) if code == "conversation_item_conflict" => {
                             util::json_error(
                                 409,
@@ -131,6 +147,15 @@ impl DurableObject for ConversationState {
                                 "Invalid conversation execution context",
                             )
                         }
+                        Err(Error::RustError(code)) if code == "conversation_capacity_exceeded" => {
+                            let mut error = util::error_body("conversation_capacity_exceeded", "Conversation retained logical-byte capacity has been reached; this budget is independent of Space storage");
+                            error["error"]["capacity_budget"] = json!("conversation_retained_logical_bytes");
+                            error["error"]["capacity"] = serde_json::to_value(quota::usage(&env, &owner, &operation).await?)?;
+                            Response::from_json(&error).map(|response| response.with_status(409))
+                        }
+                        Err(Error::RustError(code)) if code.starts_with("conversation_capacity_") && code!="conversation_capacity_exceeded" => util::json_error(409,&code,"Conversation capacity generation or input claim is no longer valid"),
+                        Err(Error::RustError(code)) if code=="conversation_item_reserved" => util::json_error(409,&code,"Item identity is reserved by an active response"),
+                        Err(Error::RustError(code)) if code=="unresolved_item_identity" => util::json_error(400,&code,"Server item identities require an owner-canonical reference"),
                         result => result,
                     }
                 })
@@ -138,126 +163,6 @@ impl DurableObject for ConversationState {
             })
             .await
     }
-}
-
-async fn reconcile_images(
-    storage: &Storage,
-    env: &Env,
-    operation: &ConversationOperation,
-    owner: &str,
-    record: Option<&mut ConversationRecord>,
-) -> Result<()> {
-    let Some(record) = record else {
-        return Ok(());
-    };
-    if !record.image_cleanup_pending {
-        return Ok(());
-    }
-    let deleting = storage
-        .get::<Vec<String>>(IMAGE_DELETE)
-        .await?
-        .unwrap_or_default();
-    for id in deleting {
-        if record.tombstones.contains(&id) {
-            operation
-                .external_d1(
-                    env,
-                    owner,
-                    "conversation-image-delete",
-                    2,
-                    crate::workspace_blobs::release_conversation_image(env, owner, &record.id, &id),
-                )
-                .await?;
-        }
-    }
-    storage.delete(IMAGE_DELETE).await?;
-    let candidates = storage
-        .get::<Vec<String>>(IMAGE_CANDIDATES)
-        .await?
-        .unwrap_or_default();
-    for id in candidates {
-        if !record.items.contains(&id) {
-            operation
-                .external_d1(
-                    env,
-                    owner,
-                    "conversation-image-discard",
-                    1,
-                    crate::workspace_blobs::discard_unpublished_conversation_image(
-                        env, owner, &record.id, &id,
-                    ),
-                )
-                .await?;
-        }
-    }
-    storage.delete(IMAGE_CANDIDATES).await?;
-    record.image_cleanup_pending = false;
-    save(storage, record).await?;
-    Ok(())
-}
-
-async fn stage_images(
-    storage: &Storage,
-    env: &Env,
-    operation: &ConversationOperation,
-    record: &mut ConversationRecord,
-    items: &[Value],
-    body: &Value,
-) -> Result<()> {
-    let images: BTreeMap<String, crate::workspace_blobs::OwnedBlobRef> = body
-        .get("image_assets")
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()?
-        .unwrap_or_default();
-    if images.len() > crate::response_image_projection::MAX_ASSETS {
-        return Err(Error::RustError(
-            "conversation_execution_context_invalid".into(),
-        ));
-    }
-    for (id, blob) in &images {
-        blob.validate(&record.owner)?;
-        if record.items.contains(id)
-            || !items.iter().any(|item| {
-                item["id"].as_str() == Some(id.as_str())
-                    && item["type"] == "image_generation_call"
-                    && item["status"] == "completed"
-                    && item["result"].is_null()
-            })
-        {
-            return Err(Error::RustError(
-                "conversation_execution_context_invalid".into(),
-            ));
-        }
-    }
-    if images.is_empty() {
-        return Ok(());
-    }
-    // A durable candidate list permits cleanup only after the header proves
-    // that publication never committed. The existing registry remains sole GC.
-    storage
-        .put(IMAGE_CANDIDATES, images.keys().cloned().collect::<Vec<_>>())
-        .await?;
-    record.image_cleanup_pending = true;
-    save(storage, record).await?;
-    for (id, blob) in &images {
-        operation
-            .external_d1(
-                env,
-                &record.owner,
-                "conversation-image-bind",
-                1,
-                crate::workspace_blobs::bind_conversation_image(
-                    env,
-                    &record.owner,
-                    &record.id,
-                    id,
-                    blob,
-                ),
-            )
-            .await?;
-        write_chunks(storage, &format!("image:{id}"), &serde_json::to_vec(blob)?).await?;
-    }
-    Ok(())
 }
 
 async fn load(storage: &Storage) -> Result<Option<ConversationRecord>> {
@@ -270,8 +175,114 @@ async fn load(storage: &Storage) -> Result<Option<ConversationRecord>> {
         .transpose()
 }
 
-async fn save(storage: &Storage, record: &ConversationRecord) -> Result<()> {
-    write_chunks(storage, HEAD, &serde_json::to_vec(record)?).await
+struct PublicationContext<'a> {
+    storage: &'a Storage,
+    env: &'a Env,
+    operation: &'a ConversationOperation,
+    legacy: Option<ConversationRecord>,
+}
+
+impl PublicationContext<'_> {
+    async fn save(&self, record: &mut ConversationRecord, bodies: Vec<Body>) -> Result<()> {
+        self.save_scoped(record, bodies, None).await
+    }
+
+    async fn save_scoped(
+        &self,
+        record: &mut ConversationRecord,
+        bodies: Vec<Body>,
+        escrow: Option<&quota::escrow::Lease>,
+    ) -> Result<()> {
+        self.adopt_legacy().await?;
+        loop {
+            let encoded = serde_json::to_vec(record)?;
+            let blocks = quota::header_blocks(
+                &record.id,
+                header_footprint(record, encoded.len())?,
+                record.quota_header_blocks,
+            )?;
+            if blocks == record.quota_header_blocks {
+                break;
+            }
+            record.quota_header_blocks = blocks;
+        }
+        let encoded = serde_json::to_vec(record)?;
+        quota::publish(
+            self.env,
+            &record.owner,
+            self.operation,
+            self.storage,
+            &record.id,
+            HEAD,
+            &encoded,
+            record.quota_header_blocks,
+            &bodies,
+            escrow,
+        )
+        .await
+    }
+
+    async fn adopt_legacy(&self) -> Result<()> {
+        let Some(record) = &self.legacy else {
+            return Ok(());
+        };
+        let mut keys = record
+            .items
+            .iter()
+            .map(|id| (format!("item:{id}"), true))
+            .collect::<Vec<_>>();
+        keys.extend(
+            record
+                .items
+                .iter()
+                .map(|id| (format!("provenance:{id}"), false)),
+        );
+        keys.extend(
+            record
+                .admitted_responses
+                .iter()
+                .map(|id| (format!("admission:{id}"), true)),
+        );
+        let names = keys.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>();
+        let encoded = read_many(self.storage, &names).await?;
+        let mut payloads = vec![];
+        for ((key, required), bytes) in keys.into_iter().zip(encoded) {
+            if let Some(bytes) = bytes {
+                payloads.push(quota::Payload::body(&record.id, &key, &bytes)?);
+            } else if required {
+                return Err(Error::RustError(
+                    "conversation_capacity_legacy_payload_missing".into(),
+                ));
+            }
+        }
+        let bytes = read_chunks(self.storage, HEAD).await?.ok_or_else(|| {
+            Error::RustError("conversation_capacity_legacy_header_missing".into())
+        })?;
+        let blocks = quota::header_blocks(&record.id, header_footprint(record, bytes.len())?, 0)?;
+        payloads.extend((0..blocks).map(|index| quota::Payload::header_block(&record.id, index)));
+        quota::adopt_existing_batch(self.env, &record.owner, self.operation, &payloads).await
+    }
+}
+
+fn header_footprint(record: &ConversationRecord, encoded_bytes: usize) -> Result<usize> {
+    // Reserve each item's bounded future tombstone slot at insertion, not at
+    // deletion. Hiding retained data must remain possible at a full quota.
+    let visibility = record
+        .items
+        .iter()
+        .filter(|id| !record.tombstones.contains(id.as_str()))
+        .try_fold(0usize, |total, id| total.checked_add(id.len() + 3))
+        .ok_or_else(|| Error::RustError("conversation_capacity_size_overflow".into()))?;
+    let revision = 20usize.saturating_sub(record.revision.to_string().len());
+    encoded_bytes
+        .checked_add(visibility)
+        .and_then(|bytes| bytes.checked_add(revision))
+        .and_then(|bytes| bytes.checked_add(usize::from(record.deleted)))
+        .ok_or_else(|| Error::RustError("conversation_capacity_size_overflow".into()))
+}
+
+async fn save(context: &PublicationContext<'_>, record: &mut ConversationRecord) -> Result<()> {
+    context.save(record, vec![]).await
 }
 
 async fn receipt(
@@ -288,6 +299,53 @@ async fn receipt(
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
+async fn reconcile_image_deletes(
+    context: &PublicationContext<'_>,
+    record: Option<&ConversationRecord>,
+) -> Result<()> {
+    let ids = context
+        .storage
+        .get::<Vec<String>>(IMAGE_DELETE)
+        .await?
+        .unwrap_or_default();
+    for id in ids {
+        if let Some(record) = record.filter(|record| record.tombstones.contains(&id)) {
+            context
+                .operation
+                .external_d1(
+                    context.env,
+                    &record.owner,
+                    "conversation-image-delete",
+                    2,
+                    crate::workspace_blobs::release_conversation_image(
+                        context.env,
+                        &record.owner,
+                        &record.id,
+                        &id,
+                    ),
+                )
+                .await?;
+        }
+    }
+    context.storage.delete(IMAGE_DELETE).await?;
+    Ok(())
+}
+
+fn reject_server_ids(
+    items: &[Value],
+    proof: Option<&BTreeMap<String, ConversationItemProvenance>>,
+) -> Result<()> {
+    if items.iter().any(|item| {
+        item["id"].as_str().is_some_and(|id| {
+            crate::response_limits::service_owned_id(id)
+                && !proof.is_some_and(|proof| proof.contains_key(id))
+        })
+    }) {
+        return Err(Error::RustError("unresolved_item_identity".into()));
+    }
+    Ok(())
+}
+
 fn busy(record: &ConversationRecord) -> Result<Response> {
     let mut body = util::error_body(
         "conversation_busy",
@@ -300,6 +358,7 @@ fn busy(record: &ConversationRecord) -> Result<Response> {
 }
 
 async fn admit(
+    context: &PublicationContext<'_>,
     storage: &Storage,
     record: &mut ConversationRecord,
     body: &Value,
@@ -314,6 +373,22 @@ async fn admit(
     }
     let now_ms = util::now_ms();
     if record.pending_expired(now_ms) {
+        if let (Some(response), Some(generation)) = (
+            &record.active_response_id,
+            &record.active_capacity_generation,
+        ) {
+            quota::escrow::release(
+                context.env,
+                &record.owner,
+                context.operation,
+                &record.id,
+                &quota::escrow::Lease {
+                    response_id: response.clone(),
+                    generation: generation.clone(),
+                },
+            )
+            .await?;
+        }
         record.clear_lease();
     }
     if !record.committed_responses.contains_key(response_id)
@@ -324,6 +399,7 @@ async fn admit(
     {
         return busy(record);
     }
+    let mut bodies = vec![];
     let accepted = match accepted {
         Some(accepted) => accepted,
         None => {
@@ -343,19 +419,14 @@ async fn admit(
             };
             // The header's receipt membership is the commit marker. An interrupted
             // write cannot make an orphan candidate bypass the writer gate.
-            write_chunks(
-                storage,
-                &format!("admission:{response_id}"),
-                &serde_json::to_vec(&accepted)?,
-            )
-            .await?;
+            bodies.push(Body::json(format!("admission:{response_id}"), &accepted)?);
             record.admitted_responses.insert(response_id.into());
             accepted
         }
     };
     if !record.deleted && !record.committed_responses.contains_key(response_id) {
         record.reserve_lease(response_id, now_ms);
-        save(storage, record).await?;
+        context.save(record, bodies).await?;
     }
     let ids = accepted
         .item_ids
@@ -374,7 +445,161 @@ async fn admit(
     )
 }
 
+fn capacity_failure(required: u64, available: u64) -> Result<Response> {
+    let mut body = util::error_body(
+        "conversation_capacity_exceeded",
+        "Prepaid Conversation output capacity is unavailable; this logical budget is independent of Space storage",
+    );
+    body["error"]["capacity_budget"] = json!("conversation_retained_logical_bytes");
+    body["error"]["required_bytes"] = json!(required);
+    body["error"]["available_bytes"] = json!(available);
+    Response::from_json(&body).map(|response| response.with_status(409))
+}
+
+fn capacity_request(body: &Value) -> Result<quota::escrow::Request> {
+    let mut request: quota::escrow::Request =
+        serde_json::from_value(body.get("capacity").cloned().unwrap_or_else(|| json!({})))?;
+    if request
+        .input_items
+        .iter()
+        .any(|item| !item.get("id").and_then(Value::as_str).is_some_and(valid_id))
+    {
+        return Err(Error::RustError(
+            "conversation_capacity_input_identity_missing".into(),
+        ));
+    }
+    request.input_items = normalize_items(&json!(request.input_items), usize::MAX)
+        .map_err(|_| Error::RustError("conversation_execution_context_invalid".into()))?;
+    Ok(request)
+}
+
+fn reject_retained_ids(record: &ConversationRecord, items: &[Value]) -> Result<()> {
+    if items.iter().any(|item| {
+        item["id"]
+            .as_str()
+            .is_some_and(|id| record.items.iter().any(|existing| existing == id))
+    }) {
+        return Err(Error::RustError("conversation_item_conflict".into()));
+    }
+    Ok(())
+}
+
+async fn reserve_capacity(
+    context: &PublicationContext<'_>,
+    storage: &Storage,
+    record: &mut ConversationRecord,
+    body: &Value,
+) -> Result<Response> {
+    let response_id = body["response_id"].as_str().unwrap_or_default();
+    let session_id = body["session_id"].as_str().unwrap_or_default();
+    if !valid_id(response_id) || !valid_id(session_id) {
+        return util::json_error(
+            400,
+            "invalid_request",
+            "Invalid response or Session identity",
+        );
+    }
+    let accepted = receipt(storage, record, response_id).await?;
+    if accepted.as_ref().map(|receipt| receipt.revision) != body["accepted_revision"].as_u64()
+        || record.active_response_id.as_deref() != Some(response_id)
+        || record.pending_expired(util::now_ms())
+        || record.committed_responses.contains_key(response_id)
+        || (record.active_activated && record.active_session_id.as_deref() != Some(session_id))
+    {
+        return busy(record);
+    }
+    let request = capacity_request(body)?;
+    reject_retained_ids(record, &request.input_items)?;
+    reject_server_ids(&request.input_items, Some(&request.input_provenance))?;
+    let plan = quota::escrow::plan(&record.owner, &record.id, response_id, session_id, &request)?;
+    let generation = record
+        .active_capacity_generation
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+    record.active_session_id = Some(session_id.into());
+    record.active_capacity_generation = Some(generation.clone());
+    if let Err(error) = save(context, record).await {
+        if matches!(&error,Error::RustError(code) if code=="conversation_capacity_exceeded") {
+            let usage = quota::usage(context.env, &record.owner, context.operation).await?;
+            return capacity_failure(
+                plan.required_bytes(),
+                usage
+                    .limit_bytes
+                    .saturating_sub(usage.reserved_bytes.saturating_add(usage.retained_bytes)),
+            );
+        }
+        return Err(error);
+    }
+    match quota::escrow::prepare(
+        context.env,
+        &record.owner,
+        context.operation,
+        &record.id,
+        response_id,
+        session_id,
+        &generation,
+        &plan,
+    )
+    .await?
+    {
+        quota::escrow::Prepared::Held(lease) => Response::from_json(
+            &json!({"id":record.id,"response_id":response_id,"capacity_generation":lease.generation,"reserved":true}),
+        ),
+        quota::escrow::Prepared::Insufficient {
+            required_bytes,
+            available_bytes,
+        } => capacity_failure(required_bytes, available_bytes),
+    }
+}
+
+async fn reserve_additional_input(
+    context: &PublicationContext<'_>,
+    record: &ConversationRecord,
+    body: &Value,
+) -> Result<Response> {
+    let response = body["response_id"].as_str().unwrap_or_default();
+    let generation = body["capacity_generation"].as_str().unwrap_or_default();
+    let session = body["session_id"].as_str().unwrap_or_default();
+    let submission = body["submission_id"].as_str().unwrap_or_default();
+    if !valid_id(submission)
+        || record.active_response_id.as_deref() != Some(response)
+        || !record.active_activated
+        || record.active_session_id.as_deref() != Some(session)
+        || record.active_capacity_generation.as_deref() != Some(generation)
+        || record.committed_responses.contains_key(response)
+    {
+        return busy(record);
+    }
+    let request = capacity_request(body)?;
+    reject_retained_ids(record, &request.input_items)?;
+    reject_server_ids(&request.input_items, Some(&request.input_provenance))?;
+    let lease = quota::escrow::Lease {
+        response_id: response.into(),
+        generation: generation.into(),
+    };
+    match quota::escrow::extend(
+        context.env,
+        &record.owner,
+        context.operation,
+        &record.id,
+        &lease,
+        submission,
+        &request,
+    )
+    .await?
+    {
+        quota::escrow::Prepared::Held(_) => {
+            Response::from_json(&json!({"id":record.id,"response_id":response,"reserved":true}))
+        }
+        quota::escrow::Prepared::Insufficient {
+            required_bytes,
+            available_bytes,
+        } => capacity_failure(required_bytes, available_bytes),
+    }
+}
+
 async fn activate(
+    context: &PublicationContext<'_>,
     storage: &Storage,
     record: &mut ConversationRecord,
     body: &Value,
@@ -404,12 +629,32 @@ async fn activate(
     {
         return busy(record);
     }
+    let generation = body["capacity_generation"]
+        .as_str()
+        .or(record.active_capacity_generation.as_deref());
+    if let Some(generation) = generation {
+        if record.active_capacity_generation.as_deref() != Some(generation) {
+            return busy(record);
+        }
+        quota::escrow::validate_generation(
+            context.env,
+            &record.owner,
+            context.operation,
+            &record.id,
+            &quota::escrow::Lease {
+                response_id: response_id.into(),
+                generation: generation.into(),
+            },
+            Some(session_id),
+        )
+        .await?;
+    }
     record.active_session_id = Some(session_id.into());
     record.active_activated = true;
     record.pending_expires_at_ms = None;
-    save(storage, record).await?;
+    save(context, record).await?;
     Response::from_json(
-        &json!({"id":record.id,"response_id":response_id,"session_id":session_id,"activated":true}),
+        &json!({"id":record.id,"response_id":response_id,"session_id":session_id,"activated":true,"capacity_generation":record.active_capacity_generation}),
     )
 }
 
@@ -672,46 +917,59 @@ fn project(mut item: Value, include: &BTreeSet<String>) -> Value {
     item
 }
 
+#[derive(Default)]
+struct AppendMetadata<'a> {
+    provenance: Option<&'a BTreeMap<String, ConversationItemProvenance>>,
+    output_source: Option<&'a ConversationItemProvenance>,
+    output_ids: Option<&'a BTreeSet<String>>,
+    images: Option<&'a BTreeMap<String, crate::workspace_blobs::OwnedBlobRef>>,
+    escrow: Option<&'a quota::escrow::Lease>,
+}
+
 async fn append(
-    storage: &Storage,
+    context: &PublicationContext<'_>,
     record: &mut ConversationRecord,
     items: Vec<Value>,
-    provenance: Option<&BTreeMap<String, ConversationItemProvenance>>,
+    metadata: AppendMetadata<'_>,
 ) -> Result<Vec<Value>> {
     let mut seen = record.items.iter().cloned().collect::<BTreeSet<_>>();
     for item in &items {
-        let id = item["id"].as_str().unwrap_or_default();
-        if !seen.insert(id.to_owned()) {
+        if !seen.insert(item["id"].as_str().unwrap_or_default().to_owned()) {
             return Err(Error::RustError("conversation_item_conflict".into()));
         }
     }
-    if let Some(provenance) = provenance {
-        for (id, source) in provenance {
-            if !items
-                .iter()
-                .any(|item| item["id"].as_str() == Some(id.as_str()))
-            {
-                return Err(Error::RustError(
-                    "conversation_execution_context_invalid".into(),
-                ));
-            }
-            write_chunks(
-                storage,
-                &format!("provenance:{id}"),
-                &serde_json::to_vec(source)?,
-            )
-            .await?;
-        }
+    if metadata.provenance.is_some_and(|provenance| {
+        provenance
+            .keys()
+            .any(|id| !items.iter().any(|item| item["id"].as_str() == Some(id)))
+    }) {
+        return Err(Error::RustError(
+            "conversation_execution_context_invalid".into(),
+        ));
     }
-    // Bodies are immutable. Publishing the header last hides partial writes after
-    // interruption and lets a retry replace only previously invisible candidates.
+    let mut bodies = vec![];
     for item in &items {
         let id = item["id"].as_str().unwrap_or_default();
-        write_chunks(storage, &format!("item:{id}"), &serde_json::to_vec(item)?).await?;
+        let origin = metadata
+            .provenance
+            .and_then(|provenance| provenance.get(id))
+            .or_else(|| {
+                metadata
+                    .output_ids
+                    .filter(|ids| ids.contains(id))
+                    .and(metadata.output_source)
+            });
+        if let Some(origin) = origin {
+            bodies.push(Body::json(format!("provenance:{id}"), origin)?);
+        }
+        if let Some(blob) = metadata.images.and_then(|images| images.get(id)) {
+            bodies.push(Body::json(format!("image:{id}"), blob)?);
+        }
+        bodies.push(Body::json(format!("item:{id}"), item)?);
         record.items.push(id.to_owned());
     }
     record.revision += 1;
-    save(storage, record).await?;
+    context.save_scoped(record, bodies, metadata.escrow).await?;
     Ok(items)
 }
 
@@ -731,7 +989,17 @@ async fn handle(
     if record.as_ref().is_some_and(|record| record.owner != owner) {
         return util::json_error(404, "not_found", "Conversation not found");
     }
-    reconcile_images(storage, env, operation, &owner, record.as_mut()).await?;
+    quota::recover(env, &owner, operation, storage).await?;
+    let context = PublicationContext {
+        storage,
+        env,
+        operation,
+        legacy: record
+            .as_ref()
+            .filter(|record| record.quota_header_blocks == 0)
+            .cloned(),
+    };
+    reconcile_image_deletes(&context, record.as_ref()).await?;
     if path == "/init" && method == Method::Post {
         if let Some(record) = record {
             if record.deleted {
@@ -753,6 +1021,7 @@ async fn handle(
             Ok(items) => items,
             Err(message) => return util::json_error(400, "invalid_request", message),
         };
+        reject_server_ids(&items, None)?;
         let mut record = ConversationRecord {
             id: id.into(),
             owner,
@@ -767,37 +1036,86 @@ async fn handle(
             active_response_id: None,
             active_session_id: None,
             active_activated: false,
+            active_capacity_generation: None,
             pending_expires_at_ms: None,
             execution_hint: None,
-            image_cleanup_pending: false,
+            quota_header_blocks: 0,
         };
-        append(storage, &mut record, items, None).await?;
+        append(&context, &mut record, items, AppendMetadata::default()).await?;
         return Response::from_json(&record.public());
     }
     let Some(mut record) = record.take() else {
         return util::json_error(404, "not_found", "Conversation not found");
     };
+    if purge::resume(&context, &mut record).await? {
+        return if path == "/purge" && method == Method::Post {
+            purge::completed(&record.id)
+        } else {
+            util::json_error(404, "not_found", "Conversation retained data was purged")
+        };
+    }
+    if path == "/purge" && method == Method::Post {
+        return purge::start(&context, &mut record).await;
+    }
     if record.deleted && !path.starts_with("/items") && !path.starts_with("/responses/") {
         return util::json_error(404, "not_found", "Conversation not found");
     }
     match (method, path.as_str()) {
         (Method::Post, "/responses/admit") => {
             let body: Value = req.json().await?;
-            admit(storage, &mut record, &body).await
+            admit(&context, storage, &mut record, &body).await
+        }
+        (Method::Post, "/responses/reserve") => {
+            let body: Value = req.json().await?;
+            reserve_capacity(&context, storage, &mut record, &body).await
+        }
+        (Method::Post, "/responses/input") => {
+            let body: Value = req.json().await?;
+            reserve_additional_input(&context, &record, &body).await
         }
         (Method::Post, "/responses/activate") => {
             let body: Value = req.json().await?;
-            activate(storage, &mut record, &body).await
+            activate(&context, storage, &mut record, &body).await
         }
-        (Method::Post, "/responses/release") => {
+        (Method::Post, "/responses/release" | "/responses/noappend") => {
             let body: Value = req.json().await?;
             let response_id = body["response_id"].as_str().unwrap_or_default();
             if !valid_id(response_id) {
                 return util::json_error(400, "invalid_request", "Invalid response identity");
             }
+            if path == "/responses/noappend" && record.committed_responses.contains_key(response_id)
+            {
+                return util::json_error(
+                    409,
+                    "conversation_capacity_generation_closed",
+                    "The response was already appended",
+                );
+            }
             if record.active_response_id.as_deref() == Some(response_id) {
+                if let Some(generation) = &record.active_capacity_generation {
+                    if body
+                        .get("capacity_generation")
+                        .and_then(Value::as_str)
+                        .is_some_and(|given| given != generation)
+                    {
+                        return busy(&record);
+                    }
+                    if !record.committed_responses.contains_key(response_id) {
+                        quota::escrow::release(
+                            env,
+                            &owner,
+                            operation,
+                            &record.id,
+                            &quota::escrow::Lease {
+                                response_id: response_id.into(),
+                                generation: generation.clone(),
+                            },
+                        )
+                        .await?;
+                    }
+                }
                 record.clear_lease();
-                save(storage, &record).await?;
+                save(&context, &mut record).await?;
             }
             Response::from_json(&json!({"id":record.id,"response_id":response_id,"released":true}))
         }
@@ -808,13 +1126,13 @@ async fn handle(
                 return util::json_error(400, "invalid_request", "Invalid metadata");
             }
             record.metadata = body["metadata"].clone();
-            save(storage, &record).await?;
+            save(&context, &mut record).await?;
             Response::from_json(&record.public())
         }
         (Method::Delete, "/metadata") => {
             record.deleted = true;
             record.revision += 1;
-            save(storage, &record).await?;
+            save(&context, &mut record).await?;
             Response::from_json(
                 &json!({"id":record.id,"object":"conversation.deleted","deleted":true}),
             )
@@ -827,22 +1145,24 @@ async fn handle(
                 .map(String::as_str)
                 .collect::<Vec<_>>();
             let items = items(storage, &ids).await?;
-            let opaque_ids = items
-                .iter()
-                .filter(|item| item["type"] == "reasoning")
-                .filter_map(|item| item["id"].as_str().map(str::to_owned))
-                .collect::<Vec<_>>();
-            let provenance = item_provenance(storage, &opaque_ids).await?;
-            let mut snapshot = json!({"id":record.id,"revision":record.revision,"items":items});
-            if !provenance.is_empty() {
-                snapshot["item_provenance"] = serde_json::to_value(provenance)?;
-            }
-            Response::from_json(&snapshot)
+            let visible_ids = ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+            let provenance = item_provenance(storage, &visible_ids).await?;
+            let previous = record
+                .execution_hint
+                .as_ref()
+                .filter(|hint| hint.adopted_revision == record.revision);
+            Response::from_json(
+                &json!({"id":record.id,"revision":record.revision,"items":items,"item_provenance":provenance,
+                "predecessor_response_id":previous.map(|hint|&hint.response_id),
+                "predecessor_session_id":previous.map(|hint|&hint.session_id),
+                "predecessor_agent_id":previous.map(|hint|&hint.agent_id),
+                "predecessor_pin_hash":previous.map(|hint|&hint.pin_hash)}),
+            )
         }
         (Method::Post, "/responses/commit") => {
             let body: Value = req.json().await?;
             let response_id = body["response_id"].as_str().unwrap_or_default();
-            if !valid_id(response_id) || serde_json::to_vec(&body)?.len() > MAX_BODY {
+            if !valid_id(response_id) {
                 return util::json_error(400, "invalid_request", "Invalid response append");
             }
             if let Some(revision) = record.committed_responses.get(response_id) {
@@ -892,7 +1212,80 @@ async fn handle(
                 },
                 None => BTreeMap::new(),
             };
-            stage_images(storage, env, operation, &mut record, &items, &body).await?;
+            let output_source: Option<ConversationItemProvenance> = body
+                .get("output_provenance")
+                .filter(|value| !value.is_null())
+                .map(|value| serde_json::from_value(value.clone()))
+                .transpose()?;
+            let images: BTreeMap<String, crate::workspace_blobs::OwnedBlobRef> = body
+                .get("image_assets")
+                .map(|value| serde_json::from_value(value.clone()))
+                .transpose()?
+                .unwrap_or_default();
+            if images.len() > crate::response_image_projection::MAX_ASSETS {
+                return Err(Error::RustError(
+                    "conversation_execution_context_invalid".into(),
+                ));
+            }
+            for (id, blob) in &images {
+                blob.validate(&owner)?;
+                if !items.iter().any(|item| {
+                    item["id"].as_str() == Some(id.as_str())
+                        && item["type"] == "image_generation_call"
+                        && item.get("result") == Some(&Value::Null)
+                }) {
+                    return Err(Error::RustError(
+                        "conversation_execution_context_invalid".into(),
+                    ));
+                }
+            }
+            let mut output_ids = items
+                .iter()
+                .filter_map(|item| {
+                    item["id"]
+                        .as_str()
+                        .filter(|id| crate::response_limits::service_owned_id(id))
+                        .map(str::to_owned)
+                })
+                .collect::<BTreeSet<_>>();
+            let capacity =
+                match quota::escrow::known_lease(env, &owner, operation, &record.id, response_id)
+                    .await?
+                {
+                    Some(lease) => {
+                        if body
+                            .get("capacity_generation")
+                            .and_then(Value::as_str)
+                            .is_some_and(|generation| generation != lease.generation)
+                            || record.active_capacity_generation.as_deref()
+                                != Some(lease.generation.as_str())
+                            || !record.active_activated
+                        {
+                            return busy(&record);
+                        }
+                        output_ids = quota::escrow::validate_commit(
+                            env,
+                            &owner,
+                            operation,
+                            &record.id,
+                            &lease,
+                            &items,
+                            body["items"].as_array().ok_or_else(|| {
+                                Error::RustError("conversation_execution_context_invalid".into())
+                            })?,
+                            &provenance,
+                            output_source.as_ref(),
+                        )
+                        .await?;
+                        Some(lease)
+                    }
+                    None => None,
+                };
+            if capacity.is_some() && images.keys().any(|id| !output_ids.contains(id)) {
+                return Err(Error::RustError(
+                    "conversation_execution_context_invalid".into(),
+                ));
+            }
             // Publish the receipt with the same header that exposes its items:
             // an interrupted transport can retry without duplicating model work.
             record
@@ -907,7 +1300,19 @@ async fn handle(
                 record.revision,
                 receipt.as_ref().map(|receipt| receipt.revision),
             )?;
-            append(storage, &mut record, items, Some(&provenance)).await?;
+            append(
+                &context,
+                &mut record,
+                items,
+                AppendMetadata {
+                    provenance: Some(&provenance),
+                    output_source: output_source.as_ref(),
+                    output_ids: Some(&output_ids),
+                    images: Some(&images),
+                    escrow: capacity.as_ref(),
+                },
+            )
+            .await?;
             Response::from_json(
                 &json!({"id":record.id,"revision":record.revision,"response_id":response_id}),
             )
@@ -930,7 +1335,14 @@ async fn handle(
                 Ok(items) => items,
                 Err(message) => return util::json_error(400, "invalid_request", message),
             };
-            let items = append(storage, &mut record, items, None).await?;
+            reject_server_ids(&items, None)?;
+            if let Some(active) = record.active_response_id.as_deref() {
+                quota::escrow::reject_reserved_inputs(
+                    env, &owner, operation, &record.id, active, &items,
+                )
+                .await?;
+            }
+            let items = append(&context, &mut record, items, AppendMetadata::default()).await?;
             Response::from_json(&page(
                 items
                     .into_iter()
@@ -953,12 +1365,19 @@ async fn handle(
                 .is_some()
             {
                 storage.put(IMAGE_DELETE, vec![id.to_owned()]).await?;
-                record.image_cleanup_pending = true;
             }
             record.tombstones.insert(id.into());
             record.revision += 1;
-            save(storage, &record).await?;
-            reconcile_images(storage, env, operation, &owner, Some(&mut record)).await?;
+            save(&context, &mut record).await?;
+            if reconcile_image_deletes(&context, Some(&record))
+                .await
+                .is_err()
+            {
+                util::emit(
+                    "conversation.image_delete_pending",
+                    json!({"conversation_id":record.id,"item_id":id}),
+                );
+            }
             Response::from_json(&record.public())
         }
         _ => util::json_error(404, "not_found", "Unknown conversation operation"),
@@ -1057,6 +1476,28 @@ mod tests {
         serde_json::from_value(json!({"id":"conv_a","owner":"owner_a","created_at":0,
             "metadata":{},"revision":1,"deleted":false,"items":[],"tombstones":[]}))
         .unwrap()
+    }
+
+    #[test]
+    fn hiding_retained_items_never_grows_header_capacity() {
+        let mut record = record();
+        record.revision = 9;
+        record.items = (0..100).map(|n| format!("item_{n}")).collect();
+        let initial =
+            header_footprint(&record, serde_json::to_vec(&record).unwrap().len()).unwrap();
+        for id in record.items.clone() {
+            record.tombstones.insert(id);
+            record.revision += 1;
+            let current =
+                header_footprint(&record, serde_json::to_vec(&record).unwrap().len()).unwrap();
+            assert!(current <= initial);
+        }
+        record.deleted = true;
+        record.revision += 1;
+        assert!(
+            header_footprint(&record, serde_json::to_vec(&record).unwrap().len()).unwrap()
+                <= initial
+        );
     }
 
     #[test]

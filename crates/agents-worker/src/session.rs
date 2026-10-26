@@ -614,32 +614,9 @@ impl DurableObject for Session {
                         "content must contain 1 to 262144 bytes",
                     );
                 }
-                if inner.closing.get() || inner.snapshot()?.archive_preparing {
-                    return util::json_error(409, "session_closing", "Session is being archived");
-                }
-                if inner.snapshot()?.record.status == SessionStatus::Closed {
-                    return util::json_error(
-                        409,
-                        "session_closed",
-                        "Resume the archived session before appending messages",
-                    );
-                }
-                let revision = inner.append(vec![Message::text("user", content)])?;
-                if inner.snapshot()?.run.is_none() {
-                    inner.start_run()?;
-                    inner
-                        .data
-                        .borrow_mut()
-                        .as_mut()
-                        .unwrap()
-                        .run
-                        .as_mut()
-                        .unwrap()
-                        .traceparent = req.headers().get("traceparent")?;
-                }
-                inner.persist().await?;
-                inner.arm_alarm().await?;
-                Response::from_json(&json!({"queued":true,"input_revision":revision}))
+                inner
+                    .accept_legacy_steer(content, req.headers().get("traceparent")?)
+                    .await
             }
             (Method::Post, "/run") => {
                 if inner.snapshot()?.has_pending_client_tools() {
@@ -1740,7 +1717,7 @@ impl SessionInner {
         let saved = self.snapshot()?;
         let known = saved.run.as_ref().unwrap().terminal.clone();
         let mut accounting_pending = result.is_err() && known.is_some();
-        let result = match (result, known) {
+        let mut result = match (result, known) {
             (Err(_), Some(value)) => Ok(value),
             (result, _) => result,
         };
@@ -1767,7 +1744,9 @@ impl SessionInner {
             }
         }
         self.prepare_response_branch().await?;
-        self.prepare_conversation_commit().await?;
+        if let Some(error) = self.prepare_conversation_commit(result.is_err()).await? {
+            result = Err(error);
+        }
         self.prepare_image_terminal().await?;
         self.reserve_response_events();
         let needs_end = saved.run.as_ref().unwrap().ended_at_ms.is_none();
