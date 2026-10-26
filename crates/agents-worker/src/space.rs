@@ -1079,8 +1079,37 @@ async fn file_object_range(
     let run = format!("space-download:{}", uuid::Uuid::new_v4());
     reconcile::maintenance_account_reservation(env, owner, &run).await?;
     let meter = ResourceMeter::account(env, owner, &run)?;
+    let object = read_file_object(env, file, range, &meter, "file.download").await?;
+    meter.settle_run().await?;
+    object.ok_or_else(|| fail("file_not_ready"))
+}
+
+/// Read an owned source under its caller's already-funded resource turn. The
+/// ordinary HTTP getter above retains its independent reservation contract.
+pub(crate) async fn file_object_with_meter(
+    env: &Env,
+    owner: &str,
+    file: &OwnedFile,
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<worker::Object> {
+    if file.account_id != owner || file.status != "processed" {
+        return Err(fail("file_not_found"));
+    }
+    read_file_object(env, file, None, meter, event)
+        .await?
+        .ok_or_else(|| fail("file_not_ready"))
+}
+
+async fn read_file_object(
+    env: &Env,
+    file: &OwnedFile,
+    range: Option<worker::Range>,
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<Option<worker::Object>> {
     meter
-        .require_observation("file.download", Resource::R2Operation, "class_b")
+        .require_observation(event, Resource::R2Operation, "class_b")
         .await?;
     let bucket = env.bucket("WORKSPACES")?;
     let get = bucket.get(file.content_key());
@@ -1090,12 +1119,9 @@ async fn file_object_range(
     };
     let object = get.execute().await?;
     meter
-        .record_observation("file.download", Resource::R2Operation, "class_b", 1)
+        .record_observation(event, Resource::R2Operation, "class_b", 1)
         .await?;
-    meter.settle_run().await?;
-    object
-        .filter(|object| object.size() == file.bytes)
-        .ok_or_else(|| fail("file_not_ready"))
+    Ok(object.filter(|object| object.size() == file.bytes))
 }
 
 pub async fn read_text(env: &Env, owner: &str, id: &str) -> Result<Option<String>> {

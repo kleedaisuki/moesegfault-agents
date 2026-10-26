@@ -26,6 +26,7 @@ pub(crate) fn profile(env: &Env) -> Result<VectorServiceProfile> {
 
 pub(crate) fn preflight(profile: &VectorServiceProfile, meter: &ResourceMeter<'_>) -> Result<()> {
     meter.preflight(false)?;
+    meter.require_tariff(&agents_auth::billing::Resource::R2Operation, "class_b")?;
     crate::file_index::storage::preflight(meter)?;
     for allocation in [
         &profile.embedding_allocation,
