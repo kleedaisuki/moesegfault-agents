@@ -65,7 +65,9 @@ async fn execute(
             None => input_tokens(env, owner, &context.config, &context.prepared).await,
         };
     }
-    let prepared = PreparedCompact {
+    let native_summary = context.config.protocol == agents_core::ProviderProtocol::Responses
+        || crate::provider::is_deepseek(&context.config);
+    let mut prepared = PreparedCompact {
         owner: owner.into(),
         operation: String::new(),
         request_hash,
@@ -81,6 +83,10 @@ async fn execute(
         controls: generation.native_controls(),
         traceparent: context.config.traceparent,
     };
+    // The native source already contains every retained user. Neither its Chat
+    // projection nor the counter's independent request is durable model input.
+    prepared.normalize_source(native_summary);
+    drop(context.prepared);
     compact(request, env, prepared).await
 }
 
@@ -165,6 +171,11 @@ fn error_response(error: &worker::Error) -> Result<Response> {
             code,
             "The latest input group cannot fit the selected model context",
         ),
+        "compaction_input_too_large" => util::json_error(
+            413,
+            code,
+            "The resolved compaction context exceeds the bounded input size",
+        ),
         "mcp_discovery_failed" => util::json_error(
             503,
             code,
@@ -241,6 +252,7 @@ pub(crate) async fn compact(
         None => uuid::Uuid::new_v4().to_string(),
     };
     prepared.operation = operation_id(&prepared.owner, &key);
+    prepared.validate()?;
     let namespace = env.durable_object("MODEL_OPERATIONS")?;
     let stub = namespace.id_from_name(&prepared.operation)?.get_stub()?;
     let mut init = RequestInit::new();
