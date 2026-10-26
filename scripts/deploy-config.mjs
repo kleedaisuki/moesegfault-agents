@@ -11,9 +11,18 @@ export function requireDistinctEnvironmentDatabases(input) {
   if (ids[0] === ids[1]) throw new Error('Staging and production database identities overlap');
 }
 
+export function deploymentRuntime(env) {
+  const features = env.RUNTIME_FEATURES ?? 'configured';
+  if (!['configured', 'none', 'web_search'].includes(features)) throw new Error('Invalid runtime feature allowlist');
+  if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
+  const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
+  return { features, limited, webSearch: limited && features === 'web_search' };
+}
+
 export function renderDeploymentConfig(input, env) {
   const environment = env.DEPLOY_ENVIRONMENT;
   if (!['staging', 'production'].includes(environment)) throw new Error('Invalid deployment environment');
+  const runtime = deploymentRuntime(env);
   const account = env.CLOUDFLARE_ACCOUNT_ID;
   const sha = env.GITHUB_SHA;
   const workerSource = env.WORKER_SOURCE_SHA ?? sha;
@@ -25,11 +34,11 @@ export function renderDeploymentConfig(input, env) {
   delete config.build;
   const target = config.env[environment];
   target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha };
-  if (environment === 'staging' && env.ACCEPTANCE_PROFILE === 'responses-increment') {
-    target.vars.HOSTED_TOOL_RUNTIMES = '';
+  if (runtime.limited) {
+    target.vars.HOSTED_TOOL_RUNTIMES = runtime.webSearch ? 'web_search' : '';
     target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
     target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
-      version: 1, platform_images: false, platform_search: false, file_search: false,
+      version: 1, platform_images: false, platform_search: runtime.webSearch, file_search: false,
       container_memory: null, available_container_profiles: [],
       code_network_disabled: false, code_network_allowlist: false,
     });

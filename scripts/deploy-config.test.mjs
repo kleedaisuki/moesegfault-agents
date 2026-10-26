@@ -1,12 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { renderDeploymentConfig, requireDistinctEnvironmentDatabases } from './deploy-config.mjs';
+import { deploymentRuntime, renderDeploymentConfig, requireDistinctEnvironmentDatabases } from './deploy-config.mjs';
 import { readFile } from 'node:fs/promises';
 
 const sha = '0123456789abcdef0123456789abcdef01234567';
 const account = '0123456789abcdef0123456789abcdef';
 const target = () => ({ vars: { EXISTING: 'retained', BUILD_ID: 'stale' }, d1_databases: [{ migrations_dir: 'migrations' }], containers: [{ image: 'container/Dockerfile', image_build_context: '.' }] });
 const input = () => ({ main: 'build/worker/shim.mjs', assets: { directory: 'apps/dashboard/dist' }, build: { command: 'unused' }, env: { staging: target(), production: target() } });
+
+test('runtime feature allowlist enables only Worker search independently of acceptance', () => {
+  const source = input();
+  source.env.staging.containers.push({ class_name: 'Session4G', image: 'unbuilt-4g' });
+  const config = renderDeploymentConfig(source, { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account,
+    GITHUB_SHA: sha, CONTAINER_SOURCE_SHA: 'b'.repeat(40), ACCEPTANCE_PROFILE: 'none', RUNTIME_FEATURES: 'web_search' });
+  const stage = config.env.staging, capabilities = JSON.parse(stage.vars.HOSTED_TOOL_CAPABILITIES_JSON);
+  assert.equal(stage.vars.HOSTED_TOOL_RUNTIMES, 'web_search');
+  assert.deepEqual(capabilities, { version: 1, platform_images: false, platform_search: true, file_search: false,
+    container_memory: null, available_container_profiles: [], code_network_disabled: false, code_network_allowlist: false });
+  assert.equal(stage.containers.length, 1);
+  assert.equal(stage.containers[0].image, `registry.cloudflare.com/${account}/magents-workspace:${'b'.repeat(40)}`);
+  assert.equal(source.env.staging.vars.HOSTED_TOOL_RUNTIMES, undefined);
+});
+
+test('runtime feature overrides cannot enable unverified tools or change production defaults', () => {
+  const base = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, ACCEPTANCE_PROFILE: 'none' };
+  for (const features of ['code_interpreter', 'image_generation', 'file_search', 'web_search,code_interpreter', '', 'all']) {
+    assert.throws(() => renderDeploymentConfig(input(), { ...base, RUNTIME_FEATURES: features }), /allowlist/);
+  }
+  assert.throws(() => renderDeploymentConfig(input(), { ...base, DEPLOY_ENVIRONMENT: 'production', RUNTIME_FEATURES: 'web_search' }), /staging-only/);
+  assert.equal(deploymentRuntime(base).limited, false);
+  assert.equal(deploymentRuntime({ ...base, RUNTIME_FEATURES: 'none' }).limited, true);
+  assert.equal(deploymentRuntime({ ...base, ACCEPTANCE_PROFILE: 'responses-increment' }).limited, true);
+  assert.equal(deploymentRuntime({ ...base, DEPLOY_ENVIRONMENT: 'production' }).limited, false);
+});
 
 test('the fixed billing return reaches authenticated Worker code instead of SPA assets', async () => {
   const config = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));

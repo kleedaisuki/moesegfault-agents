@@ -2,6 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { verifyDeploymentEvidence } from './deploy-provenance.mjs';
 
+test('runtime feature proof retains the actual old daemon only for a bounded Worker search scope', () => {
+  const value = coreCompatibleFixture();
+  value.workerRuntimeFeatures = ['web_search'];
+  const proof = verifyDeploymentEvidence(value);
+  assert.deepEqual(proof.worker_runtime_features, ['web_search']);
+  assert.equal(proof.artifacts.container.source_sha, 'b1edf97746d3902373dbb05e224799f03d9a3a10');
+  assert.equal(proof.artifacts.container.status, 'core_compatible_disabled_runtime');
+  assert.equal(proof.staging_acceptance, 'not_executed');
+  for (const features of [['code_interpreter'], ['image_generation'], ['web_search', 'web_search']]) {
+    assert.throws(() => verifyDeploymentEvidence({ ...value, workerRuntimeFeatures: features }), /unverified_runtime_feature/);
+  }
+  value.metadata['42'].jobs.jobs.find(job => job.name === 'worker').conclusion = 'failure';
+  assert.throws(() => verifyDeploymentEvidence(value), /required_current_job_not_successful/);
+});
+
 const source = 'c'.repeat(40), base = 'b'.repeat(40), digest = 'a'.repeat(64), repository = 'kleedaisuki/moesegfault-agents';
 const jobs = { worker: 'worker', native: 'rust', container: 'container', dashboard: 'dashboard', tooling: 'tooling' };
 const nativeArgv = ['cargo', 'clippy', '--locked', '--all-targets', '--', '-D', 'warnings'];

@@ -3041,7 +3041,44 @@
         "executed_tests": 1
       }
     ],
-    "unresolved_checks": []
+    "unresolved_checks": [
+      {
+        "id": "node:scripts/deploy-config.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "^runtime feature",
+          "scripts/deploy-config.test.mjs"
+        ],
+        "env": {},
+        "reason": "New runtime-feature allowlist cases only; retain the accepted deployment baseline without replaying its existing tests."
+      },
+      {
+        "id": "node:scripts/deploy-provenance.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "^runtime feature",
+          "scripts/deploy-provenance.test.mjs"
+        ],
+        "env": {},
+        "reason": "New runtime-feature allowlist cases only; retain the accepted deployment baseline without replaying its existing tests."
+      },
+      {
+        "id": "node:scripts/deploy-workflow.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-name-pattern",
+          "^runtime feature",
+          "scripts/deploy-workflow.test.mjs"
+        ],
+        "env": {},
+        "reason": "New runtime-feature allowlist cases only; retain the accepted deployment baseline without replaying its existing tests."
+      }
+    ]
   },
   {
     "source_sha": "2cc1e0cb4b06c997212d1bbfa97c6a238e7977b6",
@@ -3198,5 +3235,22 @@
       }
     ],
     "unresolved_checks": []
+  },
+  {
+    "source_sha": "eabf54acd779560681a74dd11669c274c240a088",
+    "run_id": "40295171743",
+    "components": [],
+    "status": "verified",
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12637494662,
+    "verified_checks": [
+      {
+        "id": "node:tests/worker/hosted-search.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "30253310ec320f8c49be949602fda74e04188fab07d3c2e4c273901a678febed",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      }
+    ]
   }
 ]

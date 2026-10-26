@@ -6,6 +6,19 @@ import vm from 'node:vm';
 const workflow = readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
 const before = (first, second) => assert.ok(workflow.indexOf(first) >= 0 && workflow.indexOf(first) < workflow.indexOf(second), `${first} must precede ${second}`);
 
+test('runtime feature workflow flags do not select or replay an acceptance family', () => {
+  const code = workflow.match(/<<'REQUEST'\n([\s\S]*?)\n\s+REQUEST/)[1];
+  const run = overrides => vm.runInNewContext(code, { process: { env: { DEPLOY_ENVIRONMENT: 'staging', ACCEPTANCE_PROFILE: 'none',
+    RUNTIME_FEATURES: 'web_search', SOURCE_RUN: '123', GITHUB_RUN_ATTEMPT: '1', ...overrides } } });
+  assert.doesNotThrow(() => run({}));
+  assert.throws(() => run({ RUNTIME_FEATURES: 'code_interpreter' }), /allowlist/);
+  assert.throws(() => run({ DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
+  assert.ok(workflow.includes('options: [configured, none, web_search]'));
+  assert.ok(workflow.includes("const accepted=profile==='none'?'not_selected'"));
+  assert.equal(workflow.includes('node tests/e2e/hosted-search-sdk.mjs'), false);
+  before('Require the existing selected Worker search service credential', 'npx wrangler d1 migrations apply');
+});
+
 test('deployment requires recomputed incremental provenance before infrastructure changes', () => {
   before('node scripts/deploy-provenance.mjs', 'npx wrangler d1 migrations apply');
   assert.ok(workflow.includes('name: incremental-plan'));

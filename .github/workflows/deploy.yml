@@ -17,6 +17,12 @@ on:
         options: [none, direct-deepseek-usage-probe, responses-increment]
         default: none
         required: true
+      runtime_features:
+        description: Runtime feature allowlist, independent of whether a journey runs
+        type: choice
+        options: [configured, none, web_search]
+        default: configured
+        required: true
 
 permissions:
   contents: read
@@ -31,12 +37,16 @@ jobs:
     env:
       DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
       ACCEPTANCE_PROFILE: ${{ inputs.acceptance_profile }}
+      RUNTIME_FEATURES: ${{ inputs.runtime_features }}
       SOURCE_RUN: ${{ inputs.source_run }}
     steps:
       - name: Validate requested scope without service credentials
         run: |
           node --input-type=module <<'REQUEST'
           const profile=process.env.ACCEPTANCE_PROFILE, environment=process.env.DEPLOY_ENVIRONMENT;
+          const features=process.env.RUNTIME_FEATURES ?? 'configured';
+          if (!['configured','none','web_search'].includes(features)) throw Error('Invalid runtime feature allowlist');
+          if (environment!=='staging' && features!=='configured') throw Error('Runtime feature overrides are staging-only');
           if (!['staging','production'].includes(environment) || !['none','direct-deepseek-usage-probe','responses-increment'].includes(profile)) throw Error('Invalid finite operation scope');
           if (!/^[1-9][0-9]{0,14}$/.test(process.env.SOURCE_RUN ?? '')) throw Error('Invalid source CI identity');
           if (environment!=='staging' && profile!=='none') throw Error('Operator and paid acceptance scopes are staging-only');
@@ -109,6 +119,7 @@ jobs:
       SOURCE_RUN: ${{ inputs.source_run }}
       ACCEPTANCE_PROFILE: ${{ inputs.acceptance_profile }}
       DEPLOY_CONFIG: .temp/deploy.json
+      RUNTIME_FEATURES: ${{ inputs.runtime_features }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -121,8 +132,9 @@ jobs:
           if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? '') || !/^[1-9][0-9]{0,14}$/.test(source ?? '')) throw Error('Invalid CI identity');
           if (process.env.DEPLOY_ENVIRONMENT !== 'staging' && process.env.ACCEPTANCE_PROFILE !== 'none') throw Error('Paid acceptance is staging-only');
           const run = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/actions/runs/${source}`], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 }));
+          const compatible=process.env.DEPLOY_ENVIRONMENT==='staging' && (process.env.ACCEPTANCE_PROFILE==='responses-increment' || ['none','web_search'].includes(process.env.RUNTIME_FEATURES));
           if (run.id !== Number(source) || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
-            || run.status !== 'completed' || (process.env.ACCEPTANCE_PROFILE !== 'responses-increment' && run.conclusion !== 'success') || run.head_sha !== process.env.GITHUB_SHA
+            || run.status !== 'completed' || (!compatible && run.conclusion !== 'success') || run.head_sha !== process.env.GITHUB_SHA
             || run.path !== '.github/workflows/ci.yml' || !['push', 'workflow_dispatch'].includes(run.event)
             || run.display_title?.startsWith('Worker diagnostics - ')) throw Error('CI candidate identity is not approved');
           NODE
@@ -168,6 +180,11 @@ jobs:
             test -n "$MAGENTS_TEST_API_KEY" || { echo 'Missing owned staging key'; exit 1; }
             test -n "$MAGENTS_TEST_OTHER_API_KEY" || { echo 'Missing secondary owner key'; exit 1; }
           fi
+      - name: Require the existing selected Worker search service credential
+        if: inputs.environment == 'staging' && inputs.runtime_features == 'web_search'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: test -n "$DEEPSEEK_API_KEY" || { echo 'Missing existing direct DeepSeek search route'; exit 1; }
       - name: Never replay paid stage work through an Actions rerun
         if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         run: test "$GITHUB_RUN_ATTEMPT" = 1 || { echo 'Inspect the original accepted operations; paid stage actions are not replayable'; exit 1; }
@@ -255,7 +272,7 @@ jobs:
           import fs from 'node:fs';
           const profile=process.env.ACCEPTANCE_PROFILE;
           const accepted=profile==='none'?'not_selected':process.env.OUTCOME!=='success'?'failed_or_not_observed':'selected_increment_passed';
-          fs.writeFileSync('.temp/deploy-verification/deployment-receipt.json', JSON.stringify({assembly_source_sha:process.env.GITHUB_SHA,source_run:process.env.SOURCE_RUN,component_sources:{worker:process.env.WORKER_SOURCE_SHA,dashboard:process.env.DASHBOARD_SOURCE_SHA,container:process.env.CONTAINER_SOURCE_SHA},environment:process.env.DEPLOY_ENVIRONMENT,acceptance_profile:profile,job_status:process.env.OUTCOME,acceptance_status:accepted,production_clearance:'external_root_decision_required'}));
+          fs.writeFileSync('.temp/deploy-verification/deployment-receipt.json', JSON.stringify({assembly_source_sha:process.env.GITHUB_SHA,source_run:process.env.SOURCE_RUN,component_sources:{worker:process.env.WORKER_SOURCE_SHA,dashboard:process.env.DASHBOARD_SOURCE_SHA,container:process.env.CONTAINER_SOURCE_SHA},environment:process.env.DEPLOY_ENVIRONMENT,runtime_features:process.env.RUNTIME_FEATURES??'configured',acceptance_profile:profile,job_status:process.env.OUTCOME,acceptance_status:accepted,production_clearance:'external_root_decision_required'}));
           NODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
