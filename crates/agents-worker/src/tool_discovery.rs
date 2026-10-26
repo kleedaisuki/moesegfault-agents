@@ -576,16 +576,22 @@ impl ToolRegistry {
     }
 
     pub(crate) fn select_choice(&mut self, choice: Option<&Value>) {
-        let Some(choice) =
-            choice.filter(|choice| matches!(choice["type"].as_str(), Some("function" | "custom")))
-        else {
+        let Some(choice) = choice.filter(|choice| {
+            matches!(choice["type"].as_str(), Some("function" | "custom" | "mcp"))
+        }) else {
             return;
         };
         for entry in &mut self.entries {
-            if choice["type"] == entry.key.kind
-                && choice["name"] == entry.key.name
-                && choice["namespace"].as_str() == entry.key.namespace.as_deref()
-            {
+            let selected = if choice["type"] == "mcp" {
+                entry.alias().starts_with(crate::mcp_bindings::ALIAS_PREFIX)
+                    && choice["server_label"].as_str() == entry.key.namespace.as_deref()
+                    && choice["name"] == entry.key.name
+            } else {
+                choice["type"] == entry.key.kind
+                    && choice["name"] == entry.key.name
+                    && choice["namespace"].as_str() == entry.key.namespace.as_deref()
+            };
+            if selected {
                 // An explicit caller selection already discovers exactly this
                 // schema. It does not expose other deferred definitions.
                 entry.deferred = false;

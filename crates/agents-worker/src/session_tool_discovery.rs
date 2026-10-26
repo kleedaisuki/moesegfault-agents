@@ -24,20 +24,6 @@ impl SessionInner {
                         .map(|definition| definition.function.name.as_str()),
                 )
                 .map_err(Error::RustError)?;
-            if let Some(previous) = &data.inherited_discovery {
-                let origins = match &data.native_context {
-                    Some(context) => {
-                        native_items::authorized_origins(
-                            &self.state.storage(),
-                            &context.history,
-                            &previous.origin_digests(),
-                        )
-                        .await?
-                    }
-                    None => Default::default(),
-                };
-                registry.inherit_loaded_from(previous, &origins);
-            }
             registry
                 .authorize_pending_search(
                     data.pending_general_tools
@@ -49,6 +35,33 @@ impl SessionInner {
             registry.select_choice(request.tool_choice.as_ref());
         }
         Ok(registry)
+    }
+
+    pub(super) async fn join_discovery(
+        &self,
+        data: &PersistedSession,
+        registry: &mut crate::tool_discovery::ToolRegistry,
+        mcp: &crate::mcp_runtime::McpBindings,
+        choice: Option<&Value>,
+    ) -> Result<()> {
+        registry.register_mcp(mcp).map_err(Error::RustError)?;
+        if let Some(previous) = &data.inherited_discovery {
+            let origins = match &data.native_context {
+                Some(context) => {
+                    native_items::authorized_origins(
+                        &self.state.storage(),
+                        &context.history,
+                        &previous.origin_digests(),
+                    )
+                    .await?
+                }
+                None => Default::default(),
+            };
+            registry.inherit_loaded_from(previous, &origins);
+        }
+
+        registry.select_choice(choice);
+        Ok(())
     }
 
     pub(super) fn discovery_validation_declarations(&self) -> Result<Vec<Value>> {
