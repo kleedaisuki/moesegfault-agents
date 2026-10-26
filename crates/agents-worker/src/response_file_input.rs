@@ -52,23 +52,23 @@ async fn download(
     part: &serde_json::Value,
     key: Option<&str>,
     workspace: bool,
+    max_bytes: usize,
 ) -> Result<Frozen> {
     let (url, filename) = source(part)?;
     let host = validate_url(url)?;
-    let fetched =
-        crate::image_generation::fetch_public_image_bytes(url, &[host], MAX_INLINE_BYTES, "*/*")
-            .await
-            .map_err(|error| match error {
-                worker::Error::RustError(code)
-                    if matches!(
-                        code.as_str(),
-                        "image_generation_image_too_large" | "image_generation_response_too_large"
-                    ) =>
-                {
-                    fail("attachments_too_large")
-                }
-                _ => fail("remote_file_unavailable"),
-            })?;
+    let fetched = crate::image_generation::fetch_public_image_bytes(url, &[host], max_bytes, "*/*")
+        .await
+        .map_err(|error| match error {
+            worker::Error::RustError(code)
+                if matches!(
+                    code.as_str(),
+                    "image_generation_image_too_large" | "image_generation_response_too_large"
+                ) =>
+            {
+                fail("attachments_too_large")
+            }
+            _ => fail("remote_file_unavailable"),
+        })?;
     if fetched.bytes.is_empty() {
         return Err(fail("remote_file_unavailable"));
     }
@@ -92,7 +92,7 @@ async fn download(
         return Ok(Frozen {
             part: inline_text(filename, text),
             attachment: None,
-            bytes,
+            bytes: bytes.max(text.len()),
         });
     }
     if !workspace {
@@ -148,8 +148,12 @@ pub(super) async fn resolve(
     inline_key: Option<&str>,
     storage: Option<&Storage>,
     workspace: bool,
+    max_bytes: usize,
 ) -> Result<Frozen> {
     source(part)?;
+    if max_bytes == 0 || max_bytes > MAX_INLINE_BYTES {
+        return Err(fail("attachments_too_large"));
+    }
     if present(part, "file_id").is_some() || present(part, "file_data").is_some() {
         return Err(fail("invalid_file_input"));
     }
@@ -191,7 +195,7 @@ pub(super) async fn resolve(
                 return Err(fail("remote_file_outcome_unknown"));
             }
         }
-        let result = download(env, owner, part, inline_key, workspace).await;
+        let result = download(env, owner, part, inline_key, workspace, max_bytes).await;
         if let Some((storage, key)) = storage.zip(key.as_deref()) {
             let (status, error) = match &result {
                 Ok(frozen) => {

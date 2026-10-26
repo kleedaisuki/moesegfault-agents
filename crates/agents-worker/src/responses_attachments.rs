@@ -221,10 +221,18 @@ async fn resolve_file(
     budget: &mut Budget,
     storage: Option<&Storage>,
 ) -> Result<Value> {
-    file_fields(part)?;
+    file_execution_fields(part)?;
     if present(part, "file_url").is_some() {
-        let frozen =
-            remote::resolve(env, owner, part, inline_key, storage, workspace_enabled).await?;
+        let frozen = remote::resolve(
+            env,
+            owner,
+            part,
+            inline_key,
+            storage,
+            workspace_enabled,
+            MAX_INLINE_BYTES.saturating_sub(budget.inline_bytes),
+        )
+        .await?;
         budget.inline(frozen.bytes)?;
         if let Some(file) = frozen.attachment {
             if !attachments.iter().any(|existing| existing.id == file.id) {
@@ -306,8 +314,7 @@ fn file_fields(part: &Value) -> Result<()> {
     )?;
     if let Some(detail) = present(part, "detail") {
         match detail.as_str() {
-            Some("auto") => {}
-            Some("low" | "high" | "original") => return Err(fail("file_detail_unavailable")),
+            Some("auto" | "low" | "high" | "original") => {}
             _ => return Err(fail("invalid_file_input")),
         }
     }
@@ -316,6 +323,14 @@ fn file_fields(part: &Value) -> Result<()> {
         if marker["mode"] != "explicit" {
             return Err(fail("invalid_attachment"));
         }
+    }
+    Ok(())
+}
+
+fn file_execution_fields(part: &Value) -> Result<()> {
+    file_fields(part)?;
+    if present(part, "detail").is_some_and(|detail| detail != "auto") {
+        return Err(fail("file_detail_unavailable"));
     }
     Ok(())
 }
@@ -585,8 +600,9 @@ mod tests {
             assert_eq!(rendered["prompt_cache_breakpoint"], marker);
             for detail in ["low", "high", "original"] {
                 part["detail"] = json!(detail);
+                assert!(validate_part(&part).is_ok());
                 assert!(
-                    matches!(validate_part(&part), Err(Error::RustError(code)) if code == "file_detail_unavailable")
+                    matches!(file_execution_fields(&part), Err(Error::RustError(code)) if code == "file_detail_unavailable")
                 );
             }
         }

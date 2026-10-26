@@ -109,6 +109,22 @@ test('compiled Rust Worker: remote file freeze metadata and prepaid read-only ca
   const agent = await request('POST','/v1/agents',{name:'Remote file input',instructions:'Pinned remote input policy',model:{provider:'byok',credential_id:credential.id,protocol:'responses',model:'fixture-native-model',context_window:8192,max_output_tokens:64},workspace:false,tools:[]},201,principal.apiKey);
   const sdk = new OpenAI({baseURL:'https://agents.test/v1',apiKey:principal.apiKey,maxRetries:0,fetch:(input,init)=>mf.dispatchFetch(input,init)});
   const body = path => ({model:agent.id,input:[{role:'user',content:[{type:'input_file',file_url:origin+path,filename:'note.txt',detail:'auto',prompt_cache_breakpoint:{mode:'explicit'}}]}]});
+  if (process.env.MAGENTS_REMOTE_FILE_CASE === 'metadata-budget') {
+    for (const source of [{file_id:'file_opaque_other_owner'},{filename:'note.txt',file_data:'aGk='}]) {
+      const request = {model:agent.id,input:[{role:'user',content:[{type:'input_file',...source,detail:'high',prompt_cache_breakpoint:{mode:'explicit'}}]}]};
+      await assert.rejects(sdk.responses.inputTokens.count(request),error=>error.status===422&&error.code==='file_detail_unavailable');
+    }
+    assert.equal(calls.length,0,'Legal but unsupported visual detail is a capability error before owned lookup or remote fetch');
+    text='x'.repeat(256*1024);
+    const oversized={model:agent.id,input:[{role:'user',content:Array.from({length:17},()=>({type:'input_file',file_url:origin+'/note'}))}]};
+    await assert.rejects(sdk.responses.inputTokens.count(oversized),error=>error.status===413);
+    assert.equal(calls.length,16,'The exhausted aggregate budget prevents the seventeenth download');
+    assert.equal(providers.state.counts.length,0);
+    assert.equal(providers.state.calls.length,0);
+    assert.equal(await db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE account_id=?').bind(principal.owner).first('n'),0);
+    assert.equal(await db.prepare('SELECT COUNT(*) AS n FROM space_files WHERE account_id=?').bind(principal.owner).first('n'),0);
+    return;
+  }
   const counted = await sdk.responses.inputTokens.count(body('/note?signature=not-a-provider-key'));
   assert.equal(counted.input_tokens,42);
   assert.equal(providers.state.calls.length,0);
