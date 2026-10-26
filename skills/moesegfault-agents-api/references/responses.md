@@ -177,6 +177,15 @@ summary string or manufacture provider reasoning. Protected instructions and
 explicit overrides retain their separate ownership. Missing required provider
 usage can remain an explicit capability gap, never fabricated zero detail.
 
+Keep retained user-message roles unchanged. Python SDK 3.37.0's strict
+`CompactedResponse.output` annotation permits assistant output items although its
+documented compact window includes users. Normal SDK calls and passing the whole
+window back work; strict wire validators should use the SDK's input-message and
+compaction-item union for this field rather than relabeling users or dropping
+items. Node's parsed response can also add `output_text`/`parsed` helpers: use
+`const raw = await call.asResponse(); const body = await raw.json()` when comparing
+original wire representations, without filtering fields out of the actual body.
+
 Deeper current contracts: [full inventory](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-contract.md),
 [state](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-state.md),
 [WebSocket/steering](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/full-responses-websocket.md),

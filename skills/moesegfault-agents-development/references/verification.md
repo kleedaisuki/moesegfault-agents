@@ -42,6 +42,12 @@ Choose the specific new property/SQL/SDK/browser case from the increment. Compil
 changed artifacts when necessary; do not rerun old full package/suite commands
 merely because another capability was added.
 
+Inspect the actual planned commands before dispatch: several journey labels can
+still point at the same whole test file. Use the existing case selector rather
+than execute that harness repeatedly. A fixture or result-counter failure is not
+evidence that an already accepted model/tool effect must run again; retain the
+original artifact/state and repair only the failed observation where possible.
+
 `npm run test:worker` requires an already built Worker artifact. A native unit
 test or wasm type check does not prove `worker-build` packaging or workerd HTTP
 behavior. Do not run the root workspace daemon directly with elevated privileges
@@ -65,6 +71,11 @@ unknown outcome rather than deleting state to make cleanup look successful.
 Report implemented, registered, newly executed, reused and pending evidence
 separately. Exact terminal/text/source-history/owner/ledger assertions must not be
 weakened to make a new capability pass.
+
+OpenAI Node adds `output_text` and sometimes `parsed` convenience properties to
+parsed response objects. Compare raw SSE snapshots with
+`await client.responses.retrieve(id).asResponse().then(response => response.json())`,
+not the decorated SDK object. Never delete/filter payload fields to force equality.
 
 Full map: [architecture](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/architecture.md)
 and [acceptance](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/acceptance.md).
