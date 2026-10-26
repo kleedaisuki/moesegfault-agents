@@ -46,6 +46,8 @@ mod native;
 pub(crate) mod native_items;
 #[path = "session_native_output.rs"]
 mod native_output;
+#[path = "session_native_window.rs"]
+mod native_window;
 #[path = "session_observer.rs"]
 mod observer;
 #[path = "session_response_steering.rs"]
@@ -1518,15 +1520,21 @@ impl SessionInner {
                 );
             }
         }
-        if self.compact_if_needed(&config).await? {
+        let native_auto = config.protocol == agents_core::ProviderProtocol::Responses
+            && run
+                .response
+                .as_ref()
+                .is_some_and(|response| response.request.truncation.as_deref() == Some("auto"));
+        if !native_auto && self.compact_if_needed(&config).await? {
             return Ok(None);
         }
-        self.fit_response_prompt(
-            config
-                .max_output_tokens
-                .unwrap_or(record.pinned.model.max_output_tokens),
-        )?;
-        let messages = self.snapshot()?.messages;
+        if config.protocol != agents_core::ProviderProtocol::Responses {
+            self.fit_response_prompt(
+                config
+                    .max_output_tokens
+                    .unwrap_or(record.pinned.model.max_output_tokens),
+            )?;
+        }
         let mut definitions = tool_definitions(record);
         let mut options = provider::GenerationOptions::default();
         if let Some(response) = &run.response {
@@ -1553,6 +1561,10 @@ impl SessionInner {
         tool_budget::filter_exhausted_tools(&run, record, &mut definitions);
         self.prepare_native_generation(&config, &definitions, &mut options)
             .await?;
+        if native_auto && self.compact_if_needed(&config).await? {
+            return Ok(None);
+        }
+        let messages = self.snapshot()?.messages;
         let event = format!("round:{}", run.round);
         store
             .reserve_completion(
@@ -2484,6 +2496,10 @@ fn safe_error_code(error: &Error) -> String {
         "resource_reconciliation_pending",
         "context_budget_exceeded",
         "context_length_exceeded",
+        "token_count_unavailable",
+        "token_count_encrypted_reasoning_unsupported",
+        "token_count_media_unsupported",
+        "token_count_model_profile_unavailable",
         "invalid_function_arguments",
         "invalid_structured_output",
         "provider_parallel_tool_policy_violation",

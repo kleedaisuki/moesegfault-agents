@@ -413,27 +413,7 @@ pub(crate) async fn count_account(
     protocol: CountProtocol,
     body: Value,
 ) -> worker::Result<InputTokenCount> {
-    let operation = crate::util::id("token_count");
-    crate::reconcile::maintenance_account_reservation(env, owner, &operation).await?;
-    let meter = crate::resources::ResourceMeter::account(env, owner, &operation)?;
-    meter
-        .require_observation("provider.count", Resource::Worker, "wall_ms")
-        .await?;
-    let started = crate::util::now_ms();
-    let result = count_native(config, protocol, body).await;
-    let observed = meter
-        .record_wall_time(
-            "provider.count",
-            Resource::Worker,
-            started,
-            crate::util::now_ms(),
-        )
-        .await;
-    if observed.is_ok() {
-        meter.settle_run().await?;
-    }
-    observed?;
-    result
+    resource_count(env, owner, count_native(config, protocol, body)).await
 }
 
 pub(crate) async fn count_prepared(
@@ -442,26 +422,49 @@ pub(crate) async fn count_prepared(
     config: &ProviderConfig,
     prepared: &crate::provider::responses::PreparedRequest,
 ) -> worker::Result<InputTokenCount> {
+    resource_count(env, owner, count_rendered(config, prepared)).await
+}
+
+/// Funding precedes polling: preparation, auto-fit and its exact count probes
+/// share one resource-only receipt, not unmetered prework or model admission.
+pub(crate) async fn resource_count<T>(
+    env: &Env,
+    owner: &str,
+    action: impl std::future::Future<Output = worker::Result<T>>,
+) -> worker::Result<T> {
+    crate::allowances::sync(env, owner).await?;
+    let operation = crate::util::id("token_count");
+    crate::reconcile::maintenance_account_reservation(env, owner, &operation).await?;
+    let meter = crate::resources::ResourceMeter::account(env, owner, &operation)?;
+    meter
+        .require_observation("provider.count", Resource::Worker, "wall_ms")
+        .await?;
+    let started = crate::util::now_ms();
+    let result = action.await;
+    meter
+        .record_wall_time(
+            "provider.count",
+            Resource::Worker,
+            started,
+            crate::util::now_ms(),
+        )
+        .await?;
+    meter.settle_run().await?;
+    result
+}
+
+/// Count an already rendered execution request. A Session caller uses its
+/// existing run/resource observations, rather than creating an account run.
+pub(crate) async fn count_rendered(
+    config: &ProviderConfig,
+    prepared: &crate::provider::responses::PreparedRequest,
+) -> worker::Result<InputTokenCount> {
+    if config.protocol != ProviderProtocol::Responses {
+        return Err(Error::RustError("token_count_unavailable".into()));
+    }
     if crate::deepseek_tokenizer::is_deepseek(config) {
-        let operation = crate::util::id("token_count");
-        crate::reconcile::maintenance_account_reservation(env, owner, &operation).await?;
-        let meter = crate::resources::ResourceMeter::account(env, owner, &operation)?;
-        meter
-            .require_observation("provider.count", Resource::Worker, "wall_ms")
-            .await?;
-        let started = crate::util::now_ms();
-        let counted =
-            crate::deepseek_tokenizer::count_deepseek(config, prepared).map_err(Error::RustError);
-        meter
-            .record_wall_time(
-                "provider.count",
-                Resource::Worker,
-                started,
-                crate::util::now_ms(),
-            )
-            .await?;
-        meter.settle_run().await?;
-        let count = counted?;
+        let count = crate::deepseek_tokenizer::count_deepseek(config, prepared)
+            .map_err(Error::RustError)?;
         crate::util::emit(
             "provider.count.local",
             json!({"model":config.model,"input_tokens":count.input_tokens,
@@ -473,14 +476,7 @@ pub(crate) async fn count_prepared(
             input_tokens: count.input_tokens,
         });
     }
-    count_account(
-        env,
-        owner,
-        config,
-        CountProtocol::Responses,
-        prepared.count_body(),
-    )
-    .await
+    count_native(config, CountProtocol::Responses, prepared.count_body()).await
 }
 
 async fn send_count(

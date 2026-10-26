@@ -23,6 +23,7 @@ pub(crate) struct Context {
     pub retained: Vec<Value>,
     pub config: ProviderConfig,
     pub prepared: PreparedRequest,
+    pub measured_input_tokens: Option<u64>,
 }
 
 pub(crate) async fn prepare(
@@ -234,7 +235,33 @@ pub(crate) async fn prepare(
     if let Some(personality) = personality {
         controls["personality"] = personality;
     }
-    let prepared = PreparedRequest::new(&config, &native, &tools, &controls).map_err(fail)?;
+    let (prepared, measured_input_tokens) = if controls["truncation"] == "auto" {
+        let fitted = crate::responses_auxiliary::resource_count(
+            env,
+            owner,
+            crate::native_window::fit(
+                &config,
+                &native,
+                &tools,
+                &controls,
+                pinned.model.context_window,
+                config
+                    .max_output_tokens
+                    .unwrap_or(pinned.model.max_output_tokens),
+                crate::provider::controls::HarnessControlEffects {
+                    max_tool_calls: true,
+                    ..Default::default()
+                },
+            ),
+        )
+        .await?;
+        (fitted.prepared, fitted.input_tokens)
+    } else {
+        (
+            PreparedRequest::new(&config, &native, &tools, &controls).map_err(fail)?,
+            None,
+        )
+    };
     Ok(Context {
         agent: request.model.clone(),
         pinned,
@@ -245,6 +272,7 @@ pub(crate) async fn prepare(
         retained,
         config,
         prepared,
+        measured_input_tokens,
     })
 }
 

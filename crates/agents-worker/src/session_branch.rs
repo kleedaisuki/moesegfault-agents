@@ -3,13 +3,15 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct NativeHistoryRef {
     #[serde(default)]
     pub generation: String,
     pub source_session_id: String,
     pub end: usize,
     pub provider_binding: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::native_window::Window>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

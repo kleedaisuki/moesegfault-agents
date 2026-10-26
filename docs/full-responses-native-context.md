@@ -152,3 +152,27 @@ capability contract; no live foreign-provider or production rollout is claimed.
 Both topic-only CI selectors are explicitly non-promoting and are excluded from
 the integrated source. The auto-window and explicit request compaction work
 remain separate follow-ups.
+## Effective native auto windows
+
+Native `truncation=auto` selects a view of the immutable native log, rather than
+removing only the legacy Message projection while silently sending the full log.
+The view stores an absolute suffix boundary plus earlier protected instruction
+positions. Absent views serialize exactly as older references. History exports,
+continued native reads and branches consume the same selected positions; source
+journals and older response boundaries remain unchanged.
+
+The existing exact rendered counter chooses a verified fitting whole user/tool
+group and reserves the configured output budget. Count and execution share the
+same renderer, tools, pin and selected input; upstream truncation is disabled on
+that already fitted private request while public policy stays `auto`. Count-only
+preparation uses one funded resource operation and never mutates the source
+Session. Warm-up preparation is funded without admitting inference. Existing
+percentage compaction still operates on the selected active context; public
+`context_management` item emission is a separate follow-up, not bundled here.
+
+New pure/property checks cover protected instructions, whole pending groups,
+absolute view indexes, old-reference bytes, source immutability and the actual
+vendored DeepSeek renderer. Two new controlled Worker journeys cover historical
+windows and pending tool pairs; their synthetic counter is explicitly not a
+production tokenizer claim. Compilation and real execution are still pending at
+this source checkpoint.
