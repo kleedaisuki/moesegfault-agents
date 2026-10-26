@@ -246,31 +246,10 @@ fn quote(owner: &str, conversation: &str, response: &str, terms: &Terms) -> Resu
         .pin_hash
         .clone()
         .unwrap_or_else(|| "p".repeat(256));
-    let archive = crate::workspace::OwnedArchiveRef {
-        account_id: owner.into(),
-        object_key: format!(
-            "workspace-blobs/{}/1/{}/{}.tar.zst",
-            "f".repeat(64),
-            "f".repeat(64),
-            uuid::Uuid::nil()
-        ),
-        sha256: "f".repeat(64),
-        format_version: 1,
-        generation: u64::MAX,
-        archive_bytes: u64::MAX,
-        logical_bytes: u64::MAX,
-        entries: u64::MAX,
-    };
-    let workspace = crate::conversation_state::workspace::ConversationWorkspace {
-        source_response_id: response.into(),
-        source_session_id: terms.request.session_id.clone(),
-        source_profile: terms.request.profile.unwrap_or(RuntimeProfile::Standard4g),
-        archive: Some(archive),
-    };
     let committed = BTreeMap::from([(response, u64::MAX)]);
     let metadata = serde_json::json!({"committed_responses":committed,
         "execution_hint":{"response_id":response,"session_id":terms.request.session_id,"agent_id":agent,"pin_hash":pin,"adopted_revision":u64::MAX},
-        "workspace":workspace,"quota_header_blocks":u64::MAX,"revision":u64::MAX});
+        "quota_header_blocks":u64::MAX,"revision":u64::MAX});
     let slots = checked_mul(
         2,
         checked_add(known_ids, checked_add(ids, checked_mul(3, count)?)?)?,
