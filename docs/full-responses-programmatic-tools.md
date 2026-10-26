@@ -185,9 +185,19 @@ charges remained zero, and ordinary agent-list requests returned 200. The source
 run itself failed its positive journey; this selective negative evidence does
 not promote the artifact or imply an overall-green run.
 
-The first full positive journey with the native-JSON and terminal-only event
-fixes is pending GHA; no deployment or final Cloudflare invoice verification is
-claimed by the component or Rust results. A temporary local diagnostic shim
+The unmodified repaired Worker passed the full time and program-only MCP
+journeys in [GHA 40344962094](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40344962094),
+source `52dc7611ee80cbabdc7b87d64320c41a006c4096`, Worker artifact `12662685029`.
+The two awaited time calls, dependent MCP structured results, strict nested
+argument rejection, exact 2000/1/2 allocation charges and same-key inference/
+effect/fee deduplication all passed. Raw GET equals raw SSE, and the current
+strict SDK validates both original streams. No old isolation or Rust contract
+was rerun. This is not a staging deployment or final Cloudflare invoice proof.
+
+The run's `.temp` receipt copy was excluded by upload-artifact's hidden-file
+default; retain the successful GHA log and original Worker artifact instead of
+rerunning a proven journey just to recreate that redundant copy.
+A temporary local diagnostic shim
 normalized only the old artifact's platform profile to locate the next boundary:
 two time calls and two dependent MCP calls actually completed, and the remaining
 strict SDK failure was the old terminal item's synthetic running phase. That

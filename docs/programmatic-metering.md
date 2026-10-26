@@ -158,8 +158,12 @@ allocation with no extra wait charges. These pass locally;
 those historical SQL checks used no Loader or external paid API. The integrated
 compiled-Worker journey now checks the actual Loader, Session and shared wallet,
 including replayed Responses and two awaits under one configured CPU allocation.
-Its initial GHA execution is pending; staging and production outcomes are not
-inferred from unit or SQL results.
+The unmodified compiled-Worker journeys passed in
+[GHA 40344962094](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40344962094),
+source `52dc761`, Worker artifact `12662685029`: one creation allocation of 2000
+microUSD, one rounded request charge of 1 and one CPU-capacity slot of 2 per
+program; two awaits and same-key replay add no extra charge. Staging, production
+and the final Cloudflare invoice are not inferred from these controlled journeys.
 
 Primary source: [Cloudflare Dynamic Workers pricing](https://developers.cloudflare.com/dynamic-workers/pricing/),
 read 2026-10-25. It defines unique ID/code daily counts, `.load()` identity
