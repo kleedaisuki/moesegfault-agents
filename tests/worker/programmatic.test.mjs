@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { runProgrammaticTime, runProgrammaticMcp } from './programmatic-journey.mjs';
+import { runProgrammaticTime, runProgrammaticMcp, runProgrammaticAdmissionFailures } from './programmatic-journey.mjs';
 import { createMcpTransport } from './mcp-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -26,7 +26,7 @@ test('compiled Rust Worker: a real isolated program calls pinned time and never 
     quantity_denominator: denominator, price_version: pricing.version });
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const directory = await mkdtemp(path.join(root, '.temp/programmatic-actor-'));
-  const mf = new Miniflare(convertV4MiniflareOptions({
+  const options = convertV4MiniflareOptions({
     modulesRoot: build, modules: [
       { type: 'ESModule', path: path.join(build, 'worker/shim.mjs') },
       { type: 'ESModule', path: path.join(build, 'index.js') },
@@ -55,7 +55,8 @@ test('compiled Rust Worker: a real isolated program calls pinned time and never 
       assert.notEqual(response, undefined, `No unplanned external access: ${new URL(request.url).origin}`);
       return response;
     },
-  }));
+  });
+  const mf = new Miniflare(options);
   t.after(() => mf.dispose());
   const db = await mf.getD1Database('DB');
   for (const name of (await readdir(path.join(root, 'migrations'))).filter(name => name.endsWith('.sql')).sort()) {
@@ -81,8 +82,16 @@ test('compiled Rust Worker: a real isolated program calls pinned time and never 
     assert.equal(checked.status, 0, checked.stderr || checked.stdout);
     return JSON.parse(checked.stdout);
   }
-  const context = { mf, db, encryptionKey, providers, request, validateWire };
-  const receipt = { time: await runProgrammaticTime(context), mcp: await runProgrammaticMcp(context) };
+  async function configureProgramCapability(missing) {
+    const tariffs = pricing.tariffs.filter(tariff => !tariff.unit.startsWith('dynamic_worker_'));
+    await mf.setOptions({ ...options,
+      workerLoaders: missing === 'loader' ? {} : options.workerLoaders,
+      bindings: { ...options.bindings, RESOURCE_PRICING_JSON: missing === 'price' ? JSON.stringify({ ...pricing, tariffs }) : JSON.stringify(pricing) },
+    });
+  }
+  const context = { mf, db, encryptionKey, providers, request, validateWire, configureProgramCapability };
+  const receipt = { time: await runProgrammaticTime(context), mcp: await runProgrammaticMcp(context),
+    admission: await runProgrammaticAdmissionFailures(context) };
   await writeFile(path.join(directory, 'receipt.json'), JSON.stringify({
     source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? process.env.GITHUB_SHA ?? null,
     fixture: 'actual-compiled-rust-worker-and-native-loader', external_network_calls: 0, ...receipt,

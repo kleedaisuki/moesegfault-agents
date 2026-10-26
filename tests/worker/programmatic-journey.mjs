@@ -129,6 +129,23 @@ export async function runProgrammaticMcp(context) {
   return { model_calls: 2, actual_mcp_calls: 2, same_origin_fetches: 1, program_only_caller: true, structured_result_join: true, idempotent_effects: true };
 }
 
+export async function runProgrammaticAdmissionFailures(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'programmatic-unavailable', []);
+  const failures = [];
+  for (const missing of ['loader', 'price']) {
+    await context.configureProgramCapability(missing);
+    const response = await scenario.client.responses.create({ model: scenario.agent.id, input: 'Do not spend inference on unavailable execution.',
+      tools: [{ type: 'programmatic_tool_calling' }] }).asResponse();
+    assert.equal(response.status, 422);
+    assert.equal((await response.json()).error.code, 'programmatic_unavailable');
+    assert.equal(scenario.state.calls, 0, 'Missing execution authority or price is rejected before any inference');
+    await context.request('GET', '/v1/agents', undefined, 200, scenario.principal.apiKey);
+    failures.push(missing);
+  }
+  assert.deepEqual(await charges(context.db, scenario.principal.owner), []);
+  return { disabled_only_programmatic: failures, ordinary_api_available: true, model_calls: 0, dynamic_charges: 0 };
+}
+
 async function charges(db, owner) {
   return (await db.prepare("SELECT unit, CAST(quantity AS TEXT) quantity, CAST(amount_microusd AS TEXT) amount_microusd FROM usage_ledger WHERE account_id=? AND unit LIKE 'dynamic_worker_%' ORDER BY unit").bind(owner).all()).results;
 }
