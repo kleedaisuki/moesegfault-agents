@@ -3466,7 +3466,9 @@
   {
     "source_sha": "2ffa1fbf520a2fe4906555ed5ee00226007143ef",
     "run_id": "40309873615",
-    "components": [],
+    "components": [
+      "worker"
+    ],
     "status": "verified",
     "receipt_artifact": "verification-worker",
     "receipt_artifact_id": 12644417857,
@@ -3848,6 +3850,55 @@
         "input_fingerprint": "a570b814727d30eb1847766c5bf5daa5fa598531e57ffb152b7393d7ed3f686d",
         "receipt_path": "worker-journeys.json",
         "executed_tests": 2
+      }
+    ],
+    "artifact_id": 12644682110,
+    "unresolved_checks": [
+      {
+        "id": "node:tests/worker/file-search.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/file-search.test.mjs"
+        ],
+        "env": {},
+        "reason": "Actual source 2ffa1fb Worker journey failed; the successfully built Wasm is reusable, not full runtime acceptance"
+      },
+      {
+        "id": "node:tests/worker/hosted-image.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/hosted-image.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_HOSTED_IMAGE_CASE": "stored"
+        },
+        "reason": "Actual source 2ffa1fb Worker journey failed; the successfully built Wasm is reusable, not full runtime acceptance"
+      },
+      {
+        "id": "node:tests/worker/image-projection.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/image-projection.test.mjs"
+        ],
+        "env": {},
+        "reason": "Actual source 2ffa1fb Worker journey failed; the successfully built Wasm is reusable, not full runtime acceptance"
+      },
+      {
+        "id": "node:tests/worker/vector-storage.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/vector-storage.test.mjs"
+        ],
+        "env": {},
+        "reason": "Actual source 2ffa1fb Worker journey failed; the successfully built Wasm is reusable, not full runtime acceptance"
       }
     ]
   }
