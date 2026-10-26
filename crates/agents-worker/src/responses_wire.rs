@@ -1137,7 +1137,7 @@ fn validate_native_item(item: &Value) -> Result<(), String> {
         "custom_tool_call_output" => {
             object_keys(
                 item,
-                &["type", "id", "call_id", "output", "status"],
+                &["type", "id", "call_id", "output", "status", "caller"],
                 "custom output",
             )?;
             identifier(required_string(item, "call_id")?, "call ID")?;
@@ -1193,6 +1193,16 @@ fn validate_native_item(item: &Value) -> Result<(), String> {
 }
 
 fn normalize_item(item: &Value, normalized: &mut NormalizedInput) -> Result<(), String> {
+    if let Some(caller) = item.get("caller").filter(|caller| !caller.is_null()) {
+        match caller["type"].as_str() {
+            Some("direct") => object_keys(caller, &["type"], "caller")?,
+            Some("program") => {
+                object_keys(caller, &["type", "caller_id"], "program caller")?;
+                identifier(required_string(caller, "caller_id")?, "program caller ID")?;
+            }
+            _ => return Err("Unknown tool caller type".into()),
+        }
+    }
     let kind = item
         .get("type")
         .and_then(Value::as_str)
