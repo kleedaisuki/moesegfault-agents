@@ -252,8 +252,11 @@ async fn convert(prepared: PreparedConversion) -> Result<String> {
 /// Responses attachments share the admitted native document-text parser. This
 /// never invokes embedding, OCR, images, or an unpriced custom converter.
 pub(crate) async fn attachment_text(env: &Env, bytes: &[u8]) -> Result<Option<String>> {
-    let Some(kind) = kind(bytes)? else {
-        return Ok(None);
+    let kind = match kind(bytes) {
+        Ok(Some(kind)) => kind,
+        Ok(None) => return Ok(None),
+        Err(Error::RustError(code)) if code == "unsupported_or_empty_document" => return Ok(None),
+        Err(error) => return Err(error),
     };
     convert(prepare_binding(env, "AI", kind, bytes)?)
         .await
