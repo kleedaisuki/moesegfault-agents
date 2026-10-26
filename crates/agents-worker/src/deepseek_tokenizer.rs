@@ -142,6 +142,26 @@ pub(crate) fn count_deepseek(
     count_body(&config.model, prepared.count_body())
 }
 
+pub(crate) fn count_anthropic_plain(
+    config: &ProviderConfig,
+    body: &Value,
+) -> Result<ExactCount, String> {
+    if !is_deepseek(config) || config.protocol != agents_core::ProviderProtocol::Anthropic {
+        return Err("token_count_provider_protocol_unavailable".into());
+    }
+    let profile = Profile::resolve(&config.model)?;
+    let wire = serde_json::to_vec(body).map_err(|_| "token_count_input_invalid")?;
+    if wire.len() > MAX_BODY || body["model"] != config.model {
+        return Err("token_count_input_invalid".into());
+    }
+    let request: deepseek_recipe::anthropic::MessagesRequest =
+        serde_json::from_slice(&wire).map_err(|_| "token_count_input_unsupported")?;
+    let converted = request
+        .convert(ConversionOptions::default().with_model_alias(&config.model, profile.version()))
+        .map_err(|_| "token_count_input_unsupported")?;
+    encode_conversation(profile, &converted)
+}
+
 fn count_body(model: &str, body: Value) -> Result<ExactCount, String> {
     let profile = Profile::resolve(model)?;
     validate_input(&body)?;
@@ -176,6 +196,13 @@ fn count_body(model: &str, body: Value) -> Result<ExactCount, String> {
     let converted = request
         .convert(options)
         .map_err(|_| "token_count_input_unsupported")?;
+    encode_conversation(profile, &converted)
+}
+
+fn encode_conversation(
+    profile: Profile,
+    converted: &deepseek_recipe::request::ConversationRequest,
+) -> Result<ExactCount, String> {
     WARM.with_borrow_mut(|warm| {
         if warm.as_ref().is_none_or(|(loaded, _)| *loaded != profile) {
             // Drop the old vocabulary before allocating a replacement.

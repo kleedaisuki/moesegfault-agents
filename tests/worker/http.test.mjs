@@ -24,6 +24,7 @@ import { runWorkspaceBlobJourney } from './workspace-blob-journey.mjs';
 import { runJsonObserverJourney } from './json-observer-journey.mjs';
 import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
 import { createAuxiliaryProviderFixture, runAuxiliaryJourney } from './auxiliary-journey.mjs';
+import { createDeepseekCompactFixture, runDeepseekCompactJourney } from './deepseek-compact-journey.mjs';
 import { runDeepSeekTokenizerJourney } from './deepseek-tokenizer-journey.mjs';
 import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
 import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
@@ -49,6 +50,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const coalescingProviders = createCoalescingProviderFixture();
   const chatRecoveryControl = createChatRecoveryControl();
   const auxiliaryProvider = createAuxiliaryProviderFixture();
+  const deepseekCompactProvider = createDeepseekCompactFixture();
   const promptProvider = createPromptProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
@@ -109,6 +111,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       PROMPT_REGISTRY_JSON: promptRegistry,
     },
     outboundService: async request => {
+      const deepseekCompactResponse = await deepseekCompactProvider.handle(request);
+      if (deepseekCompactResponse !== undefined) return deepseekCompactResponse;
       const promptResponse = await promptProvider.handle(request);
       if (promptResponse !== undefined) return promptResponse;
       const auxiliaryResponse = await auxiliaryProvider.handle(request);
@@ -522,6 +526,20 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
+  const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
+    .map(name => [name, mfOptions.workers[0].config.env[name]]));
+  await selected(t, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage', { timeout: 60000 }, () =>
+    runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: async values => {
+      const env = mfOptions.workers[0].config.env;
+      for (const name of Object.keys(compactBindings)) {
+        if (values) env[name] = { ...env.OPENROUTER_API_KEY, value: values[name] };
+        else if (compactBindings[name] === undefined) delete env[name];
+        else env[name] = compactBindings[name];
+      }
+      await mf.setOptions(mfOptions);
+      db = await mf.getD1Database('DB');
+      return db;
+    } }));
   await selected(t, 'response-wide server tool allowance survives disobedient calls and cold retrieval', { timeout: 40000 }, () =>
     runResponsesToolBudgetJourney(responseContext()));
   await selected(t, 'Responses auxiliary compact and count', { timeout: 60000 }, () =>
