@@ -3317,5 +3317,150 @@
       }
     ],
     "unresolved_checks": []
+  },
+  {
+    "source_sha": "32df6b663235ecc7698698aa48d8988ab1cb5082",
+    "run_id": "40307048654",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12642508853,
+    "verified_checks": [
+      {
+        "id": "rust:agents-core:omitted_routes_keep_old_configuration_serialization_empty",
+        "status": "passed_current",
+        "input_fingerprint": "2429937a37422d50b24a4f00c6bd1fb41e06b7985cb8cca9b3a60efef535af0c",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-core:omitted_image_contract_keeps_legacy_route_bytes_unchanged",
+        "status": "passed_current",
+        "input_fingerprint": "e83c4e830a3bdfbcd851a09bb63d41a5a5a37bc7c9e6279a8808c80d09e38ab4",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-core:owner_image_contract_is_versioned_bounded_and_never_platform_authority",
+        "status": "passed_current",
+        "input_fingerprint": "f44a87beaf2a8c9259c8c9cee6cb333fe4e8672de88a24a68de97c976c90c57a",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-core:image_contract_has_no_secret_or_unversioned_escape_hatch",
+        "status": "passed_current",
+        "input_fingerprint": "d479d25a073eb5e96ab5686475c739b7094095b034abbc371b7f7e66ac0ce50a",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "python:tests/test_code_context_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "be625583a297add4e7df8cac75be852beea4c01b8ffa0f27623bc1719d089d8f",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_conversation_image_blob_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "f4f706162b0a927d79aff9d7f3dcafe24c987dd8f75385425205fc60009774fa",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_deepseek_retrieval_tokenizer_assets.py",
+        "status": "passed_current",
+        "input_fingerprint": "43470e9a5c13797c6f9e2e79f161e859e95d69a8d0a7dbf0550824a2ea2b1bf9",
+        "receipt_path": "rust.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "python:tests/test_file_ingest_recovery_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "18d48aeb1e94799ebb863087b8788444e5de319f381a1564b69a96541d18c8b5",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_image_blob_holders_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "7b64cd4d88f3ba2f5426b2e4c3249ca6329ecb3aaa2b27b6f6225499dc4d8b00",
+        "receipt_path": "rust.json",
+        "executed_tests": 5
+      },
+      {
+        "id": "python:tests/test_image_execution_blob_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "50076866e437486f5608dbf7420abf2599fb25dee937de446cc5b1c8e11748a3",
+        "receipt_path": "rust.json",
+        "executed_tests": 6
+      },
+      {
+        "id": "python:tests/test_original_image_read_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "58909206b3f91bd0800e9b1dd7d438c9d68678d90429b8b61409a7d047180f71",
+        "receipt_path": "rust.json",
+        "executed_tests": 3
+      },
+      {
+        "id": "python:tests/test_vector_storage_clock_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "c4438ec694bead82cc26fdadc44a1d28369d2cf5795b5aa1629bc2f988c5ef80",
+        "receipt_path": "rust.json",
+        "executed_tests": 4
+      }
+    ],
+    "unresolved_checks": []
+  },
+  {
+    "source_sha": "32df6b663235ecc7698698aa48d8988ab1cb5082",
+    "run_id": "40307048654",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12642908769,
+    "receipt_artifact": "verification-container",
+    "receipt_artifact_id": 12642908772,
+    "verified_checks": [
+      {
+        "id": "pytest:tests/e2e/test_workspace_code_contexts.py",
+        "status": "passed_current",
+        "input_fingerprint": "b27581b4fae398f83633fc1c1276f3c790e712601deae966ca85bbff54a8dd75",
+        "receipt_path": "container.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "pytest:tests/e2e/test_workspace_code_writes.py",
+        "status": "passed_current",
+        "input_fingerprint": "f9d9fd3f0468fb51543123d2071646c41e6e20be04da9fea99bab3e13f8ec090",
+        "receipt_path": "container.json",
+        "executed_tests": 1
+      }
+    ],
+    "unresolved_checks": []
+  },
+  {
+    "source_sha": "32df6b663235ecc7698698aa48d8988ab1cb5082",
+    "run_id": "40307048654",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12642917835,
+    "verified_checks": [
+      {
+        "id": "node:scripts/code-lifecycle-selection.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "9f951974c6354f89b68f365e34e0bb4eed16ead8febbddffd863b83804013d0a",
+        "receipt_path": "tooling.json",
+        "executed_tests": 1
+      }
+    ],
+    "unresolved_checks": []
   }
 ]
