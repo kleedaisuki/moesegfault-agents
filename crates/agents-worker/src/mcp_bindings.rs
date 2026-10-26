@@ -622,12 +622,12 @@ mod tests {
     }
 
     #[test]
-    fn programmatic_mcp_is_a_specific_pre_admission_capability_error() {
+    fn programmatic_mcp_is_scoped_to_explicit_server_permission() {
         let mut value = server();
         value["allowed_callers"] = json!(["programmatic"]);
-        assert!(
-            matches!(ServerDeclaration::parse(&value), Err(Error::RustError(code)) if code == "mcp_programmatic_binding_required")
-        );
+        let declaration = ServerDeclaration::parse(&value).unwrap();
+        assert!(declaration.programmatic);
+        assert!(!declaration.direct);
     }
 
     #[test]

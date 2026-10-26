@@ -240,7 +240,11 @@ impl ToolRegistry {
         &mut self,
         bindings: &crate::mcp_runtime::McpBindings,
     ) -> Result<(), String> {
-        for server in bindings.servers.iter().filter(|server| server.deferred) {
+        for server in bindings
+            .servers
+            .iter()
+            .filter(|server| server.deferred || server.programmatic)
+        {
             for tool in &server.tools {
                 let key = ToolKey {
                     kind: "function".into(),
@@ -260,13 +264,14 @@ impl ToolRegistry {
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
-                let declaration = json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.input_schema,"strict":true,"defer_loading":true,"allowed_callers":callers});
+                let declaration = json!({"type":"function","name":tool.name,"description":tool.description,"parameters":tool.input_schema,"strict":true,"defer_loading":server.deferred,"allowed_callers":callers});
                 self.add(
                     &declaration,
                     Some(&server.label),
                     server.description.as_deref(),
                 )?;
                 self.entries.last_mut().unwrap().native_alias = Some(server.alias(&tool.name));
+                self.entries.last_mut().unwrap().initial = server.deferred;
             }
         }
         Ok(())

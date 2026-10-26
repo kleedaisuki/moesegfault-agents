@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { runProgrammaticTime } from './programmatic-journey.mjs';
+import { runProgrammaticTime, runProgrammaticMcp } from './programmatic-journey.mjs';
+import { createMcpTransport } from './mcp-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -16,7 +17,7 @@ const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-
 test('compiled Rust Worker: a real isolated program calls pinned time and never replays effects', { timeout: 75000 }, async t => {
   const identity = createIdentityFixture();
   const encryptionKey = randomBytes(32);
-  const providers = createNativeSemanticsProvider();
+  const providers = createMcpTransport(createNativeSemanticsProvider());
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const pricing = JSON.parse(deployment.env.staging.vars.RESOURCE_PRICING_JSON);
   for (const [unit, numerator, denominator] of [
@@ -47,7 +48,7 @@ test('compiled Rust Worker: a real isolated program calls pinned time and never 
       IDENTITY_REDIRECT_URI: 'https://agents.test/auth/callback', IDENTITY_NATIVE_REDIRECT_URI: 'http://127.0.0.1/callback',
       IDENTITY_CLIENT_PRIVATE_JWK: JSON.stringify(identity.privateJwk), BILLING_PRODUCT_ID: 'agents', BILLING_MODE: 'test',
       MODEL_REGISTRY_JSON: '[]', MODEL_PRICING_JSON: '{}', RESOURCE_PRICING_JSON: JSON.stringify(pricing),
-      HOSTED_TOOL_RUNTIMES: 'programmatic_tool_calling',
+      HOSTED_TOOL_RUNTIMES: 'programmatic_tool_calling,mcp',
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000', FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000',
     }, async outboundService(request) {
       const response = await providers.handle(request);
@@ -80,7 +81,8 @@ test('compiled Rust Worker: a real isolated program calls pinned time and never 
     assert.equal(checked.status, 0, checked.stderr || checked.stdout);
     return JSON.parse(checked.stdout);
   }
-  const receipt = await runProgrammaticTime({ mf, db, encryptionKey, providers, request, validateWire });
+  const context = { mf, db, encryptionKey, providers, request, validateWire };
+  const receipt = { time: await runProgrammaticTime(context), mcp: await runProgrammaticMcp(context) };
   await writeFile(path.join(directory, 'receipt.json'), JSON.stringify({
     source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? process.env.GITHUB_SHA ?? null,
     fixture: 'actual-compiled-rust-worker-and-native-loader', external_network_calls: 0, ...receipt,
