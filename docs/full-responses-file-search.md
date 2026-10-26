@@ -200,6 +200,10 @@ publication under a separate resource-only funding identity. Publication retries
 do not query/embed again. Exact file markers produce `file_citation` annotations
 only when present in the actual answer and backed by completed owned results.
 Text deltas are unchanged; Unicode character positions are not UTF-8 byte offsets.
+Terminal model/retrieval operation settlement is distinct from account-wide
+reserved balance: a live Session intentionally retains its prepaid archive
+cleanup hold until that lifecycle completes. Tests must not release this hold
+merely to obtain an account-wide zero.
 
 `tests/worker/file-search.test.mjs` covers actual Rust management, asynchronous
 ingestion, delayed visibility, owner isolation, harness search/citation,
