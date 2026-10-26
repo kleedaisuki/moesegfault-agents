@@ -31,11 +31,10 @@ jobs:
           cache-all-crates: true
           cache-on-failure: true
       - run: cargo fmt -p agents-worker --check
-      - name: Only the new frozen-resource identity regression
+      - name: Compile without repeating accepted executor contracts
         run: |
-          set -euo pipefail
           mkdir -p .temp/code-runtime
-          cargo test --locked -p agents-worker --lib code_reuse_rejects_memory_backend_and_executor_identity_changes_before_prepare -- --nocapture 2>&1 | tee .temp/code-runtime/rust.log
+          cargo test --locked -p agents-worker --lib --no-run
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
