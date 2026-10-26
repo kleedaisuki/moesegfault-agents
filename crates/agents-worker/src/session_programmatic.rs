@@ -478,7 +478,8 @@ impl SessionInner {
         let output = program
             .output_item()
             .ok_or_else(|| fault("program_output_missing"))?;
-        self.publish_hosted_item(&output, true).await?;
+        self.publish_tool_item(&output, true, output.clone(), |_, _| vec![])
+            .await?;
         Ok(super::hosted_dispatch::HostedDispatch::Ready(
             json!({"program_call_id":program.call_id(),"status":output["status"],"result":output["result"],"billing_pending":operation.metering_gap.is_some() || (operation.native_receipt.is_some() && operation.capacity_receipt.is_none())}).to_string().into(),
         ))
