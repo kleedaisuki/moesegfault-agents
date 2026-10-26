@@ -377,12 +377,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Topic-only execution for the new owned item capability. Independent
     // client, hosted service and storage receipts must not be replayed here.
     const nativeItems = new Set([
-      'rust:agents-worker:handles_bind_owner_public_identity_and_effective_context',
-      'rust:agents-worker:public_reference_routing_is_exact_and_bounded',
       'node:tests/worker/native-item-handles.test.mjs',
     ]);
     for (const job of Object.keys(receipt.checks)) {
       receipt.checks[job] = receipt.checks[job].filter(check => nativeItems.has(check.id));
+    }
+    for (const check of receipt.checks.worker) {
+      check.env = { ...check.env, MAGENTS_NATIVE_HANDLE_CASE: 'negative_count' };
+      check.reason = 'Continue only the failed invalid native count boundary, with no generation submission';
+      check.input_fingerprint = checkFingerprint(receipt.source_sha, check);
     }
     receipt.non_deployable = true;
     receipt.diagnostic_only_components = ['worker'];
