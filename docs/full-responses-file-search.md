@@ -217,6 +217,13 @@ The public item retains structured results; the private continuation carries
 serialized JSON text, matching the existing Code/Search output-content contract.
 An object-valued tool message must not reach native text/part translation.
 
+Persisted tagged tool variants need a separate typed decode boundary. With
+arbitrary precision, direct serde_json decoding into an internally tagged enum
+can buffer a floating score as a private map and reject its own archived JSON.
+Both ResponseRun and cold Session restore normalize through a genuine JSON
+Value before typed deserialization. Canonical output bytes, numeric values,
+pinned context and idempotency hashes are not rewritten to work around it.
+
 ## Allocated vector capacity clock
 
 The independent 0024 increment uses `worker/allocated_vector_dimension_ms`:
@@ -234,8 +241,10 @@ append. Retry settles the same identity before advancing time. Fractional units
 carry between observations: whole tariff quanta are charged while open and the
 last remainder rounds only once on closure, not every fifteen minutes. Long
 intervals split at the signed-ledger limit without losing units. Debt retains its
-pending interval; unknown quantities never become zero. Source and SQL checks
-are not compiled/live acceptance of this independent clock increment.
+pending interval; unknown quantities never become zero. The controlled actual
+Worker journey verifies confirmed native deletion, final capacity quantity,
+single final carry rounding and zero leftover holds. Its two-dimensional
+service adapters are not proof of a live Cloudflare index or vendor invoice.
 
 ## Bounded document extraction
 
