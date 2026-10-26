@@ -66,6 +66,9 @@ impl SessionInner {
         )?;
         bindings.validate_owned(&self.env, &record.owner_id).await?;
         bindings
+            .resolve_owned_code(&self.env, &record.owner_id)
+            .await?;
+        bindings
             .resolve_owned_profiles(&self.env, &record.owner_id)
             .await?;
         Ok(bindings)

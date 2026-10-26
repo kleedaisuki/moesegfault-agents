@@ -8,6 +8,15 @@ struct ContextIdentity {
 }
 
 impl Workspace<'_> {
+    pub(crate) async fn python_dispatch_exists(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .state
+            .storage()
+            .get::<Dispatch>(&format!("workspace:python-dispatch:{}", digest_key(id)))
+            .await?
+            .is_some())
+    }
+
     pub async fn python_context(&self) -> Result<Option<String>> {
         if !self.container()?.running() {
             return Ok(None);

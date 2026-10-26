@@ -45,6 +45,9 @@ pub use interpreter::{
 mod transport;
 
 pub(crate) use crate::workspace_blobs::OwnedArchiveRef;
+#[path = "workspace_lost_code.rs"]
+mod lost_code;
+
 use lease::ComputeLease;
 use transport::{Deadline, TimedResponse};
 
@@ -69,6 +72,7 @@ pub struct Workspace<'a> {
     session: String,
     run: Option<String>,
     trace: Option<TraceContext>,
+    code_existing_only: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -162,6 +166,7 @@ impl<'a> Workspace<'a> {
             session: session.into(),
             run: None,
             trace: None,
+            code_existing_only: false,
         }
     }
 
@@ -183,6 +188,11 @@ impl<'a> Workspace<'a> {
 
     pub fn for_run(mut self, run: &str) -> Self {
         self.run = Some(run.into());
+        self
+    }
+
+    pub(crate) fn existing_code_only(mut self) -> Self {
+        self.code_existing_only = true;
         self
     }
 
@@ -464,6 +474,9 @@ impl<'a> Workspace<'a> {
     /// Reconcile a process incarnation, not just DO memory: a live container may
     /// outlast an evicted DO, and must never be overwritten by an older snapshot.
     pub async fn restore_if_needed(&self) -> Result<()> {
+        if self.code_existing_only && !self.container()?.running() {
+            return Err(Error::RustError("code_container_not_found".into()));
+        }
         if self
             .state
             .storage()

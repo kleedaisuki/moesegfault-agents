@@ -693,6 +693,10 @@ impl SessionInner {
         }
         let bound_tools = match self.resolve_hosted_bindings(&request, &data.record).await {
             Ok(bindings) => bindings,
+            Err(error) if matches!(&error,Error::RustError(code) if code=="code_container_not_found") =>
+            {
+                return crate::routes::error_response(&error);
+            }
             Err(error) => return util::json_error(400, "invalid_hosted_tool", &error.to_string()),
         };
         let local = request.function_definitions().map_err(Error::RustError)?;

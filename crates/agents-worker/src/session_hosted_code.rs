@@ -115,6 +115,7 @@ fn permanent(error: &Error) -> Option<&'static str> {
             Some("code_container_not_found")
         }
         "file_not_found" => Some("file_not_found"),
+        "code_resource_execution_already_published" => Some("code_result_already_published"),
         "code_memory_profile_mismatch" => Some("code_memory_profile_mismatch"),
         "code_network_policy_conflict" => Some("code_network_policy_conflict"),
         "invalid_code_input" | "code_input_rejected" => Some("code_input_rejected"),
@@ -142,7 +143,7 @@ impl SessionInner {
         response_id: &str,
         record: &SessionRecord,
     ) -> Result<()> {
-        let execution = {
+        let (execution, run_id, options) = {
             let data = self.data.borrow();
             let Some(data) = data.as_ref() else {
                 return Ok(());
@@ -165,7 +166,26 @@ impl SessionInner {
             {
                 return Ok(());
             }
-            execution_key(&run.id, run.round, &call.id)
+            let Some(options) = run
+                .response
+                .as_ref()
+                .and_then(|response| {
+                    response
+                        .bound_tools
+                        .lookup(crate::hosted_tools::Kind::CodeInterpreter.alias())
+                })
+                .and_then(|binding| match &binding.tool {
+                    ResolvedTool::Code { options } => Some(options.clone()),
+                    _ => None,
+                })
+            else {
+                return Ok(());
+            };
+            (
+                execution_key(&run.id, run.round, &call.id),
+                run.id.clone(),
+                options,
+            )
         };
         let scope = scope_identity(&record.owner_id, &record.id, &execution)?;
         let key = format!("hosted:code:{scope}");
@@ -185,7 +205,7 @@ impl SessionInner {
         {
             return Ok(());
         }
-        self.workspace(record)
+        self.hosted_code_runtime(record, &run_id, &execution, &options)?
             .cancel_python(&operation.supervisor_id)
             .await
     }
@@ -221,6 +241,45 @@ impl SessionInner {
             }
             Err(_) => pending().await,
         }
+    }
+
+    fn hosted_code_runtime<'a>(
+        &'a self,
+        record: &'a SessionRecord,
+        run: &str,
+        execution: &str,
+        options: &'a crate::hosted_bindings::CodeOptions,
+    ) -> Result<crate::code_runtime::CodeRuntime<'a>> {
+        if let Some(context) = options
+            .owned_context()
+            .filter(|context| context.source_session != record.id)
+        {
+            let header = self
+                .data
+                .borrow()
+                .as_ref()
+                .and_then(|data| data.run.as_ref())
+                .and_then(|run| run.traceparent.clone());
+            let executor = crate::code_borrowed_client::BorrowedExecutor::new(
+                &self.env,
+                &record.owner_id,
+                context,
+                crate::code_borrowing::Ticket {
+                    guest_session: record.id.clone(),
+                    guest_run: run.into(),
+                    execution: execution.into(),
+                },
+                Some(crate::telemetry::TraceContext::from_traceparent(
+                    header.as_deref(),
+                )),
+            )?;
+            return Ok(crate::code_runtime::CodeRuntime::Borrowed(executor));
+        }
+        let mut workspace = self.workspace(record).for_run(run);
+        if matches!(&options.container, CodeContainer::Existing { .. }) {
+            workspace = workspace.existing_code_only();
+        }
+        Ok(crate::code_runtime::CodeRuntime::Local(workspace))
     }
 
     async fn hosted_code_step(
@@ -268,7 +327,7 @@ impl SessionInner {
                     fingerprint: fingerprint.clone(),
                     supervisor_id: format!("pyexec_{scope}"),
                     context: match &options.container {
-                        CodeContainer::Existing { id } => Some(id.clone()),
+                        CodeContainer::Existing { id, .. } => Some(id.clone()),
                         CodeContainer::Auto { .. } => None,
                     },
                     imported: 0,
@@ -297,7 +356,8 @@ impl SessionInner {
             .ok_or_else(|| fail("run_missing"))?
             .id
             .clone();
-        if !operation.submitted
+        if options.is_local_to(&record.id)
+            && !operation.submitted
             && operation.result.is_none()
             && read_chunks(&storage, &format!("{key}:outcome"))
                 .await?
@@ -307,7 +367,7 @@ impl SessionInner {
                 .await?;
         }
         let _resource = self.code_operation.lock().await;
-        let workspace = self.workspace(record).for_run(&run_id);
+        let workspace = self.hosted_code_runtime(record, &run_id, execution_id, options)?;
         if operation.failure.is_none()
             && operation.result.is_none()
             && action(
@@ -395,7 +455,7 @@ impl SessionInner {
 
     async fn advance_hosted_code(
         &self,
-        workspace: &crate::workspace::Workspace<'_>,
+        workspace: &crate::code_runtime::CodeRuntime<'_>,
         record: &SessionRecord,
         execution: CodeExecution<'_>,
         operation: &mut CodeOperation,
@@ -456,14 +516,16 @@ impl SessionInner {
                     if !operation.prepared {
                         let request = python_request(options, operation.context.clone(), code);
                         operation.context = Some(workspace.prepare_python_context(&request).await?);
-                        self.bind_local_code_context(
-                            record,
-                            run,
-                            execution_id,
-                            operation.context.as_deref().unwrap(),
-                            options,
-                        )
-                        .await?;
+                        if options.is_local_to(&record.id) {
+                            self.bind_local_code_context(
+                                record,
+                                run,
+                                execution_id,
+                                operation.context.as_deref().unwrap(),
+                                options,
+                            )
+                            .await?;
+                        }
                         operation.prepared = true;
                         save(&storage, key, operation).await?;
                     }
@@ -834,6 +896,7 @@ mod tests {
             tool: ResolvedTool::Code {
                 options: crate::hosted_bindings::CodeOptions {
                     container: CodeContainer::Existing {
+                        source: None,
                         id: "cntr_known".into(),
                     },
                     allocated_memory: MemoryTier::OneGiB,

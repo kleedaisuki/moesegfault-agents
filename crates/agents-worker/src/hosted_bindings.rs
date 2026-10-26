@@ -69,6 +69,8 @@ pub(crate) enum NetworkPolicy {
 pub(crate) enum CodeContainer {
     Existing {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<crate::code_contexts::OwnedContext>,
     },
     Auto {
         file_ids: Vec<String>,
@@ -84,6 +86,16 @@ pub(crate) struct CodeOptions {
 }
 
 impl CodeOptions {
+    pub(crate) fn owned_context(&self) -> Option<&crate::code_contexts::OwnedContext> {
+        match &self.container {
+            CodeContainer::Existing { source, .. } => source.as_ref(),
+            CodeContainer::Auto { .. } => None,
+        }
+    }
+    pub(crate) fn is_local_to(&self, session: &str) -> bool {
+        self.owned_context()
+            .is_none_or(|source| source.source_session == session)
+    }
     pub(crate) fn file_ids(&self) -> &[String] {
         match &self.container {
             CodeContainer::Existing { .. } => &[],
@@ -234,7 +246,11 @@ impl BoundTools {
     }
 
     pub(crate) fn requires_container(&self) -> bool {
-        self.lookup(Kind::CodeInterpreter.alias()).is_some()
+        self.lookup(Kind::CodeInterpreter.alias())
+            .is_some_and(|binding| {
+                matches!(&binding.tool,
+            ResolvedTool::Code{options} if options.owned_context().is_none())
+            })
     }
 
     pub(crate) fn retained_file_ids(&self) -> Vec<String> {
@@ -326,6 +342,24 @@ impl BoundTools {
 
     /// Read-only ownership checks, also usable by input-token counting. No
     /// Container, index, collection or inference reservation is created here.
+
+    pub(crate) async fn resolve_owned_code(&mut self, env: &Env, owner: &str) -> Result<()> {
+        for binding in &mut self.0 {
+            let ResolvedTool::Code { options } = &mut binding.tool else {
+                continue;
+            };
+            let CodeContainer::Existing { id, source } = &mut options.container else {
+                continue;
+            };
+            let owned = crate::code_owned_bindings::resolve(env, owner, id).await?;
+            if source.as_ref().is_some_and(|pinned| pinned != &owned) {
+                return Err(fail("code_context_identity_conflict"));
+            }
+            options.allocated_memory = MemoryTier::from_core(owned.profile);
+            *source = Some(owned);
+        }
+        Ok(())
+    }
 
     pub(crate) async fn validate_owned(&self, env: &Env, owner: &str) -> Result<()> {
         let mut services = ToolServices::default();
@@ -555,7 +589,7 @@ fn code_options(value: Value, capabilities: &HostCapabilities) -> Result<CodeOpt
             return Err(fail("code_network_policy_unavailable"));
         }
         return Ok(CodeOptions {
-            container: CodeContainer::Existing { id },
+            container: CodeContainer::Existing { id, source: None },
             allocated_memory,
         });
     }
@@ -1087,5 +1121,42 @@ mod tests {
             bound.retained_file_ids(),
             ["file-code", "file-image", "file-mask", "file-shared"]
         );
+    }
+    #[test]
+    fn borrowed_code_memory_never_selects_or_bills_a_second_local_vm() {
+        let id = format!("cntr_{}", "a".repeat(32));
+        let source = crate::code_contexts::OwnedContext {
+            id: id.clone(),
+            source_session: "original".into(),
+            profile: agents_core::RuntimeProfile::Standard4g,
+            daemon_boot: "boot".into(),
+            policy_revision: "policy".into(),
+        };
+        let options = CodeOptions {
+            container: CodeContainer::Existing {
+                id: id.clone(),
+                source: Some(source),
+            },
+            allocated_memory: MemoryTier::FourGiB,
+        };
+        assert!(!options.is_local_to("fresh-guest"));
+        assert!(options.is_local_to("original"));
+        let tools = BoundTools(vec![ResolvedBinding {
+            tool: ResolvedTool::Code { options },
+            allowed_callers: None,
+        }]);
+        assert!(!tools.requires_container());
+        assert!(
+            BoundTools::requested_memory(&[json!({"type":"code_interpreter","container":id})])
+                .unwrap()
+                .is_none()
+        );
+        let restored: BoundTools =
+            serde_json::from_slice(&serde_json::to_vec(&tools).unwrap()).unwrap();
+        assert!(!restored.requires_container());
+        let ResolvedTool::Code { options } = &restored.0[0].tool else {
+            panic!("code binding");
+        };
+        assert!(matches!(options.allocated_memory, MemoryTier::FourGiB));
     }
 }
