@@ -311,9 +311,8 @@ mod tests {
             json!({"version":1,"edit":false,"mask":true}),
             json!({"version":1,"partial_images":4}),
         ] {
-            match serde_json::from_value::<ImageCapabilityContract>(value) {
-                Ok(contract) => assert!(contract.validate().is_err()),
-                Err(_) => {}
+            if let Ok(contract) = serde_json::from_value::<ImageCapabilityContract>(value) {
+                assert!(contract.validate().is_err());
             }
         }
     }
