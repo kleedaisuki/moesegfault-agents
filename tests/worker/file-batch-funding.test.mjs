@@ -86,14 +86,17 @@ test('compiled Rust Worker: bounded file batches fund separately, resume only un
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'capacity-owner' });
   const sdk = new OpenAI({ baseURL: 'https://agents.test/v1', apiKey: principal.apiKey, maxRetries: 0, fetch: (input, init) => dispatchSDKFetch(mf, input, init) });
 
+  const fragment=process.env.MAGENTS_FILE_FUNDING_CASE??'all';
+  let store,held;let summary={};
+  if(fragment!=='cancel'){
   const text='batch recovery tokens 雪 crabs\n'.repeat(1600);
   const file=await sdk.files.create({purpose:'assistants',file:await toFile(Buffer.from(text),'batches.txt',{type:'text/plain'})});
-  const store=await sdk.vectorStores.create({});
+  store=await sdk.vectorStores.create({});
   await sdk.vectorStores.files.create(store.id,{file_id:file.id,chunking_strategy:{type:'static',static:{max_chunk_size_tokens:100,chunk_overlap_tokens:0}}});
   const pausedDeadline=Date.now()+30000;let member;
   do{await new Promise(r=>setTimeout(r,150));member=await sdk.vectorStores.files.retrieve(file.id,{vector_store_id:store.id});}
   while(!member.last_error?.message.includes('file_search_budget_required')&&Date.now()<pausedDeadline);
-  assert.equal(member.status,'in_progress');assert.ok(member.last_error?.message.includes('file_search_budget_required'),JSON.stringify(member));
+  assert.equal(member.status,'failed');assert.ok(member.last_error?.message.includes('file_search_budget_required'),JSON.stringify(member));
   const row=await db.prepare('SELECT generation,funding_blocked,staged_chunks,chunk_count FROM vector_store_files WHERE vector_store_id=? AND file_id=?').bind(store.id,file.id).first();
   assert.equal(row.funding_blocked,1);assert.ok(row.chunk_count>32);assert.equal(row.staged_chunks,row.chunk_count);
   assert.equal(embeddings,1);assert.equal(upserts,1);
@@ -113,22 +116,32 @@ test('compiled Rust Worker: bounded file batches fund separately, resume only un
   const staged=await db.prepare('SELECT SUM(length(CAST(text AS BLOB))) AS bytes FROM file_search_chunks WHERE vector_store_id=? AND file_id=?').bind(store.id,file.id).first();
   assert.equal(measured.quantity,staged.bytes);assert.equal(measured.amount,staged.bytes);assert.ok(measured.amount>20000,'This real ledger exceeds the former whole-generation reservation');
   assert.equal(embeddingSizes.reduce((a,b)=>a+b,0),staged.bytes);
-  const settledDeadline=Date.now()+4000;let held;
+  const settledDeadline=Date.now()+4000;
   do{await new Promise(r=>setTimeout(r,50));held=(await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND state='reserved' AND id LIKE 'file-ingest:%'").bind(principal.owner).first()).n;}while(held&&Date.now()<settledDeadline);
   assert.equal(held,0);assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM resource_observations WHERE account_id=? AND status='pending'").bind(principal.owner).first()).n,0);
+  summary={chunks:row.chunk_count,batches:embeddings,upserts,embedding_allocation_bytes:measured.quantity,embedding_allocation_microusd:measured.amount,paused_polling_no_new_funding:true,same_generation_resume:true,unknown_upsert_not_replayed:true};
+  }
+  if(fragment==='batches'){
+    await writeFile(path.join(directory,'receipt.json'),JSON.stringify({source:process.env.MAGENTS_TEST_EXPECTED_BUILD??process.env.GITHUB_SHA??null,fragment,...summary,model_calls:0,terminal_holds:0},null,2));return;
+  }
+  if(!store)store=await sdk.vectorStores.create({});
   const next=await sdk.files.create({purpose:'assistants',file:await toFile(Buffer.from('Cancel this before any paid effect.'),'cancel.txt')});
-  await db.prepare('UPDATE usage_accounts SET budget_microusd=spent_microusd+reserved_microusd+21000 WHERE account_id=?').bind(principal.owner).run();
+  await db.prepare('UPDATE usage_accounts SET budget_microusd=spent_microusd+21000 WHERE account_id=?').bind(principal.owner).run();
   await sdk.vectorStores.files.create(store.id,{file_id:next.id});
+  await mf.dispatchFetch('https://agents.test/__test/retrieval-maintenance',{method:'POST'});
   const cancelDeadline=Date.now()+6000;let cancelled;
   do{await new Promise(r=>setTimeout(r,100));cancelled=await db.prepare('SELECT funding_blocked FROM vector_store_files WHERE vector_store_id=? AND file_id=?').bind(store.id,next.id).first();}while(!cancelled?.funding_blocked&&Date.now()<cancelDeadline);
-  assert.equal(cancelled.funding_blocked,1);
+  assert.equal(cancelled.funding_blocked,1,JSON.stringify(await db.prepare('SELECT status,last_error_json,lease_id,retry_at FROM vector_store_files WHERE file_id=?').bind(next.id).first()));
+  if(fragment==='cancel')assert.deepEqual([embeddings,upserts],[0,0]);
   const cancelFundingDeadline=Date.now()+4000;
   do{await new Promise(r=>setTimeout(r,50));held=(await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND state='reserved' AND id LIKE 'file-ingest:%'").bind(principal.owner).first()).n;}while(held&&Date.now()<cancelFundingDeadline);
   assert.equal(held,0);
   await db.prepare('UPDATE usage_accounts SET budget_microusd=spent_microusd+reserved_microusd WHERE account_id=?').bind(principal.owner).run();
   assert.equal((await db.prepare('SELECT budget_microusd-spent_microusd-reserved_microusd AS available FROM usage_accounts WHERE account_id=?').bind(principal.owner).first()).available,0);
+  const stopped=await sdk.vectorStores.files.poll(store.id,next.id,{pollIntervalMs:0,signal:AbortSignal.timeout(2500)});
+  assert.equal(stopped.status,'failed');assert.equal(stopped.last_error.code,'server_error');assert.ok(stopped.last_error.message.includes('file_search_budget_required'));
   const callsBefore=[embeddings,upserts];assert.equal((await sdk.vectorStores.files.delete(next.id,{vector_store_id:store.id})).deleted,true);
   assert.deepEqual([embeddings,upserts],callsBefore);assert.equal((await db.prepare('SELECT status FROM space_files WHERE id=?').bind(next.id).first()).status,'processed');
   assert.equal((await db.prepare('SELECT status FROM vector_store_files WHERE vector_store_id=? AND file_id=?').bind(store.id,next.id).first()).status,'cancelled');
-  await writeFile(path.join(directory,'receipt.json'),JSON.stringify({source:process.env.MAGENTS_TEST_EXPECTED_BUILD??process.env.GITHUB_SHA??null,fixture:'actual-rust-worker-bounded-funding',chunks:row.chunk_count,batches:embeddings,upserts,embedding_allocation_bytes:measured.quantity,embedding_allocation_microusd:measured.amount,paused_polling_no_new_funding:true,same_generation_resume:true,unknown_upsert_not_replayed:true,zero_credit_cancel:true,model_calls:0,terminal_holds:0},null,2));
+  await writeFile(path.join(directory,'receipt.json'),JSON.stringify({source:process.env.MAGENTS_TEST_EXPECTED_BUILD??process.env.GITHUB_SHA??null,fixture:'actual-rust-worker-bounded-funding',...summary,fragment,zero_credit_cancel:true,standard_sdk_poll_terminal:true,native_embeddings:embeddings,native_upserts:upserts,model_calls:0,terminal_holds:0},null,2));
 });
