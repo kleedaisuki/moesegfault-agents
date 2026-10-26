@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
-  CODE_RUNTIME_CASE_PATTERN: 'owned CID reuses'
+  CODE_RUNTIME_CASE_PATTERN: 'late owned-CID use'
 jobs:
   code-runtime:
     runs-on: ubuntu-latest
@@ -31,10 +31,11 @@ jobs:
           cache-all-crates: true
           cache-on-failure: true
       - run: cargo fmt -p agents-worker --check
-      - name: Compile contracts without repeating the three accepted Rust cases
+      - name: Only the new lease coverage contract
         run: |
+          set -euo pipefail
           mkdir -p .temp/code-runtime
-          cargo test --locked -p agents-worker --lib --no-run
+          cargo test --locked -p agents-worker --lib code_use_covers_its_idle_window_before_the_normal_renewal_margin -- --nocapture 2>&1 | tee .temp/code-runtime/rust.log
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
@@ -61,7 +62,7 @@ jobs:
         run: |
           python3 -m venv .cache/e2e-current-venv
           .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
-      - name: Only the failed owned-CID ownership boundary
+      - name: Only new late-use resource funding boundary
         env:
           MAGENTS_CURRENT_SCHEMA_PYTHON: .cache/e2e-current-venv/bin/python
           MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
