@@ -52,7 +52,7 @@ jobs:
           node --test --test-reporter=tap tests/worker/programmatic.test.mjs 2>&1 | tee .temp/programmatic-verification/journeys.log
         env:
           MAGENTS_CURRENT_SCHEMA_PYTHON: .temp/programmatic-sdk-venv/bin/python
-          MAGENTS_PROGRAMMATIC_CASE: client
+          MAGENTS_PROGRAMMATIC_CASE: approval
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -63,3 +63,4 @@ jobs:
             .temp/programmatic-actor-*/receipt.json
 
           retention-days: 14
+
