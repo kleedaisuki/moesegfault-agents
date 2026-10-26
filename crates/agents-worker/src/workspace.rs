@@ -355,8 +355,24 @@ impl<'a> Workspace<'a> {
     }
 
     async fn renew_compute_lease(&self) -> Result<()> {
+        self.renew_compute_lease_covering(None).await
+    }
+
+    pub(crate) async fn ensure_code_lease(&self) -> Result<()> {
+        if !self.container()?.running() {
+            return Err(Error::RustError("code_container_not_found".into()));
+        }
+        // Fund the independent idle clock and the bounded native prepare before
+        // extending resource lifetime; background heartbeats never renew funds.
+        let required =
+            crate::util::now_ms().saturating_add(crate::code_contexts::IDLE_MS + 120_000);
+        self.renew_compute_lease_covering(Some(required)).await?;
+        self.configure_inactivity_if_running().await
+    }
+
+    async fn renew_compute_lease_covering(&self, minimum_until: Option<u64>) -> Result<()> {
         let leases = self.lease();
-        let Some(renewal) = leases.prepare().await? else {
+        let Some(renewal) = leases.prepare(minimum_until).await? else {
             return Ok(());
         };
         self.finish_container_clock().await?;

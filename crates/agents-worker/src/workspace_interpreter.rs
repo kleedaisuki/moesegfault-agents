@@ -229,6 +229,7 @@ impl Workspace<'_> {
             return Err(fail("code_memory_profile_mismatch"));
         }
         self.restore_if_needed().await?;
+        self.ensure_code_lease().await?;
         let value = json!({"container_id":request.container_id,
             "network_policy":request.network_policy,"memory_limit":request.memory_limit});
         let response = self
