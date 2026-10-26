@@ -4571,5 +4571,35 @@
       "tooling"
     ],
     "status": "verified"
+  },
+  {
+    "source_sha": "b8defef1e728bf9f17e58eb317d864deab0ada2b",
+    "run_id": "40337239535",
+    "artifact_id": 12657344011,
+    "components": [
+      "worker"
+    ],
+    "status": "compiled_topic_only",
+    "source_conclusion": "failure",
+    "verified_steps": [
+      "Wasm check",
+      "Worker release build",
+      "bundle",
+      "three new compact media Rust contracts"
+    ],
+    "unresolved_checks": [
+      {
+        "id": "journey:DeepSeek compact keeps frozen images and files through a complete continuation window",
+        "argv": [
+          "node",
+          "--test",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "DeepSeek compact keeps frozen images and files through a complete continuation window"
+        },
+        "reason": "First run failed in the prerequisite SDK multipart mock before any compact or generation. Reuse the exact built Worker with the fixed explicit wire prerequisite; never imply aggregate source success."
+      }
+    ]
   }
 ]

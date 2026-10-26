@@ -387,9 +387,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Non-promoting topic execution: old text, budget and vision receipts are
     // retained; only the newly implemented media compactor is exercised here.
     const selected = new Set([
-      'rust:agents-worker:compact_media_projects_ordered_images_without_changing_source_roles_or_retention',
-      'rust:agents-worker:compact_low_detail_is_a_real_bounded_image_before_the_shared_counter',
-      'rust:agents-worker:compact_media_refuses_unknown_images_and_pro_placeholder_before_inference',
       'journey:DeepSeek compact keeps frozen images and files through a complete continuation window',
     ]);
     for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => selected.has(check.id));
