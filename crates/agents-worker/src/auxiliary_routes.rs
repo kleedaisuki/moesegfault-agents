@@ -160,6 +160,11 @@ fn error_response(error: &worker::Error) -> Result<Response> {
         _ => return crate::routes::error_response(error),
     };
     match code {
+        "context_length_exceeded" => util::json_error(
+            400,
+            code,
+            "The latest input group cannot fit the selected model context",
+        ),
         "invalid_auxiliary_request" | "invalid_agent_configuration" | "unresolved_native_item" => {
             util::json_error(
                 400,
