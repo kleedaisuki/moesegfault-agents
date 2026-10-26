@@ -456,8 +456,9 @@ and observed guest bytes; the actual cell observation must equal that guest valu
 It then archives the harness, observes the independent CID still running, deletes
 the CID, requires 404, and reads the unchanged ordinary File. A fresh receipt
 fences intent before submission; ambiguous accepted operations must be reconciled,
-not retried. Actual Cloudflare profile runs, application/SKU identity and scoped
-financial closure are still required before claiming managed Code delivery.
+not retried. At that preparation checkpoint, actual Cloudflare profile runs and
+scoped financial closure were still pending. The later sections retain both the
+initial runtime failure and the completed managed delivery receipts.
 
 ## Actual managed CF startup observation (2026-10-26)
 
@@ -514,8 +515,8 @@ and financial closure remain required after repair. Safe metadata and original
 operation identities are retained under `.temp/code-staging/` in the integration
 checkout; the original source/run conclusions remain unchanged.
 
-not retried. At driver preparation, actual Cloudflare runs and scoped financial
-closure were still pending; the following receipts close that managed boundary.
+The initial runtime failures were subsequently repaired; the following receipts
+close that managed boundary without rewriting the original failed operations.
 
 ## Actual managed Cloudflare delivery completed, 2026-10-27
 
