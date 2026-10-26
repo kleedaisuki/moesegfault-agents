@@ -12,7 +12,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
-  CODE_RUNTIME_CASE_PATTERN: 'late owned-CID use'
+  CODE_RUNTIME_CASE_PATTERN: 'BYOK Code executor'
 jobs:
   code-runtime:
     runs-on: ubuntu-latest
@@ -31,11 +31,14 @@ jobs:
           cache-all-crates: true
           cache-on-failure: true
       - run: cargo fmt -p agents-worker --check
-      - name: Only the new lease coverage contract
+      - name: Only the new executor authority and memory contracts
         run: |
           set -euo pipefail
           mkdir -p .temp/code-runtime
-          cargo test --locked -p agents-worker --lib code_use_covers_its_idle_window_before_the_normal_renewal_margin -- --nocapture 2>&1 | tee .temp/code-runtime/rust.log
+          cargo test --locked -p agents-core --lib owned_executor_credential_is_not_implicit_outer_model_authority -- --nocapture 2>&1 | tee .temp/code-runtime/rust.log
+          for test in external_executor_memory_is_not_rewritten_to_a_cloudflare_sku executor_context_and_spool_selectors_are_not_arbitrary_url_paths legacy_context_pins_keep_identity_and_ticket_bytes_across_memory_descriptors owned_executor_is_selected_before_cloudflare_memory_policy; do
+            cargo test --locked -p agents-worker --lib "$test" -- --nocapture 2>&1 | tee -a .temp/code-runtime/rust.log
+          done
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
@@ -62,7 +65,7 @@ jobs:
         run: |
           python3 -m venv .cache/e2e-current-venv
           .cache/e2e-current-venv/bin/pip install -r tests/e2e/requirements-current.lock
-      - name: Only new late-use resource funding boundary
+      - name: Only the new separate-credential BYOK Code journey
         env:
           MAGENTS_CURRENT_SCHEMA_PYTHON: .cache/e2e-current-venv/bin/python
           MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
@@ -79,3 +82,55 @@ jobs:
             .temp/hosted-code-*/receipt.json
           retention-days: 14
           if-no-files-found: warn
+
+  native-executor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: .
+          file: container/Dockerfile
+          load: true
+          tags: magents-workspace:acceptance
+          cache-from: type=gha,scope=workspace
+          cache-to: type=gha,mode=max,scope=workspace
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/e2e/requirements.lock
+      - name: Only new authenticated actual-capability and boot-proof contract
+        env:
+          MAGENTS_DAEMON_IMAGE: magents-workspace:acceptance
+        run: |
+          set -euo pipefail
+          python3 -m venv .cache/e2e-venv
+          .cache/e2e-venv/bin/pip install -r tests/e2e/requirements.lock
+          mkdir -p .temp/code-executor
+          .cache/e2e-venv/bin/python -m pytest 'tests/e2e/test_workspace_code_executor.py::test_executor_capabilities_and_atomic_prepare_boot_match_actual_instance[4g]' -ra -rP --basetemp=.temp/pytest-code-executor -o cache_dir=.cache/pytest 2>&1 | tee .temp/code-executor/native.log
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - name: Retain the exact new executor image
+        run: |
+          mkdir -p .cache/code-executor-image
+          docker image tag magents-workspace:acceptance "magents-workspace:${GITHUB_SHA}"
+          docker image save "magents-workspace:${GITHUB_SHA}" | gzip -n -1 > .cache/code-executor-image/image.tar.gz
+          node scripts/container-artifact.mjs create .cache/code-executor-image
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: container-image
+          path: .cache/code-executor-image
+          include-hidden-files: true
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: code-executor-native-receipts
+          path: .temp/code-executor/*.log
+          include-hidden-files: true
+          retention-days: 14
