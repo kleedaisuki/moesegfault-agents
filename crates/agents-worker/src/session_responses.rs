@@ -928,6 +928,8 @@ impl SessionInner {
             }
             Err(error) => return Err(error),
         };
+        provider::responses::PreparedRequest::validate_input_capabilities(&config, &owned_native)
+            .map_err(Error::RustError)?;
         let mut resolved = crate::responses_attachments::resolve(
             &self.env,
             &data.record.owner_id,

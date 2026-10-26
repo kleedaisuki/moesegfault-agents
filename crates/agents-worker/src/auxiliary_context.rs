@@ -91,6 +91,7 @@ pub(crate) async fn prepare(
     let owned_native =
         crate::session::native_items::resolve_input(env, &item_context, &initial.native_items)
             .await?;
+    PreparedRequest::validate_input_capabilities(&config, &owned_native).map_err(fail)?;
     let image_file_ids = initial
         .native_items
         .iter()

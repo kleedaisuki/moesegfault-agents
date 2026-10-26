@@ -445,3 +445,29 @@ after sixteen 256-KiB remote text parts it rejects the exhausted aggregate
 budget without a seventeenth download, Session, File or provider count/model
 submission. It does not replay the accepted remote front or any prior
 PDF/embedding/Space/image acceptance.
+
+
+### Image cache metadata is a provider capability
+
+Image and file attachments share the same explicit-marker validator and the
+same preservation operation. Native image freezing retains
+`prompt_cache_breakpoint` at its original content position; a capable native
+BYOK transport receives it unchanged, including the count projection. This
+transport fidelity is not a claim of measured vendor cache hits.
+
+DeepSeek's published Responses contract says that caching is automatic, explicit
+cache controls are unsupported, and unsupported parameters may be silently
+ignored: https://api-docs.deepseek.com/guides/responses_api/#compatibility-details .
+Its documented image fields contain no explicit breakpoint. Consequently the
+unified PreparedRequest input-capability boundary rejects explicit nested
+content breakpoints with 422 `native_cache_control_unsupported` for DeepSeek,
+instead of letting the recipe ignore metadata and pretending it took effect.
+The check applies to new and restored prepared contexts and to source preparation
+before remote fetch. Only semantic content/output parts are examined; arbitrary
+function arguments and tool schemas are user data, not cache directives.
+
+The new `image-metadata` fragment in the existing compiled-Worker fixture covers
+BYOK image/count fidelity and DeepSeek count/create rejection with zero model
+submissions and zero remote-image requests. Existing vision, remote-file and
+retrieval cases remain sealed. This addition requires its new exact Worker
+compilation and fragment receipt; no older journey is repeated for it.

@@ -62,6 +62,13 @@ impl fmt::Debug for PreparedRequest {
 }
 
 impl PreparedRequest {
+    pub(crate) fn validate_input_capabilities(
+        config: &ProviderConfig,
+        input: &[Value],
+    ) -> Result<(), String> {
+        super::controls::validate_input(config, input)
+    }
+
     pub(crate) fn from_messages(
         config: &ProviderConfig,
         messages: &[Message],
@@ -94,6 +101,10 @@ impl PreparedRequest {
         {
             return Err("prepared native context does not match the model budget".into());
         }
+        let input = self.body["input"]
+            .as_array()
+            .ok_or("invalid native Responses context")?;
+        Self::validate_input_capabilities(config, input)?;
         super::controls::validate(config, &self.body, self.effects)
     }
     pub(crate) fn new(
@@ -121,6 +132,7 @@ impl PreparedRequest {
         if config.model.is_empty() || input.iter().any(|item| !item.is_object()) {
             return Err("invalid native Responses context".into());
         }
+        Self::validate_input_capabilities(config, input)?;
         for tool in tools {
             validate_tool(config, tool)?;
         }
@@ -1279,6 +1291,38 @@ mod tests {
             "usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":4},"output_tokens":3,
                 "output_tokens_details":{"reasoning_tokens":2},"total_tokens":15,"cost":0.00000037},
             "error":null,"incomplete_details":null})
+    }
+
+    #[test]
+    fn nested_cache_controls_are_capabilities_not_ignored_recipe_metadata() {
+        let mut deepseek = config();
+        deepseek.protocol = agents_core::ProviderProtocol::Responses;
+        deepseek.base_url = "https://api.deepseek.com".into();
+        for item in [
+            json!({"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AQID","prompt_cache_breakpoint":{"mode":"explicit"}}]}),
+            json!({"role":"developer","content":[{"type":"input_text","text":"policy","prompt_cache_breakpoint":{"mode":"explicit"}}]}),
+            json!({"type":"function_call_output","call_id":"call_owned","output":[{"type":"input_text","text":"tool result","prompt_cache_breakpoint":{"mode":"explicit"}}]}),
+            json!({"type":"custom_tool_call_output","call_id":"call_owned","output":[{"type":"input_image","file_id":"file_owned","prompt_cache_breakpoint":{"mode":"explicit"}}]}),
+        ] {
+            let input = vec![item];
+            assert_eq!(
+                PreparedRequest::new(&deepseek, &input, &[], &Value::Null).unwrap_err(),
+                super::super::controls::CACHE_CONTROL_UNSUPPORTED
+            );
+            let prepared = PreparedRequest::new(&config(), &input, &[], &Value::Null).unwrap();
+            assert_eq!(prepared.payload(false)["input"], json!(input));
+            assert_eq!(prepared.count_body()["input"], json!(input));
+            let restored: PreparedRequest =
+                serde_json::from_value(serde_json::to_value(&prepared).unwrap()).unwrap();
+            assert_eq!(
+                restored.validate_model(&deepseek).unwrap_err(),
+                super::super::controls::CACHE_CONTROL_UNSUPPORTED
+            );
+        }
+        let data = vec![
+            json!({"type":"function_call","name":"parse","call_id":"c","arguments":"{\"prompt_cache_breakpoint\":{\"mode\":\"explicit\"}}"}),
+        ];
+        PreparedRequest::new(&deepseek, &data, &[], &Value::Null).unwrap();
     }
 
     #[test]

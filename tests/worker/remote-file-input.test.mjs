@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createAuxiliaryProviderFixture } from './auxiliary-journey.mjs';
+import { publicImagePng } from './public-image-input-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -109,6 +110,27 @@ test('compiled Rust Worker: remote file freeze metadata and prepaid read-only ca
   const agent = await request('POST','/v1/agents',{name:'Remote file input',instructions:'Pinned remote input policy',model:{provider:'byok',credential_id:credential.id,protocol:'responses',model:'fixture-native-model',context_window:8192,max_output_tokens:64},workspace:false,tools:[]},201,principal.apiKey);
   const sdk = new OpenAI({baseURL:'https://agents.test/v1',apiKey:principal.apiKey,maxRetries:0,fetch:(input,init)=>mf.dispatchFetch(input,init)});
   const body = path => ({model:agent.id,input:[{role:'user',content:[{type:'input_file',file_url:origin+path,filename:'note.txt',detail:'auto',prompt_cache_breakpoint:{mode:'explicit'}}]}]});
+  if (process.env.MAGENTS_REMOTE_FILE_CASE === 'image-metadata') {
+    const marker = {mode:'explicit'};
+    const image = {type:'input_image',image_url:'data:image/png;base64,'+publicImagePng.toString('base64'),detail:'auto',prompt_cache_breakpoint:marker};
+    const input = [{role:'user',content:[image]}];
+    const counted = await sdk.responses.inputTokens.count({model:agent.id,input});
+    assert.equal(counted.input_tokens,42);
+    const actual = providers.state.counts.at(-1).input.flatMap(item=>Array.isArray(item.content)?item.content:[]).find(part=>part.type==='input_image');
+    assert.deepEqual(actual,image,'Native BYOK counting retains the exact image and its cache boundary');
+    const deepseekKey = await principal.browser('POST','/v1/provider-keys',{protocol:'openai',base_url:'https://api.deepseek.com',api_key:'synthetic-image-metadata-never-submit'},201);
+    const deepseek = await request('POST','/v1/agents',{name:'Unsupported explicit cache',instructions:'No ignored controls',model:{provider:'byok',credential_id:deepseekKey.id,protocol:'responses',model:'deepseek-flash',context_window:8192,max_output_tokens:64},workspace:false,tools:[]},201,principal.apiKey);
+    const unsupported = error => error.status===422&&error.code==='native_cache_control_unsupported';
+    await assert.rejects(sdk.responses.inputTokens.count({model:deepseek.id,input}),unsupported);
+    const remote = [{role:'user',content:[{...image,image_url:origin+'/note'}]}];
+    await assert.rejects(sdk.responses.create({model:deepseek.id,input:remote},{headers:{'Idempotency-Key':'unsupported-image-cache'}}),unsupported);
+    assert.equal(calls.length,0,'Unsupported provider controls fail before remote image preparation');
+    assert.equal(providers.state.counts.length,1,'DeepSeek recipe/count transport is never asked to ignore the marker');
+    assert.equal(providers.state.calls.length,0,'No generation is submitted');
+    assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_ledger WHERE account_id=? AND resource='model'").bind(principal.owner).first('n'),0);
+    assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE account_id=? AND status!='closed'").bind(principal.owner).first('n'),0);
+    return;
+  }
   if (process.env.MAGENTS_REMOTE_FILE_CASE === 'metadata-budget') {
     for (const source of [{file_id:'file_opaque_other_owner'},{filename:'note.txt',file_data:'aGk='}]) {
       const request = {model:agent.id,input:[{role:'user',content:[{type:'input_file',...source,detail:'high',prompt_cache_breakpoint:{mode:'explicit'}}]}]};

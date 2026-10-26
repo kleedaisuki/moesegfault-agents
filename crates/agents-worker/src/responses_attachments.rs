@@ -191,7 +191,7 @@ pub fn validate_part(part: &Value) -> Result<(usize, usize)> {
             }
         }
         Some("input_image") => {
-            fields(part, &["type", "file_id", "image_url", "detail"])?;
+            image_fields(part)?;
             image_detail(part)?;
             match (present(part, "file_id"), present(part, "image_url")) {
                 (Some(id), None) if id.as_str().is_some_and(valid_file_id) => Ok((1, 0)),
@@ -318,6 +318,24 @@ fn file_fields(part: &Value) -> Result<()> {
             _ => return Err(fail("invalid_file_input")),
         }
     }
+    cache_breakpoint(part)
+}
+
+fn image_fields(part: &Value) -> Result<()> {
+    fields(
+        part,
+        &[
+            "type",
+            "file_id",
+            "image_url",
+            "detail",
+            "prompt_cache_breakpoint",
+        ],
+    )?;
+    cache_breakpoint(part)
+}
+
+fn cache_breakpoint(part: &Value) -> Result<()> {
     if let Some(marker) = part.get("prompt_cache_breakpoint") {
         fields(marker, &["mode"])?;
         if marker["mode"] != "explicit" {
@@ -416,7 +434,7 @@ fn valid_file_id(id: &str) -> bool {
 }
 
 async fn resolve_image(env: &Env, owner: &str, part: &Value, budget: &mut Budget) -> Result<Value> {
-    fields(part, &["type", "file_id", "image_url", "detail"])?;
+    image_fields(part)?;
     let detail = image_detail(part)?;
     let source = match (present(part, "file_id"), present(part, "image_url")) {
         (Some(id), None) => {
@@ -462,7 +480,10 @@ async fn resolve_image(env: &Env, owner: &str, part: &Value, budget: &mut Budget
         }
         _ => return Err(fail("invalid_image_source")),
     };
-    Ok(json!({"type":"input_image","image_url":source,"detail":detail}))
+    preserve_breakpoint(
+        part,
+        json!({"type":"input_image","image_url":source,"detail":detail}),
+    )
 }
 
 fn image_detail(part: &Value) -> Result<&str> {
@@ -580,6 +601,25 @@ mod tests {
             "original"
         );
         assert!(image_detail(&json!({"detail":"very_high"})).is_err());
+    }
+
+    #[test]
+    fn image_cache_metadata_reuses_the_file_boundary_without_losing_its_position() {
+        let marker = json!({"mode":"explicit"});
+        let image = json!({"type":"input_image","image_url":"data:image/png;base64,AQID","detail":"auto","prompt_cache_breakpoint":marker});
+        assert_eq!(validate_part(&image).unwrap(), (1, 3));
+        let rendered = preserve_breakpoint(&image, image.clone()).unwrap();
+        assert_eq!(rendered["prompt_cache_breakpoint"], marker);
+        for invalid in [
+            json!(null),
+            json!({"mode":"auto"}),
+            json!({"mode":"explicit","unexpected":true}),
+        ] {
+            let mut image = image.clone();
+            image["prompt_cache_breakpoint"] = invalid.clone();
+            assert!(validate_part(&image).is_err());
+            assert!(file_fields(&json!({"type":"input_file","file_id":"file_owned","prompt_cache_breakpoint":invalid})).is_err());
+        }
     }
 
     #[test]
