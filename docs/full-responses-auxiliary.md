@@ -309,7 +309,21 @@ New tests cover source order and immutability, real low-image materialization,
 pre-inference rejection, and an actual Rust Worker/current SDK media compact
 window followed by continuation after the original file is deleted. Existing
 text compact and budget receipts are retained, not replayed by this increment.
-Compilation and execution results are recorded after Actions, not implied here.
+Actions `40337239535` at `b8defef` passed all three new media Rust contracts and
+produced Worker artifact `12657344011`; the aggregate run failed before compact
+execution because the SDK upload prerequisite used an in-process fetch that
+does not support its multipart probe. The fixture-only correction uses the
+existing explicit-wire upload setup. Actions `40338796050` at `f9a6852` reused
+that exact Worker and passed the complete new media/owned-BYOK journey with the
+current SDK, file deletion, full-window continuation and final hold closure.
+Receipt artifact `12658072275` records that split. There were no external model
+or tool requests, and no accepted text/budget/vision journey was replayed.
+
+Low-image re-encoding also retains EXIF orientation, rotating only the small
+resized raster. Its decoder path preserves the image library's explicit
+allocation reservation rather than bypassing it through `from_decoder`. The
+additional orientation contract is separate from the accepted media journey;
+the latter is not rerun solely for this bounded transformation correction.
 
 Provider image transport reference:
 https://api-docs.deepseek.com/guides/vision/#using-images-with-the-anthropic-api
