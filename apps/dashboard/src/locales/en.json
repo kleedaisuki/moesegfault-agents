@@ -266,5 +266,10 @@
   "API transport": "API transport",
   "Provider default": "Provider default",
   "Chat Completions": "Chat Completions",
-  "The model transport must match the saved key’s authentication family.": "The model transport must match the saved key’s authentication family."
+  "The model transport must match the saved key’s authentication family.": "The model transport must match the saved key’s authentication family.",
+  "Code Interpreter": "Code Interpreter",
+  "Code service": "Code service",
+  "Compatible executor · your key": "Compatible executor · your key",
+  "Executor API key": "Executor API key",
+  "Unavailable saved service": "Unavailable saved service"
 }

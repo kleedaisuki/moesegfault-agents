@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import {
   request,
+  type CodeService,
   type ImageService,
   type ProviderKey,
   type SearchService,
@@ -31,8 +32,13 @@ export function ToolServicesEditor({
   const keys = (credentials.data?.data ?? []).filter(
     (key) => key.protocol !== "anthropic",
   );
+  const code = value.code_interpreter;
   const image = value.image_generation;
   const search = value.web_search;
+  function updateCode(next?: CodeService) {
+    const { code_interpreter: _, ...rest } = value;
+    onChange(next ? { ...rest, code_interpreter: next } : rest);
+  }
   function updateImage(next?: ImageService) {
     const { image_generation: _, ...rest } = value;
     onChange(next ? { ...rest, image_generation: next } : rest);
@@ -66,6 +72,48 @@ export function ToolServicesEditor({
       }}
     >
       <summary>{t("Tool services")}</summary>
+      <fieldset className="skill-selection">
+        <legend>{t("Code Interpreter")}</legend>
+        <label>
+          {t("Code service")}
+          <select
+            value={code ? (code.provider ?? "platform") : ""}
+            onChange={(event) =>
+              updateCode(
+                event.target.value
+                  ? { provider: event.target.value as CodeService["provider"] }
+                  : undefined,
+              )
+            }
+          >
+            <option value="">{t("Platform default")}</option>
+            <option value="platform">{t("Platform")}</option>
+            <option value="workspace_daemon">
+              {t("Compatible executor · your key")}
+            </option>
+            {code?.provider &&
+              !["platform", "workspace_daemon"].includes(code.provider) && (
+                <option value={code.provider} disabled>
+                  {t("Unavailable saved service")}
+                </option>
+              )}
+          </select>
+        </label>
+        {code?.provider === "workspace_daemon" && (
+          <label>
+            {t("Executor API key")}
+            <select
+              required
+              value={code.credential_id ?? ""}
+              onChange={(event) =>
+                updateCode({ ...code, credential_id: event.target.value })
+              }
+            >
+              {keyOptions(code.credential_id)}
+            </select>
+          </label>
+        )}
+      </fieldset>
       <fieldset className="skill-selection">
         <legend>{t("Image generation")}</legend>
         <label>
