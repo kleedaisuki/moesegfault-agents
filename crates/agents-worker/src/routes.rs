@@ -1420,7 +1420,7 @@ pub(crate) async fn read_chat_run(
     trace: &TraceContext,
     run: &str,
 ) -> Result<Response> {
-    let context = RouteContext { env, trace };
+    let context = RouteContext::new(env, trace);
     forward_raw(
         &context,
         session,
