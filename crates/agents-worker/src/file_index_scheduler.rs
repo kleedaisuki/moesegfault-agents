@@ -23,6 +23,7 @@ struct Job {
 
 pub(crate) async fn run(env: &Env) -> Result<()> {
     gc::run(env).await?;
+    crate::file_index::storage::run(env).await?;
     if env.var("FILE_SEARCH_PROFILE_JSON").is_err() {
         return Ok(());
     }
