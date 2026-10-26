@@ -484,7 +484,7 @@ impl SessionInner {
         {
             let original = call;
             let call = self.resolved_mcp_call(call)?;
-            let (record, response_id, intent) = {
+            let (record, intent) = {
                 let data = self.data.borrow();
                 let data = data
                     .as_ref()
@@ -503,64 +503,115 @@ impl SessionInner {
                     &execution,
                     &call,
                 )?;
-                (data.record.clone(), response.id.clone(), intent)
+                (data.record.clone(), intent)
             };
-            let Some(mut intent) = intent.filter(|intent| intent.approval_id.is_some()) else {
+            let Some(intent) = intent.filter(|intent| intent.approval_id.is_some()) else {
                 continue;
             };
-            intent.server.clear_credentials();
-            let key = mcp_key(&response_id, &intent.execution);
-            self.track_mcp_operation(&key).await?;
-            let saved = self.read_mcp_operation(&key).await?;
-            if let Some(saved) = &saved {
-                if !same_intent(&saved.intent, &intent)? {
-                    return Err(mcp_fault("mcp_operation_conflict"));
-                }
-            } else {
-                self.write_mcp_operation(
-                    &key,
-                    &McpOperation {
-                        intent: intent.clone(),
-                        dispatched: false,
-                        claimed_by: None,
-                        outcome: None,
-                        result: None,
-                    },
-                )
+            self.publish_mcp_approval(&record, intent, &original.function.name)
                 .await?;
-            }
-            let item = intent
-                .approval_item()
-                .ok_or_else(|| mcp_fault("mcp_approval_missing"))?;
-            let reference = ApprovalReference::new(&record.owner_id, &record.id, &key, &intent)?;
-            let token = reference.seal(&self.env.secret("DATA_ENCRYPTION_KEY")?.to_string())?;
-            let mut pending = native_output::GeneralPendingCall::from_item(&item)
-                .ok_or_else(|| mcp_fault("mcp_approval_missing"))?;
-            pending.name = original.function.name.clone();
-            pending.details.as_mut().unwrap()["__agents_mcp"] =
-                json!({"capability":token,"native_call_id":call.id});
-            {
-                let mut data = self.data.borrow_mut();
-                let response = data
-                    .as_mut()
-                    .unwrap()
-                    .run
-                    .as_mut()
-                    .unwrap()
-                    .response
-                    .as_mut()
-                    .unwrap();
-                if !response
-                    .general_pending_calls
-                    .iter()
-                    .any(|known| known.item_id == pending.item_id)
-                {
-                    response.general_pending_calls.push(pending);
-                }
-            }
-            self.publish_mcp_item(&item, true).await?;
         }
         Ok(())
+    }
+
+    async fn publish_mcp_approval(
+        &self,
+        record: &SessionRecord,
+        mut intent: CallIntent,
+        native_name: &str,
+    ) -> Result<()> {
+        let response_id = intent.source_response.clone();
+        intent.server.clear_credentials();
+        let key = mcp_key(&response_id, &intent.execution);
+        self.track_mcp_operation(&key).await?;
+        let saved = self.read_mcp_operation(&key).await?;
+        if let Some(saved) = &saved {
+            if !same_intent(&saved.intent, &intent)? {
+                return Err(mcp_fault("mcp_operation_conflict"));
+            }
+        } else {
+            self.write_mcp_operation(
+                &key,
+                &McpOperation {
+                    intent: intent.clone(),
+                    dispatched: false,
+                    claimed_by: None,
+                    outcome: None,
+                    result: None,
+                },
+            )
+            .await?;
+        }
+        let item = intent
+            .approval_item()
+            .ok_or_else(|| mcp_fault("mcp_approval_missing"))?;
+        let reference = ApprovalReference::new(&record.owner_id, &record.id, &key, &intent)?;
+        let token = reference.seal(&self.env.secret("DATA_ENCRYPTION_KEY")?.to_string())?;
+        let mut pending = native_output::GeneralPendingCall::from_item(&item)
+            .ok_or_else(|| mcp_fault("mcp_approval_missing"))?;
+        pending.name = native_name.into();
+        pending.details.as_mut().unwrap()["__agents_mcp"] =
+            json!({"capability":token,"native_call_id":intent.native_call_id});
+        {
+            let mut data = self.data.borrow_mut();
+            let response = data
+                .as_mut()
+                .unwrap()
+                .run
+                .as_mut()
+                .unwrap()
+                .response
+                .as_mut()
+                .unwrap();
+            if !response
+                .general_pending_calls
+                .iter()
+                .any(|known| known.item_id == pending.item_id)
+            {
+                response.general_pending_calls.push(pending);
+            }
+        }
+        self.publish_mcp_item(&item, true).await?;
+        Ok(())
+    }
+
+    pub(super) async fn stage_programmatic_mcp_approval(
+        &self,
+        record: &SessionRecord,
+        proof: &crate::programmatic_tools::AuthorizedInvocation,
+    ) -> Result<()> {
+        proof
+            .verify_scope(&record.owner_id, &record.id, util::now_ms())
+            .map_err(mcp_fault)?;
+        let crate::programmatic_tools::ExecutionTarget::Adapter { capability } = proof.target()
+        else {
+            return Err(mcp_fault("programmatic_tool_not_allowed"));
+        };
+        let call = provider::ToolCall {
+            id: proof.call_id().into(),
+            kind: "function".into(),
+            function: provider::FunctionCall {
+                name: capability.clone(),
+                arguments: serde_json::to_string(proof.arguments())?,
+            },
+        };
+        let data = self.snapshot()?;
+        let response = data
+            .run
+            .and_then(|run| run.response)
+            .ok_or_else(|| mcp_fault("mcp_response_missing"))?;
+        let intent = response
+            .mcp_bindings
+            .prepare_call_as(
+                &record.owner_id,
+                &response.id,
+                proof.execution_key(),
+                &call,
+                crate::hosted_bindings::Caller::Programmatic,
+            )?
+            .filter(|intent| intent.approval_id.is_some())
+            .ok_or_else(|| mcp_fault("mcp_approval_missing"))?;
+        self.publish_mcp_approval(record, intent, capability).await
     }
 
     pub(super) async fn prepare_mcp_approvals(
@@ -784,38 +835,18 @@ impl SessionInner {
                     .mcp_approvals
                     .iter()
                     .enumerate()
-                    .find(|(_, action)| !action.completed)
+                    .find(|(_, action)| {
+                        !action.completed
+                            && action.intent.caller == crate::hosted_bindings::Caller::Direct
+                    })
                     .map(|(index, action)| (index, action.clone()))
             })
         };
         let Some((index, action)) = next else {
             return Ok(false);
         };
-        self.load_mcp_approval(
-            &action.reference,
-            &action.capability,
-            Some(&self.snapshot()?.run.as_ref().unwrap().id),
-        )
-        .await?;
-        let allowed = !action.approved
-            || self
-                .admit_tool_dispatch(
-                    record,
-                    &action.intent.execution,
-                    &action.intent.server.alias(&action.intent.tool.name),
-                )
-                .await?;
-        let output = if !allowed {
-            self.publish_mcp_item(&action.intent.result_item(None, Some(json!({"type":"mcp_protocol_error","code":-32000,"message":"The response tool allowance is exhausted"}))), true).await?;
-            tool_budget::exhausted_result().into()
-        } else if action.approved {
-            match self.execute_mcp(record, &action.intent).await? {
-                hosted_dispatch::HostedDispatch::Ready(output) => output,
-                hosted_dispatch::HostedDispatch::Pending => return Ok(true),
-            }
-        } else {
-            self.publish_mcp_item(&action.intent.denied(), true).await?;
-            json!({"error":{"code":"mcp_approval_denied","message":"The requested MCP call was declined."}}).to_string().into()
+        let Some(output) = self.mcp_approval_output(record, &action, None).await? else {
+            return Ok(true);
         };
         let native = action.intent.native_output(&output.clone().into())?;
         {
@@ -855,6 +886,142 @@ impl SessionInner {
         }
         self.persist().await?;
         Ok(true)
+    }
+
+    async fn mcp_approval_output(
+        &self,
+        record: &SessionRecord,
+        action: &ApprovedCall,
+        proof: Option<&crate::programmatic_tools::AuthorizedInvocation>,
+    ) -> Result<Option<hosted_dispatch::ToolOutput>> {
+        let caller = if proof.is_some() {
+            crate::hosted_bindings::Caller::Programmatic
+        } else {
+            crate::hosted_bindings::Caller::Direct
+        };
+        if action.intent.caller != caller {
+            return Err(mcp_fault("mcp_tool_caller_mismatch"));
+        }
+        self.load_mcp_approval(
+            &action.reference,
+            &action.capability,
+            Some(
+                &self
+                    .snapshot()?
+                    .run
+                    .as_ref()
+                    .and_then(|run| run.response.as_ref())
+                    .ok_or_else(|| mcp_fault("mcp_response_missing"))?
+                    .id,
+            ),
+        )
+        .await?;
+        let allowed = !action.approved
+            || self
+                .admit_tool_dispatch_as(
+                    record,
+                    &action.intent.execution,
+                    &action.intent.server.alias(&action.intent.tool.name),
+                    caller,
+                )
+                .await?;
+        let output = if !allowed {
+            self.publish_mcp_item(&action.intent.result_item(None, Some(json!({"type":"mcp_protocol_error","code":-32000,"message":"The response tool allowance is exhausted"}))), true).await?;
+            tool_budget::exhausted_result().into()
+        } else if action.approved {
+            match match proof {
+                Some(proof) => {
+                    self.execute_programmatic_mcp(record, &action.intent, proof)
+                        .await?
+                }
+                None => self.execute_mcp(record, &action.intent).await?,
+            } {
+                hosted_dispatch::HostedDispatch::Ready(output) => output,
+                hosted_dispatch::HostedDispatch::Pending => return Ok(None),
+            }
+        } else {
+            self.publish_mcp_item(&action.intent.denied(), true).await?;
+            json!({"error":{"code":"mcp_approval_denied","message":"The requested MCP call was declined."}}).to_string().into()
+        };
+        Ok(Some(output))
+    }
+
+    pub(super) async fn advance_programmatic_mcp_approvals(
+        &self,
+        record: &SessionRecord,
+        proofs: &[crate::programmatic_tools::AuthorizedInvocation],
+    ) -> Result<Vec<(u32, Value)>> {
+        let mut completed = Vec::new();
+        loop {
+            let data = self.snapshot()?;
+            let response = data
+                .run
+                .as_ref()
+                .and_then(|run| run.response.as_ref())
+                .ok_or_else(|| mcp_fault("mcp_response_missing"))?;
+            let Some((index, action)) = response
+                .mcp_approvals
+                .iter()
+                .enumerate()
+                .find(|(_, action)| {
+                    !action.completed
+                        && action.intent.caller == crate::hosted_bindings::Caller::Programmatic
+                })
+                .map(|(index, action)| (index, action.clone()))
+            else {
+                break;
+            };
+            let proof = proofs
+                .iter()
+                .find(|proof| proof.call_id() == action.intent.native_call_id)
+                .ok_or_else(|| mcp_fault("program_approval_scope_mismatch"))?;
+            proof
+                .verify_scope(&record.owner_id, &record.id, util::now_ms())
+                .map_err(mcp_fault)?;
+            let crate::programmatic_tools::ExecutionTarget::Adapter { capability } = proof.target()
+            else {
+                return Err(mcp_fault("program_approval_scope_mismatch"));
+            };
+            if *capability != action.intent.server.alias(&action.intent.tool.name)
+                || *proof.arguments() != action.intent.arguments
+            {
+                return Err(mcp_fault("program_approval_scope_mismatch"));
+            }
+            let Some(output) = self
+                .mcp_approval_output(record, &action, Some(proof))
+                .await?
+            else {
+                break;
+            };
+            let value = if action.approved {
+                self.programmatic_mcp_result(&action.intent.execution)
+                    .await?
+            } else {
+                match output {
+                    hosted_dispatch::ToolOutput::Text(text) => serde_json::from_str(&text)?,
+                    hosted_dispatch::ToolOutput::Mcp(_) => {
+                        return Err(mcp_fault("invalid_mcp_denial"));
+                    }
+                }
+            };
+            self.data
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .run
+                .as_mut()
+                .unwrap()
+                .response
+                .as_mut()
+                .unwrap()
+                .mcp_approvals[index]
+                .completed = true;
+            self.persist().await?;
+            self.publish_hosted_item(&proof.result_item(&value).map_err(mcp_fault)?, true)
+                .await?;
+            completed.push((proof.sequence(), value));
+        }
+        Ok(completed)
     }
 
     pub(super) async fn dispatch_mcp_tool(
@@ -923,21 +1090,37 @@ impl SessionInner {
                 arguments: serde_json::to_string(proof.arguments())?,
             },
         };
-        self.dispatch_mcp_tool_as(
-            record,
-            proof.execution_key(),
-            &call,
-            crate::hosted_bindings::Caller::Programmatic,
-        )
-        .await?
-        .ok_or_else(|| mcp_fault("mcp_tool_not_bound"))?;
+        let data = self.snapshot()?;
+        let response = data
+            .run
+            .and_then(|run| run.response)
+            .ok_or_else(|| mcp_fault("mcp_response_missing"))?;
+        let intent = response
+            .mcp_bindings
+            .prepare_call_as(
+                &record.owner_id,
+                &response.id,
+                proof.execution_key(),
+                &call,
+                crate::hosted_bindings::Caller::Programmatic,
+            )?
+            .ok_or_else(|| mcp_fault("mcp_tool_not_bound"))?;
+        if intent.approval_id.is_some() {
+            return Err(mcp_fault("mcp_approval_required"));
+        }
+        self.execute_programmatic_mcp(record, &intent, proof)
+            .await?;
+        self.programmatic_mcp_result(proof.execution_key()).await
+    }
+
+    async fn programmatic_mcp_result(&self, execution: &str) -> Result<Value> {
         let response = self
             .snapshot()?
             .run
             .and_then(|run| run.response)
             .ok_or_else(|| mcp_fault("mcp_response_missing"))?;
         let operation = self
-            .read_mcp_operation(&mcp_key(&response.id, proof.execution_key()))
+            .read_mcp_operation(&mcp_key(&response.id, execution))
             .await?
             .ok_or_else(|| mcp_fault("mcp_operation_missing"))?;
         let outcome = operation
@@ -978,6 +1161,41 @@ impl SessionInner {
         &self,
         record: &SessionRecord,
         intent: &CallIntent,
+    ) -> Result<hosted_dispatch::HostedDispatch> {
+        if intent.caller != crate::hosted_bindings::Caller::Direct {
+            return Err(mcp_fault("programmatic_authority_required"));
+        }
+        self.execute_mcp_inner(record, intent, None).await
+    }
+
+    async fn execute_programmatic_mcp(
+        &self,
+        record: &SessionRecord,
+        intent: &CallIntent,
+        proof: &crate::programmatic_tools::AuthorizedInvocation,
+    ) -> Result<hosted_dispatch::HostedDispatch> {
+        proof
+            .verify_scope(&record.owner_id, &record.id, util::now_ms())
+            .map_err(mcp_fault)?;
+        let crate::programmatic_tools::ExecutionTarget::Adapter { capability } = proof.target()
+        else {
+            return Err(mcp_fault("program_approval_scope_mismatch"));
+        };
+        if intent.caller != crate::hosted_bindings::Caller::Programmatic
+            || *capability != intent.server.alias(&intent.tool.name)
+            || intent.native_call_id != proof.call_id()
+            || intent.arguments != *proof.arguments()
+        {
+            return Err(mcp_fault("program_approval_scope_mismatch"));
+        }
+        self.execute_mcp_inner(record, intent, Some(proof)).await
+    }
+
+    async fn execute_mcp_inner(
+        &self,
+        record: &SessionRecord,
+        intent: &CallIntent,
+        program: Option<&crate::programmatic_tools::AuthorizedInvocation>,
     ) -> Result<hosted_dispatch::HostedDispatch> {
         let response_id = {
             let data = self.data.borrow();
@@ -1034,11 +1252,23 @@ impl SessionInner {
             operation.dispatched = true;
             self.write_mcp_operation(&key, &operation).await?;
             let started = util::now_ms();
-            operation.outcome = Some(if self.mcp_cancelled() {
+            // Approval and dispatch journal writes yield; the live program's
+            // authority must still hold at the actual network-effect boundary.
+            let expired = program.is_some_and(|proof| {
+                proof
+                    .verify_scope(&record.owner_id, &record.id, started)
+                    .is_err()
+            });
+            operation.outcome = Some(if self.mcp_cancelled() || expired {
                 RpcOutcome {
                     result: None,
                     failure: Some(RpcFailure {
-                        code: "mcp_cancelled".into(),
+                        code: if expired {
+                            "program_authority_expired"
+                        } else {
+                            "mcp_cancelled"
+                        }
+                        .into(),
                         http_status: None,
                         protocol_code: None,
                         outcome_unknown: false,
@@ -1086,6 +1316,15 @@ impl SessionInner {
     }
 
     fn mcp_cancelled(&self) -> bool {
+        if self.closing.get()
+            || self
+                .data
+                .borrow()
+                .as_ref()
+                .is_some_and(|data| data.record.status == SessionStatus::Closed)
+        {
+            return true;
+        }
         self.data
             .borrow()
             .as_ref()

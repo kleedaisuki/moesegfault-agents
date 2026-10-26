@@ -9,9 +9,26 @@ pub(crate) struct ProgramPause {
     pub(in crate::session) expires_at_ms: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(in crate::session) inputs: Vec<Value>,
+    #[serde(skip)]
+    pub(in crate::session) delivery_ready: bool,
 }
 
 impl SessionInner {
+    pub(in crate::session) fn programmatic_mailbox_committed(&self, response_id: &str) {
+        let active = self.programmatic_active.borrow();
+        if let Some(pause) = self
+            .data
+            .borrow_mut()
+            .as_mut()
+            .and_then(|data| data.run.as_mut())
+            .and_then(|run| run.response.as_mut())
+            .filter(|response| response.id == response_id && response.status != "completed")
+            .and_then(|response| response.programmatic.as_mut())
+            .filter(|pause| active.as_deref() == Some(pause.operation.as_str()))
+        {
+            pause.delivery_ready = true;
+        }
+    }
     pub(in crate::session) async fn programmatic_continuation(
         &self,
         data: &PersistedSession,
@@ -85,6 +102,7 @@ impl SessionInner {
                 response: response.id.clone(),
                 expires_at_ms: program.expires_at_ms(),
                 inputs: vec![],
+                delivery_ready: false,
             });
             response.general_pending_calls.extend(
                 calls
@@ -130,6 +148,7 @@ impl SessionInner {
         &self,
         key: &str,
         program: &mut ProgramState,
+        approvals: &[AuthorizedInvocation],
         deadline: u64,
     ) -> Result<()> {
         loop {
@@ -139,19 +158,54 @@ impl SessionInner {
             if util::now_ms() >= deadline {
                 return Err(fault("program_runtime_expired"));
             }
+            let ready = self
+                .data
+                .borrow()
+                .as_ref()
+                .and_then(|data| data.run.as_ref())
+                .and_then(|run| run.response.as_ref())
+                .is_some_and(|response| {
+                    response.status != "completed"
+                        && response.programmatic.as_ref().is_some_and(|pause| {
+                            pause.operation == key
+                                && pause.delivery_ready
+                                && (!pause.inputs.is_empty()
+                                    || response.mcp_approvals.iter().any(|action| {
+                                        !action.completed
+                                            && action.intent.caller
+                                                == crate::hosted_bindings::Caller::Programmatic
+                                    }))
+                        })
+                });
+            if !ready {
+                worker::Delay::from(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
             let data = self.snapshot()?;
             let response = data
                 .run
                 .as_ref()
                 .and_then(|run| run.response.as_ref())
                 .ok_or_else(|| fault("program_cancelled"))?;
-            if let Some(pause) = response.programmatic.as_ref().filter(|pause| {
-                pause.operation == key && !pause.inputs.is_empty() && response.status != "completed"
-            }) {
+            if let Some(pause) = response
+                .programmatic
+                .as_ref()
+                .filter(|pause| pause.operation == key && response.status != "completed")
+            {
                 self.activate_conversation_run(data.run.as_ref().unwrap())
                     .await?;
                 if self.programmatic_cancelled() {
                     return Err(fault("program_cancelled"));
+                }
+                let settled = self
+                    .advance_programmatic_mcp_approvals(&data.record, approvals)
+                    .await?;
+                if settled.is_empty() && pause.inputs.is_empty() {
+                    worker::Delay::from(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
+                for (sequence, result) in settled {
+                    program.complete_call(sequence, result).map_err(fault)?;
                 }
                 program
                     .accept_client_outputs(&pause.inputs)
