@@ -78,6 +78,17 @@ version. rmcp already accepts legacy tool results without `resultType`; no JSON
 normalization or removal of typed permission/output fields is needed. The
 deprecated two-endpoint HTTP+SSE transport is not introduced by this increment.
 
+At 2026-10-26T16:07:01Z an anonymous direct metadata follow-up to the same fixed
+`https://mcp.deepwiki.com/mcp` endpoint completed `initialize` (HTTP 200 SSE,
+without a version header), negotiated 2025-11-25 with DeepWiki 2.14.3, then
+completed `notifications/initialized` (202) and `tools/list` (200 SSE) using that
+version. No session ID was issued. The legacy list omitted `resultType` and
+returned `ask_wiki_question`, `read_wiki_contents`, and `read_wiki_structure` with
+typed input/output schemas. Authorization, model invocations and tool calls were
+all absent. This establishes live protocol/metadata compatibility, not a deployed
+Worker tool-execution receipt. The follow-up must not invoke the model-backed
+`ask_wiki_question` tool.
+
 References:
 - https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility
 - https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation
