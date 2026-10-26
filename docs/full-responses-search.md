@@ -98,13 +98,23 @@ observed action is not overwritten with the outer query. Dedicated API results
 contain no answer-span offsets, and no offsets are manufactured for the outer
 assistant's separate text.
 
+A Responses BYOK service can return multiple search/open/find calls within its
+one bounded HTTP operation. Their original order, actual actions and individual
+terminal statuses are projected to separate stable canonical items rather than
+collapsing to the last call. The first uses the pre-dispatch item identity;
+additional identities derive from the retained operation and call index, never
+from upstream IDs. Settlement still consumes one original provider-request
+receipt, and replay publishes no duplicate item or external request. The new
+`responses_multi` compiled journey verifies three native actions from one HTTP
+request; it awaits the next build, independently of the six accepted cases below.
+
 `tests/worker/hosted-search.test.mjs` is the compiled-Worker acceptance entrypoint:
 platform search/open/find, an independent owner search credential, proved empty
 zero-unit results, and a lost response that retains its hold without redispatch.
 It uses the actual OpenAI Node SDK, strict current Python SDK wire validation,
 canonical SSE replay/JSON retrieval and actual D1 ledger/hold assertions. The
 fixture has no external network access. Select one increment with
-`MAGENTS_HOSTED_SEARCH_CASE=platform|byok|responses_byok|empty|http_error|unknown`.
+`MAGENTS_HOSTED_SEARCH_CASE=platform|byok|responses_byok|responses_multi|empty|http_error|unknown`.
 
 On 2026-10-26 all six cases passed locally against the actual Worker artifact
 `12636014402` from source `2cc1e0cb4b06c997212d1bbfa97c6a238e7977b6`, CI build

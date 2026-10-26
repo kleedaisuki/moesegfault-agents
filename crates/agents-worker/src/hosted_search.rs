@@ -7,6 +7,7 @@
 use agents_core::SearchServiceProvider;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use worker::{Env, Result};
 
 use crate::{
@@ -178,6 +179,42 @@ impl PreparedHostedSearch {
 }
 
 impl HostedSearchOutcome {
+    pub(crate) fn public_items(&self, item_id: &str) -> Vec<Value> {
+        let calls = self
+            .exchange
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.native_calls.as_slice())
+            .unwrap_or_default();
+        if self.plan.route != SearchRouteKind::OpenaiResponsesByok || calls.len() < 2 {
+            return vec![self.public_item(item_id)];
+        }
+        calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                let id = if index == 0 {
+                    item_id.to_owned()
+                } else {
+                    format!(
+                        "hosted_{:x}",
+                        Sha256::digest(format!("{item_id}:search-action:{index}"))
+                    )
+                };
+                let action = call
+                    .action
+                    .clone()
+                    .unwrap_or_else(|| native_action(&self.plan.action));
+                let status = if call.status == "completed" {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                json!({"id":id,"type":"web_search_call","status":status,"action":action})
+            })
+            .collect()
+    }
+
     /// Native upstream item IDs and internal function aliases never escape as
     /// canonical output identity. Citation offsets belong to other text parts.
     pub(crate) fn public_item(&self, item_id: &str) -> Value {
@@ -428,7 +465,7 @@ mod tests {
                 results: None,
             }],
         });
-        let outcome = HostedSearchOutcome {
+        let mut outcome = HostedSearchOutcome {
             exchange,
             receipt: None,
             platform_funded: false,
@@ -444,6 +481,29 @@ mod tests {
         assert!(!model_result.contains("private"));
         assert!(!model_result.contains("__agents"));
         assert!(!model_result.contains("start_index"));
+        let evidence = outcome.exchange.evidence.as_mut().unwrap();
+        evidence.native_calls.insert(
+            0,
+            NativeSearchCall {
+                id: "ws_other_upstream_private".into(),
+                kind: "web_search_call".into(),
+                status: "completed".into(),
+                action: Some(SearchAction::Search {
+                    query: Some("Actual upstream query".into()),
+                    queries: None,
+                    sources: Some(evidence.sources.clone()),
+                }),
+                results: None,
+            },
+        );
+        let items = outcome.public_items("ws_ours");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["id"], "ws_ours");
+        assert_eq!(items[0]["action"]["query"], "Actual upstream query");
+        assert_eq!(items[1]["action"]["type"], "open_page");
+        assert_ne!(items[0]["id"], items[1]["id"]);
+        assert_eq!(items, outcome.public_items("ws_ours"));
+        assert!(!serde_json::to_string(&items).unwrap().contains("private"));
     }
 
     #[test]

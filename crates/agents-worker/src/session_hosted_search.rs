@@ -355,12 +355,13 @@ impl SessionInner {
             .outcome
             .as_ref()
             .ok_or_else(|| fault("hosted_search_outcome_missing"))?;
-        let item = outcome.public_item(&hosted_item_id(execution_id));
-        if let Err(error) = self.publish_hosted_item(&item, true).await {
-            if super::permanent_publication_error(&error) {
-                return Err(error);
+        for item in outcome.public_items(&hosted_item_id(execution_id)) {
+            if let Err(error) = self.publish_hosted_item(&item, true).await {
+                if super::permanent_publication_error(&error) {
+                    return Err(error);
+                }
+                return pending().await;
             }
-            return pending().await;
         }
         let result = outcome.model_result().to_string();
         saved.published_result = Some(result.clone());

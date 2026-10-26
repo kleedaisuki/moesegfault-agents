@@ -16,7 +16,7 @@ const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-
 const origin = 'https://agents.test';
 const source = 'https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html';
 const answer = 'Ownership is checked by Rust. [Source](' + source + ')';
-const cases = ['platform', 'byok', 'responses_byok', 'empty', 'http_error', 'unknown'];
+const cases = ['platform', 'byok', 'responses_byok', 'responses_multi', 'empty', 'http_error', 'unknown'];
 const usage = { input_tokens: 7, output_tokens: 2, total_tokens: 9,
   input_tokens_details: { cached_tokens: 0 }, output_tokens_details: {} };
 const final = { id: 'outer-final', type: 'message', role: 'assistant', status: 'completed',
@@ -73,14 +73,14 @@ test('compiled Rust Worker: independently funded native web search and replay', 
     async outboundService(request) {
       const url = new URL(request.url);
       if (url.origin === 'https://owned-search-service.example.com') {
-        assert.equal(active.name, 'responses_byok');
+        assert.ok(['responses_byok', 'responses_multi'].includes(active.name));
         assert.equal(url.pathname, '/v1/responses');
         assert.equal(request.method, 'POST');
         assert.equal(request.headers.get('authorization'), 'Bearer synthetic-owner-responses-search-key');
         const body = await request.json();
         assert.equal(body.model, 'owned-search-model');
         assert.equal(body.tool_choice, 'required');
-        assert.equal(body.max_tool_calls, 1);
+        assert.equal(body.max_tool_calls, active.name === 'responses_multi' ? 3 : 1);
         assert.equal(body.stream, false);
         assert.equal(body.store, false);
         assert.equal(body.tools[0].type, 'web_search');
@@ -88,9 +88,13 @@ test('compiled Rust Worker: independently funded native web search and replay', 
         const db = await mf.getD1Database('DB');
         assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'tool:reported_cost:%' AND state='reserved'")
           .bind(active.owner).first()).n, 1, 'Responses BYOK also needs its independently bound hold before dispatch');
+        const extra = active.name === 'responses_multi' ? [
+          { id: 'private-search-open', type: 'web_search_call', status: 'completed', action: { type: 'open_page', url: source } },
+          { id: 'private-search-find', type: 'web_search_call', status: 'completed', action: { type: 'find_in_page', url: source, pattern: 'Ownership' } },
+        ] : [];
         return Response.json({ id: 'private-search-response', object: 'response', status: 'completed',
           output: [{ id: 'private-search-call', type: 'web_search_call', status: 'completed',
-            action: { type: 'search', query: 'provider refined query', sources: [{ type: 'url', url: source }] } },
+            action: { type: 'search', query: 'provider refined query', sources: [{ type: 'url', url: source }] } }, ...extra,
           { id: 'private-search-message', type: 'message', role: 'assistant', status: 'completed',
             content: [{ type: 'output_text', text: 'Different provider text.', annotations: [
               { type: 'url_citation', start_index: 0, end_index: 9, title: 'Ownership', url: source }] }] }],
@@ -152,11 +156,12 @@ test('compiled Rust Worker: independently funded native web search and replay', 
       assert.ok(!wire.includes('synthetic-platform-search-key') && !wire.includes('synthetic-owner-search-key'));
     } }]);
     const credential = await principal.browser('POST', '/v1/provider-keys', { protocol: 'openai', base_url: model.baseUrl, api_key: model.key }, 201);
-    const searchKey = ['byok', 'responses_byok'].includes(name) ? await principal.browser('POST', '/v1/provider-keys',
+    const nativeByok = name.startsWith('responses_');
+    const searchKey = name === 'byok' || nativeByok ? await principal.browser('POST', '/v1/provider-keys',
       { protocol: 'openai', base_url: name === 'byok' ? 'https://api.deepseek.com/v1' : 'https://owned-search-service.example.com/v1',
         api_key: name === 'byok' ? 'synthetic-owner-search-key' : 'synthetic-owner-responses-search-key' }, 201) : null;
-    const service = name === 'responses_byok' ? { provider: 'openai_responses', credential_id: searchKey.id,
-      model: 'owned-search-model', max_tool_calls: 1 } : searchKey ? { provider: 'deepseek_search', credential_id: searchKey.id }
+    const service = nativeByok ? { provider: 'openai_responses', credential_id: searchKey.id,
+      model: 'owned-search-model', max_tool_calls: name === 'responses_multi' ? 3 : 1 } : searchKey ? { provider: 'deepseek_search', credential_id: searchKey.id }
       : { provider: 'platform_deepseek' };
     const agent = await request('POST', '/v1/agents', { name: 'Independent search ' + name, workspace: false, tools: [],
       model: { provider: 'byok', credential_id: credential.id, protocol: 'responses', model: model.model, context_window: 32768, max_output_tokens: 512 },
@@ -173,22 +178,25 @@ test('compiled Rust Worker: independently funded native web search and replay', 
     const response = events.findLast(event => event.type === 'response.completed')?.response;
     assert.ok(response, JSON.stringify(events.at(-1)));
     const items = response.output.filter(item => item.type === 'web_search_call');
-    assert.equal(items.length, actions.length);
+    const expectedItems = name === 'responses_multi' ? 3 : actions.length;
+    assert.equal(items.length, expectedItems);
+    assert.equal(new Set(items.map(item => item.id)).size, expectedItems, 'Each native action has one stable canonical identity');
     assert.equal(items[0].status, ['unknown', 'http_error'].includes(name) ? 'failed' : 'completed');
-    assert.equal(items[0].action.query, name === 'responses_byok' ? 'provider refined query' : 'Rust ownership');
-    if (['platform', 'byok', 'responses_byok'].includes(name)) assert.deepEqual(items[0].action.sources, [{ type: 'url', url: source }]);
-    if (name === 'platform') {
+    assert.equal(items[0].action.query, nativeByok ? 'provider refined query' : 'Rust ownership');
+    if (['platform', 'byok'].includes(name) || nativeByok) assert.deepEqual(items[0].action.sources, [{ type: 'url', url: source }]);
+    if (name === 'platform' || name === 'responses_multi') {
       assert.deepEqual(items[1].action, { type: 'open_page', url: source });
       assert.deepEqual(items[2].action, { type: 'find_in_page', url: source, pattern: 'Ownership' });
     }
-    assert.equal(events.filter(event => event.type === 'response.web_search_call.completed').length, actions.length);
-    assert.equal(events.filter(event => event.type === 'response.web_search_call.in_progress').length, actions.length);
-    assert.equal(events.filter(event => event.type === 'response.web_search_call.searching').length, actions.length);
+    assert.equal(events.filter(event => event.type === 'response.web_search_call.completed').length, expectedItems);
+    assert.equal(events.filter(event => event.type === 'response.web_search_call.in_progress').length, expectedItems);
+    assert.equal(events.filter(event => event.type === 'response.web_search_call.searching').length, expectedItems);
     for (const item of items) {
       const phases = events.filter(event => event.item_id === item.id).map(event => event.type);
       assert.deepEqual(phases, ['response.web_search_call.in_progress', 'response.web_search_call.searching', 'response.web_search_call.completed']);
     }
     assert.ok(!JSON.stringify(response).includes('__agents_web_search'), 'Private harness aliases cannot escape canonical output');
+    assert.ok(!JSON.stringify(response).includes('private-search-'), 'Upstream service item identities remain private');
     const schema = validateWire(response, events);
     assert.equal(response.usage, null, 'Missing provider breakdown is not invented for standard SDK usage');
     assert.equal(response.agents_usage.input_tokens, 7 * (actions.length + 1), 'Search units are not fabricated language-model tokens');
@@ -206,16 +214,16 @@ test('compiled Rust Worker: independently funded native web search and replay', 
     assert.equal(requests.filter(row => row.name === name).length, actions.length);
     assert.equal(model.calls, actions.length + 1);
     const rows = (await db.prepare("SELECT CAST(l.quantity AS TEXT) AS quantity,CAST(l.amount_microusd AS TEXT) AS amount FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit=?")
-      .bind(principal.owner, name === 'responses_byok' ? 'provider_request' : 'successful_search_request').all()).results;
+      .bind(principal.owner, nativeByok ? 'provider_request' : 'successful_search_request').all()).results;
     assert.equal(rows.length, name === 'unknown' ? 0 : actions.length);
     const empty = ['empty', 'http_error'].includes(name);
     const amount = empty || searchKey ? '0' : '750';
     for (const row of rows) assert.deepEqual(row, { quantity: empty ? '0' : '1', amount });
-    const unresolved = await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'tool:deepseek_request:%' AND state='reserved'")
+    const unresolved = await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'tool:%' AND state='reserved'")
       .bind(principal.owner).first();
     assert.equal(unresolved.n, name === 'unknown' ? 1 : 0, 'Unknown dispatch preserves its hold; known receipts settle once');
     receipts[name] = { response_id: response.id, provider_posts: actions.length, model_calls: model.calls,
-      search_units: name === 'unknown' ? null : empty ? 0 : actions.length,
+      search_units: name === 'unknown' ? null : empty ? 0 : actions.length, native_search_items: expectedItems,
       unresolved_service_holds: unresolved.n, strict_sdk: schema.sdk ?? null };
   });
   assert.deepEqual(Object.keys(receipts).sort(), selected.sort());

@@ -104,6 +104,12 @@ impl SessionInner {
                     "response.web_search_call.in_progress",
                     json!({"item_id":item["id"],"output_index":index}),
                 ));
+                if terminal {
+                    events.push((
+                        "response.web_search_call.searching",
+                        json!({"item_id":item["id"],"output_index":index}),
+                    ));
+                }
             }
             if kind == "web_search_call" && !terminal && item["status"] == "searching" {
                 events.push((
