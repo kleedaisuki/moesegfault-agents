@@ -87,10 +87,8 @@ async fn resolve_scoped(
     }
     let mut budget = Budget::default();
     for (item_index, item) in items.iter_mut().enumerate() {
-        let key = match (item["type"].as_str(), item["role"].as_str()) {
-            (Some("function_call_output"), _) => "output",
-            (_, Some("user")) => "content",
-            _ => continue,
+        let Some(key) = media_slot(item) else {
+            continue;
         };
         let Some(parts) = item.get_mut(key).and_then(Value::as_array_mut) else {
             continue;
@@ -122,6 +120,18 @@ async fn resolve_scoped(
     Ok(resolved)
 }
 
+fn media_slot(item: &Value) -> Option<&'static str> {
+    match (item["type"].as_str(), item["role"].as_str()) {
+        (Some("function_call_output" | "custom_tool_call_output"), _) => Some("output"),
+        (_, Some("user" | "developer" | "system" | "assistant")) => Some("content"),
+        _ => None,
+    }
+}
+
+fn present<'a>(part: &'a Value, key: &str) -> Option<&'a Value> {
+    part.get(key).filter(|value| !value.is_null())
+}
+
 fn fields(part: &Value, allowed: &[&str]) -> Result<()> {
     let object = part.as_object().ok_or_else(|| fail("invalid_attachment"))?;
     if object.keys().any(|name| !allowed.contains(&name.as_str())) {
@@ -136,7 +146,7 @@ pub fn validate_part(part: &Value) -> Result<(usize, usize)> {
     match part["type"].as_str() {
         Some("input_file") => {
             fields(part, &["type", "file_id", "file_data", "filename"])?;
-            match (part.get("file_id"), part.get("file_data")) {
+            match (present(part, "file_id"), present(part, "file_data")) {
                 (Some(id), None) if id.as_str().is_some_and(valid_file_id) => Ok((0, 0)),
                 (None, Some(_)) => Ok((0, inline_file(part)?.2.len())),
                 _ => Err(fail("invalid_file_input")),
@@ -145,11 +155,16 @@ pub fn validate_part(part: &Value) -> Result<(usize, usize)> {
         Some("input_image") => {
             fields(part, &["type", "file_id", "image_url", "detail"])?;
             image_detail(part)?;
-            match (part.get("file_id"), part.get("image_url")) {
+            match (present(part, "file_id"), present(part, "image_url")) {
                 (Some(id), None) if id.as_str().is_some_and(valid_file_id) => Ok((1, 0)),
                 (None, Some(url)) => {
                     let url = url.as_str().ok_or_else(|| fail("invalid_image_source"))?;
-                    Ok((1, validate_data_image(url)?))
+                    if url.starts_with("data:") {
+                        Ok((1, validate_data_image(url)?))
+                    } else {
+                        crate::public_image_input::validate_public_input(url, MAX_IMAGE_BYTES)?;
+                        Ok((1, 0))
+                    }
                 }
                 _ => Err(fail("invalid_image_source")),
             }
@@ -168,7 +183,7 @@ async fn resolve_file(
     budget: &mut Budget,
 ) -> Result<Value> {
     fields(part, &["type", "file_id", "file_data", "filename"])?;
-    let (file, text) = match (part.get("file_id"), part.get("file_data")) {
+    let (file, text) = match (present(part, "file_id"), present(part, "file_data")) {
         (Some(id), None) => {
             let id = id
                 .as_str()
@@ -298,7 +313,7 @@ fn valid_file_id(id: &str) -> bool {
 async fn resolve_image(env: &Env, owner: &str, part: &Value, budget: &mut Budget) -> Result<Value> {
     fields(part, &["type", "file_id", "image_url", "detail"])?;
     let detail = image_detail(part)?;
-    let source = match (part.get("file_id"), part.get("image_url")) {
+    let source = match (present(part, "file_id"), present(part, "image_url")) {
         (Some(id), None) => {
             let id = id
                 .as_str()
@@ -313,6 +328,7 @@ async fn resolve_image(env: &Env, owner: &str, part: &Value, budget: &mut Budget
             let bytes = space::read_bytes(env, owner, id, MAX_IMAGE_BYTES as u64)
                 .await?
                 .ok_or_else(|| fail("invalid_image_size"))?;
+            validate_image_header(&bytes, &file.content_type)?;
             budget.image(bytes.len())?;
             format!(
                 "data:{};base64,{}",
@@ -322,9 +338,22 @@ async fn resolve_image(env: &Env, owner: &str, part: &Value, budget: &mut Budget
         }
         (None, Some(url)) => {
             let url = url.as_str().ok_or_else(|| fail("invalid_image_source"))?;
-            let bytes = validate_data_image(url)?;
-            budget.image(bytes)?;
-            url.into()
+            if url.starts_with("data:") {
+                let bytes = decode_data_image(url)?;
+                let media = url
+                    .split_once(';')
+                    .and_then(|(head, _)| head.strip_prefix("data:"))
+                    .ok_or_else(|| fail("invalid_image_source"))?;
+                validate_image_header(&bytes, media)?;
+                budget.image(bytes.len())?;
+                url.into()
+            } else {
+                let image =
+                    crate::public_image_input::freeze_public_input_image(url, MAX_IMAGE_BYTES)
+                        .await?;
+                budget.image(image.len())?;
+                image.data_url()
+            }
         }
         _ => return Err(fail("invalid_image_source")),
     };
@@ -332,9 +361,11 @@ async fn resolve_image(env: &Env, owner: &str, part: &Value, budget: &mut Budget
 }
 
 fn image_detail(part: &Value) -> Result<&str> {
-    match part.get("detail") {
+    match present(part, "detail") {
         None => Ok("auto"),
-        Some(Value::String(detail)) if matches!(detail.as_str(), "auto" | "low" | "high") => {
+        Some(Value::String(detail))
+            if matches!(detail.as_str(), "auto" | "low" | "high" | "original") =>
+        {
             Ok(detail)
         }
         _ => Err(fail("invalid_image_detail")),
@@ -349,6 +380,10 @@ fn image_media(media: &str) -> bool {
 }
 
 pub fn validate_data_image(url: &str) -> Result<usize> {
+    decode_data_image(url).map(|bytes| bytes.len())
+}
+
+fn decode_data_image(url: &str) -> Result<Vec<u8>> {
     let (header, encoded) = url
         .split_once(',')
         .ok_or_else(|| fail("invalid_image_source"))?;
@@ -368,7 +403,15 @@ pub fn validate_data_image(url: &str) -> Result<usize> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
         return Err(fail("invalid_image_size"));
     }
-    Ok(bytes.len())
+    Ok(bytes)
+}
+
+fn validate_image_header(bytes: &[u8], mime: &str) -> Result<()> {
+    let header = crate::input_image_metadata::inspect(bytes).map_err(fail)?;
+    if header.mime != mime {
+        return Err(fail("invalid_image_source"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -391,6 +434,47 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
         }
+    }
+
+    #[test]
+    fn nullable_attachment_fields_have_the_same_meaning_as_omission() {
+        assert_eq!(
+            validate_part(&json!({"type":"input_image","file_id":null,
+            "image_url":"data:image/png;base64,AQID","detail":null}))
+            .unwrap(),
+            (1, 3)
+        );
+        assert_eq!(
+            validate_part(&json!({"type":"input_image","file_id":"file_owned",
+            "image_url":null,"detail":null}))
+            .unwrap(),
+            (1, 0)
+        );
+        assert_eq!(
+            validate_part(&json!({"type":"input_file","file_id":"file_owned",
+            "file_data":null,"filename":null}))
+            .unwrap(),
+            (0, 0)
+        );
+        assert!(
+            validate_part(&json!({"type":"input_image","file_id":null,"image_url":null})).is_err()
+        );
+    }
+
+    #[test]
+    fn image_preparation_covers_native_roles_custom_outputs_and_original_detail() {
+        for role in ["user", "developer", "system", "assistant"] {
+            assert_eq!(media_slot(&json!({"role":role})), Some("content"));
+        }
+        for kind in ["function_call_output", "custom_tool_call_output"] {
+            assert_eq!(media_slot(&json!({"type":kind})), Some("output"));
+        }
+        assert_eq!(media_slot(&json!({"type":"reasoning"})), None);
+        assert_eq!(
+            image_detail(&json!({"detail":"original"})).unwrap(),
+            "original"
+        );
+        assert!(image_detail(&json!({"detail":"very_high"})).is_err());
     }
 
     #[test]

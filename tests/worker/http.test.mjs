@@ -25,6 +25,7 @@ import { runJsonObserverJourney } from './json-observer-journey.mjs';
 import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
 import { createAuxiliaryProviderFixture, runAuxiliaryJourney } from './auxiliary-journey.mjs';
 import { runDeepSeekTokenizerJourney } from './deepseek-tokenizer-journey.mjs';
+import { createVisionInputFixture, runDeepSeekVisionCountJourney } from './deepseek-vision-count-journey.mjs';
 import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
 import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
 
@@ -49,6 +50,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const coalescingProviders = createCoalescingProviderFixture();
   const chatRecoveryControl = createChatRecoveryControl();
   const auxiliaryProvider = createAuxiliaryProviderFixture();
+  const visionInputs = createVisionInputFixture();
   const promptProvider = createPromptProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
@@ -109,6 +111,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       PROMPT_REGISTRY_JSON: promptRegistry,
     },
     outboundService: async request => {
+      const visionResponse = await visionInputs.handle(request);
+      if (visionResponse !== undefined) return visionResponse;
       const promptResponse = await promptProvider.handle(request);
       if (promptResponse !== undefined) return promptResponse;
       const auxiliaryResponse = await auxiliaryProvider.handle(request);
@@ -530,6 +534,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     runExecutionLeaseJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
   await selected(t, 'DeepSeek exact count-only tokenizer cold warm and profile replacement', { timeout: 60000 }, () =>
     runDeepSeekTokenizerJourney(responseContext()));
+  await selected(t, 'DeepSeek vision exact count shares frozen PNG GIF owned files and native media slots', { timeout: 90000 }, () =>
+    runDeepSeekVisionCountJourney({ ...responseContext(), visionInputs }));
   await selected(t, 'Responses prompt templates preserve version owner variables and replay identity', { timeout: 40000 }, () =>
     runPromptTemplatesJourney({ ...responseContext(), provider: promptProvider,
       replaceRegistry: async value => {

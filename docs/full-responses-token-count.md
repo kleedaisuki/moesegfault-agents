@@ -236,3 +236,33 @@ bytes. WASM pages are a useful high-water allocation measurement, not total JS
 isolate heap. A successful workerd execution and configured platform memory
 limit still need to accompany that measurement. This gate was authored and
 syntax-checked locally, not reported as executed until compiled CI runs it.
+
+## Shared prepared vision input (2026-10-26)
+
+This slice extends the earlier text-only boundary. Count and create both use
+`responses_attachments` before constructing the native prepared request. Owned
+Files remain owner-checked; public HTTPS is frozen once per preparation with
+the existing credential-free, redirect-denying bounded image reader. The count
+encoder accepts only prepared bytes/data URLs and never fetches an image.
+Preparation preserves original bytes, GIF animation and requested detail across
+user/developer/system/assistant messages and function/custom tool outputs.
+Bounded `image` header readers cover PNG, JPEG, WebP and GIF without allocating
+decoded pixel frames; dimensions use the first GIF frame and no display rotation.
+
+The same `encode_conversation` helper renders once, encodes with the existing
+single warm official vocabulary, and adds `image_tokens - 1` for each ordered
+rendered image placeholder. The pinned V4.1 dimension/detail recipe remains in
+`deepseek_image_tokens`; genuine no-vision Pro is rejected before conversion.
+No character-based estimate, second vocabulary, image Files side effect, or
+binary workspace alias is introduced.
+
+`scripts/deepseek-image-reference.py` checks the pinned official Python renderer
+and tokenizer SHA256 before regenerating the 12-case synthetic corpus. It covers
+all four roles, both native tool output families, PNG/GIF/JPEG/WebP, low/high/auto/
+original detail and an 8192-square compressed PNG (header inspection only).
+The dedicated Worker/SDK case adds owned-file/HTTPS equivalence, one fetch per
+preparation, private/redirect/oversize refusals, no count Sessions/model ledger,
+and one controlled create observing the same frozen GIF payload. All provider
+traffic in that fixture is synthetic; its usage equality is not hosted vision
+usage parity. No paid model probe is required. Compiled execution is pending
+the new-source incremental CI, not implied by the offline corpus.

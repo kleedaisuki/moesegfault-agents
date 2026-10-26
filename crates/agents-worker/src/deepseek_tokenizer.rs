@@ -5,7 +5,8 @@ use deepseek_recipe::request::{
     ConversionOptions, ModelVersion, ProtocolRequest, WebSearchBehavior,
 };
 use deepseek_recipe_encoding::{
-    PromptEncoding, PromptTokenizer, dsv4::DeepseekV4Encoding, dsv41::DeepseekV41Encoding,
+    PromptEncoding, PromptTokenizer, TokenizerEncoder, dsv4::DeepseekV4Encoding,
+    dsv41::DeepseekV41Encoding,
 };
 use flate2::read::GzDecoder;
 use serde_json::Value;
@@ -144,7 +145,9 @@ pub(crate) fn count_deepseek(
 
 fn count_body(model: &str, body: Value) -> Result<ExactCount, String> {
     let profile = Profile::resolve(model)?;
-    validate_input(&body)?;
+    if validate_input(&body)? && profile == Profile::Pro0813 {
+        return Err("token_count_model_vision_unsupported".into());
+    }
     validate_tools(&body["tools"], profile)?;
     for item in body["input"]
         .as_array()
@@ -176,6 +179,23 @@ fn count_body(model: &str, body: Value) -> Result<ExactCount, String> {
     let converted = request
         .convert(options)
         .map_err(|_| "token_count_input_unsupported")?;
+    encode_conversation(profile, &converted)
+}
+
+fn encode_conversation(
+    profile: Profile,
+    converted: &deepseek_recipe::request::ConversationRequest,
+) -> Result<ExactCount, String> {
+    let rendered = match profile {
+        Profile::Flash1017 => {
+            DeepseekV41Encoding::new().render_conversation(&converted.conversation)
+        }
+        Profile::Pro0813 => DeepseekV4Encoding::new().render_conversation(&converted.conversation),
+    };
+    if !rendered.image_sources.is_empty() && profile == Profile::Pro0813 {
+        return Err("token_count_model_vision_unsupported".into());
+    }
+    let image_adjustment = crate::deepseek_image_tokens::adjustment(&rendered.image_sources)?;
     WARM.with_borrow_mut(|warm| {
         if warm.as_ref().is_none_or(|(loaded, _)| *loaded != profile) {
             // Drop the old vocabulary before allocating a replacement.
@@ -183,17 +203,14 @@ fn count_body(model: &str, body: Value) -> Result<ExactCount, String> {
             *warm = Some((profile, Arc::new(load_tokenizer(profile)?)));
         }
         let tokenizer = &warm.as_ref().ok_or("token_count_tokenizer_unavailable")?.1;
-        let ids = match profile {
-            Profile::Flash1017 => DeepseekV41Encoding::new()
-                .with_tokenizer(tokenizer.clone())
-                .encode(&converted.conversation),
-            Profile::Pro0813 => DeepseekV4Encoding::new()
-                .with_tokenizer(tokenizer.clone())
-                .encode(&converted.conversation),
-        }
-        .map_err(|_| "token_count_encoding_failed")?;
+        let ids = tokenizer
+            .encode_ids(&rendered.prompt, &rendered.special_ranges)
+            .map_err(|_| "token_count_encoding_failed")?;
+        let prompt_tokens = u64::try_from(ids.len()).map_err(|_| "token_count_overflow")?;
         Ok(ExactCount {
-            input_tokens: ids.len().try_into().map_err(|_| "token_count_overflow")?,
+            input_tokens: prompt_tokens
+                .checked_add(image_adjustment)
+                .ok_or("token_count_overflow")?,
             renderer_revision: RECIPE,
             tokenizer_sha256: profile.asset().1,
             wasm_linear_memory_bytes: wasm_memory_bytes(),
@@ -257,7 +274,8 @@ fn validate_tools(tools: &Value, profile: Profile) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_input(body: &Value) -> Result<(), String> {
+fn validate_input(body: &Value) -> Result<bool, String> {
+    let mut has_images = false;
     let input = body["input"]
         .as_array()
         .ok_or("token_count_context_not_prepared")?;
@@ -285,23 +303,80 @@ fn validate_input(body: &Value) -> Result<(), String> {
         for field in ["content", "output"] {
             if let Some(parts) = item[field].as_array() {
                 for part in parts {
-                    if !matches!(
-                        part["type"].as_str(),
-                        Some("input_text" | "output_text" | "reasoning_text")
-                    ) {
-                        return Err("token_count_media_unsupported".into());
+                    match part["type"].as_str() {
+                        Some("input_image") => has_images = true,
+                        Some("input_text" | "output_text" | "reasoning_text") => {}
+                        _ => return Err("token_count_media_unsupported".into()),
                     }
                 }
             }
         }
     }
-    Ok(())
+    Ok(has_images)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn official_prepared_vision_reference_corpus_counts_each_image_once() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/deepseek-image-count.json"
+        ))
+        .unwrap();
+        for fixture in corpus["fixtures"].as_array().unwrap() {
+            let count = count_body("deepseek-flash", fixture["body"].clone()).unwrap();
+            assert_eq!(
+                count.input_tokens,
+                fixture["input_tokens"].as_u64().unwrap(),
+                "{}",
+                fixture["name"]
+            );
+        }
+        let mut pro = corpus["fixtures"][0]["body"].clone();
+        pro["model"] = json!("deepseek-v4-pro");
+        assert_eq!(
+            count_body("deepseek-v4-pro", pro).err().as_deref(),
+            Some("token_count_model_vision_unsupported")
+        );
+    }
+
+    #[test]
+    fn vision_count_uses_the_unchanged_final_prepared_body() {
+        let corpus: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/deepseek-image-count.json"
+        ))
+        .unwrap();
+        let config = ProviderConfig {
+            base_url: "https://api.deepseek.com".into(),
+            model: "deepseek-flash".into(),
+            protocol: agents_core::ProviderProtocol::Responses,
+            api_key: "synthetic".into(),
+            max_output_tokens: None,
+            session_id: None,
+            traceparent: None,
+        };
+        let fixture = &corpus["fixtures"][0];
+        let prepared = PreparedRequest::new(
+            &config,
+            fixture["body"]["input"].as_array().unwrap(),
+            &[],
+            &json!({"reasoning":{"effort":"none"}}),
+        )
+        .unwrap();
+        let before = serde_json::to_value(&prepared).unwrap();
+        assert_eq!(
+            count_deepseek(&config, &prepared).unwrap().input_tokens,
+            fixture["input_tokens"].as_u64().unwrap()
+        );
+        assert_eq!(serde_json::to_value(&prepared).unwrap(), before);
+        assert_eq!(
+            prepared.payload(true)["input"],
+            prepared.count_body()["input"]
+        );
+    }
 
     fn request(text: &str) -> Value {
         json!({"model":"deepseek-flash","input":[{"role":"user","content":text}],"reasoning":{"effort":"none"}})

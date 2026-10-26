@@ -115,6 +115,7 @@ export function selections(source, base, files) {
     [/context_management/, 'Responses request context management emits sealed item and continues'],
     [/^tests\/worker\/auxiliary-journey\.mjs$/, 'Responses auxiliary compact and count'],
     [/^tests\/worker\/deepseek-tokenizer-journey\.mjs$/, 'DeepSeek exact count-only tokenizer cold warm and profile replacement'],
+    [/^tests\/worker\/deepseek-vision-count-journey\.mjs$/, 'DeepSeek vision exact count shares frozen PNG GIF owned files and native media slots'],
   ];
   for (const [pattern, name] of journeys) {
     // Lease fixture controls belong to the new actor journey, not the accepted endpoint baseline.
