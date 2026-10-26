@@ -471,6 +471,13 @@ fn fail(code: &str) -> Error {
 }
 
 fn observation_error(error: Error) -> Error {
+    let text = match &error {
+        Error::RustError(code) => code.clone(),
+        _ => error.to_string(),
+    };
+    if crate::routes::classify_error(&text).1 == "insufficient_credits" {
+        return fail("budget_exceeded");
+    }
     match error {
         Error::RustError(code)
             if matches!(
@@ -579,6 +586,26 @@ mod tests {
             images
                 .admit_final_with_metadata(16 * 1024 * 1024, 12 * 1024 * 1024)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn wrapped_credit_denials_stay_actionable_without_backend_error_disclosure() {
+        for text in [
+            "budget_exceeded",
+            "D1_ERROR: budget_exceeded: SQLITE_CONSTRAINT",
+        ] {
+            let Error::RustError(code) = observation_error(fail(text)) else {
+                panic!("credit denial lost its safe machine code");
+            };
+            assert_eq!(code, "budget_exceeded");
+            assert_eq!(
+                crate::routes::classify_error(&format!("Error: {code}")).0,
+                402
+            );
+        }
+        assert!(
+            matches!(observation_error(fail("super_budget_exceeded_secret")), Error::RustError(code) if code == "image_projection_failed")
         );
     }
 }
