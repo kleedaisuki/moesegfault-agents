@@ -131,3 +131,24 @@ The new controlled journey covers actual create/count/stateless continuation,
 foreign/tampered rejection before dispatch, current SDK raw response/events and
 byte-identical SSE retrieval. Source and syntax checks are not execution receipts;
 compiled results are recorded only after the new Worker artifact runs.
+### Compiled native-item checkpoint
+
+Actions `40318548395`, source `9681a8d`, Worker artifact `12648367160`
+(Wasm SHA-256 `6b4158a466de0e6cbce5b063618d8a1079ff609edfb682fb7f3aa6f574ad933a`)
+passed both new capability/routing Rust contracts and the actual create/count/
+stateless-reasoning/message-reference flows: three controlled native generations,
+two authoritative counters, current Python SDK 3.37.0 validation of original JSON
+and SSE, and byte-identical enriched SSE GET. No external provider was called.
+The first invalid count was rejected before dispatch but returned 500 instead of
+400; the aggregate job therefore correctly failed rather than sealing completion.
+
+Only that failed tail was executed after its domain-error mapping fix. Actions
+`40319817718`, source `144a6cb`, artifact `12648678145` (Wasm SHA-256
+`1554ac67a56b97919a7bca7670dc731e073a4ec574b30deecedee5d48326eba6`)
+passed all four negative count inputs with zero generation/counter dispatch.
+The successful positive calls and two Rust contracts were not replayed. Owner,
+public identity, pin and provider binding rejection are covered by the executed
+capability contract; no live foreign-provider or production rollout is claimed.
+Both topic-only CI selectors are explicitly non-promoting and are excluded from
+the integrated source. The auto-window and explicit request compaction work
+remain separate follow-ups.
