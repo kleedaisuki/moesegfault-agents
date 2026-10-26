@@ -63,7 +63,7 @@ export function renderDeploymentConfig(input, env) {
   config.assets.directory = resolve(config.assets.directory);
   delete config.build;
   const target = config.env[environment];
-  target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha };
+  target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha, DAEMON_IMAGE_SOURCE: containerSource };
   if (runtime.limited) {
     target.vars.HOSTED_TOOL_RUNTIMES = runtime.workerFeatures.join(',');
     if (!runtime.codeInterpreter) target.containers = target.containers.filter(container => container.class_name !== 'Session4G');

@@ -162,7 +162,9 @@ fn router(state: Arc<App>) -> Router {
 }
 
 async fn health(State(state): State<Arc<App>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status":"ok", "boot_id":state.boot_id}))
+    Json(
+        serde_json::json!({"status":"ok", "boot_id":state.boot_id, "capacity":interpreter_limits::capacity()}),
+    )
 }
 
 async fn status(State(state): State<Arc<App>>) -> Json<serde_json::Value> {

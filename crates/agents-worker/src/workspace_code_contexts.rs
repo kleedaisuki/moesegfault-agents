@@ -8,6 +8,20 @@ struct ContextIdentity {
 }
 
 impl Workspace<'_> {
+    pub(crate) async fn python_capacity(&self, boot: &str) -> Result<Option<Value>> {
+        if !self.container()?.running() {
+            return Ok(None);
+        }
+        let health: Value = decode(self.request(Method::Get, "/health", None, &[]).await?).await?;
+        if health["boot_id"].as_str() != Some(boot) {
+            return Err(fail("code_context_generation_changed"));
+        }
+        Ok(health
+            .get("capacity")
+            .filter(|value| value.is_object())
+            .cloned())
+    }
+
     pub(crate) async fn python_boot(&self) -> Result<String> {
         self.state
             .storage()

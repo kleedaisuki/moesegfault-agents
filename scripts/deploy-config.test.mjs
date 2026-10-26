@@ -87,6 +87,13 @@ test('native FileSearch tariffs are explicit byte/dimension allocations and unav
   assert.throws(() => renderDeploymentConfig(source, env), /explicit staging FileSearch/);
 });
 
+test('Code capacity provenance injects the actual verified image source rather than the assembly label', () => {
+  const containerSource = 'd'.repeat(40);
+  const rendered = renderDeploymentConfig(input(), { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, CONTAINER_SOURCE_SHA: containerSource }).env.staging;
+  assert.equal(rendered.vars.DAEMON_IMAGE_SOURCE, containerSource);
+  assert.notEqual(rendered.vars.DAEMON_IMAGE_SOURCE, rendered.vars.DEPLOYMENT_ASSEMBLY_SHA);
+});
+
 test('runtime feature allowlist enables only Worker search independently of acceptance', () => {
   const source = input();
   source.env.staging.containers.push({ class_name: 'Session4G', image: 'unbuilt-4g' });
@@ -140,7 +147,7 @@ test('deployment build identity cannot be missing, truncated, free-form, or supp
 test('rendering permits an environment with no preexisting variables', () => {
   const source = input();
   delete source.env.staging.vars;
-  assert.deepEqual(renderDeploymentConfig(source, { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha }).env.staging.vars, { BUILD_ID: sha, DEPLOYMENT_ASSEMBLY_SHA: sha });
+  assert.deepEqual(renderDeploymentConfig(source, { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha }).env.staging.vars, { BUILD_ID: sha, DEPLOYMENT_ASSEMBLY_SHA: sha, DAEMON_IMAGE_SOURCE: sha });
 });
 
 test('reused container source remains immutable while the deployment identity advances', () => {

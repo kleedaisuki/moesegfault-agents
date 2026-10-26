@@ -88,3 +88,62 @@ matching real allocation. The unrestricted private legacy case does not claim
 to implement either tier. These are new focused journeys; the global passing
 daemon fixture is not changed. Three cases were collected locally; Docker and
 Rust execution remain GHA acceptance, not a claimed local result.
+
+## Actual Cloudflare guest boundary, 2026-10-26
+
+The first managed Code requests correctly selected `basic1g` and `standard4g`
+and reached the new daemon image, but failed before any Python cell. Both exposed
+`code_memory_profile_mismatch` because the Worker collapsed every daemon 422 into
+that code. The underlying Docker-only assumption was false on the actual guests.
+
+Three tightly scoped Bash diagnostics, not replayed Code requests, established:
+
+| Observation | basic | standard-1 |
+| --- | --- | --- |
+| Actual application allocation | 1024 MiB | 4096 MiB |
+| Kernel `MemTotal` | 1242872 KiB | 4263920 KiB |
+| `/proc/self/cgroup` | `0::/` | `0::/` |
+| Visible cgroup mount root | `/..` | `/..` |
+| Root `memory.max` | absent | absent |
+| Actual process-containing child | observed on standard-1 | own PID in child `cgroup.procs`, not root |
+| Process-containing child ceiling | not claimed finite | `memory.max=max`, `memory.high=max` |
+
+The child's observed vendor name is not an API and is not hardcoded. The generic
+resolver now discovers the current process by `cgroup.procs` only when a root
+membership cannot directly identify it, with bounded depth/directory/PID scans,
+no symlink following and no ambiguous sibling acceptance. It measures the minimum
+visible ancestor limit; a v2 hierarchy root may legitimately lack `memory.max`.
+
+`CapacityEvidence` makes the two authority paths explicit:
+
+- A finite readable kernel ceiling retains exact cgroup equality. A CF boot label
+  cannot override a different finite ceiling.
+- An explicitly unbounded hierarchy can use `cloudflare_vm` only with the owned
+  DO's immutable application class/profile and verified daemon image source,
+  injected into the root supervisor at boot, plus actual guest physical memory.
+  The published allocation and `guest_physical_bytes` remain separate. The
+  observed additional OS memory is checked in a common 0..256 MiB sanity envelope;
+  this envelope is not advertised as a fabricated cgroup cap. Missing/invalid
+  boot provenance, unsupported tiers, unreadable/ambiguous cgroups and unrelated
+  host-sized physical memory still reject.
+
+The deployment renderer binds `DAEMON_IMAGE_SOURCE` to the actual accepted image
+artifact, not the newer assembly label. The authenticated health response and
+owned Containers inspection expose this evidence through `agents_capacity`;
+the existing executor capability JSON and legacy requests remain compatible.
+External Docker executors without the managed boot profile still require a real
+finite cgroup ceiling. No privileged cgroup setup or public debug endpoint was
+introduced.
+
+The actual failed preparations also revealed a lifecycle bug: a Reserved resource
+with no published CID retained compute after its Response ended. The repair
+returns a failed Response before another model inference and retires that
+unbound allocation through the existing namespace/release journals and measured
+wall-time settlement. Unknown original exit times remain unresolved; neither an
+elapsed TTL nor this source fix authorizes a refund. The new failure-only compiled
+Worker journey passed in `40344904604`; the original paid failures are not replayed.
+
+The provider allocation contract remains
+[Cloudflare's instance-type specification](https://developers.cloudflare.com/containers/platform/limits/),
+not `/proc/meminfo`. Actual managed Code execution with the corrected source still
+needs its new bounded live receipt.
