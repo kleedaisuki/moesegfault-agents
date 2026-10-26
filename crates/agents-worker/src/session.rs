@@ -1520,12 +1520,14 @@ impl SessionInner {
                 );
             }
         }
-        let native_auto = config.protocol == agents_core::ProviderProtocol::Responses
-            && run
-                .response
-                .as_ref()
-                .is_some_and(|response| response.request.truncation.as_deref() == Some("auto"));
-        if !native_auto && self.compact_if_needed(&config).await? {
+        let native_view = config.protocol == agents_core::ProviderProtocol::Responses
+            && (self
+                .native_branch_ref()?
+                .is_some_and(|history| history.window.is_some())
+                || run.response.as_ref().is_some_and(|response| {
+                    response.request.truncation.as_deref() == Some("auto")
+                }));
+        if !native_view && self.compact_if_needed(&config).await? {
             return Ok(None);
         }
         if config.protocol != agents_core::ProviderProtocol::Responses {
@@ -1561,7 +1563,7 @@ impl SessionInner {
         tool_budget::filter_exhausted_tools(&run, record, &mut definitions);
         self.prepare_native_generation(&config, &definitions, &mut options)
             .await?;
-        if native_auto && self.compact_if_needed(&config).await? {
+        if native_view && self.compact_if_needed(&config).await? {
             return Ok(None);
         }
         let messages = self.snapshot()?.messages;

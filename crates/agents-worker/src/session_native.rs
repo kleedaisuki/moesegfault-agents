@@ -357,15 +357,6 @@ impl SessionInner {
             .and_then(|data| data.run.as_ref())
             .and_then(|run| run.response.as_ref())
             .is_some_and(|response| response.request.truncation.as_deref() == Some("auto"));
-        if auto {
-            let owner = self.data.borrow().as_ref().unwrap().record.owner_id.clone();
-            return crate::responses_auxiliary::resource_count(
-                &self.env,
-                &owner,
-                self.prepare_warm_native_window(),
-            )
-            .await;
-        }
         let record = self
             .data
             .borrow()
@@ -374,6 +365,14 @@ impl SessionInner {
             .record
             .clone();
         let config = self.provider_config(&record).await?;
+        if auto && config.protocol == ProviderProtocol::Responses {
+            return crate::responses_auxiliary::resource_count(
+                &self.env,
+                &record.owner_id,
+                self.prepare_warm_native_window(config),
+            )
+            .await;
+        }
         if config.protocol == ProviderProtocol::Responses {
             self.native_generation_input(&config).await?;
         }
@@ -525,7 +524,7 @@ impl SessionInner {
                     .unwrap_or(data.record.pinned.model.max_output_tokens),
             )
         };
-        let fitted = crate::native_window::fit(
+        let mut fitted = crate::native_window::fit(
             config,
             &input,
             &tools,
@@ -538,6 +537,15 @@ impl SessionInner {
             },
         )
         .await?;
+        if fitted.input_tokens.is_none() && history.window.is_some() {
+            let tokens = crate::responses_auxiliary::count_rendered(config, &fitted.prepared)
+                .await?
+                .input_tokens;
+            if tokens > u64::from(capacity.saturating_sub(output)) {
+                return Err(fault("context_length_exceeded"));
+            }
+            fitted.input_tokens = Some(tokens);
+        }
         if let Some(tokens) = fitted.input_tokens {
             self.apply_native_window(&history, &input, fitted.cut, tokens)
                 .await?;

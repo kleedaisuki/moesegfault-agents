@@ -150,7 +150,8 @@ export async function runNativeWindowJourney(context) {
   const retry = await invoke({ previous_response_id: continued.value.id, input: 'TRUNCATED-HISTORICAL-FORK' }, 'native-window-cut-fork');
   assert.deepEqual(retry.value, secondFork.value);
   const oversized = 'UNFIT-LATEST-GROUP-' + 'x'.repeat(6000);
-  const disabled = await outcomeWithoutInference(scenario, { input: oversized, truncation: 'disabled' }, 'native-window-disabled');
+  const disabled = await outcomeWithoutInference(scenario, { previous_response_id: secondFork.value.id,
+    input: oversized, truncation: 'disabled' }, 'native-window-disabled');
   const unfit = await outcomeWithoutInference(scenario, { previous_response_id: secondFork.value.id, input: oversized,
     truncation: 'auto' }, 'native-window-unfit');
   assert.equal(scenario.state.calls, actions.length, 'Only the five planned generations execute; no summary or retry replay');

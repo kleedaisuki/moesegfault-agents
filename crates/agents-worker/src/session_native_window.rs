@@ -4,8 +4,11 @@ use super::*;
 
 impl SessionInner {
     /// The caller funds the warm-up's count probes without model admission.
-    pub(super) async fn prepare_warm_native_window(&self) -> Result<()> {
-        let (record, limit, definitions, mut options) = {
+    pub(super) async fn prepare_warm_native_window(
+        &self,
+        mut config: ProviderConfig,
+    ) -> Result<()> {
+        let (maximum, limit, definitions, mut options) = {
             let borrowed = self.data.borrow();
             let data = borrowed.as_ref().unwrap();
             let response = data
@@ -26,15 +29,14 @@ impl SessionInner {
                 options.tool_choice = Some(response.bound_tools.rewrite_choice(choice)?);
             }
             (
-                data.record.clone(),
+                data.record.pinned.model.max_output_tokens,
                 response.request.max_output_tokens,
                 definitions,
                 options,
             )
         };
-        let mut config = self.provider_config(&record).await?;
         if let Some(limit) = limit {
-            config.max_output_tokens = Some(limit.min(record.pinned.model.max_output_tokens));
+            config.max_output_tokens = Some(limit.min(maximum));
         }
         self.prepare_native_generation(&config, &definitions, &mut options)
             .await?;
@@ -61,6 +63,7 @@ impl SessionInner {
         if cut == 1 {
             data.input_tokens = tokens;
             data.measured_messages = data.messages.len();
+            context.history.window.get_or_insert_with(Default::default);
             return Ok(());
         }
         let indices = expected
