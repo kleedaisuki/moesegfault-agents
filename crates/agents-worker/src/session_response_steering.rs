@@ -162,6 +162,17 @@ fn prepare_steering(
             "Conversation-bound and automatic-compaction requests do not support steering",
         ));
     }
+    if response
+        .request
+        .tools
+        .iter()
+        .any(|tool| tool.kind == "local_shell")
+    {
+        return Err(rejection(
+            "steering_not_supported",
+            "Local shell execution does not support steering",
+        ));
+    }
     let pending = data
         .steering_queue
         .iter()
@@ -581,12 +592,10 @@ impl SessionInner {
             .map(|call| json!({"type":"function_call_output","call_id":call.id,"name":call.function.name}))
             .collect::<Vec<_>>();
         for call in &response.general_pending_calls {
-            if !required.iter().any(|item| item["call_id"] == call.call_id) {
-                required.push(if call.kind == "custom" {
-                    json!({"type":"custom_tool_call_output","call_id":call.call_id})
-                } else {
-                    json!({"type":"function_call_output","call_id":call.call_id,"name":call.name})
-                });
+            if let Some(stub) = call.required_input() {
+                if !required.contains(&stub) {
+                    required.push(stub);
+                }
             }
         }
         let failed = response.status == "failed"

@@ -1146,10 +1146,7 @@ fn validate_native_item(item: &Value) -> Result<(), String> {
         | "local_shell_call_output"
         | "shell_call_output"
         | "apply_patch_call_output" => {
-            identifier(required_string(item, "call_id")?, "call ID")?;
-            if item.get("output").is_none() && item.get("status").is_none() {
-                return Err("Tool result requires output or status".into());
-            }
+            crate::client_tool_items::validate_output(item).map_err(str::to_owned)?;
         }
         "file_search_call"
         | "web_search_call"
@@ -1263,7 +1260,11 @@ fn normalize_item(item: &Value, normalized: &mut NormalizedInput) -> Result<(), 
             validate_native_item(item)?;
             normalized.native_only = true;
             if kind.ends_with("_output")
-                && let Some(call_id) = item.get("call_id").and_then(Value::as_str)
+                && let Some(call_id) = if crate::client_tool_items::is_output(item) {
+                    crate::client_tool_items::result_id(item)
+                } else {
+                    item.get("call_id").and_then(Value::as_str)
+                }
             {
                 normalized.tool_outputs.push(ToolOutput {
                     call_id: call_id.into(),
