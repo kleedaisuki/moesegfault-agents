@@ -266,5 +266,10 @@
   "API transport": "API 传输协议",
   "Provider default": "提供方默认",
   "Chat Completions": "Chat Completions",
-  "The model transport must match the saved key’s authentication family.": "模型传输协议必须与已保存密钥的认证类型匹配。"
+  "The model transport must match the saved key’s authentication family.": "模型传输协议必须与已保存密钥的认证类型匹配。",
+  "Code Interpreter": "代码解释器",
+  "Code service": "代码执行服务",
+  "Compatible executor · your key": "兼容执行器 · 自备密钥",
+  "Executor API key": "执行器 API 密钥",
+  "Unavailable saved service": "已保存的服务暂不可用"
 }

@@ -31,7 +31,15 @@ export type SearchService = {
   max_output_tokens?: number;
   max_tool_calls?: number;
 };
+export type CodeService = {
+  provider?: "platform" | "workspace_daemon";
+  credential_id?: string;
+  [field: string]: unknown;
+};
+// Preserve server-managed future descriptors when another service is edited.
 export type ToolServices = {
+  code_interpreter?: CodeService;
+  [service: string]: unknown;
   image_generation?: ImageService;
   web_search?: SearchService;
 };

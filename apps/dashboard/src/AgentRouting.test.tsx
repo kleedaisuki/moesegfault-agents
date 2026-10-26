@@ -444,3 +444,132 @@ describe("independent agent service routing", () => {
     });
   });
 });
+
+describe("Code executor management increment", () => {
+  it("Code executor chooses and validates its own existing credential without changing the model", async () => {
+    mount(nativeAgent, platformModel, [
+      ...keys,
+      {
+        id: "code-key",
+        name: "Dedicated executor",
+        protocol: "openai",
+        base_url: "https://executor.example.com",
+      },
+    ]);
+    const { user, dialog } = await edit();
+    await user.click(dialog.getByText("Tool services", { exact: true }));
+    await user.selectOptions(
+      dialog.getByLabelText("Code service"),
+      "workspace_daemon",
+    );
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    expect(writes).toHaveLength(0);
+    expect(
+      within(dialog.getByLabelText("Executor API key")).queryByRole("option", {
+        name: "Anthropic only",
+      }),
+    ).not.toBeInTheDocument();
+    await user.selectOptions(
+      dialog.getByLabelText("Executor API key"),
+      "code-key",
+    );
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).not.toHaveProperty("model");
+    expect(writes[0].tool_services).toEqual({
+      code_interpreter: {
+        provider: "workspace_daemon",
+        credential_id: "code-key",
+      },
+    });
+  });
+
+  it.each(["Name", "Instructions"])(
+    "Code executor metadata-only edit of %s never serializes or drops saved services",
+    async (label) => {
+      const services = {
+        code_interpreter: {
+          provider: "workspace_daemon" as const,
+          credential_id: "unavailable-code-key",
+          owner_extension: { keep: true },
+        },
+        future_service: { keep: "unrecognized" },
+      };
+      const agent = { ...nativeAgent, tool_services: services };
+      mount(agent);
+      const { user, dialog } = await edit();
+      await user.type(dialog.getByLabelText(label), " updated");
+      await user.click(dialog.getByRole("button", { name: "Save agent" }));
+      await waitFor(() => expect(writes).toHaveLength(1));
+      expect(writes[0]).not.toHaveProperty("tool_services");
+      expect({ ...agent, ...writes[0] }.tool_services).toEqual(services);
+    },
+  );
+
+  it("Code executor unknown saved routing survives an image-only service edit", async () => {
+    const services = {
+      code_interpreter: {
+        provider: "future_executor",
+        credential_id: "future-code",
+        contract: { version: 2 },
+      },
+      future_service: { keep: "unknown" },
+    } as unknown as ToolServices;
+    mount({ ...nativeAgent, tool_services: services });
+    const { user, dialog } = await edit();
+    await user.click(dialog.getByText("Tool services", { exact: true }));
+    expect(dialog.getByLabelText("Code service")).toHaveValue(
+      "future_executor",
+    );
+    await user.selectOptions(
+      dialog.getByLabelText("Image service"),
+      "openai_images",
+    );
+    await user.selectOptions(
+      dialog.getByLabelText("Image API key"),
+      "image-key",
+    );
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].tool_services?.code_interpreter).toEqual(
+      services.code_interpreter,
+    );
+    expect(writes[0].tool_services?.future_service).toEqual(
+      services.future_service,
+    );
+  });
+
+  it("Code executor reset removes only its own override", async () => {
+    const services: ToolServices = {
+      code_interpreter: {
+        provider: "workspace_daemon",
+        credential_id: "llm-key",
+      },
+      image_generation: { provider: "platform" },
+      web_search: { provider: "platform_deepseek" },
+      future_service: { keep: true },
+    };
+    mount({ ...nativeAgent, tool_services: services });
+    const { user, dialog } = await edit();
+    await user.click(dialog.getByText("Tool services", { exact: true }));
+    await user.selectOptions(dialog.getByLabelText("Code service"), "");
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].tool_services).toEqual({
+      image_generation: services.image_generation,
+      web_search: services.web_search,
+      future_service: services.future_service,
+    });
+  });
+
+  it("Code executor controls disclose the key progressively in Chinese", async () => {
+    mount();
+    const { user, dialog } = await edit();
+    await user.click(dialog.getByText("Tool services", { exact: true }));
+    await i18n.changeLanguage("zh-CN");
+    const service = await dialog.findByLabelText("代码执行服务");
+    expect(dialog.queryByLabelText("执行器 API 密钥")).not.toBeInTheDocument();
+    await user.selectOptions(service, "workspace_daemon");
+    expect(dialog.getByLabelText("执行器 API 密钥")).toBeInTheDocument();
+  });
+});
