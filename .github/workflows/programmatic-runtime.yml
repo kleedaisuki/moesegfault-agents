@@ -25,8 +25,8 @@ jobs:
           cache-on-failure: true
       - run: cargo fmt --check
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
-      - name: Run only newly registered programmatic Rust contracts
-        run: cargo test --locked -p agents-worker --lib programmatic_ -- --nocapture
+      - name: Run only the newly enabled MCP program capability contract
+        run: cargo test --locked -p agents-worker --lib programmatic_mcp_is_scoped_to_explicit_server_permission -- --exact mcp_bindings::tests::programmatic_mcp_is_scoped_to_explicit_server_permission --nocapture
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
         working-directory: crates/agents-worker
