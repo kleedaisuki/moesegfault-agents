@@ -60,6 +60,7 @@ jobs:
         env:
           CONTAINER_SCOPE: ${{ inputs.container_scope || 'incremental' }}
           VERIFICATION_SCOPE: ${{ inputs.verification_scope || 'incremental' }}
+          MAGENTS_RUNTIME_TOPIC: media
         run: node scripts/incremental-checks.mjs plan
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

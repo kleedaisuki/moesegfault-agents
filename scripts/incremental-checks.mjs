@@ -371,6 +371,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    if (process.env.MAGENTS_RUNTIME_TOPIC === 'media') {
+      const selected = new Set(['node:tests/worker/hosted-image.test.mjs']);
+      const deferred = receipt.checks.worker.filter(check => check.argv[0] === 'node' && !selected.has(check.id));
+      receipt.checks.worker = receipt.checks.worker.filter(check => check.argv[0] !== 'node' || selected.has(check.id));
+      receipt.topic_scope = 'media-producer-regression-only';
+      receipt.components.worker.validation_scope = receipt.topic_scope;
+      receipt.components.worker.deferred_checks = deferred;
+      receipt.diagnostic_only_components = [...new Set([...receipt.diagnostic_only_components, 'worker'])];
+    }
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
