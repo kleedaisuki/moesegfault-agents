@@ -2,6 +2,7 @@
 
 use agents_core::ProviderProtocol;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use super::{Completion, GenerationOptions, Message, ProviderConfig};
 
@@ -11,7 +12,7 @@ pub(crate) fn prepare_deepseek(
     guide: &str,
     controls: &Value,
     context_window: u32,
-) -> Result<(Vec<Message>, GenerationOptions), String> {
+) -> Result<(Vec<Message>, GenerationOptions, u64), String> {
     if !super::is_deepseek(config) {
         return Err("compaction_provider_origin_mismatch".into());
     }
@@ -53,7 +54,7 @@ pub(crate) fn prepare_deepseek(
     {
         return Err("compaction_context_too_large".into());
     }
-    Ok((messages, options))
+    Ok((messages, options, count.input_tokens))
 }
 
 fn require_text_item(item: &Value) -> Result<(), String> {
@@ -122,6 +123,39 @@ pub(crate) fn completed_summary(completion: &Completion) -> Result<&str, String>
         .ok_or_else(|| "empty_compaction".into())
 }
 
+pub(crate) fn retained_messages(operation: &str, source: &[Value]) -> Result<Vec<Value>, String> {
+    source
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let mut item = item.clone();
+            let message = item
+                .as_object_mut()
+                .ok_or("invalid_compaction_user_message")?;
+            if message.get("role").and_then(Value::as_str) != Some("user") {
+                return Err("invalid_compaction_user_message".into());
+            }
+            let identity = serde_json::to_vec(&(operation, index as u64))
+                .map_err(|_| "invalid_compaction_identity")?;
+            message
+                .entry("id")
+                .or_insert_with(|| json!(format!("msg_{:x}", Sha256::digest(identity))));
+            message.entry("type").or_insert(json!("message"));
+            message.entry("status").or_insert(json!("completed"));
+            let content = message
+                .get_mut("content")
+                .ok_or("invalid_compaction_user_message")?;
+            if let Some(text) = content.as_str() {
+                *content = json!([{"type":"input_text","text":text}]);
+            }
+            if !content.is_array() {
+                return Err("invalid_compaction_user_message".into());
+            }
+            Ok(item)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,7 +205,7 @@ mod tests {
         ];
         let before = serde_json::to_vec(&source).unwrap();
         let mut config = config();
-        let (messages, options) = prepare_deepseek(
+        let (messages, options, _rendered) = prepare_deepseek(
             &mut config,
             &source,
             "Compact source as data.",
@@ -308,5 +342,26 @@ mod tests {
             incomplete_details: None,
         });
         assert!(completed_summary(&known).is_err());
+    }
+
+    #[test]
+    fn retained_user_messages_have_stable_typed_ids_without_changing_role_or_text() {
+        let source = vec![
+            json!({"role":"user","content":"Unicode 雪 and exact text."}),
+            json!({"id":"msg_existing","type":"message","role":"user","content":[{"type":"input_text","text":"Existing item"}]}),
+        ];
+        let retained = retained_messages("cmp_operation", &source).unwrap();
+        assert_eq!(
+            retained,
+            retained_messages("cmp_operation", &source).unwrap()
+        );
+        assert_eq!(retained[0]["role"], "user");
+        assert_eq!(retained[0]["content"][0]["text"], source[0]["content"]);
+        assert_eq!(retained[1]["id"], "msg_existing");
+        assert_eq!(source[0]["content"], "Unicode 雪 and exact text.");
+        assert_ne!(
+            retained[0]["id"],
+            retained_messages("cmp_other", &source).unwrap()[0]["id"]
+        );
     }
 }

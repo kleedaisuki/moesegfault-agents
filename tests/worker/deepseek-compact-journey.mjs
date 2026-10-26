@@ -58,9 +58,11 @@ export function createDeepseekCompactFixture() {
 function strictCompaction(value) {
   const python = process.env.MAGENTS_CURRENT_SCHEMA_PYTHON ?? process.env.CURRENT_SCHEMA_PYTHON;
   assert.ok(python, 'Current SDK interpreter is required');
-  const code = 'import json,sys\nfrom typing import Any\nfrom openai.types.responses.compacted_response import CompactedResponse\nvalue: dict[str, Any] = json.load(sys.stdin)\nCompactedResponse.model_validate(value, strict=True)\nprint("strict_compaction_pass")';
+  // SDK 3.37 documents retained user messages but annotates output with an
+  // assistant-only union. Keep the protocol roles and use its actual input type.
+  const code = 'import json,sys\nfrom typing import Any, Union\nfrom openai.types.responses.compacted_response import CompactedResponse\nfrom openai.types.responses.response_input_message_item import ResponseInputMessageItem\nfrom openai.types.responses.response_compaction_item import ResponseCompactionItem\nclass CompactionWindow(CompactedResponse):\n output: list[Union[ResponseInputMessageItem, ResponseCompactionItem]]\nvalue: dict[str, Any] = json.load(sys.stdin)\nparsed: CompactionWindow = CompactionWindow.model_validate(value, strict=True)\nassert parsed.output[-1].type == "compaction"\nassert all(item.type == "message" and item.role == "user" for item in parsed.output[:-1])\nprint("strict_compaction_contract_pass")';
   assert.equal(execFileSync(python, ['-c', code], { input: JSON.stringify(value), encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(), 'strict_compaction_pass');
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(), 'strict_compaction_contract_pass');
 }
 
 export async function runDeepseekCompactJourney({ mf, encryptionKey, request, provider, configure }) {

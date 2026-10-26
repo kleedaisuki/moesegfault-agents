@@ -78,6 +78,8 @@ struct Receipt {
     provider_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     compactor_protocol: Option<ProviderProtocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rendered_input_tokens: Option<u64>,
     error: Option<String>,
     duration_ms: Option<u64>,
 }
@@ -148,6 +150,7 @@ impl DurableObject for ModelOperation {
                 rejected_before_dispatch: false,
                 provider_request_id: None,
                 compactor_protocol: None,
+                rendered_input_tokens: None,
                 error: None,
                 duration_ms: None,
             };
@@ -295,7 +298,7 @@ impl Inner {
                 return self.fail(&mut receipt, "compaction_outcome_unknown").await;
             }
             let started = util::now_ms();
-            let (config, messages, options) =
+            let (config, messages, options, rendered_input_tokens) =
                 match self.prepare_dispatch(&mut receipt, &input).await {
                     Ok(prepared) => prepared,
                     Err(error) => {
@@ -312,11 +315,12 @@ impl Inner {
                 };
             receipt.phase = Phase::InFlight;
             receipt.compactor_protocol = Some(config.protocol);
+            receipt.rendered_input_tokens = rendered_input_tokens;
             self.state.storage().put(RECEIPT, &receipt).await?;
             util::emit(
                 "compact.in_flight",
                 json!({"operation_id":receipt.operation,"request_hash":receipt.request_hash,
-                "model":input.model.model,"protocol":config.protocol}),
+                "model":input.model.model,"protocol":config.protocol,"rendered_input_tokens":receipt.rendered_input_tokens}),
             );
             self.state
                 .storage()
@@ -390,7 +394,8 @@ impl Inner {
         util::emit(
             "compact.complete",
             json!({"operation_id":receipt.operation,"input_tokens":completion.usage.prompt_tokens,
-            "output_tokens":completion.usage.completion_tokens,"provider_request_id":completion.usage.provider_request_id}),
+            "output_tokens":completion.usage.completion_tokens,"rendered_input_tokens":receipt.rendered_input_tokens,
+            "provider_request_id":completion.usage.provider_request_id}),
         );
         self.publish(200, output);
         self.release_local(&receipt).await?;
@@ -405,7 +410,7 @@ impl Inner {
         &self,
         receipt: &mut Receipt,
         input: &PreparedCompact,
-    ) -> Result<(ProviderConfig, Vec<Message>, GenerationOptions)> {
+    ) -> Result<(ProviderConfig, Vec<Message>, GenerationOptions, Option<u64>)> {
         let store = Store::new(&self.env);
         if !receipt.admitted {
             store
@@ -470,6 +475,7 @@ impl Inner {
             guide.push_str(guidance);
         }
         let mut options = GenerationOptions::default();
+        let mut rendered_input_tokens = None;
         if input.model.provider == agents_core::Provider::DeepSeek {
             let projected;
             let source = if let Some(items) = &input.native_input {
@@ -478,7 +484,7 @@ impl Inner {
                 projected = provider::responses::message_items(&input.messages).map_err(failure)?;
                 &projected
             };
-            (messages, options) = provider::compaction::prepare_deepseek(
+            let prepared = provider::compaction::prepare_deepseek(
                 &mut config,
                 source,
                 &guide,
@@ -486,6 +492,9 @@ impl Inner {
                 input.model.context_window,
             )
             .map_err(failure)?;
+            messages = prepared.0;
+            options = prepared.1;
+            rendered_input_tokens = Some(prepared.2);
         } else {
             messages = input.messages.clone();
             messages.insert(0, Message::text("system", guide.clone()));
@@ -510,7 +519,7 @@ impl Inner {
                 .map_err(failure)?,
             );
         }
-        Ok((config, messages, options))
+        Ok((config, messages, options, rendered_input_tokens))
     }
 
     fn output(
@@ -533,7 +542,9 @@ impl Inner {
             &receipt.owner,
             &compaction_item_id(&receipt.operation),
         )?;
-        let mut output = input.retained.clone();
+        let mut output =
+            provider::compaction::retained_messages(&receipt.operation, &input.retained)
+                .map_err(failure)?;
         output.push(item);
         compacted_response(
             &receipt.operation,

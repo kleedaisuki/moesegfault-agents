@@ -268,3 +268,13 @@ text/tool context; media and vendor-opaque inputs without a portable resolution
 remain explicit pre-inference capability errors, not text placeholders. Their
 full-context integration remains required. Known partial/failed model output is
 accounted for but never installed as a successful summary.
+
+SDK 3.37.0 has a local schema inconsistency: `CompactedResponse.output` documents
+all retained user messages, but is annotated with `ResponseOutputItem`, whose
+message variant permits only assistants. The endpoint's real user roles must
+not be rewritten to satisfy that annotation. Retained messages have stable IDs,
+`type: message`, and typed `input_text` content. The controlled validation uses
+the SDK's `ResponseInputMessageItem` and `ResponseCompactionItem` for this one
+union, while inheriting the SDK's unchanged envelope and usage model. It does
+not drop payload fields or claim the unmodified faulty union validated. Normal
+SDK calls and passing the entire returned window into generation remain tested.
