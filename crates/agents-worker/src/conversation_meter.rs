@@ -93,12 +93,23 @@ enum Scope {
 impl ConversationOperation {
     /// Fund before the first routing query, including reads that return 404.
     pub(crate) async fn account(env: &Env, owner: &str) -> Result<Self> {
+        Self::account_resource(env, owner, Resource::Worker).await
+    }
+
+    pub(crate) async fn account_resource(
+        env: &Env,
+        owner: &str,
+        resource: Resource,
+    ) -> Result<Self> {
+        if !matches!(resource, Resource::Worker | Resource::DurableObject) {
+            return Err(fail("invalid_conversation_meter_resource"));
+        }
         crate::allowances::sync(env, owner).await?;
         let operation = Self {
             run_id: format!("conversation:{}", uuid::Uuid::new_v4()),
             session_id: None,
             parent_event: Some(event("worker")?),
-            parent_resource: Resource::Worker,
+            parent_resource: resource,
             scope: Scope::Request,
             started_at_ms: util::now_ms(),
         };

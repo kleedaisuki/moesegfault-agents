@@ -359,3 +359,46 @@ the later media/context-management source changes. Safe local receipts:
 `.temp/code-staging/live-compact-receipt.json` and
 `.temp/code-staging/compact-postflight-after-terminal.json`. The bounded metadata
 collector stopped; neither raw model windows nor credentials were retained.
+
+
+## Public file inputs: frozen execution and read-only counting
+
+The Responses `input_file.file_url` execution resolver now uses the same native
+credential-free global Fetch reader as public image inputs and generated assets.
+It accepts public HTTPS origins, including signed queries, but never userinfo,
+private/local addresses, non-443 ports, fragments, redirects or caller/provider
+headers. The source URL and query do not become model text or telemetry. The
+reader bounds both declared and streamed body size (4 MiB per input and aggregate
+attachment budget); text materialization is capped at 256 KiB.
+
+Verified UTF-8 becomes the same filename/content JSON renderer as inline text.
+PDF/DOCX/XLSX reuse the existing bounded native document-text converter, with no
+OCR, image-description model, embedding or invented provider token usage. Other
+binary/large inputs require an actual owned File and workspace import; execution
+uses normal owner quota and funded R2 publication. Read-only count never creates
+such a File, Session or workspace and reports its capability boundary instead.
+Both count and execution prepay their actual Worker/DO read interval independently
+of model credit. Known failed or rejected HTTP outcomes still settle known I/O.
+
+Execution preparation uses the Session's existing transactional and chunked
+storage. A response/part identity pins an owner-bound source digest before
+download. A saved renderer result is reused; a dispatched-but-interrupted attempt
+cannot download or convert a potentially changed source again. Temporary receipts
+are removed after canonical accepted Response/native state owns the frozen view.
+Before acceptance they are retained as private Session retry state, not Files or
+observability data. Ordinary idempotent response replay reads canonical state and
+never revisits the public URL. Count has no execution identity and keeps its bytes
+only for that one read-only operation.
+
+`prompt_cache_breakpoint` survives the file-to-text renderer unchanged. `detail`
+`auto` selects this adapter's text path; `low`/`high`/`original` receive explicit
+422 `file_detail_unavailable`, not an invalid-field error or false page-image
+support. OpenAI documents PDF detail as a page-image control, separately from
+extracted text: https://developers.openai.com/api/docs/guides/file-inputs .
+
+New verification is scoped to `tests/worker/remote-file-input.test.mjs`: actual
+compiled Worker + OpenAI SDK remote text/count/create equivalence, metadata,
+owner isolation, no forwarded secrets, redirect/size rejection, prepaid failure
+and stable response intent. This source addition does not claim execution until
+its new exact-artifact journey passes; prior PDF/embedding/Space/image acceptance
+is not rerun.
