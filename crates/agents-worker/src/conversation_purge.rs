@@ -64,6 +64,7 @@ pub(super) async fn start(
     context: &PublicationContext<'_>,
     record: &mut ConversationRecord,
 ) -> Result<Response> {
+    reclaim_pending(context, record, None).await?;
     if !record.deleted || record.active_response_id.is_some() {
         return util::json_error(
             409,
