@@ -350,12 +350,6 @@ impl ServerBinding {
             crate::hosted_bindings::Caller::Programmatic => self.programmatic,
         }
     }
-    pub(crate) fn allows(&self, caller: crate::hosted_bindings::Caller) -> bool {
-        match caller {
-            crate::hosted_bindings::Caller::Direct => self.direct,
-            crate::hosted_bindings::Caller::Programmatic => self.programmatic,
-        }
-    }
     pub(crate) fn headers(&self, owner: &str, key: &str) -> Result<BTreeMap<String, String>> {
         if self.owner != owner {
             return Err(fail("mcp_server_not_found"));

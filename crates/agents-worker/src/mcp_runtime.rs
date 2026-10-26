@@ -50,9 +50,6 @@ impl McpBindings {
             if !server.allows(intent.caller) {
                 return Err(fail("mcp_tool_not_allowed"));
             }
-            if !server.allows(intent.caller) {
-                return Err(fail("mcp_tool_not_allowed"));
-            }
             if current.input_schema != intent.tool.input_schema {
                 return Err(fail("mcp_approval_schema_changed"));
             }
