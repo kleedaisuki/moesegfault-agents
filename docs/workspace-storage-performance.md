@@ -376,3 +376,115 @@ are not a claim that the new wire journey has passed.
   [consistency contract](https://developers.cloudflare.com/r2/reference/consistency/)
   makes completed direct-binding writes/deletes visible immediately, while D1
   reference claims still provide the cross-object lifetime fence R2 alone lacks.
+
+Historical evidence location: the `.temp/` receipt paths in the following
+sections refer to the preserved `.cache/v2-release-worktree` checkout. They are
+not new executions in this integration checkout; no identity or credentials move.
+
+## First real staging upload measurement (2026-10-26)
+
+This was a zero-LLM, one-owned-Session increment against the actual serving Worker
+`8578792f1ce0cc06504165b98dbf8a471f3dafd3` (Worker artifact `12629180312`, source CI
+`40272443641`), assembly `db58d1ed78e5d20e122a2f4a0bb72fcfeee5d807`, and retained
+basic daemon `b1edf97746d3902373dbb05e224799f03d9a3a10` (container artifact
+`12598193423`, image digest
+`sha256:e481c97dbdde54a73f6c864c35922fd24acc86eb3473e0d7f175eafa08bb55f4`).
+Hosted Code and 4 GiB remained disabled; neither is claimed by this measurement.
+
+The existing authorized owner had historical versions, clocks and intents, so the
+fresh-owner-only probe was not invoked blindly. A narrow project-local driver
+reused its transport, metering and download primitives, took a baseline of the
+existing owner object keys, and measured only the new Session and newly added
+archive key. No historical archive bytes, versions, intents or uncertain hold were
+modified, and no model input was submitted.
+
+| Actual boundary | Result |
+| --- | --- |
+| First empty native tar/zstd checkpoint plus version | Archive 104 bytes; manifest 433 bytes |
+| First commit user-metered Class A | 2: one archive PUT and one manifest PUT, **not one total write** |
+| Second unchanged commit | Distinct immutable version; zero additional Class A |
+| New physical archive objects / active archive clocks | 1 / 1, owner-scoped (`session_id = NULL`) |
+| Current plus two immutable versions | Same exact owner archive object key |
+| Original immutable downloads | 104 bytes each; SHA, checksum header and Content-Length agree |
+| Closed original Session archive download | HTTP 200; same 104 bytes and SHA |
+| Native restore | Not submitted; still not live accepted |
+
+The compressed archive SHA is
+`08a87f91f6f0e8b49602226866bf362d773f8be874f90d4af0061ff3dbecd83b`.
+The old two-archive comparison is **208 analytical bytes**, not an observed old
+producer measurement, latency improvement, or whole-bucket inventory.
+The operation roles above are determined from the actual scoped two Class-A
+observations, the two newly materialized archive/manifest objects and the exact
+serving producer; the metering event keys do not individually label PUT roles.
+
+### Driver correction and retained failure
+
+The first driver incorrectly attempted the current-session archive download
+before closing its Session. Worker `exports::workspace_ready` correctly returned
+409: that legacy endpoint requires CLOSED. Both immutable version downloads had
+already succeeded. Cleanup closed the Session and deleted its temporary Agent.
+Read-only reconciliation then downloaded both original versions and the closed
+original Session archive, without replaying either commit or allocating compute.
+The original failed receipt remains failed; separate supplements retain the
+successful upload/download facts. The restore request had **not** been submitted
+when that driver stopped, so no restore success is inferred.
+
+The reusable probe now downloads the current Session archive only after cleanup,
+uses persisted Session status `active` (not nonexistent `running`) in its exclusive
+window preflight, and identifies its legitimate acceptance HTTP client explicitly.
+Only the two new focused driver regressions were run; both passed. No old SQL,
+checkpoint, Space or paid-model baseline was repeated. The daemon's independent
+private-copy `hash_file` barrier before extraction remains unchanged in source;
+this increment does not claim a live restore or instrument that barrier away.
+
+Final read-only postflight for only the new Session records **800 microUSD**:
+Container 777, D1 2, R2 operations 21. The three total Session Class-A events include
+the two checkpoint writes plus the separate conversation-archive write during
+Session close; do not relabel three whole-journey writes as two. All six new
+reservations are settled, zero new reserved holds and zero pending Session
+observations remain, and the Session is CLOSED. The owner's one pre-existing
+uncertain hold remains untouched. The immutable versions and their one 104-byte
+physical storage clock remain active as user data, not a leaked compute lease.
+Account-only metadata/storage fees and out-of-band operator reads are outside
+this Session-scoped cost, so it is not an account-wide invoice total.
+
+Safe receipts: `.temp/workspace-live-upload/receipt.json` (original failure),
+`download-reconciliation.json`, `closed-session-download.json`, and
+`postflight.json`. No collector, provider call, grant or production operation was
+used. The next missing behavior is only the unsubmitted native restore; retain
+this upload evidence rather than repeating its two commits.
+
+### Remaining native restore accepted separately
+
+The previously unsubmitted restore was subsequently executed exactly once into a
+new owned target Session, reusing the original measured version. No original
+commit, upload, model call or ambiguous operation was replayed. The serving
+Worker, assembly and b1 image above were unchanged. Receipt:
+`.temp/workspace-live-restore/receipt.json`.
+
+The actual native restore returned the original version identity and digest. Its
+normal automatic pre-restore safety snapshot created one distinct immutable
+version; both it and the restored target use the already measured archive key.
+No new archive object was added. The restore operation's two Class-A writes are
+its fresh safety-checkpoint manifest and restored-current manifest, not another
+archive upload. Session close subsequently adds its separate conversation
+archive write. After closing, the target's real archive download returned HTTP
+200, 104 bytes and the original compressed SHA/checksum header/length.
+
+The b1 restore implementation retains its independent private-file copy followed
+by `hash_file(private.path())` before extraction. The exact daemon snapshot source
+Git blob is `d7c01be7955fa7db31cbf1f403a88d7f739fd5e4`; no integrity barrier was
+removed. This is a real native **empty archive** restore, not a claim about
+nonempty historical-content differentiation or arbitrary workloads.
+
+The new target's cost is independently **476 microUSD** (Container 456, D1 2,
+R2 operations 18), excluding the original upload's 800 microUSD and account-only
+metadata/operator work. Its two reservations are settled, zero holds and zero
+pending observations remain, the target Session is CLOSED, the temporary Agent
+was deleted, and the local driver exited. Original versions plus the new safety
+version remain immutable user data sharing the same physical archive.
+
+Thus the real new-upload/shared-clock/download/native-restore increment is now
+accepted by its aggregate scoped receipts. Preserve the earlier driver failure
+and its correction rather than relabeling that original run as successful; no
+legacy functional, SQL, Space or paid-model baseline needs replay.

@@ -220,3 +220,85 @@ live or paid operation was made in this slice.
 - [DeepSeek Fetch API](https://api-docs.deepseek.com/api/fetch/)
 - Existing vault policy: [BYOK protocol adapters](byok-protocols.md).
 
+Historical evidence location: the `.temp/` receipt paths in the following
+sections refer to the preserved `.cache/v2-release-worktree` checkout. They are
+not new executions in this integration checkout; no identity or credentials move.
+
+## First real platform-search acceptance (2026-10-26)
+
+[Staging deployment 40298168131](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40298168131)
+completed successfully from assembly
+`0074abdffb489228743eb51472acbeb1aba9e2fd`, after successful scoped tooling CI
+`40297652125`. Its actual Worker remains
+`2cc1e0cb4b06c997212d1bbfa97c6a238e7977b6` (artifact `12636014402`, Wasm checksum
+above), dashboard `52662678f09ba7e65ceda467ec40557241aea090`, and daemon
+`b1edf97746d3902373dbb05e224799f03d9a3a10`. Runtime flags selected only
+`web_search` / platform search. Code, image generation, file search and 4 GiB
+remained disabled. The deployment's `acceptance_profile=none` honestly records
+`not_selected`; the subsequent local live journey is separate evidence.
+
+The one new paid Response used an immutable direct-DeepSeek outer pin, one
+platform search service, low context, the official Rust documentation domain
+filter and `max_tool_calls=1`. It performed two outer model rounds and one search
+request, without an accepted-POST replay, provider retry, standalone usage probe,
+extra search/open/find request, new key, credit grant or legacy model trajectory.
+
+| Genuine live boundary | Result |
+| --- | --- |
+| Model-free declared-search admission/count | 469 input tokens; no run or input-clock mutation |
+| First model round's reported input | 469: exact parity with that count |
+| Native search call | One completed `search`, with the ordered in-progress/searching/completed phases |
+| Actual `action.sources` | Five returned URLs, all on `doc.rust-lang.org`; includes the Rust Book ownership chapters |
+| Original stream | 40 canonical SSE events, with a final answer using an actually returned source |
+| Current strict SDK | Python `3.37.0` validates the original raw response/events through stdin, with no new model work |
+| Canonical retrieval | JSON output and GET-only SSE replay agree with the original result |
+| Service settlement | One `successful_search_request`, quantity 1, **750 microUSD**, revision `deepseek-direct-search-fetch-2026-10-26` |
+| Cleanup | Session CLOSED, temporary Agent deleted, no new reserved hold or pending observation |
+
+The new Session-scoped total is **2,037 microUSD**: outer model tokens 1,132,
+search 750, D1 53, Durable Object 89, R2 operation 5 and Worker 8. This excludes
+account-only metadata and out-of-band operator reads and is not a provider invoice
+or account-wide total. The search unit is separate from language-model tokens.
+The owner's pre-existing uncertain hold is not changed by this scoped closure.
+
+### Driver repair without paid replay
+
+An earlier local driver stopped at an HTTP-400 **count-only** preflight, before
+any model or search submission (`submissions=0`, no response IDs, no pending
+execution). The count endpoint correctly rejected generation-only `include`,
+`max_output_tokens` and `max_tool_calls`. The shared SDK count helper now removes
+only these three fields, preserving the actual input, tools, reasoning and any
+unknown fields for normal server validation. One new focused regression passed.
+That original failed receipt remains failed and its temporary fixtures were
+cleaned. The successful paid request above had never been submitted before the
+repair. It did not retry an accepted model/tool operation or redeploy the backend.
+
+The actual repaired local runner and its three dependency hashes are retained
+in the successful receipt; these changed driver bytes are **not** relabeled as
+having been part of the original `0074abd` CI. The earlier clean-CI module-import
+failure was separately fixed by putting the existing Session-archive helper in
+the tracked shared SDK module, without introducing another runner framework.
+
+### Real trace and observer closure
+
+The new metadata-only capture observed one `run.started`, two
+`provider.completed`, one `tool.completed` and one `run.completed` for the same
+canonical response/Session. All traced records retain root trace
+`c95e82e2acd69a9c7e823c42df01c701`. The native terminal and global aggregate each
+contain one terminal, verifying the collector's same-invocation untraced-terminal
+backfill on this already-needed real journey rather than another paid reproduction.
+The observed Worker script-version ID was
+`e0dc08ee-839f-4225-bb17-77dcc3f9fbc6`; it is not a replacement Git build identity.
+
+The collector retained no raw tail or exception text. Its Python process and all
+four observed descendants stopped normally and were verified absent. No stopped
+collector was restarted.
+
+Safe receipts are under `.temp/stage-delivery/`: the retained zero-submission
+`search-live-receipt.json`, successful
+`search-live-count-repair-receipt.json`, `search-live-postflight.json`,
+`search-live-summary.json`, `search-live-trace.json`, and
+`search-collector-stop.json`. The deployment's source-bound component evidence is
+in `search-deploy-40298168131-evidence/`. This accepts the real default platform
+**search query** path only; BYOK, open-page/find and other hosted families retain
+their own explicitly scoped evidence. No production/public release is implied.

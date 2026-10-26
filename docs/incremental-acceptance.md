@@ -42,3 +42,108 @@ The old compaction/protected-marker/authentic replay and browser/native transfer
 The b1 Worker run `40191955285` built Wasm and passed 363 library cases, while three leaf defects caused its integration job to fail. The 55/60 aggregate includes duplicate parent failures; it is not a passing candidate. Its known passing component/selector evidence can be sealed, and only the actual unresolved leaves and new changes need execution. Never replay those known passing 363 cases or 51-plus journeys merely to obtain a globally green label.
 
 A coherent compiled API increment may be staged to learn its genuine native usage and new API behavior before hosted dispatch is complete, provided unavailable capabilities reject honestly before paid work. Such staging does not complete the full objective. Final release requires the aggregate named capability receipts, financial/resource closure, the exact public artifact gate and root's explicit decision. Do not inspect legacy production profiles/data or apply old release drafts before that clearance.
+
+Historical evidence location: the `.temp/` receipt paths in the following
+sections refer to the preserved `.cache/v2-release-worktree` checkout. They are
+not new executions in this integration checkout; no identity or credentials move.
+
+## Collector lifecycle correlation repair (2026-10-26)
+
+The final db58 staging capture contains all three `run.started` and all three
+`provider.completed` events with the expected attempt trace. Their absence in an
+early live read was tail-delivery delay, not demonstrated backend trace loss.
+The original global `events` list omitted two untraced `run.completed` records,
+although all three were already retained in the same owned invocation's
+sanitized `native.events`. The remaining local capture has the same collector
+aggregation defect (zero global terminals versus two native terminals).
+
+The metadata collector generator now merges only sanitized, untraced lifecycle
+records linked by run/session identifiers to exact matched events in that same
+invocation. It preserves richer exact-match fields, rejects foreign runs/traces,
+and does not invent a trace or a success outcome. The focused offline check now
+covers the actual `consume` path, not only the merge helper. Existing captures
+were reconciled offline: db58 terminals 1 to 3; remaining-local terminals 0 to 2;
+all other counts unchanged, no duplicate events, idempotent merge. Both original
+receipt hashes remain unchanged. The separate safe supplements are under
+`.temp/stage-delivery/collector-correlation-repair/`; no tail, app, or model
+request was started for this repair.
+
+The missing later warm-WebSocket log is not explained by that result. Do not
+replay accepted model work or patch backend tracing on this evidence. Inspect
+request/run/provider/tool correlation during the next already-needed new hosted
+staging journey, using a new bounded metadata capture. Previously stopped
+collectors are not restarted.
+
+Source-only inspection at the actual deployed Worker `8578792` confirms that
+`response_websocket_executor::Harness::create` derives a child of the connection
+trace for each frame and passes its `RouteContext` into canonical admission;
+`session_responses::create_response` stores the supplied traceparent on the new
+run. `run.completed` intentionally contains session/run IDs without a trace in
+that source. This explains why same-invocation terminal correlation is needed,
+but does not identify the cause of a missing later warm-WebSocket invocation.
+
+## Narrow live Code increment driver
+
+`tests/e2e/hosted-code-sdk.mjs` extends the existing SDK acceptance helpers rather
+than introducing another harness. It is prepared, not live accepted. Supply the
+accepted assembly SHA, exact downloaded deployment provenance, existing owned
+platform key in process memory, a unique trace seed, project-managed current
+Python SDK, a new project-local receipt path, and `--allow-model-call`.
+
+The driver first checks actual Worker/daemon artifact provenance and model-free
+hosted-tool admission, then submits one new bounded direct-DeepSeek Response
+(`max_tool_calls=1`, auto/default 1 GiB, Bash workspace disabled). It requires real
+native Code events/CID/logs, a unique published nine-byte CSV with an exact SHA,
+and current Python SDK validation of the original response/events through stdin
+only. Its real-resource sequence is Session archive, CID still running, explicit
+standard Containers DELETE, CID 404, and unchanged published File bytes. No
+natural idle-clock wait, 4 GiB claim, accepted-POST replay, or legacy core journey
+is included. Receipts retain identifiers, hashes and bounded metadata, not model
+code, prompts, provider secrets or raw SSE. Behavior success remains explicitly
+`financial_postflight_pending` until the owned Session/run ledger, holds, Code
+allocation-release timestamp and compute lease are checked separately.
+
+## Orthogonal staging runtime flags
+
+Deployment now accepts `runtime_features=configured|none|web_search` independently
+of `acceptance_profile`. `configured` preserves existing rendering defaults;
+explicit overrides are staging-only. `web_search` enables only the existing
+Worker web-search runtime and platform-search capability. Code, image generation,
+file search and 4 GiB apps remain disabled. `acceptance_profile=none` still records
+`not_selected` and never invokes the old paid core runner.
+
+The same finite runtime selector controls rendering and compatible legacy-daemon
+provenance. A pure Worker search increment may retain actual b1 while its
+container-dependent new tools are disabled. The existing container scope/status
+and immutable source/image identities are preserved; `worker_runtime_features`
+explicitly records the separately enabled Worker feature. An unverified Code or
+image feature cannot enter through that compatibility path. Production rendering
+and default old callers are unchanged.
+
+`tests/e2e/hosted-search-sdk.mjs` is the narrow prepared live driver, not a live
+acceptance result: one new direct-DeepSeek outer Response, one declared platform
+search, low context, official Rust domain filter, source inclusion and
+`max_tool_calls=1`. It verifies the actual deployed 750-microUSD tariff revision,
+model-free admission, native search phases/sources, original current-SDK wire
+through stdin, and GET-only canonical JSON/event retrieval. It does not replay an
+accepted POST, invoke the consumed usage observation, or enable compute/image
+work. The independently scoped actual service ledger and financial closure are
+required after its behavior receipt. Three new driver contracts and four new
+runtime-feature deployment contracts passed locally; no controlled six-case
+search or old eight-call model trajectory was rerun for this preparation.
+
+### Search-only live closure
+
+Deployment `40298168131` selected the orthogonal Worker `web_search` feature with
+`acceptance_profile=none`; its component identities remain actual Worker `2cc1e0c`,
+assembly `0074abd`, dashboard `5266267` and daemon `b1edf97`. The separate single
+real platform-search journey passed native phases/sources, original strict SDK
+wire, GET-only canonical retrieval, exact 469-token count/provider parity and
+one independently settled 750-microUSD service unit. The new Session total was
+2,037 microUSD, with zero new holds/pending observations after normal cleanup.
+The same request supplied complete request/run/provider/tool correlation and
+actual native/global terminal parity; all capture processes stopped without raw
+retention. Full source/financial/driver-repair boundaries and receipt paths are in
+`docs/full-responses-search.md`. Neither the zero-submission count-preflight
+failure nor the original failed CI was relabeled successful, and no accepted paid
+operation or legacy core trajectory was replayed.
