@@ -151,7 +151,10 @@ The public sequence is `program`, causal nested function calls and outputs,
 then `program_output`; nested calls and outputs carry the exact program caller
 relationship. A private provider alias never enters that sequence. Original SSE
 and raw GET are compared without filtering SDK convenience fields, and the
-current strict Python SDK validates the unmodified wire objects.
+current strict Python SDK validates the unmodified wire objects. `program_output`
+is terminal-only: its added event carries completed/incomplete already. It uses
+the existing canonical publisher directly, not the hosted tools' synthetic
+in_progress projection.
 
 A human-approval-required MCP call produces an incomplete program without
 remote execution. Client-owned function/custom handoff and program image
