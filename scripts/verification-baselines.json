@@ -3943,5 +3943,34 @@
     "components": [
       "container"
     ]
+  },
+  {
+    "source_sha": "3b80eef35166021e95f80d9f7b23fcdc20d3d1d0",
+    "run_id": "40329817331",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12654956481,
+    "verified_phases": [
+      "wasm_build",
+      "rust_lib"
+    ],
+    "unresolved_checks": [
+      {
+        "id": "node:tests/worker/native-window.test.mjs",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/native-window.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_NATIVE_WINDOW_CASE": "rejection"
+        },
+        "reason": "Only the failed canonical SDK error boundary and unexecuted unfit rejection; retain original five history and three tool generations without replay",
+        "expected_test": "oversized groups reject without model work"
+      }
+    ]
   }
 ]

@@ -374,11 +374,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
-    // Topic-only first execution of the new immutable native auto-window slice.
+    // Topic-only failed tail: keep the original accepted window generations sealed.
     for (const job of Object.keys(receipt.checks)) {
       receipt.checks[job] = receipt.checks[job].filter(check =>
-        check.id === 'rust:agents-worker:native_window_import_rebases_only_the_exported_positions'
-        || check.id === 'node:tests/worker/native-window.test.mjs');
+        check.id === 'node:tests/worker/native-window.test.mjs');
     }
     receipt.non_deployable = true;
     receipt.diagnostic_only_components = ['worker'];

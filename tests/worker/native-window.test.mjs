@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { runNativeWindowJourney, runNativeWindowToolsJourney } from './native-window-journey.mjs';
+import { runNativeWindowJourney, runNativeWindowToolsJourney, runNativeWindowRejectionJourney } from './native-window-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -82,6 +82,9 @@ test('compiled Rust Worker: native auto window preserves source and historical t
   }
   const context = { mf, db, encryptionKey, request, providers };
   const receipts = {};
+  if (process.env.MAGENTS_NATIVE_WINDOW_CASE === 'rejection') {
+    await t.test('oversized groups reject without model work', async () => { receipts.rejection = await runNativeWindowRejectionJourney(context); });
+  }
   if (!process.env.MAGENTS_NATIVE_WINDOW_CASE || process.env.MAGENTS_NATIVE_WINDOW_CASE === 'history') {
     await t.test('history windows and default historical forks', async () => { receipts.history = await runNativeWindowJourney(context); });
   }

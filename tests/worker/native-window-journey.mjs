@@ -82,10 +82,30 @@ async function outcomeWithoutInference(scenario, body, key) {
   const value = await response.json();
   assert.ok(response.status === 400 || response.status === 200,
     `Context rejection must be a request error or an accepted failed Response, got ${response.status}`);
-  if (response.status === 200) assert.equal(value.status, 'failed');
-  assert.equal(value.error?.code, 'context_length_exceeded');
+  if (response.status === 200) {
+    assert.equal(value.status, 'failed');
+    assert.equal(value.error?.code, 'server_error');
+    assert.equal(value.agents_error_code, 'context_length_exceeded');
+  } else {
+    assert.equal(value.error?.code, 'context_length_exceeded');
+  }
   assert.equal(scenario.state.calls, before, 'An oversized rejected request cannot buy model work');
   return { status: response.status, response_id: value.object === 'response' ? value.id : null };
+}
+
+export async function runNativeWindowRejectionJourney(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'window-rejection', []);
+  scenario.state.count = windowFixtureCount;
+  scenario.agent = await context.request('PATCH', `/v1/agents/${scenario.agent.id}`, {
+    model: { ...scenario.agent.model, context_window: capacity, max_output_tokens: outputBudget }, compaction_percent: 99,
+  }, 200, scenario.principal.apiKey);
+  const oversized = 'UNFIT-LATEST-GROUP-' + 'x'.repeat(6000);
+  const disabled = await outcomeWithoutInference(scenario, { input: oversized, truncation: 'disabled' }, 'window-rejection-disabled');
+  const unfit = await outcomeWithoutInference(scenario, { input: oversized, truncation: 'auto' }, 'window-rejection-auto');
+  assert.equal(scenario.state.calls, 0);
+  await assertModelLedger(scenario, []);
+  return { provider_calls: 0, synthetic_counter_calls: scenario.state.countRequests.length,
+    disabled, unfit, model_ledger_rows: 0, external_network_calls: 0 };
 }
 
 export async function runNativeWindowJourney(context) {
