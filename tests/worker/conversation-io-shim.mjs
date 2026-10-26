@@ -27,7 +27,7 @@ function database(target, state) {
 // A real >30s asynchronous D1 boundary in the actual Rust actor; fixture only.
 export class ConversationState extends RustConversationState {
   constructor(ctx, env) {
-    const state = { armed: false, entered: false, delays: 0, platformBlocks: 0 };
+    const state = { armed: false, entered: false, delays: 0, platformBlocks: 0, loseReserveAck: false, ackLost: false };
     const wrappedContext = new Proxy(ctx, { get(object, key) {
       if (key === 'constructor') return object.constructor;
       if (key === 'blockConcurrencyWhile') return (...args) => { state.platformBlocks++; return object.blockConcurrencyWhile(...args); };
@@ -37,11 +37,31 @@ export class ConversationState extends RustConversationState {
     const wrappedEnv = new Proxy(env, { get(object, key) { return key === 'DB' ? database(object.DB, state) : Reflect.get(object, key, object); } });
     super(wrappedContext, wrappedEnv);
     this.ioState = state;
+    this.fixtureStorage = ctx.storage;
   }
   async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === '/__io/arm') { this.ioState.armed = true; return Response.json(this.ioState); }
     if (path === '/__io/status') return Response.json(this.ioState);
-    return super.fetch(request);
+    if (path === '/__io/lose-reserve') { this.ioState.loseReserveAck = true; return Response.json(this.ioState); }
+    if (path === '/__io/expire-pending') {
+      const index = await this.fixtureStorage.get('conversation.v1');
+      if (index.chunks !== 1) throw new Error('This bounded fixture header must occupy one chunk');
+      const key = `conversation.v1:${index.generation}:0`;
+      const record = JSON.parse(new TextDecoder().decode(new Uint8Array(await this.fixtureStorage.get(key))));
+      if (record.active_activated || !record.pending_expires_at_ms) throw new Error('Cannot expire active/unknown work');
+      record.pending_expires_at_ms = Date.now() - 1;
+      const bytes = new TextEncoder().encode(JSON.stringify(record));
+      await this.fixtureStorage.put(key, Array.from(bytes));
+      await this.fixtureStorage.put('conversation.v1', { ...index, bytes: bytes.length });
+      return Response.json({ expired: true });
+    }
+    const response = await super.fetch(request);
+    if (path === '/responses/reserve' && this.ioState.loseReserveAck && response.status === 200) {
+      this.ioState.loseReserveAck = false; this.ioState.ackLost = true;
+      await response.arrayBuffer();
+      throw new Error('Fixture loses the successful reserve acknowledgment before Session acceptance');
+    }
+    return response;
   }
 }
