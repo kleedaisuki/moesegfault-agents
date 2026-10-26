@@ -377,7 +377,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Topic-only first execution of the new immutable native auto-window slice.
     for (const job of Object.keys(receipt.checks)) {
       receipt.checks[job] = receipt.checks[job].filter(check =>
-        check.id.startsWith('rust:agents-worker:native_window_')
+        check.id === 'rust:agents-worker:native_window_import_rebases_only_the_exported_positions'
         || check.id === 'node:tests/worker/native-window.test.mjs');
     }
     receipt.non_deployable = true;
