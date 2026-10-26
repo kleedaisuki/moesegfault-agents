@@ -223,9 +223,6 @@ impl ServerDeclaration {
         let programmatic = callers
             .as_ref()
             .is_some_and(|values| values.contains(&crate::hosted_bindings::Caller::Programmatic));
-        if programmatic {
-            return Err(fail("mcp_programmatic_binding_required"));
-        }
         let deferred = value
             .get("defer_loading")
             .and_then(Value::as_bool)
@@ -646,6 +643,17 @@ mod tests {
         let mut forged = binding.clone();
         forged.url = "https://other.example.com/mcp".into();
         assert!(forged.headers("alice", &key).is_err());
+    }
+
+    #[test]
+    fn declaring_programmatic_permission_never_grants_a_direct_capability() {
+        let mut value = server();
+        value["allowed_callers"] = json!(["programmatic"]);
+        let only = ServerDeclaration::parse(&value).unwrap();
+        assert!(!only.direct && only.programmatic);
+        value["allowed_callers"] = json!(["direct", "programmatic"]);
+        let mixed = ServerDeclaration::parse(&value).unwrap();
+        assert!(mixed.direct && mixed.programmatic);
     }
 
     #[test]

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { createMcpTransport, runMcpApprovalJourney, runMcpDeferredJourney, runMcpDeniedAndUnknown } from './mcp-journey.mjs';
+import { createMcpTransport, runMcpApprovalJourney, runMcpDeferredJourney, runMcpDeniedAndUnknown, runMcpApprovalReuse } from './mcp-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -84,9 +84,10 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
   }
   function validateWire(response, events) {
     assert.ok(process.env.MAGENTS_CURRENT_SCHEMA_PYTHON, 'Use the current strict SDK interpreter');
-    const checked = spawnSync(process.env.MAGENTS_CURRENT_SCHEMA_PYTHON,
-      ['tests/e2e/current_responses_sdk.py', 'response-wire', '--input', '-'],
-      { cwd: root, input: JSON.stringify({ response, events }), encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    const argv = events.length ? ['tests/e2e/current_responses_sdk.py', 'response-wire', '--input', '-'] :
+      ['-c', 'import json,sys;from openai.types.responses import Response;response: Response=Response.model_validate(json.load(sys.stdin),strict=True);print(json.dumps({"passed":True,"scope":"strict_current_sdk_response_snapshot","output_items":len(response.output)}))'];
+    const checked = spawnSync(process.env.MAGENTS_CURRENT_SCHEMA_PYTHON, argv,
+      { cwd: root, input: JSON.stringify(events.length ? { response, events } : response), encoding: 'utf8', maxBuffer: 1024 * 1024 });
     assert.equal(checked.status, 0, checked.stderr || checked.stdout);
     return JSON.parse(checked.stdout);
   }
@@ -95,12 +96,12 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
   const receipt = {};
   const chosen = process.env.MAGENTS_MCP_CASE?.split(',');
   let selected = 0;
-  for (const [id, run] of [['mcp_approval', () => runMcpApprovalJourney(context, reference)], ['mcp_deferred', () => runMcpDeferredJourney(context)], ['mcp_negative', () => runMcpDeniedAndUnknown(context)]]) {
+  for (const [id, run] of [['mcp_approval', () => runMcpApprovalJourney(context, reference)], ['mcp_deferred', () => runMcpDeferredJourney(context)], ['mcp_negative', () => runMcpDeniedAndUnknown(context)], ['mcp_claim', () => runMcpApprovalReuse(context)]]) {
     if (chosen && !chosen.includes(id)) continue;
     selected++;
     await t.test(id, async () => {
       receipt[id] = await run();
-      await writeFile(path.join(directory, `receipt-${id}.json`), JSON.stringify({ source: process.env.GITHUB_SHA ?? null,
+      await writeFile(path.join(directory, `receipt-${id}.json`), JSON.stringify({ source: process.env.MAGENTS_TEST_EXPECTED_BUILD ?? process.env.GITHUB_SHA ?? null,
         wasm_sha256: createHash('sha256').update(await readFile(path.join(build, 'index_bg.wasm'))).digest('hex'),
         case_id: id, status: 'passed_current', ...receipt[id] }, null, 2));
     });

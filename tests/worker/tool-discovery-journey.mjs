@@ -147,7 +147,7 @@ export async function runServerDiscovery(context) {
   if (scenario.state.failure) throw scenario.state.failure;
   assert.equal(next.value.status, 'completed');
   assert.equal(scenario.state.calls, 3);
-  const rows = await context.db.prepare("SELECT CAST(quantity AS TEXT) quantity FROM usage_ledger WHERE account_id=? AND resource='model'").bind(scenario.principal.owner).all();
+  const rows = await context.db.prepare("SELECT CAST(l.quantity AS TEXT) quantity FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='model'").bind(scenario.principal.owner).all();
   assert.deepEqual(rows.results.map(row => row.quantity), ['110', '110', '110']);
   return { provider_calls: 3, stable_initial_tools: true, canonical_namespace: true, replay_calls: 0 };
 }
@@ -164,7 +164,7 @@ export async function runInvalidDiscoveryArguments(context) {
   assert.ok(!result.events.some(event => event.type === 'response.output_item.done' && event.item.type === 'function_call'),
     'Invalid inner parameters never become a completed client handoff');
   assert.equal(scenario.state.calls, 2, 'Server strict validation never performs a hidden paid repair');
-  const rows = await context.db.prepare("SELECT CAST(quantity AS TEXT) quantity FROM usage_ledger WHERE account_id=? AND resource='model'").bind(scenario.principal.owner).all();
+  const rows = await context.db.prepare("SELECT CAST(l.quantity AS TEXT) quantity FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='model'").bind(scenario.principal.owner).all();
   assert.equal(rows.results.length, 2);
   assert.ok(rows.results.every(row => row.quantity === '110'), 'Both known disobedient rounds are still accounted');
   return { provider_calls: 2, invalid_handoffs: 0, hidden_repairs: 0, known_usage_settlements: 2 };

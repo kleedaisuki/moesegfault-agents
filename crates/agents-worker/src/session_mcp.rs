@@ -15,6 +15,8 @@ struct DiscoverySnapshot {
 struct McpOperation {
     intent: CallIntent,
     dispatched: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claimed_by: Option<String>,
     outcome: Option<RpcOutcome>,
     result: Option<hosted_dispatch::ToolOutput>,
 }
@@ -74,6 +76,11 @@ impl SessionInner {
                     "Supply current MCP authorization on each new Response creation",
                 )
             }
+            Err(Error::RustError(code)) if code == "mcp_approval_consumed" => util::json_error(
+                409,
+                &code,
+                "This approval already belongs to another Response",
+            ),
             Err(Error::RustError(code)) if code == "mcp_approval_not_found" => {
                 util::json_error(404, &code, "MCP approval is not retained for this owner")
             }
@@ -207,6 +214,7 @@ impl SessionInner {
         snapshot.bindings.clear_credentials();
         if let Some(response) = self.read_response(response_id).await? {
             for operation in &response.mcp_operation_keys {
+                let _operation = self.mcp_operations.lock().await;
                 let saved = match self.read_mcp_operation(operation).await {
                     Err(Error::RustError(code)) if code == "mcp_operation_deleted" => None,
                     saved => saved?,
@@ -275,6 +283,7 @@ impl SessionInner {
             agents_auth::billing::Resource::DurableObject,
         )
         .await?;
+        let _operations = self.mcp_operations.lock().await;
         for operation in &response.mcp_operation_keys {
             write_chunks(&self.state.storage(), operation, br#"{"deleted":true}"#).await?;
         }
@@ -510,6 +519,7 @@ impl SessionInner {
                     &McpOperation {
                         intent: intent.clone(),
                         dispatched: false,
+                        claimed_by: None,
                         outcome: None,
                         result: None,
                     },
@@ -622,9 +632,11 @@ impl SessionInner {
             if reference.native_call_id != expected.native_call_id() {
                 return Err(mcp_fault("invalid_mcp_approval_context"));
             }
-            let intent = self.load_mcp_approval(&reference, token).await?;
+            let intent = self.load_mcp_approval(&reference, token, None).await?;
             let execution = format!("approval:{response_id}:{id}");
             result.push(ApprovedCall {
+                reference,
+                capability: token.into(),
                 intent: if decision["approve"] == true {
                     fresh.rebind_approved(intent)?
                 } else {
@@ -642,13 +654,14 @@ impl SessionInner {
         &self,
         reference: &ApprovalReference,
         token: &str,
+        destination: Option<&str>,
     ) -> Result<CallIntent> {
         let record = self.data.borrow().as_ref().unwrap().record.clone();
         if record.owner_id != reference.owner {
             return Err(mcp_fault("mcp_approval_not_found"));
         }
         if record.id == reference.source_session {
-            return self.local_mcp_approval(reference).await;
+            return self.local_mcp_approval(reference, destination).await;
         }
         let source = Store::new(&self.env)
             .get_session(&record.owner_id, &reference.source_session)
@@ -661,9 +674,12 @@ impl SessionInner {
             &source,
             Method::Post,
             "/mcp-approval",
-            Some(json!({"approval_id":reference.approval_id,"capability":token})),
+            Some(json!({"approval_id":reference.approval_id,"capability":token,"destination":destination})),
         )
         .await?;
+        if response.status_code() == 409 {
+            return Err(mcp_fault("mcp_approval_consumed"));
+        }
         if response.status_code() != 200 {
             return Err(mcp_fault("mcp_approval_not_found"));
         }
@@ -680,6 +696,8 @@ impl SessionInner {
         struct Lookup {
             approval_id: String,
             capability: String,
+            #[serde(default)]
+            destination: Option<String>,
         }
         let input: Lookup = request.json().await?;
         let record = self
@@ -695,10 +713,24 @@ impl SessionInner {
             &input.approval_id,
             &input.capability,
         )?;
-        Response::from_json(&self.local_mcp_approval(&reference).await?)
+        match self
+            .local_mcp_approval(&reference, input.destination.as_deref())
+            .await
+        {
+            Ok(intent) => Response::from_json(&intent),
+            Err(Error::RustError(code)) if code == "mcp_approval_consumed" => {
+                util::json_error(409, &code, "This approval is already consumed")
+            }
+            result => result.and_then(|intent| Response::from_json(&intent)),
+        }
     }
 
-    async fn local_mcp_approval(&self, reference: &ApprovalReference) -> Result<CallIntent> {
+    async fn local_mcp_approval(
+        &self,
+        reference: &ApprovalReference,
+        destination: Option<&str>,
+    ) -> Result<CallIntent> {
+        let _claim = self.mcp_operations.lock().await;
         let record = self.data.borrow().as_ref().unwrap().record.clone();
         if reference.owner != record.owner_id || reference.source_session != record.id {
             return Err(mcp_fault("mcp_approval_not_found"));
@@ -714,7 +746,7 @@ impl SessionInner {
                         .any(|item| item["id"] == reference.approval_id)
             })
             .ok_or_else(|| mcp_fault("mcp_approval_not_found"))?;
-        let operation = self
+        let mut operation = self
             .read_mcp_operation(&reference.operation)
             .await?
             .ok_or_else(|| mcp_fault("mcp_approval_not_found"))?;
@@ -723,6 +755,11 @@ impl SessionInner {
             || response.id != reference.source_response
         {
             return Err(mcp_fault("mcp_approval_not_found"));
+        }
+        claim_approval(&mut operation.claimed_by, destination)?;
+        if destination.is_some() {
+            self.write_mcp_operation(&reference.operation, &operation)
+                .await?;
         }
         Ok(operation.intent)
     }
@@ -751,6 +788,12 @@ impl SessionInner {
         let Some((index, action)) = next else {
             return Ok(false);
         };
+        self.load_mcp_approval(
+            &action.reference,
+            &action.capability,
+            Some(&self.snapshot()?.run.as_ref().unwrap().id),
+        )
+        .await?;
         let allowed = !action.approved
             || self
                 .admit_tool_dispatch(
@@ -870,6 +913,7 @@ impl SessionInner {
             None => McpOperation {
                 intent: intent.clone(),
                 dispatched: false,
+                claimed_by: None,
                 outcome: None,
                 result: None,
             },
@@ -1053,6 +1097,51 @@ fn completed(
                 json!({"error":error}).to_string().into(),
             ))
         }
+    }
+}
+
+fn claim_approval(claimed_by: &mut Option<String>, destination: Option<&str>) -> Result<()> {
+    match (claimed_by.as_deref(), destination) {
+        (None, None) => Ok(()),
+        (Some(known), Some(destination)) if known == destination => Ok(()),
+        (None, Some(destination)) if !destination.is_empty() && destination.len() <= 256 => {
+            *claimed_by = Some(destination.into());
+            Ok(())
+        }
+        _ => Err(mcp_fault("mcp_approval_consumed")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn approval_destination_is_invariant_under_replay(destinations in prop::collection::vec(0u8..32, 1..128)) {
+            let mut claim = None;
+            let first = destinations[0].to_string();
+            for destination in destinations {
+                let destination = destination.to_string();
+                let result = claim_approval(&mut claim, Some(&destination));
+                prop_assert_eq!(result.is_ok(), destination == first);
+                claim = serde_json::from_str(&serde_json::to_string(&claim).unwrap()).unwrap();
+                prop_assert_eq!(claim.as_deref(), Some(first.as_str()));
+            }
+        }
+    }
+
+    #[test]
+    fn one_approval_has_one_destination_and_cold_retry_cannot_fork_its_effect() {
+        let mut claim = None;
+        claim_approval(&mut claim, None).unwrap();
+        claim_approval(&mut claim, Some("approved-response")).unwrap();
+        let mut restored: Option<String> =
+            serde_json::from_str(&serde_json::to_string(&claim).unwrap()).unwrap();
+        claim_approval(&mut restored, Some("approved-response")).unwrap();
+        assert!(claim_approval(&mut restored, Some("second-response")).is_err());
+        assert!(claim_approval(&mut restored, None).is_err());
+        assert_eq!(restored.as_deref(), Some("approved-response"));
     }
 }
 
