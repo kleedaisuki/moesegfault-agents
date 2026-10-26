@@ -30,6 +30,15 @@ export class Session extends RustSession {
   }
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (path === '/__test/code-funding-window') {
+      const stored=await this.fixtureStorage.get('workspace:lease');
+      const lease=typeof stored==='string'?JSON.parse(stored):stored;
+      if (!lease) throw Error('Expected an already-funded live VM');
+      lease.expires_ms=Date.now()+18*60*1000;
+      await this.fixtureStorage.put('workspace:lease',JSON.stringify(lease));
+      await this.fixtureStorage.put(`workspace:lease:${lease.id}`,JSON.stringify(lease));
+      return Response.json({lease_id:lease.id,expires_ms:lease.expires_ms});
+    }
     if (path === '/__test/code-drop') {
       const stored = await this.fixtureStorage.get('workspace:lease');
       const lease = typeof stored === 'string' ? JSON.parse(stored) : stored;
@@ -55,7 +64,10 @@ export class Session extends RustSession {
       if (receipt.stage === 'published') publishedBorrowed++;
       borrowedOutcomeBytes += (await this.fixtureStorage.get(`${key}:outcome`))?.bytes ?? 0;
     }
+    const storedLease=await this.fixtureStorage.get('workspace:lease');
+    const lease=typeof storedLease==='string'?JSON.parse(storedLease):storedLease;
     return Response.json({ running: this.fixtureContainer.running, operations,
+      lease_id:lease?.id??null,lease_expires_ms:lease?.expires_ms??null,
       borrowed_receipts: borrowedReceipts, published_borrowed_receipts: publishedBorrowed, borrowed_outcome_bytes: borrowedOutcomeBytes,
       boot_present: Boolean(await this.fixtureStorage.get('workspace:boot')),
       lease_present: Boolean(await this.fixtureStorage.get('workspace:lease')) });

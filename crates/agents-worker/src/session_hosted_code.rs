@@ -356,7 +356,8 @@ impl SessionInner {
             .ok_or_else(|| fail("run_missing"))?
             .id
             .clone();
-        if options.is_local_to(&record.id)
+        if !self.hosted_code_cancel_requested()
+            && options.is_local_to(&record.id)
             && !operation.submitted
             && operation.result.is_none()
             && read_chunks(&storage, &format!("{key}:outcome"))

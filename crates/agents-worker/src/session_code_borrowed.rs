@@ -250,6 +250,7 @@ impl SessionInner {
             {
                 return Err(fail("code_container_not_found"));
             }
+            workspace.ensure_code_lease().await?;
             Some(allocation)
         };
         if receipt.is_none() {

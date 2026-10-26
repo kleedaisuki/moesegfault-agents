@@ -353,3 +353,27 @@ one catalog allocation, compacted source result bytes, and a foreign-owner
 rejection before any model or code execution. This controlled-supervisor journey
 establishes routing/state ownership, not an additional claim of real Python
 execution; the native kernel acceptance remains separate.
+
+
+## Resource use must have a funded idle horizon
+
+A thirty-minute compute lease with a fifteen-minute renewal margin is not enough
+by itself to promise twenty minutes after each Code use: at minute twelve, the
+old threshold permits reuse even though the new resource deadline is minute
+thirty-two and physical funding ends at minute thirty. Before a fresh managed
+prepare or borrowed cell, `ensure_code_lease` requires coverage of the independent
+twenty-minute resource clock plus the bounded two-minute native prepare window.
+This is an explicit-use admission requirement, not background renewal. Idle
+heartbeats still neither advance resource last-use nor reserve new money.
+The previous interval is measured/settled before activating the next lease, using
+the existing reserve-before-transfer protocol and immutable tariffs. Ordinary
+Bash callers pass no minimum horizon and retain their previous renewal policy.
+Known/ambiguous result drains do not renew or start a replacement kernel.
+
+The focused Worker counterexample retains the same live source VM but gives its
+already reserved compute lease eighteen minutes of remaining horizon. The
+pre-fix compiled Worker executes the new cell but fails the assertion that its
+promised resource expiry is covered by physical funding. The new journey checks
+a distinct next lease, coverage through resource expiry, and settlement of the
+old interval without a second VM. It is a controlled state-boundary test, not a
+claim of waiting twelve wall-clock minutes or a new real-Python acceptance.
