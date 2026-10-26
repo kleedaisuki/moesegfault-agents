@@ -169,3 +169,17 @@ DeepSeek compaction increments. The next regular build selects only the new
 staging native FileSearch configuration and its zero-network intent guard. It
 does not turn controlled acceptance into a live CF embedding claim; that remains
 the operator's next single, zero-LLM journey after exact-source deployment.
+## Code rollout selection (2026-10-26)
+
+The next normal source build uses composed selection `24e5bea`, with the original
+Code topic executor/real Python/owned-guest receipts, Vision exact-count receipt
+`40327906021`, compact budget receipt `40327392475`, and repaired normal source
+fixture receipt `40328309649`. The catalog retains their actual sources and
+failed aggregate conclusions where applicable. This is not a claim that the
+combined selection source was compiled or live Cloudflare Code was accepted.
+
+Only the new cross-interface plain compact bound, six executor UI form cases,
+two Code deployment/provenance cases and five narrow staging-driver contracts
+remain selected. Changed Wasm, native packages, daemon image and dashboard are
+built under normal CI from the exact new source; artifact/dependency fingerprint
+gates are unchanged. The new compact media transport is not part of this source.
