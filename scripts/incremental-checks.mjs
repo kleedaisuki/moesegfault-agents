@@ -376,7 +376,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // Topic-only probe. This selector is not part of the product commit: other
     // independently accepted topics must not be replayed for compaction.
     const compactChecks = new Set([
-      'journey:DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage',
+      'journey:DeepSeek compact reserves the exact rendered input rather than the full model window',
     ]);
     for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => compactChecks.has(check.id));
     if (receipt.checks.worker.length !== compactChecks.size) throw Error('Missing compaction topic check');
