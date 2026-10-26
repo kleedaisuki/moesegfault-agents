@@ -196,7 +196,13 @@ jobs:
       - name: Compile changed Worker tests without replaying accepted cases
         id: worker_unit_compile
         if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
-        run: cargo test --locked -p agents-worker --lib --no-run
+        run: |
+          has_rust=$(node --input-type=module -e "import fs from 'node:fs'; const plan=JSON.parse(fs.readFileSync('.cache/verification/plan.json','utf8')); console.log(plan.checks.worker.some(check => check.argv[0] === 'cargo'))")
+          if [ "$has_rust" = true ]; then
+            cargo test --locked -p agents-worker --lib --no-run
+          else
+            echo 'No changed Rust test contracts; execute only the selected Worker journeys.'
+          fi
       - run: node scripts/incremental-checks.mjs run worker-rust
         if: ${{ !cancelled() && steps.worker_unit_compile.outcome == 'success' }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
