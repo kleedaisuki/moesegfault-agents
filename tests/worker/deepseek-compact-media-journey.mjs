@@ -27,7 +27,19 @@ export async function runDeepseekCompactMediaJourney({ mf, encryptionKey, reques
     const pro = await createAgent('deepseek-v4-pro');
     const sdk = new OpenAI({ apiKey: principal.apiKey, baseURL: 'https://agents.test/v1', maxRetries: 0,
       fetch: (input, init) => mf.dispatchFetch(input, init) });
-    const upload = await sdk.files.create({ purpose: 'user_data', file: new File([Buffer.from(gif, 'base64')], 'source.gif', { type: 'image/gif' }) });
+    // This in-process fetch transport has no HTTP stack to supply the multipart
+    // Content-Length. Use the existing explicit-wire fixture, not another SDK
+    // upload acceptance test, for this journey's owned-image prerequisite.
+    const form = new FormData();
+    form.set('purpose', 'user_data');
+    form.set('file', new File([Buffer.from(gif, 'base64')], 'source.gif', { type: 'image/gif' }));
+    const encoded = new Request('https://agents.test/v1/files', { method: 'POST', body: form });
+    const bytes = Buffer.from(await encoded.arrayBuffer());
+    const uploaded = await mf.dispatchFetch(encoded.url, { method: 'POST', headers: {
+      Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': encoded.headers.get('content-type'), 'Content-Length': String(bytes.length),
+    }, body: bytes });
+    assert.equal(uploaded.status, 200);
+    const upload = await uploaded.json();
     const body = { model: agent.id, input: [
       { role: 'developer', content: 'Preserve the correction: the right pixel is selected.' },
       { role: 'user', content: [
