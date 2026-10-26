@@ -53,7 +53,7 @@ impl StoreRow {
         let metadata: BTreeMap<String, String> = serde_json::from_str(&self.metadata_json)?;
         let total = self.in_progress + self.completed + self.failed + self.cancelled;
         Ok(
-            json!({"id":self.id,"object":"vector_store","name":self.name,"metadata":metadata,
+            json!({"id":self.id,"object":"vector_store","name":self.name.as_deref().unwrap_or("Untitled vector store"),"metadata":metadata,
             "created_at":self.created_at/1000,"last_active_at":self.last_active_at/1000,
             "expires_after":self.expires_after_days.map(|days|Expiry {anchor:"last_active_at".into(),days}),
             "expires_at":self.expires_after_days.map(|days|self.last_active_at/1000+u64::from(days)*86400),
@@ -63,7 +63,7 @@ impl StoreRow {
     }
 }
 
-const STORE_SELECT: &str = "SELECT vs.id,vs.name,vs.metadata_json,vs.created_at,vs.last_active_at,vs.expires_after_days,vs.status,COALESCE(SUM(vf.usage_bytes),0) AS usage_bytes,COALESCE(SUM(vf.status='in_progress'),0) AS in_progress,COALESCE(SUM(vf.status='completed'),0) AS completed,COALESCE(SUM(vf.status='failed'),0) AS failed,COALESCE(SUM(vf.status='cancelled'),0) AS cancelled FROM vector_stores vs LEFT JOIN vector_store_files vf ON vf.vector_store_id=vs.id AND vf.account_id=vs.account_id";
+pub(crate) const STORE_SELECT: &str = "SELECT vs.id,vs.name,vs.metadata_json,vs.created_at,vs.last_active_at,vs.expires_after_days,vs.status,COALESCE(SUM(vf.usage_bytes),0) AS usage_bytes,COALESCE(SUM(vf.status='in_progress'),0) AS in_progress,COALESCE(SUM(vf.status='completed'),0) AS completed,COALESCE(SUM(vf.status='failed'),0) AS failed,COALESCE(SUM(vf.status='cancelled'),0) AS cancelled FROM vector_stores vs LEFT JOIN vector_store_files vf ON vf.vector_store_id=vs.id AND vf.account_id=vs.account_id AND vf.removed_at IS NULL";
 
 fn validate_metadata(metadata: &BTreeMap<String, String>) -> Result<()> {
     if metadata.len() > 16
@@ -87,6 +87,11 @@ pub async fn create_store(
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<StoreRow> {
+    validate_update(input)?;
+    create_validated_store(env, owner, input, store_limit, meter, event).await
+}
+
+pub(crate) fn validate_update(input: &CreateStore) -> Result<()> {
     validate_metadata(&input.metadata)?;
     if input
         .name
@@ -102,6 +107,17 @@ pub async fn create_store(
     {
         return Err(fail("invalid_vector_store_expiry"));
     }
+    Ok(())
+}
+
+async fn create_validated_store(
+    env: &Env,
+    owner: &str,
+    input: &CreateStore,
+    store_limit: u32,
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<StoreRow> {
     let id = util::id("vs");
     let now = util::now_ms().to_string();
     let metadata = serde_json::to_string(&input.metadata)?;
@@ -145,7 +161,7 @@ pub async fn list_stores(
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<Vec<StoreRow>> {
-    if !(1..=100).contains(&limit) {
+    if !(1..=101).contains(&limit) {
         return Err(fail("invalid_vector_store_list_limit"));
     }
     meter.require_d1(event).await?;
@@ -178,7 +194,7 @@ pub struct AttachFile {
     pub chunking_strategy: Option<crate::file_index::ChunkingStrategy>,
 }
 
-fn validate_attributes(attributes: &BTreeMap<String, Value>) -> Result<()> {
+pub(crate) fn validate_attributes(attributes: &BTreeMap<String, Value>) -> Result<()> {
     if attributes.len() > 16
         || attributes.iter().any(|(key, value)| {
             key.is_empty()
@@ -209,11 +225,18 @@ pub async fn attach_file(
     event: &str,
 ) -> Result<String> {
     validate_attributes(&input.attributes)?;
+    let profile = crate::file_ingest::store_profile(
+        env,
+        owner,
+        store,
+        meter,
+        &format!("{event}:service"),
+        true,
+    )
+    .await?;
+    crate::file_ingest::preflight(&profile, meter)?;
     let strategy = input.chunking_strategy.clone().unwrap_or_default();
     strategy.parameters()?;
-    if !matches!(strategy, crate::file_index::ChunkingStrategy::Auto) {
-        return Err(fail("static_chunking_tokenizer_not_configured"));
-    }
     let generation = uuid::Uuid::new_v4().to_string();
     let attributes = serde_json::to_string(&input.attributes)?;
     let bindings = vec![
@@ -225,9 +248,10 @@ pub async fn attach_file(
         generation.clone(),
         file_limit.to_string(),
         serde_json::to_string(&strategy)?,
+        serde_json::to_string(&profile)?,
     ];
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("INSERT INTO vector_store_files(vector_store_id,file_id,account_id,file_sha256,attributes_json,status,created_at,updated_at,generation,chunking_json) SELECT ?1,sf.id,?2,sf.sha256,?4,'in_progress',CAST(?5 AS INTEGER),CAST(?5 AS INTEGER),?6,?8 FROM space_files sf JOIN vector_stores vs ON vs.id=?1 AND vs.account_id=?2 AND vs.status='completed' WHERE sf.id=?3 AND sf.account_id=?2 AND sf.status='processed' AND (SELECT COUNT(*) FROM vector_store_files WHERE vector_store_id=?1)<CAST(?7 AS INTEGER) RETURNING generation")
+    let result=env.d1("DB")?.prepare("INSERT INTO vector_store_files(vector_store_id,file_id,account_id,file_sha256,attributes_json,status,created_at,updated_at,generation,chunking_json,service_profile_json) SELECT ?1,sf.id,?2,sf.sha256,?4,'in_progress',CAST(?5 AS INTEGER),CAST(?5 AS INTEGER),?6,?8,?9 FROM space_files sf JOIN vector_stores vs ON vs.id=?1 AND vs.account_id=?2 AND vs.status='completed' WHERE sf.id=?3 AND sf.account_id=?2 AND sf.status='processed' AND (SELECT COUNT(*) FROM vector_store_files WHERE vector_store_id=?1 AND removed_at IS NULL)<CAST(?7 AS INTEGER) ON CONFLICT(vector_store_id,file_id) DO UPDATE SET generation=excluded.generation,attributes_json=excluded.attributes_json,chunking_json=excluded.chunking_json,service_profile_json=excluded.service_profile_json,status='in_progress',created_at=excluded.created_at,updated_at=excluded.updated_at,removed_at=NULL,source_staged=0,chunk_count=0,usage_bytes=0,last_error_json=NULL,lease_id=NULL,lease_until=0,retry_at=0,embedding_model=NULL,embedding_dimensions=NULL,embedding_revision=NULL,vector_mutation_id=NULL,batch_id=NULL WHERE vector_store_files.removed_at IS NOT NULL RETURNING generation")
         .bind(&values(&bindings))?.all().await?;
     meter.record_d1(event, &result).await?;
     if result.results::<Value>()?.is_empty() {
@@ -245,15 +269,99 @@ pub async fn detach_file(
     event: &str,
 ) -> Result<bool> {
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET status='cancelled',lease_id=NULL,lease_until=0 WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND status!='cancelled' AND EXISTS(SELECT 1 FROM vector_stores WHERE id=?2 AND account_id=?1 AND status='completed') RETURNING file_id")
+    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET status='cancelled',lease_id=NULL,lease_until=0,removed_at=unixepoch()*1000 WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND removed_at IS NULL AND EXISTS(SELECT 1 FROM vector_stores WHERE id=?2 AND account_id=?1 AND status='completed') RETURNING file_id")
         .bind(&[JsValue::from_str(owner),JsValue::from_str(store),JsValue::from_str(file)])?.all().await?;
     meter.record_d1(event, &result).await?;
     Ok(!result.results::<Value>()?.is_empty())
 }
 
+pub(crate) async fn attach_batch(
+    env: &Env,
+    owner: &str,
+    store: &str,
+    files: &[String],
+    attributes: &BTreeMap<String, Value>,
+    strategy: &crate::file_index::ChunkingStrategy,
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<String> {
+    validate_attributes(attributes)?;
+    let profile = crate::file_ingest::store_profile(
+        env,
+        owner,
+        store,
+        meter,
+        &format!("{event}:service"),
+        true,
+    )
+    .await?;
+    crate::file_ingest::preflight(&profile, meter)?;
+    strategy.parameters()?;
+    if files.is_empty()
+        || files.len() > 500
+        || files
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != files.len()
+    {
+        return Err(fail("invalid_vector_store_file_ids"));
+    }
+    let batch = util::id("vsfb");
+    let bindings = vec![
+        owner.to_string(),
+        store.to_string(),
+        batch.clone(),
+        util::now_ms().to_string(),
+        serde_json::to_string(files)?,
+        serde_json::to_string(attributes)?,
+        serde_json::to_string(strategy)?,
+        serde_json::to_string(&profile)?,
+    ];
+    let db = env.d1("DB")?;
+    let insert_batch=db.prepare("INSERT INTO vector_store_file_batches(id,account_id,vector_store_id,created_at,status) SELECT ?3,?1,?2,CAST(?4 AS INTEGER),'in_progress' WHERE EXISTS(SELECT 1 FROM vector_stores WHERE id=?2 AND account_id=?1 AND status='completed') AND (SELECT COUNT(*) FROM space_files sf WHERE sf.account_id=?1 AND sf.status='processed' AND sf.id IN (SELECT value FROM json_each(?5)))=json_array_length(?5) AND NOT EXISTS(SELECT 1 FROM vector_store_files vf WHERE vf.vector_store_id=?2 AND vf.removed_at IS NULL AND vf.file_id IN (SELECT value FROM json_each(?5))) AND (SELECT COUNT(*) FROM vector_store_files WHERE vector_store_id=?2 AND removed_at IS NULL)+json_array_length(?5)<=10000").bind(&values(&bindings[..5]))?;
+    let insert_files=db.prepare("INSERT INTO vector_store_files(vector_store_id,file_id,account_id,file_sha256,attributes_json,status,created_at,updated_at,generation,batch_id,chunking_json,service_profile_json) SELECT ?2,sf.id,?1,sf.sha256,?6,'in_progress',CAST(?4 AS INTEGER),CAST(?4 AS INTEGER),lower(hex(randomblob(16))),?3,?7,?8 FROM space_files sf JOIN json_each(?5) f ON f.value=sf.id WHERE sf.account_id=?1 AND sf.status='processed' AND EXISTS(SELECT 1 FROM vector_store_file_batches b WHERE b.id=?3 AND b.account_id=?1 AND b.vector_store_id=?2) ON CONFLICT(vector_store_id,file_id) DO UPDATE SET generation=excluded.generation,attributes_json=excluded.attributes_json,chunking_json=excluded.chunking_json,service_profile_json=excluded.service_profile_json,status='in_progress',created_at=excluded.created_at,updated_at=excluded.updated_at,removed_at=NULL,source_staged=0,chunk_count=0,usage_bytes=0,last_error_json=NULL,lease_id=NULL,lease_until=0,retry_at=0,embedding_model=NULL,embedding_dimensions=NULL,embedding_revision=NULL,vector_mutation_id=NULL,batch_id=excluded.batch_id WHERE vector_store_files.removed_at IS NOT NULL").bind(&values(&bindings))?;
+    meter.require_d1(&format!("{event}:batch")).await?;
+    meter.require_d1(&format!("{event}:files")).await?;
+    let results = db.batch(vec![insert_batch, insert_files]).await?;
+    meter
+        .record_d1(&format!("{event}:batch"), &results[0])
+        .await?;
+    meter
+        .record_d1(&format!("{event}:files"), &results[1])
+        .await?;
+    let rows = results[0]
+        .meta()?
+        .and_then(|meta| meta.changes)
+        .unwrap_or(0);
+    if rows != 1 {
+        return Err(fail("vector_store_source_unavailable_or_limit"));
+    }
+    Ok(batch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unnamed_store_keeps_the_sdk_required_string_name() {
+        let store = StoreRow {
+            id: "vs_test".into(),
+            name: None,
+            metadata_json: "{}".into(),
+            created_at: 1000,
+            last_active_at: 1000,
+            expires_after_days: None,
+            status: "completed".into(),
+            usage_bytes: 0,
+            in_progress: 0,
+            completed: 0,
+            failed: 0,
+            cancelled: 0,
+        };
+        assert_eq!(store.public().unwrap()["name"], "Untitled vector store");
+    }
 
     #[test]
     fn attributes_are_typed_bounded_and_do_not_accept_objects() {

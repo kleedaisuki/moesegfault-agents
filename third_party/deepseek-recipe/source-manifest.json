@@ -230,7 +230,7 @@
     },
     "deepseek-recipe-encoding/src/tokenizer.rs": {
       "upstream_sha256": "21fefc37c6689cac8357d030f1ccb2c84e37d293950797ec4a6a0bfc208b56de",
-      "vendored_sha256": "4db40b28811483dcdce2ab2ca1e15199ca70504517732a44cf6a9e12081da747"
+      "vendored_sha256": "58c6d818c2ace88d84f8200f364f30c77e681a05495dc6485a20144b25a55ff5"
     },
     "deepseek-recipe-encoding/src/v4/dsv4.rs": {
       "upstream_sha256": "d1e210fb958c9d4c0c3ab18899d7aa2e76c8d8f93e66e4dd1f1fcead5790a7ad",

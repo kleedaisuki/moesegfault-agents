@@ -78,6 +78,22 @@ impl PromptTokenizer {
         }
     }
 
+    /// Encode plain text with byte offsets, without an added vocabulary or BOS.
+    /// Platform retrieval uses the same warm model without cloning its vocabulary.
+    pub fn encode_plain_text(&self, text: &str) -> Result<tokenizers::Encoding, String> {
+        self.plain_tokenizer
+            .encode(text, false)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Count the same plain tokens without computing unused offset metadata.
+    pub fn count_plain_text(&self, text: &str) -> Result<usize, String> {
+        self.plain_tokenizer
+            .encode_fast(text, false)
+            .map(|encoding| encoding.get_ids().len())
+            .map_err(|error| error.to_string())
+    }
+
     fn special_token_id(&self, token: &str) -> Result<u32, String> {
         self.added_vocabulary
             .get(token)

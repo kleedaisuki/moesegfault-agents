@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 
 #[path = "session_hosted_code.rs"]
 mod code;
+#[path = "session_hosted_file_search.rs"]
+mod file_search;
 #[path = "session_hosted_search.rs"]
 mod search;
 
@@ -129,7 +131,11 @@ impl SessionInner {
         let kind = crate::hosted_tools::Kind::from_alias(&call.function.name);
         if !matches!(
             kind,
-            Some(crate::hosted_tools::Kind::CodeInterpreter | crate::hosted_tools::Kind::WebSearch)
+            Some(
+                crate::hosted_tools::Kind::CodeInterpreter
+                    | crate::hosted_tools::Kind::WebSearch
+                    | crate::hosted_tools::Kind::FileSearch
+            )
         ) {
             return Ok(None);
         }
@@ -143,6 +149,10 @@ impl SessionInner {
             .filter(|binding| binding.allows(crate::hosted_bindings::Caller::Direct))
             .ok_or_else(|| Error::RustError("hosted_tool_not_bound".into()))?;
         match kind {
+            Some(crate::hosted_tools::Kind::FileSearch) => self
+                .dispatch_hosted_file_search(record, execution, call, &binding)
+                .await
+                .map(Some),
             Some(crate::hosted_tools::Kind::WebSearch) => self
                 .dispatch_hosted_search(record, execution, call, &binding)
                 .await

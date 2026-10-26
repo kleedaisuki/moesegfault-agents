@@ -493,6 +493,7 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "sessions"] if req.method() == Method::Get => Response::from_json(
             &json!({"object":"list","data":Store::new(env).list_sessions(owner).await?}),
         ),
+        ["v1", "vector_stores", ..] => crate::file_search_routes::handle(req, env, owner).await,
         ["v1", "models"] if req.method() == Method::Get => {
             let data = Store::new(env).list_agents(owner).await?.into_iter().map(|agent| {
                 json!({"id":agent.id,"object":"model","created":agent.created_at_ms / 1000,"owned_by":owner})

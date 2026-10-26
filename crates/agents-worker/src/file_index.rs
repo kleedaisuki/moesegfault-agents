@@ -13,8 +13,9 @@ use crate::{
     resources::ResourceMeter,
 };
 
-const LIVE: &str = "c.account_id=?1 AND vs.account_id=?1 AND vf.account_id=?1 AND sf.account_id=?1 AND vs.status='completed' AND vf.status='completed' AND sf.status='processed' AND sf.sha256=c.file_sha256 AND vf.file_sha256=c.file_sha256 AND vf.generation=c.generation AND c.embedding_model=vf.embedding_model AND c.embedding_revision=vf.embedding_revision AND c.embedding_dimensions=vf.embedding_dimensions";
+const LIVE: &str = "c.account_id=?1 AND vs.account_id=?1 AND vf.account_id=?1 AND sf.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000) AND vf.status='completed' AND vf.removed_at IS NULL AND sf.status='processed' AND sf.sha256=c.file_sha256 AND vf.file_sha256=c.file_sha256 AND vf.generation=c.generation AND c.embedding_model=vf.embedding_model AND c.embedding_revision=vf.embedding_revision AND c.embedding_dimensions=vf.embedding_dimensions";
 const JOINS: &str = "JOIN vector_store_files vf ON vf.vector_store_id=c.vector_store_id AND vf.file_id=c.file_id JOIN vector_stores vs ON vs.id=c.vector_store_id JOIN space_files sf ON sf.id=c.file_id";
+pub(crate) const CHUNKING_REVISION: &str = "deepseek-recipe-0.2.0/plain-v1:b64f58e1ec67577c2fc4b6b93689b12da288a974e46c088bad52ae6e5defe5f8:text-splitter-0.33.1:v1";
 
 fn fail(code: &str) -> Error {
     Error::RustError(code.into())
@@ -94,13 +95,63 @@ impl ChunkingStrategy {
     }
 }
 
+struct RetrievalSizer<'a, 'b>(&'a crate::deepseek_tokenizer::PlainTextTokenizer<'b>);
+
+impl text_splitter::TryChunkSizer for RetrievalSizer<'_, '_> {
+    type Error = String;
+    fn try_size(&self, text: &str) -> std::result::Result<usize, String> {
+        self.0.count(text)
+    }
+}
+
+pub(crate) fn token_chunks(
+    text: &str,
+    strategy: &ChunkingStrategy,
+    input_byte_limit: usize,
+) -> Result<Vec<Chunk>> {
+    let (size, overlap) = strategy.parameters()?;
+    crate::deepseek_tokenizer::with_retrieval_tokenizer(|tokenizer| {
+        let revision = format!(
+            "{}:{}:text-splitter-0.33.1:v1",
+            tokenizer.profile(),
+            tokenizer.stable_vocab_hash()
+        );
+        if revision != CHUNKING_REVISION {
+            return Err("retrieval_tokenizer_revision_changed".into());
+        }
+        let config = text_splitter::ChunkConfig::new(size)
+            .with_sizer(RetrievalSizer(tokenizer))
+            .with_overlap(overlap)
+            .map_err(|_| "invalid_vector_store_chunking_strategy".to_string())?
+            .with_trim(false);
+        let splitter = text_splitter::TextSplitter::new(config);
+        splitter
+            .try_chunk_indices(text)
+            .enumerate()
+            .map(|(ordinal, chunk)| {
+                let (start, text) = chunk?;
+                if text.len() > input_byte_limit {
+                    return Err("file_search_embedding_input_byte_limit".into());
+                }
+                Ok(Chunk {
+                    ordinal,
+                    byte_start: start,
+                    byte_end: start + text.len(),
+                    text: text.into(),
+                })
+            })
+            .collect()
+    })
+    .map_err(Error::RustError)
+}
+
 pub async fn pending_chunks(
     env: &Env,
     job: &IngestJob,
     profile: &EmbeddingProfile,
     meter: &ResourceMeter<'_>,
     event: &str,
-) -> Result<Vec<Chunk>> {
+) -> Result<Vec<PendingChunk>> {
     let bindings = vec![
         job.account_id.clone(),
         job.vector_store_id.clone(),
@@ -111,11 +162,33 @@ pub async fn pending_chunks(
         profile.revision.clone(),
     ];
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("SELECT ordinal,byte_start,byte_end,text FROM file_search_chunks WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND embedding_model=?5 AND embedding_dimensions=CAST(?6 AS INTEGER) AND embedding_revision=?7 AND vector_status='pending' ORDER BY ordinal LIMIT 32")
+    let result=env.d1("DB")?.prepare("SELECT ordinal,byte_start,byte_end,text,vector_status,vector_json,vector_effect_event,vector_effect_started_at,vector_mutation_id FROM file_search_chunks WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND embedding_model=?5 AND embedding_dimensions=CAST(?6 AS INTEGER) AND embedding_revision=?7 AND vector_status!='visible' ORDER BY ordinal LIMIT 32")
         .bind(&values(&bindings))?.all().await?;
     meter.record_d1(event, &result).await?;
     result.results()
 }
+
+#[derive(Deserialize)]
+pub struct PendingChunk {
+    #[serde(flatten)]
+    pub chunk: Chunk,
+    pub vector_status: String,
+    pub vector_json: Option<String>,
+    pub vector_effect_event: Option<String>,
+    pub vector_effect_started_at: Option<u64>,
+    pub vector_mutation_id: Option<String>,
+}
+
+impl std::ops::Deref for PendingChunk {
+    type Target = Chunk;
+
+    fn deref(&self) -> &Self::Target {
+        &self.chunk
+    }
+}
+
+#[path = "file_index_effects.rs"]
+pub mod effects;
 
 pub async fn renew_job(
     env: &Env,
@@ -148,12 +221,11 @@ pub async fn mark_visible(
     env: &Env,
     job: &IngestJob,
     ids: &[String],
-    mutation: &str,
     now_ms: u64,
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<()> {
-    if ids.is_empty() || ids.len() > 32 || mutation.is_empty() || mutation.len() > 256 {
+    if ids.is_empty() || ids.len() > 32 {
         return Err(fail("invalid_file_search_visibility_batch"));
     }
     let bindings = vec![
@@ -164,10 +236,9 @@ pub async fn mark_visible(
         job.lease_id.clone(),
         now_ms.to_string(),
         serde_json::to_string(ids)?,
-        mutation.to_string(),
     ];
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("UPDATE file_search_chunks SET vector_status='visible',vector_mutation_id=?8 WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND chunk_id IN (SELECT value FROM json_each(?7)) AND EXISTS(SELECT 1 FROM vector_store_files vf WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.generation=?4 AND vf.lease_id=?5 AND vf.status='in_progress' AND vf.lease_until>CAST(?6 AS INTEGER))")
+    let result=env.d1("DB")?.prepare("UPDATE file_search_chunks SET vector_status='visible',vector_json=NULL WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND chunk_id IN (SELECT value FROM json_each(?7)) AND vector_status IN ('upserting','submitted') AND EXISTS(SELECT 1 FROM vector_store_files vf WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.generation=?4 AND vf.lease_id=?5 AND vf.status='in_progress' AND vf.lease_until>CAST(?6 AS INTEGER))")
         .bind(&values(&bindings))?.run().await?;
     meter.record_d1(event, &result).await
 }
@@ -217,6 +288,7 @@ pub struct IngestJob {
     pub generation: String,
     pub lease_id: String,
     pub chunking_json: String,
+    pub chunking_revision: String,
     pub source_staged: u8,
     pub chunk_count: usize,
 }
@@ -276,35 +348,13 @@ pub async fn source_file(
     event: &str,
 ) -> Result<Option<crate::space::OwnedFile>> {
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("SELECT id,account_id,filename,purpose,content_type,object_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms FROM space_files WHERE id=?1 AND account_id=?2 AND sha256=?3 AND status='processed'")
+    let result=env.d1("DB")?.prepare("SELECT id,account_id,filename,purpose,content_type,object_key,blob_key,bytes,sha256,status,reservation_id,created_at_ms,updated_at_ms FROM space_files WHERE id=?1 AND account_id=?2 AND sha256=?3 AND status='processed'")
         .bind(&[JsValue::from_str(&job.file_id),JsValue::from_str(&job.account_id),JsValue::from_str(&job.file_sha256)])?.all().await?;
     meter.record_d1(event, &result).await?;
     Ok(result
         .results::<crate::space::OwnedFile>()?
         .into_iter()
         .next())
-}
-
-#[derive(Deserialize)]
-struct LastMutation {
-    mutation: Option<String>,
-}
-
-pub async fn last_mutation(
-    env: &Env,
-    job: &IngestJob,
-    meter: &ResourceMeter<'_>,
-    event: &str,
-) -> Result<Option<String>> {
-    meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("SELECT MAX(vector_mutation_id) AS mutation FROM file_search_chunks WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND vector_status='visible'")
-        .bind(&[JsValue::from_str(&job.account_id),JsValue::from_str(&job.vector_store_id),JsValue::from_str(&job.file_id),JsValue::from_str(&job.generation)])?.all().await?;
-    meter.record_d1(event, &result).await?;
-    Ok(result
-        .results::<LastMutation>()?
-        .into_iter()
-        .next()
-        .and_then(|row| row.mutation))
 }
 
 /// A lease is acquired only while both source and store remain eligible. Expired
@@ -331,7 +381,7 @@ pub async fn claim_job(
         lease,
     ];
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET lease_id=?6,lease_until=CAST(?5 AS INTEGER),updated_at=CAST(?4 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND status='in_progress' AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed') RETURNING account_id,vector_store_id,file_id,file_sha256,generation,lease_id,chunking_json,source_staged,chunk_count")
+    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET lease_id=?6,lease_until=CAST(?5 AS INTEGER),updated_at=CAST(?4 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND status='in_progress' AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) RETURNING account_id,vector_store_id,file_id,file_sha256,generation,lease_id,chunking_json,chunking_revision,source_staged,chunk_count")
         .bind(&values(&bindings))?.all().await?;
     meter.record_d1(event, &result).await?;
     Ok(result.results::<IngestJob>()?.into_iter().next())
@@ -383,7 +433,7 @@ pub async fn stage_chunks(
             profile.dimensions.to_string(),
             profile.revision.clone(),
         ];
-        statements.push(db.prepare("INSERT INTO file_search_chunks(chunk_id,account_id,vector_store_id,file_id,file_sha256,generation,ordinal,text,byte_start,byte_end,embedding_model,embedding_dimensions,embedding_revision) SELECT ?7,?1,?2,?3,?8,?4,CAST(?9 AS INTEGER),?10,CAST(?11 AS INTEGER),CAST(?12 AS INTEGER),?13,CAST(?14 AS INTEGER),?15 WHERE EXISTS(SELECT 1 FROM vector_store_files vf JOIN space_files sf ON sf.id=vf.file_id JOIN vector_stores vs ON vs.id=vf.vector_store_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.generation=?4 AND vf.lease_id=?5 AND vf.lease_until>CAST(?6 AS INTEGER) AND vf.status='in_progress' AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=?8 AND vs.account_id=?1 AND vs.status='completed') ON CONFLICT(chunk_id) DO NOTHING")
+        statements.push(db.prepare("INSERT INTO file_search_chunks(chunk_id,account_id,vector_store_id,file_id,file_sha256,generation,ordinal,text,byte_start,byte_end,embedding_model,embedding_dimensions,embedding_revision) SELECT ?7,?1,?2,?3,?8,?4,CAST(?9 AS INTEGER),?10,CAST(?11 AS INTEGER),CAST(?12 AS INTEGER),?13,CAST(?14 AS INTEGER),?15 WHERE EXISTS(SELECT 1 FROM vector_store_files vf JOIN space_files sf ON sf.id=vf.file_id JOIN vector_stores vs ON vs.id=vf.vector_store_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.generation=?4 AND vf.lease_id=?5 AND vf.lease_until>CAST(?6 AS INTEGER) AND vf.status='in_progress' AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=?8 AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) ON CONFLICT(chunk_id) DO NOTHING")
             .bind(&values(&bindings))?);
     }
     for ordinal in 0..statements.len() {
@@ -409,7 +459,14 @@ pub async fn fail_job(
     if !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') || code.len() > 128 {
         return Err(fail("invalid_file_search_error_code"));
     }
-    let error = serde_json::json!({"code":code,"message":code}).to_string();
+    let public_code = match code {
+        "unsupported_or_empty_document" => "unsupported_file",
+        "file_extraction_byte_limit"
+        | "file_integrity_error"
+        | "file_search_embedding_input_byte_limit" => "invalid_file",
+        _ => "server_error",
+    };
+    let error = serde_json::json!({"code":public_code,"message":code}).to_string();
     let bindings = vec![
         job.account_id.clone(),
         job.vector_store_id.clone(),
@@ -432,17 +489,12 @@ pub async fn publish_job(
     job: &IngestJob,
     profile: &EmbeddingProfile,
     expected_chunks: usize,
-    mutation_id: &str,
     now_ms: u64,
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<bool> {
     profile.validate()?;
-    if expected_chunks == 0
-        || expected_chunks > 65536
-        || mutation_id.is_empty()
-        || mutation_id.len() > 256
-    {
+    if expected_chunks == 0 || expected_chunks > 65536 {
         return Err(fail("invalid_file_search_publication"));
     }
     let bindings = vec![
@@ -456,10 +508,9 @@ pub async fn publish_job(
         profile.dimensions.to_string(),
         profile.revision.clone(),
         expected_chunks.to_string(),
-        mutation_id.to_string(),
     ];
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET status='completed',embedding_model=?7,embedding_dimensions=CAST(?8 AS INTEGER),embedding_revision=?9,chunk_count=CAST(?10 AS INTEGER),usage_bytes=(SELECT COALESCE(SUM(length(CAST(text AS BLOB))),0)+COUNT(*)*CAST(?8 AS INTEGER)*4 FROM file_search_chunks c WHERE c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4),vector_mutation_id=?11,lease_id=NULL,lease_until=0,updated_at=CAST(?6 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND lease_id=?5 AND lease_until>CAST(?6 AS INTEGER) AND status='in_progress' AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed') AND (SELECT COUNT(*) FROM file_search_chunks c WHERE c.account_id=?1 AND c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4 AND c.embedding_model=?7 AND c.embedding_dimensions=CAST(?8 AS INTEGER) AND c.embedding_revision=?9 AND c.vector_status='visible')=CAST(?10 AS INTEGER) AND (SELECT COUNT(*) FROM file_search_chunks c WHERE c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4)=CAST(?10 AS INTEGER) AND (SELECT MAX(ordinal) FROM file_search_chunks c WHERE c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4)=CAST(?10 AS INTEGER)-1 RETURNING file_id")
+    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET status='completed',embedding_model=?7,embedding_dimensions=CAST(?8 AS INTEGER),embedding_revision=?9,chunk_count=CAST(?10 AS INTEGER),usage_bytes=(SELECT COALESCE(SUM(length(CAST(text AS BLOB))),0)+COUNT(*)*CAST(?8 AS INTEGER)*4 FROM file_search_chunks c WHERE c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4),vector_mutation_id=(SELECT vector_mutation_id FROM file_search_chunks c WHERE c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4 AND c.vector_mutation_id IS NOT NULL ORDER BY ordinal DESC LIMIT 1),lease_id=NULL,lease_until=0,updated_at=CAST(?6 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND lease_id=?5 AND lease_until>CAST(?6 AS INTEGER) AND status='in_progress' AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) AND (SELECT COUNT(*) FROM file_search_chunks c WHERE c.account_id=?1 AND c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4 AND c.embedding_model=?7 AND c.embedding_dimensions=CAST(?8 AS INTEGER) AND c.embedding_revision=?9 AND c.vector_status='visible')=CAST(?10 AS INTEGER) AND (SELECT COUNT(*) FROM file_search_chunks c WHERE c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4)=CAST(?10 AS INTEGER) AND (SELECT MAX(ordinal) FROM file_search_chunks c WHERE c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=?4)=CAST(?10 AS INTEGER)-1 RETURNING file_id")
         .bind(&values(&bindings))?.all().await?;
     meter.record_d1(event, &result).await?;
     Ok(!result.results::<Value>()?.is_empty())
@@ -518,7 +569,7 @@ async fn require_stores(
 ) -> Result<()> {
     let stores = serde_json::to_string(&options.vector_store_ids)?;
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("SELECT COUNT(*) AS count FROM vector_stores WHERE account_id=?1 AND status='completed' AND id IN (SELECT value FROM json_each(?2))")
+    let result=env.d1("DB")?.prepare("SELECT COUNT(*) AS count FROM vector_stores WHERE account_id=?1 AND status='completed' AND (expires_after_days IS NULL OR last_active_at+expires_after_days*86400000>unixepoch()*1000) AND id IN (SELECT value FROM json_each(?2))")
         .bind(&[JsValue::from_str(owner),JsValue::from_str(&stores)])?.all().await?;
     meter.record_d1(event, &result).await?;
     let rows: Vec<Count> = result.results()?;
@@ -590,7 +641,7 @@ pub async fn eligible_files(
         None => "1".into(),
     };
     let sql = format!(
-        "SELECT vf.vector_store_id,vf.file_id,vf.embedding_model,vf.embedding_dimensions,vf.embedding_revision FROM vector_store_files vf JOIN vector_stores vs ON vs.id=vf.vector_store_id JOIN space_files sf ON sf.id=vf.file_id WHERE vf.account_id=?1 AND vs.account_id=?1 AND sf.account_id=?1 AND vs.status='completed' AND vf.status='completed' AND sf.status='processed' AND sf.sha256=vf.file_sha256 AND vf.vector_store_id IN (SELECT value FROM json_each(?2)) AND ({filter}) ORDER BY vf.vector_store_id,vf.file_id LIMIT 2049"
+        "SELECT vf.vector_store_id,vf.file_id,vf.embedding_model,vf.embedding_dimensions,vf.embedding_revision FROM vector_store_files vf JOIN vector_stores vs ON vs.id=vf.vector_store_id JOIN space_files sf ON sf.id=vf.file_id WHERE vf.account_id=?1 AND vs.account_id=?1 AND sf.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000) AND vf.status='completed' AND vf.removed_at IS NULL AND sf.status='processed' AND sf.sha256=vf.file_sha256 AND vf.vector_store_id IN (SELECT value FROM json_each(?2)) AND ({filter}) ORDER BY vf.vector_store_id,vf.file_id LIMIT 2049"
     );
     meter.require_d1(event).await?;
     let result = env
@@ -697,5 +748,49 @@ mod tests {
         for vector in [&[0.0, 0.0][..], &[f32::NAN, 1.0][..], &[1.0][..]] {
             assert!(profile.validate_vector(vector).is_err());
         }
+    }
+
+    #[test]
+    fn static_chunks_use_shared_real_tokens_and_source_byte_offsets() {
+        let text =
+            "Unicode retrieval 中文字符 🦀🌸. Spaces and punctuation remain source evidence.\n"
+                .repeat(40);
+        let strategy = ChunkingStrategy::Static {
+            r#static: StaticChunking {
+                max_chunk_size_tokens: 100,
+                chunk_overlap_tokens: 25,
+            },
+        };
+        let chunks = token_chunks(&text, &strategy, 32768).unwrap();
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.first().unwrap().byte_start, 0);
+        assert_eq!(chunks.last().unwrap().byte_end, text.len());
+        crate::deepseek_tokenizer::with_retrieval_tokenizer(|tokenizer| {
+            for chunk in &chunks {
+                assert_eq!(chunk.text, &text[chunk.byte_start..chunk.byte_end]);
+                assert!(tokenizer.count(&chunk.text)? <= 100);
+            }
+            Ok(())
+        })
+        .unwrap();
+        for pair in chunks.windows(2) {
+            assert!(pair[1].byte_start > pair[0].byte_start);
+            assert!(pair[1].byte_start <= pair[0].byte_end);
+        }
+        assert!(token_chunks(&text, &strategy, 4).is_err());
+    }
+
+    #[test]
+    fn native_static_chunk_limits_are_not_reinterpreted_as_characters() {
+        for (size, overlap) in [(99, 0), (4097, 0), (100, 51)] {
+            let strategy = ChunkingStrategy::Static {
+                r#static: StaticChunking {
+                    max_chunk_size_tokens: size,
+                    chunk_overlap_tokens: overlap,
+                },
+            };
+            assert!(strategy.parameters().is_err());
+        }
+        assert_eq!(ChunkingStrategy::Auto.parameters().unwrap(), (800, 400));
     }
 }

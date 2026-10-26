@@ -429,6 +429,26 @@ impl SessionInner {
         }
     }
 
+    fn annotate_search_message(&self, item: &mut Value) {
+        let data = self.data.borrow();
+        if let Some(response) = data
+            .as_ref()
+            .and_then(|data| data.run.as_ref())
+            .and_then(|run| run.response.as_ref())
+        {
+            crate::file_ingest::annotate_message(item, &response.output);
+        }
+    }
+
+    fn annotate_search_part(&self, part: &mut Value) -> Vec<Value> {
+        let data = self.data.borrow();
+        data.as_ref()
+            .and_then(|data| data.run.as_ref())
+            .and_then(|run| run.response.as_ref())
+            .map(|response| crate::file_ingest::annotate_part(part, &response.output))
+            .unwrap_or_default()
+    }
+
     fn publish_native_delta(&self, kind: &str, payload: &Value) -> Result<()> {
         let mapped = {
             let mut data = self.data.borrow_mut();
@@ -460,6 +480,18 @@ impl SessionInner {
         }
         if let Some(item) = fields.get_mut("item") {
             *item = canonical_item(item, &mapped.id)?;
+            if kind == "response.output_item.done" {
+                self.annotate_search_message(item);
+            }
+        }
+        if kind == "response.content_part.done" {
+            if let Some(part) = fields.get_mut("part") {
+                let first = part["annotations"].as_array().map_or(0, Vec::len);
+                let added = self.annotate_search_part(part);
+                for (offset, annotation) in added.into_iter().enumerate() {
+                    self.response_event("response.output_text.annotation.added", json!({"item_id":mapped.id,"output_index":mapped.index,"content_index":fields["content_index"],"annotation_index":first+offset,"annotation":annotation}))?;
+                }
+            }
         }
         self.response_event(kind, fields)
     }
@@ -526,7 +558,8 @@ impl SessionInner {
                     .saturating_sub(1),
                 ordinal
             );
-            let item = canonical_item(raw, &id)?;
+            let mut item = canonical_item(raw, &id)?;
+            self.annotate_search_message(&mut item);
             let streamed = {
                 let data = self.data.borrow();
                 let run = data.as_ref().unwrap().run.as_ref().unwrap();

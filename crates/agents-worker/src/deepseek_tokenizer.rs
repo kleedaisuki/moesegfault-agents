@@ -57,6 +57,65 @@ impl Profile {
 // Keep at most one vocabulary alive per isolate, including after model changes.
 thread_local! { static WARM: RefCell<Option<(Profile, Arc<PromptTokenizer>)>> = const { RefCell::new(None) }; }
 
+const PLAIN_VOCABULARY_SHA256: &str =
+    "b64f58e1ec67577c2fc4b6b93689b12da288a974e46c088bad52ae6e5defe5f8";
+
+/// Retrieval text sizing, not a chat prompt or embedding billing tokenizer.
+/// This borrowed view cannot keep another model vocabulary alive across await.
+pub(crate) struct PlainTextTokenizer<'a> {
+    tokenizer: &'a PromptTokenizer,
+}
+
+impl PlainTextTokenizer<'_> {
+    pub(crate) fn profile(&self) -> &'static str {
+        "deepseek-recipe-0.2.0/plain-v1"
+    }
+
+    pub(crate) fn stable_vocab_hash(&self) -> &'static str {
+        PLAIN_VOCABULARY_SHA256
+    }
+
+    pub(crate) fn count(&self, text: &str) -> Result<usize, String> {
+        self.tokenizer
+            .count_plain_text(text)
+            .map_err(|_| "retrieval_tokenizer_encoding_failed".into())
+    }
+
+    /// Offsets are UTF-8 byte ranges. They may overlap; never assume partitioning.
+    pub(crate) fn encode(&self, text: &str) -> Result<tokenizers::Encoding, String> {
+        let encoded = self
+            .tokenizer
+            .encode_plain_text(text)
+            .map_err(|_| "retrieval_tokenizer_encoding_failed")?;
+        if encoded.get_offsets().iter().any(|&(start, end)| {
+            start > end
+                || end > text.len()
+                || !text.is_char_boundary(start)
+                || !text.is_char_boundary(end)
+        }) {
+            return Err("retrieval_tokenizer_invalid_byte_offsets".into());
+        }
+        Ok(encoded)
+    }
+}
+
+pub(crate) fn with_retrieval_tokenizer<T>(
+    operation: impl FnOnce(&PlainTextTokenizer<'_>) -> Result<T, String>,
+) -> Result<T, String> {
+    WARM.with_borrow_mut(|warm| {
+        if warm.is_none() {
+            *warm = Some((
+                Profile::Flash1017,
+                Arc::new(load_tokenizer(Profile::Flash1017)?),
+            ));
+        }
+        let tokenizer = &warm.as_ref().ok_or("token_count_tokenizer_unavailable")?.1;
+        // V4/V4.1 differ only in removed added vocabulary; their plain JSON hash
+        // is checked by the managed-asset test. Preserve the current warm profile.
+        operation(&PlainTextTokenizer { tokenizer })
+    })
+}
+
 pub(crate) struct ExactCount {
     pub input_tokens: u64,
     pub renderer_revision: &'static str,
@@ -319,5 +378,38 @@ mod tests {
         let mut body = request("hello");
         body["input"] = json!([{"type":"web_search_call","id":"search"}]);
         assert!(count_body("deepseek-flash", body).is_err());
+    }
+    #[test]
+    fn retrieval_plain_vocabulary_is_shared_and_unicode_offsets_are_safe() {
+        let text = "你好 world 🌋 <｜Assistant｜> e\u{301}";
+        WARM.with_borrow_mut(|warm| *warm = None);
+        let first = with_retrieval_tokenizer(|tokenizer| {
+            assert_eq!(tokenizer.stable_vocab_hash(), PLAIN_VOCABULARY_SHA256);
+            let encoding = tokenizer.encode(text)?;
+            assert_eq!(encoding.get_ids().len(), tokenizer.count(text)?);
+            assert!(tokenizer.count("<｜Assistant｜>")? > 1);
+            for &(start, end) in encoding.get_offsets() {
+                let _ = &text[start..end];
+            }
+            Ok(encoding.get_ids().to_vec())
+        })
+        .unwrap();
+        WARM.with_borrow_mut(|warm| {
+            *warm = None;
+            *warm = Some((
+                Profile::Pro0813,
+                Arc::new(load_tokenizer(Profile::Pro0813).unwrap()),
+            ));
+        });
+        let before = WARM.with_borrow(|warm| Arc::as_ptr(&warm.as_ref().unwrap().1));
+        let second =
+            with_retrieval_tokenizer(|tokenizer| Ok(tokenizer.encode(text)?.get_ids().to_vec()))
+                .unwrap();
+        assert_eq!(first, second);
+        WARM.with_borrow(|warm| {
+            let (profile, tokenizer) = warm.as_ref().unwrap();
+            assert_eq!(*profile, Profile::Pro0813);
+            assert_eq!(before, Arc::as_ptr(tokenizer));
+        });
     }
 }

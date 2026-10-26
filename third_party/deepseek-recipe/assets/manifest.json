@@ -3,12 +3,14 @@
     "sha256": "97d2f31b020d18b5aee5c9b3d5b4efb10ea210f3fe3f7dffe3f1cd90542d6b19",
     "bytes": 6367146,
     "gzip_bytes": 1863531,
-    "gzip_sha256": "12cd8741e6b690687f8912ee6a330a9be329ba65f6e03771b42aacff796c0318"
+    "gzip_sha256": "12cd8741e6b690687f8912ee6a330a9be329ba65f6e03771b42aacff796c0318",
+    "plain_vocabulary_sha256": "b64f58e1ec67577c2fc4b6b93689b12da288a974e46c088bad52ae6e5defe5f8"
   },
   "v41": {
     "sha256": "81f64d1248a68ce3663e07ab3ee48b851e5df0e32d27cb98e4c9a268151e8d99",
     "bytes": 6367247,
     "gzip_bytes": 1863526,
-    "gzip_sha256": "499bb23d3b8608904a27f61b5ae4fdaa0ff7d18ef1b830f710b0e21052057092"
+    "gzip_sha256": "499bb23d3b8608904a27f61b5ae4fdaa0ff7d18ef1b830f710b0e21052057092",
+    "plain_vocabulary_sha256": "b64f58e1ec67577c2fc4b6b93689b12da288a974e46c088bad52ae6e5defe5f8"
   }
 }

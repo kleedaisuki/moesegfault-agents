@@ -15,7 +15,10 @@ mod deepseek_tokenizer;
 mod execution_leases;
 mod exports;
 mod file_index;
+mod file_index_scheduler;
+mod file_ingest;
 mod file_search;
+mod file_search_routes;
 mod file_vector;
 mod hosted_artifacts;
 mod hosted_bindings;
@@ -96,6 +99,9 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, ctx: ScheduleContext) {
         }
         if checkpoint_gc::run(&env).await.is_err() {
             util::emit("checkpoint.gc_deferred", serde_json::json!({}));
+        }
+        if file_index_scheduler::run(&env).await.is_err() {
+            util::emit("file_search.scheduler_deferred", serde_json::json!({}));
         }
         if reconcile::run(env).await.is_err() {
             util::emit("storage.reconciliation_failed", serde_json::json!({}));

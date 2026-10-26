@@ -21,7 +21,7 @@ fn fail(code: &str) -> Error {
     Error::RustError(code.into())
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Allocation {
     pub resource: Resource,
@@ -37,7 +37,7 @@ impl Allocation {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VectorServiceProfile {
     pub embedding: EmbeddingProfile,
@@ -63,6 +63,24 @@ impl VectorServiceProfile {
             .validate("embedding_input_bytes")?;
         self.query_allocation.validate("queried_dimensions")?;
         self.upsert_allocation.validate("written_dimensions")
+    }
+
+    pub(crate) fn validate_bindings(&self, env: &Env) -> Result<()> {
+        env.ai(&self.ai_binding)?;
+        let binding = Reflect::get(env.as_ref(), &JsValue::from_str(&self.vector_binding))
+            .map_err(|_| fail("file_search_vector_binding_missing"))?;
+        if binding.is_undefined() || binding.is_null() {
+            return Err(fail("file_search_vector_binding_missing"));
+        }
+        for method in ["query", "upsert", "deleteByIds", "getByIds", "describe"] {
+            if !Reflect::get(&binding, &JsValue::from_str(method))
+                .map_err(|_| fail("file_search_vector_method_missing"))?
+                .is_function()
+            {
+                return Err(fail("file_search_vector_method_missing"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -258,6 +276,84 @@ struct Mutation {
     mutation_id: String,
 }
 
+pub(crate) async fn existing_ids(
+    env: &Env,
+    profile: &VectorServiceProfile,
+    ids: &[String],
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<std::collections::BTreeSet<String>> {
+    if ids.is_empty()
+        || ids.len() > 128
+        || ids
+            .iter()
+            .any(|id| id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(fail("invalid_file_search_cleanup_ids"));
+    }
+    let allocation = &profile.query_allocation;
+    meter
+        .require_observation(event, allocation.resource.clone(), &allocation.unit)
+        .await?;
+    let result = invoke(env, &profile.vector_binding, "getByIds", &[json!(ids)]).await?;
+    meter
+        .record_observation(
+            event,
+            allocation.resource.clone(),
+            &allocation.unit,
+            (ids.len() * profile.embedding.dimensions) as u64,
+        )
+        .await?;
+    let found = result
+        .as_array()
+        .ok_or_else(|| fail("invalid_file_search_vector_response"))?;
+    if found.len() > ids.len() {
+        return Err(fail("invalid_file_search_vector_response"));
+    }
+    found
+        .iter()
+        .map(|record| {
+            let id = record["id"]
+                .as_str()
+                .ok_or_else(|| fail("invalid_file_search_vector_response"))?;
+            if !ids.iter().any(|expected| expected == id) {
+                return Err(fail("invalid_file_search_vector_response"));
+            }
+            Ok(id.to_string())
+        })
+        .collect()
+}
+
+pub(crate) async fn delete_ids(
+    env: &Env,
+    profile: &VectorServiceProfile,
+    ids: &[String],
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<()> {
+    if ids.is_empty()
+        || ids.len() > 128
+        || ids
+            .iter()
+            .any(|id| id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(fail("invalid_file_search_cleanup_ids"));
+    }
+    let started = crate::util::now_ms();
+    meter
+        .require_observation(event, Resource::Worker, "wall_ms")
+        .await?;
+    let result = invoke(env, &profile.vector_binding, "deleteByIds", &[json!(ids)]).await?;
+    meter
+        .record_wall_time(event, Resource::Worker, started, crate::util::now_ms())
+        .await?;
+    let mutation: Mutation = serde_json::from_value(result)?;
+    if mutation.mutation_id.is_empty() || mutation.mutation_id.len() > 256 {
+        return Err(fail("invalid_file_search_vector_mutation"));
+    }
+    Ok(())
+}
+
 pub async fn upsert(
     env: &Env,
     profile: &VectorServiceProfile,
@@ -314,14 +410,22 @@ pub async fn visible(
     if records.is_empty() || records.len() > 32 {
         return Err(fail("file_search_vector_batch_limit"));
     }
-    for (ordinal, record) in records.iter().enumerate() {
+    for (ordinal, batch) in records.chunks(16).enumerate() {
         let allocation = &profile.query_allocation;
         let operation = format!("{event}:{ordinal}");
         meter
             .require_observation(&operation, allocation.resource.clone(), &allocation.unit)
             .await?;
-        let filter = json!({"owner_hash":{"$eq":record.metadata["owner_hash"]},"store_id":{"$eq":record.metadata["store_id"]},"file_id":{"$eq":record.metadata["file_id"]},"chunk_id":{"$eq":record.id}});
-        let result=invoke(env,&profile.vector_binding,"query",&[json!(record.values),json!({"namespace":profile.namespace,"topK":1,"returnValues":false,"returnMetadata":"none","filter":filter})]).await?;
+        let record = &batch[0];
+        let ids = batch
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        let filter = json!({"owner_hash":{"$eq":record.metadata["owner_hash"]},"store_id":{"$eq":record.metadata["store_id"]},"file_id":{"$eq":record.metadata["file_id"]},"chunk_id":{"$in":ids}});
+        if filter.to_string().len() > 2048 {
+            return Err(fail("file_search_vector_filter_batch_limit"));
+        }
+        let result=invoke(env,&profile.vector_binding,"query",&[json!(record.values),json!({"namespace":profile.namespace,"topK":batch.len(),"returnValues":false,"returnMetadata":"none","filter":filter})]).await?;
         meter
             .record_observation(
                 &operation,
@@ -331,11 +435,12 @@ pub async fn visible(
             )
             .await?;
         let matches: Matches = serde_json::from_value(result)?;
-        if !matches
-            .matches
-            .iter()
-            .any(|candidate| candidate.id == record.id && candidate.score.is_finite())
-        {
+        if !ids.iter().all(|id| {
+            matches
+                .matches
+                .iter()
+                .any(|candidate| candidate.id == *id && candidate.score.is_finite())
+        }) {
             return Ok(false);
         }
     }
@@ -347,6 +452,54 @@ pub enum IngestProgress {
     Unavailable,
     Pending,
     Completed,
+}
+
+async fn vectors_for_batch(
+    env: &Env,
+    profile: &VectorServiceProfile,
+    job: &file_index::IngestJob,
+    chunks: &[file_index::PendingChunk],
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<Vec<Vec<f32>>> {
+    match file_index::effects::batch_state(chunks)? {
+        "embedded" | "upserting" => {
+            return file_index::effects::read_vectors(chunks, &profile.embedding);
+        }
+        "submitted" => {
+            if chunks.iter().any(|chunk| {
+                chunk
+                    .vector_mutation_id
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+            }) {
+                return Err(fail("file_search_vector_mutation_missing"));
+            }
+            return file_index::effects::read_vectors(chunks, &profile.embedding);
+        }
+        "pending" => {}
+        _ => return Err(fail("invalid_file_search_effect_phase")),
+    }
+    let effect = format!("{event}:embed");
+    if !file_index::effects::begin(env, job, chunks, "embedding", &effect, meter).await? {
+        return Err(fail("file_search_effect_lease_lost"));
+    }
+    let texts = chunks
+        .iter()
+        .map(|chunk| chunk.text.clone())
+        .collect::<Vec<_>>();
+    let vectors = embed(env, profile, &texts, meter, &effect).await?;
+    file_index::effects::save_vectors(
+        env,
+        job,
+        chunks,
+        &vectors,
+        &profile.embedding,
+        meter,
+        &format!("{effect}:receipt"),
+    )
+    .await?;
+    Ok(vectors)
 }
 
 /// One recoverable, resource-admitted maintenance turn. Sealed source chunks
@@ -381,6 +534,9 @@ pub async fn ingest_turn(
     // Attempt identity is part of resource event keys: a recovery that genuinely
     // repeats an upstream operation must not reuse its predecessor's measurement.
     let attempt = format!("{event}:{}", job.lease_id);
+    if job.chunking_revision != file_index::CHUNKING_REVISION {
+        return Err(fail("file_search_chunking_revision_unavailable"));
+    }
     if job.source_staged == 0 {
         let Some(source) =
             file_index::source_file(env, &job, meter, &format!("{attempt}:source")).await?
@@ -408,7 +564,16 @@ pub async fn ingest_turn(
         if bytes.len() as u64 != source.bytes
             || format!("{:x}", Sha256::digest(&bytes)) != job.file_sha256
         {
-            return Err(fail("file_integrity_error"));
+            file_index::fail_job(
+                env,
+                &job,
+                "file_integrity_error",
+                crate::util::now_ms(),
+                meter,
+                &format!("{attempt}:integrity_failure"),
+            )
+            .await?;
+            return Ok(IngestProgress::Unavailable);
         }
         let text = match std::str::from_utf8(&bytes) {
             Ok(text) if !text.contains('\0') && !text.trim().is_empty() => text,
@@ -425,11 +590,24 @@ pub async fn ingest_turn(
                 return Ok(IngestProgress::Unavailable);
             }
         };
-        let chunks = file_index::auto_chunks(
-            text,
-            profile.embedding.input_byte_limit,
-            profile.embedding.input_byte_limit / 8,
-        )?;
+        let strategy: file_index::ChunkingStrategy = serde_json::from_str(&job.chunking_json)?;
+        let chunks =
+            match file_index::token_chunks(text, &strategy, profile.embedding.input_byte_limit) {
+                Ok(chunks) => chunks,
+                Err(Error::RustError(code)) if code == "file_search_embedding_input_byte_limit" => {
+                    file_index::fail_job(
+                        env,
+                        &job,
+                        "file_search_embedding_input_byte_limit",
+                        crate::util::now_ms(),
+                        meter,
+                        &format!("{attempt}:chunk_failure"),
+                    )
+                    .await?;
+                    return Ok(IngestProgress::Unavailable);
+                }
+                Err(error) => return Err(error),
+            };
         for (ordinal, batch) in chunks.chunks(32).enumerate() {
             if !file_index::renew_job(
                 env,
@@ -491,16 +669,26 @@ pub async fn ingest_turn(
         if chunks.is_empty() {
             return complete_ingest(env, profile, &job, meter, &attempt).await;
         }
-        let texts = chunks
-            .iter()
-            .map(|chunk| chunk.text.clone())
-            .collect::<Vec<_>>();
-        let vectors = embed(
+        let phase = file_index::effects::batch_state(&chunks)?;
+        if phase == "embedding" {
+            file_index::fail_job(
+                env,
+                &job,
+                "file_search_embedding_outcome_unknown",
+                crate::util::now_ms(),
+                meter,
+                &format!("{attempt}:embedding_unknown"),
+            )
+            .await?;
+            return Ok(IngestProgress::Unavailable);
+        }
+        let vectors = vectors_for_batch(
             env,
             profile,
-            &texts,
+            &job,
+            &chunks,
             meter,
-            &format!("{attempt}:embed:{batch}"),
+            &format!("{attempt}:{batch}"),
         )
         .await?;
         let records = chunks
@@ -518,40 +706,68 @@ pub async fn ingest_turn(
                 )
             })
             .collect::<Result<Vec<_>>>()?;
-        let mutation = upsert(
+        if matches!(phase, "pending" | "embedded") {
+            let effect = format!("{attempt}:upsert:{batch}");
+            if !file_index::effects::begin(env, &job, &chunks, "upserting", &effect, meter).await? {
+                return Ok(IngestProgress::Unavailable);
+            }
+            let mutation = upsert(env, profile, &records, meter, &effect).await?;
+            file_index::effects::save_mutation(
+                env,
+                &job,
+                &chunks,
+                &mutation,
+                meter,
+                &format!("{effect}:receipt"),
+            )
+            .await?;
+        }
+        let found = visible(
             env,
             profile,
             &records,
             meter,
-            &format!("{attempt}:upsert:{batch}"),
+            &format!("{attempt}:visibility:{batch}"),
         )
         .await?;
-        let mut found = false;
-        for poll in 0..5 {
-            worker::Delay::from(std::time::Duration::from_secs(1u64 << poll)).await;
-            if visible(
-                env,
-                profile,
-                &records,
-                meter,
-                &format!("{attempt}:visibility:{batch}:{poll}"),
-            )
-            .await?
-            {
-                found = true;
-                break;
-            }
-        }
         if !found {
+            if chunks
+                .first()
+                .and_then(|chunk| chunk.vector_effect_started_at)
+                .is_some_and(|started| crate::util::now_ms().saturating_sub(started) > 600_000)
+            {
+                file_index::fail_job(
+                    env,
+                    &job,
+                    "file_search_vector_visibility_timeout",
+                    crate::util::now_ms(),
+                    meter,
+                    &format!("{attempt}:visibility_timeout"),
+                )
+                .await?;
+                return Ok(IngestProgress::Unavailable);
+            }
             file_index::release_job(
                 env,
                 &job,
-                crate::util::now_ms() + 30_000,
+                crate::util::now_ms() + 2_000,
                 meter,
                 &format!("{attempt}:defer"),
             )
             .await?;
             return Ok(IngestProgress::Pending);
+        }
+        if phase == "upserting" {
+            let effect = file_index::effects::original_effect(&chunks)?;
+            let allocation = &profile.upsert_allocation;
+            meter
+                .record_observation(
+                    effect,
+                    allocation.resource.clone(),
+                    &allocation.unit,
+                    (records.len() * profile.embedding.dimensions) as u64,
+                )
+                .await?;
         }
         let ids = records
             .into_iter()
@@ -561,7 +777,6 @@ pub async fn ingest_turn(
             env,
             &job,
             &ids,
-            &mutation,
             crate::util::now_ms(),
             meter,
             &format!("{attempt}:visible:{batch}"),
@@ -597,15 +812,11 @@ async fn complete_ingest(
     meter: &ResourceMeter<'_>,
     attempt: &str,
 ) -> Result<IngestProgress> {
-    let mutation = file_index::last_mutation(env, job, meter, &format!("{attempt}:mutation"))
-        .await?
-        .ok_or_else(|| fail("file_search_vector_visibility_missing"))?;
     let published = file_index::publish_job(
         env,
         job,
         &profile.embedding,
         job.chunk_count,
-        &mutation,
         crate::util::now_ms(),
         meter,
         &format!("{attempt}:publish"),

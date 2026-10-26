@@ -36,6 +36,8 @@ tokenizers = { version = "=0.23.2", default-features = false, features = ["unsta
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 minijinja = { version = "3.0.3", default-features = false, features = ["builtins", "serde", "fuel"] }
 
+text-splitter = { version = "=0.33.1", default-features = false }
+
 [dev-dependencies]
 proptest = "1"
 

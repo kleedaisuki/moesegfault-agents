@@ -52,3 +52,21 @@ serde-json source hashes, including upstream and locally patched hashes, are in
 `source-manifest.json`; only those two files and the consuming tokenizer
 constructor differ from recipe upstream. Recompute the local hash inventory
 when intentionally changing a patch, then review the upstream/local delta.
+
+### Shared retrieval plain-token accessors
+
+The same patched tokenizer source now exposes `encode_plain_text` (genuine byte
+offsets, no special vocabulary/BOS) and `count_plain_text` (same IDs using the
+mature tokenizer's fast path). Neither returns or clones the underlying model.
+The platform wraps these behind a synchronous borrowed callback so an indexing
+job cannot retain an owning Arc across await and keep two model vocabularies
+alive during profile replacement. No prompt grammar or model billing counter is
+changed by these accessors.
+
+For both pinned assets, setting `added_tokens` to an empty list and encoding
+UTF-8 JSON with recursively sorted keys and compact separators produces
+4,181,828 bytes with SHA-256
+`b64f58e1ec67577c2fc4b6b93689b12da288a974e46c088bad52ae6e5defe5f8`.
+The new asset-contract test verifies this equality; profile-specific prompt
+special tokens remain distinct. Retrieval sizing is not a CF embedding token
+measurement, a chat-template count, or an inference billing amount.
