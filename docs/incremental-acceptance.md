@@ -147,3 +147,25 @@ retention. Full source/financial/driver-repair boundaries and receipt paths are 
 `docs/full-responses-search.md`. Neither the zero-submission count-preflight
 failure nor the original failed CI was relabeled successful, and no accepted paid
 operation or legacy core trajectory was replayed.
+
+## Composed selection and immutable artifact baselines
+
+A catalog entry may now name a `selection_base` with `composed_accepted` status,
+an ancestor source and explicit references to the original scoped receipts. This
+is a change-selection boundary, not a claim that that combined commit was built
+or that every historical CI job succeeded. Its unresolved checks are the current
+work; old artifact failures are not an eternal replay list after the actual
+feature journeys have been closed on retained binaries.
+
+Artifact source/run/ID/fingerprint and positive build steps remain unchanged and
+are verified independently. Any changed binary is rebuilt from the new exact
+source. Native type/lint package selection still compares that real artifact
+source, not the composed selection source. Deployment provenance records both
+identities and rejects a selection not present in the committed catalog.
+
+The first composed boundary closes the separately recorded caller-tool, owned
+Code/lease, Search, retrieval/read-recovery, image, sealed-native and default
+DeepSeek compaction increments. The next regular build selects only the new
+staging native FileSearch configuration and its zero-network intent guard. It
+does not turn controlled acceptance into a live CF embedding claim; that remains
+the operator's next single, zero-LLM journey after exact-source deployment.
