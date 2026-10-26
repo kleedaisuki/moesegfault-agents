@@ -3461,5 +3461,52 @@
       }
     ],
     "unresolved_checks": []
+  },
+  {
+    "source_sha": "82aed43158217d6cd54bed29ebfb10cfd7f29024",
+    "run_id": "40308921494",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-rust",
+    "receipt_artifact_id": 12644205202,
+    "verified_checks": [
+      {
+        "id": "rust:agents-core:image_contract_has_no_secret_or_unversioned_escape_hatch",
+        "status": "passed_current",
+        "input_fingerprint": "d479d25a073eb5e96ab5686475c739b7094095b034abbc371b7f7e66ac0ce50a",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "python:tests/test_image_blob_upgrade_sql.py",
+        "status": "passed_current",
+        "input_fingerprint": "76ea80f73c7146e49c7de9c6a1574e93c03e9c2898b6adc15d3bf18fa1460920",
+        "receipt_path": "rust.json",
+        "executed_tests": 1
+      }
+    ],
+    "unresolved_checks": []
+  },
+  {
+    "source_sha": "82aed43158217d6cd54bed29ebfb10cfd7f29024",
+    "run_id": "40308921494",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12643089704,
+    "verified_checks": [
+      {
+        "id": "node:scripts/code-lifecycle-selection.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "b6e13c0aed1ee719dcccab9d140fc27dca9606ad1e71a9a4e188ddf395a8f157",
+        "receipt_path": "tooling.json",
+        "executed_tests": 2
+      }
+    ],
+    "unresolved_checks": []
   }
 ]
