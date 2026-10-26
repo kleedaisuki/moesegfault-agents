@@ -384,6 +384,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // Non-promoting topic scope: one new media metadata capability boundary.
+    const metadataChecks = new Set([
+      'rust:agents-worker:image_cache_metadata_reuses_the_file_boundary_without_losing_its_position',
+      'rust:agents-worker:nested_cache_controls_are_capabilities_not_ignored_recipe_metadata',
+      'node:tests/worker/remote-file-input.test.mjs',
+    ]);
+    for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => metadataChecks.has(check.id));
+    for (const check of Object.values(receipt.checks).flat()) {
+      if (check.id === 'node:tests/worker/remote-file-input.test.mjs') check.env = {...check.env, MAGENTS_REMOTE_FILE_CASE:'image-metadata'};
+      check.input_fingerprint = checkFingerprint(receipt.source_sha, check);
+    }
+    for (const [name, component] of Object.entries(receipt.components)) if (name !== 'worker') component.action = 'not_requested';
+    receipt.native_packages = [];
+    receipt.non_deployable = true;
+    receipt.diagnostic_only_components = ['worker'];
+    receipt.required_remediations = [...metadataChecks];
+    receipt.required_jobs = ['changes', 'worker'];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
