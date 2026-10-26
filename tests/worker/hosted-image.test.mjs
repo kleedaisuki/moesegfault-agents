@@ -327,7 +327,12 @@ test('compiled Rust Worker: hosted image generation and private delivery lifecyc
       { output: [{ id: 'native-image-call', type: 'function_call', name: '__agents_image_generation', call_id: 'image-call',
         arguments: JSON.stringify({ prompt: `Synthetic ${name} image.` }), status: 'completed' }] },
       { output: [{ id: 'native-image-answer', type: 'message', role: 'assistant', status: 'completed',
-        content: [{ type: 'output_text', text: 'Image operation recorded.', annotations: [], logprobs: [] }] }], gate },
+        content: [{ type: 'output_text', text: 'Image operation recorded.', annotations: [], logprobs: [] }] }], gate,
+        check(body) {
+          const result = body.input.findLast(item => item.type === 'function_call_output' && item.call_id === 'image-call');
+          assert.equal(typeof result?.output, 'string', 'Hosted image receipts cross the native function-result boundary as JSON text');
+          assert.equal(JSON.parse(result.output).status, 'completed');
+        } },
     ]);
     const credential = await principal.browser('POST', '/v1/provider-keys', { protocol: 'openai', base_url: model.baseUrl, api_key: model.key }, 201);
     const imageCredential = name === 'lifecycle' ? await principal.browser('POST', '/v1/provider-keys',
@@ -402,7 +407,11 @@ test('compiled Rust Worker: hosted image generation and private delivery lifecyc
       gate.resolve();
     }
     const response = name === 'lifecycle' ? null : await running;
-    if (name !== 'lifecycle') assert.ok(response, 'The real Rust run must emit its terminal Response');
+    if (name !== 'lifecycle') assert.ok(response, JSON.stringify({
+      error: 'The real Rust run must emit its terminal Response', model_calls: model.calls,
+      image_posts: images.state.calls.length - beforePosts, terminal: observed.at(-1)?.type,
+      error_code: observed.at(-1)?.response?.agents_error_code, fixture_error: model.failure?.message,
+    }));
     const stream = name === 'lifecycle' ? observed : await rawEvents;
     const image = response?.output.find(item => item.type === 'image_generation_call')
       ?? observed.findLast(event => event.type === 'response.output_item.done' && event.item?.type === 'image_generation_call')?.item;
