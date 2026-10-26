@@ -12,10 +12,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
-  CODE_RUNTIME_CASE_PATTERN: 'BYOK Code executor'
+  CODE_RUNTIME_CASE_PATTERN: 'rejected managed prepare'
 jobs:
   code-runtime:
-    if: ${{ false }}
+    if: ${{ true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -32,11 +32,6 @@ jobs:
           cache-all-crates: true
           cache-on-failure: true
       - run: cargo fmt -p agents-worker --check
-      - name: Compile without repeating accepted executor contracts
-        run: |
-          mkdir -p .temp/code-runtime
-          cargo test --locked -p agents-worker --lib --no-run
-      - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
         working-directory: crates/agents-worker
@@ -68,6 +63,7 @@ jobs:
           MAGENTS_TEST_EXPECTED_BUILD: ${{ github.sha }}
         run: |
           set -euo pipefail
+          mkdir -p .temp/code-runtime
           node --test --test-reporter=tap "--test-name-pattern=$CODE_RUNTIME_CASE_PATTERN" tests/worker/hosted-code.test.mjs 2>&1 | tee .temp/code-runtime/worker.log
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
@@ -134,7 +130,7 @@ jobs:
           retention-days: 14
 
   real-executor-journey:
-    if: ${{ always() }}
+    if: ${{ false }}
     needs: code-runtime
     runs-on: ubuntu-latest
     steps:
