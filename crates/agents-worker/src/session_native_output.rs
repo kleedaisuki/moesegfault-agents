@@ -2,6 +2,39 @@
 use super::*;
 use std::collections::BTreeMap;
 
+pub(super) fn call_item(item: &Value) -> bool {
+    matches!(
+        item["type"].as_str(),
+        Some("function_call" | "custom_tool_call")
+    ) || crate::client_tool_items::is_call(item)
+}
+
+fn direct_caller(item: &Value) -> Result<()> {
+    // Native model JSON is not the runtime's authenticated programmatic RPC.
+    // A caller field cannot manufacture that execution authority.
+    if item
+        .get("caller")
+        .is_some_and(|caller| !caller.is_null() && caller["type"] != "direct")
+    {
+        return Err(Error::RustError("untrusted_programmatic_caller".into()));
+    }
+    Ok(())
+}
+
+pub(super) fn require_direct_permission(callers: Option<&Value>) -> Result<()> {
+    if callers
+        .filter(|value| !value.is_null())
+        .is_some_and(|callers| {
+            !callers
+                .as_array()
+                .is_some_and(|callers| callers.iter().any(|caller| caller == "direct"))
+        })
+    {
+        return Err(Error::RustError("tool_caller_not_allowed".into()));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct NativeStream {
     round: u64,
@@ -15,6 +48,10 @@ struct StreamItem {
     index: usize,
     visible: bool,
     done: bool,
+    #[serde(default)]
+    deferred_done: bool,
+    #[serde(default)]
+    buffered_input: bool,
 }
 
 impl NativeStream {
@@ -40,17 +77,15 @@ impl NativeStream {
         }
         if kind == "response.output_item.added" {
             let raw = &payload["item"];
-            let is_call = matches!(
-                raw["type"].as_str(),
-                Some("function_call" | "custom_tool_call")
-            );
-            let visible = !is_call || declared(request, raw);
+            let visible = !call_item(raw) || declared(request, raw);
             let index = self.base + self.items.values().filter(|item| item.visible).count();
             let item = StreamItem {
                 id: format!("item_{response_id}_{round}_{ordinal}"),
                 index,
                 visible,
                 done: false,
+                deferred_done: false,
+                buffered_input: raw["type"] == "custom_tool_call",
             };
             if self.items.contains_key(&ordinal) {
                 return Err(Error::RustError("native_stream_duplicate_item".into()));
@@ -66,12 +101,37 @@ impl NativeStream {
         }
         if kind == "response.output_item.done" {
             item.done = true;
+            item.deferred_done = true;
         }
         Ok(item.clone())
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+fn completed_events(
+    item: &Value,
+    index: usize,
+    buffered_input: bool,
+    complete: bool,
+) -> Vec<(&'static str, Value)> {
+    let mut events = Vec::with_capacity(3);
+    if complete {
+        match item["type"].as_str() {
+            Some("function_call") => events.push(("response.function_call_arguments.done", json!({"item_id":item["id"],"output_index":index,"arguments":item["arguments"],"name":item["name"]}))),
+            Some("custom_tool_call") => {
+                if buffered_input { events.push(("response.custom_tool_call_input.delta", json!({"item_id":item["id"],"output_index":index,"delta":item["input"]}))); }
+                events.push(("response.custom_tool_call_input.done", json!({"item_id":item["id"],"output_index":index,"input":item["input"]})));
+            }
+            _ => {}
+        }
+    }
+    events.push((
+        "response.output_item.done",
+        json!({"output_index":index,"item":item}),
+    ));
+    events
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct GeneralPendingCall {
     pub item_id: String,
     pub call_id: String,
@@ -79,10 +139,43 @@ pub(crate) struct GeneralPendingCall {
     pub namespace: Option<String>,
     pub kind: String,
     pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+impl std::fmt::Debug for GeneralPendingCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeneralPendingCall")
+            .field("item_id", &self.item_id)
+            .field("call_id", &self.call_id)
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
 }
 
 impl GeneralPendingCall {
     pub(crate) fn from_item(item: &Value) -> Option<Self> {
+        if let Some(family) = item["type"]
+            .as_str()
+            .and_then(crate::client_tool_items::Family::call)
+        {
+            // Only pairing/safety metadata is retained here; actions and patches
+            // already have one canonical output and private native-log copy.
+            let details = ["type", "call_id", "pending_safety_checks", "caller"]
+                .iter()
+                .filter_map(|key| item.get(*key).map(|value| ((*key).into(), value.clone())))
+                .collect();
+            return Some(Self {
+                item_id: item["id"].as_str()?.into(),
+                call_id: item["call_id"].as_str()?.into(),
+                name: family.name().into(),
+                namespace: None,
+                kind: family.name().into(),
+                input: String::new(),
+                details: Some(Value::Object(details)),
+            });
+        }
         let kind = match item["type"].as_str()? {
             "function_call" => "function",
             "custom_tool_call" => "custom",
@@ -101,14 +194,30 @@ impl GeneralPendingCall {
             }]
             .as_str()?
             .into(),
+            details: None,
         })
+    }
+
+    pub(crate) fn required_input(&self) -> Option<Value> {
+        let kind = match self.kind.as_str() {
+            "function" => {
+                return Some(
+                    json!({"type":"function_call_output","call_id":self.call_id,"name":self.name}),
+                );
+            }
+            "custom" => "custom_tool_call_output",
+            "computer" => "computer_call_output",
+            "shell" => "shell_call_output",
+            "apply_patch" => "apply_patch_call_output",
+            _ => return None,
+        };
+        Some(json!({"type":kind,"call_id":self.call_id}))
     }
 }
 
 fn complete_call(item: &Value, status: provider::responses::TerminalStatus) -> bool {
     item["status"] == "completed"
-        || (item.get("status").is_none()
-            && status == provider::responses::TerminalStatus::Completed)
+        || (item["status"].is_null() && status == provider::responses::TerminalStatus::Completed)
 }
 
 pub(crate) fn validate_returns(
@@ -120,9 +229,14 @@ pub(crate) fn validate_returns(
         matches!(
             item["type"].as_str(),
             Some("function_call_output" | "custom_tool_call_output")
-        )
+        ) || crate::client_tool_items::is_output(item)
     }) {
-        let id = item["call_id"].as_str().ok_or("invalid_tool_output")?;
+        let id = if crate::client_tool_items::is_output(item) {
+            crate::client_tool_items::result_id(item)
+        } else {
+            item["call_id"].as_str()
+        }
+        .ok_or("invalid_tool_output")?;
         if seen.insert(id, ()).is_some() {
             return Err("duplicate_tool_output");
         }
@@ -130,6 +244,14 @@ pub(crate) fn validate_returns(
             .iter()
             .find(|call| call.call_id == id)
             .ok_or("unexpected_tool_output")?;
+        if let Some(details) = call
+            .details
+            .as_ref()
+            .filter(|details| crate::client_tool_items::is_call(details))
+        {
+            crate::client_tool_items::validate_result(details, item)?;
+            continue;
+        }
         let required = if call.kind == "custom" {
             "custom_tool_call_output"
         } else {
@@ -152,6 +274,11 @@ pub(crate) fn declared(request: &crate::responses_wire::ResponseRequest, item: &
     let Ok(tools) = request.native_tool_items() else {
         return false;
     };
+    if crate::client_tool_items::is_call(item) {
+        return tools
+            .iter()
+            .any(|tool| crate::client_tool_items::matches_declaration(tool, item));
+    }
     let kind = if item["type"] == "custom_tool_call" {
         "custom"
     } else {
@@ -184,12 +311,7 @@ pub(super) fn validate_policy(
     let calls = turn
         .output
         .iter()
-        .filter(|item| {
-            matches!(
-                item["type"].as_str(),
-                Some("function_call" | "custom_tool_call")
-            )
-        })
+        .filter(|item| call_item(item))
         .collect::<Vec<_>>();
     let refusal = turn.output.iter().any(|item| {
         item["content"]
@@ -214,6 +336,18 @@ pub(super) fn validate_policy(
                         || call.get("namespace") != choice.get("namespace")
                 });
         }
+        if let Some(family) = choice["type"]
+            .as_str()
+            .and_then(crate::client_tool_items::Family::choice)
+        {
+            return calls.is_empty()
+                || calls.iter().any(|call| {
+                    call["type"]
+                        .as_str()
+                        .and_then(crate::client_tool_items::Family::call)
+                        != Some(family)
+                });
+        }
         false
     });
     if violation {
@@ -229,6 +363,7 @@ pub(super) fn validate_policy(
     let mut ids = BTreeMap::new();
     let declarations = request.native_tool_items().map_err(Error::RustError)?;
     for call in &calls {
+        direct_caller(call)?;
         let call_id = call["call_id"]
             .as_str()
             .filter(|id| !id.is_empty())
@@ -237,6 +372,15 @@ pub(super) fn validate_policy(
             return Err(Error::RustError("duplicate_native_call_id".into()));
         }
         if !complete_call(call, turn.status) {
+            continue;
+        }
+        if crate::client_tool_items::is_call(call) {
+            if !declared(request, call) {
+                return Err(Error::RustError(
+                    "undeclared_native_client_tool_call".into(),
+                ));
+            }
+            crate::client_tool_items::public_item(call).map_err(Error::RustError)?;
             continue;
         }
         let namespace = call["namespace"].as_str();
@@ -260,6 +404,7 @@ pub(super) fn validate_policy(
                 None
             }
         });
+        require_direct_permission(declaration.and_then(|tool| tool.get("allowed_callers")))?;
         if kind == "custom" || namespace.is_some() {
             if declaration.is_none() {
                 return Err(Error::RustError("undeclared_native_tool_call".into()));
@@ -470,7 +615,14 @@ impl SessionInner {
                 payload,
             )?
         };
-        if !mapped.visible {
+        if !mapped.visible
+            || (kind == "response.output_item.done" && mapped.deferred_done)
+            || matches!(
+                kind,
+                "response.function_call_arguments.done" | "response.custom_tool_call_input.done"
+            )
+            || (mapped.buffered_input && kind == "response.custom_tool_call_input.delta")
+        {
             return Ok(());
         }
         let mut fields = payload.clone();
@@ -538,11 +690,7 @@ impl SessionInner {
         };
         let mut streams = vec![];
         for (ordinal, raw) in turn.output.iter().enumerate() {
-            let is_call = matches!(
-                raw["type"].as_str(),
-                Some("function_call" | "custom_tool_call")
-            );
-            if is_call && !declared(&request, raw) {
+            if call_item(raw) && !declared(&request, raw) {
                 continue;
             }
             let id = format!(
@@ -581,7 +729,18 @@ impl SessionInner {
         }
         for (change, streamed) in plan.finish().into_iter().zip(streams) {
             let item = change.item();
-            if streamed.is_none() {
+            if let Some(streamed) = streamed {
+                if streamed.deferred_done {
+                    for (kind, value) in completed_events(
+                        item,
+                        index,
+                        streamed.buffered_input,
+                        complete_call(item, turn.status),
+                    ) {
+                        self.response_event(kind, value)?;
+                    }
+                }
+            } else {
                 for (kind, value) in events(item, index) {
                     self.response_event(kind, value)?;
                 }
@@ -631,6 +790,84 @@ impl SessionInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_native_item_family_uses_the_validated_completion_boundary() {
+        let request = request();
+        for kind in [
+            "message",
+            "reasoning",
+            "tool_search_call",
+            "future_tool_call",
+        ] {
+            let mut stream = NativeStream::default();
+            stream
+                .map(
+                    0,
+                    0,
+                    "resp_ours",
+                    &request,
+                    "response.output_item.added",
+                    &json!({"output_index":0,"item":{"type":kind}}),
+                )
+                .unwrap();
+            assert!(
+                stream
+                    .map(
+                        0,
+                        0,
+                        "resp_ours",
+                        &request,
+                        "response.output_item.done",
+                        &json!({"output_index":0,"item":{"type":kind}})
+                    )
+                    .unwrap()
+                    .deferred_done
+            );
+        }
+    }
+
+    #[test]
+    fn provider_caller_json_cannot_establish_programmatic_authority() {
+        let base =
+            json!({"type":"function_call","name":"ordinary","call_id":"call","arguments":"{}"});
+        assert!(direct_caller(&base).is_ok());
+        for caller in [json!(null), json!({"type":"direct"})] {
+            let mut call = base.clone();
+            call["caller"] = caller;
+            assert!(direct_caller(&call).is_ok());
+        }
+        for caller in [
+            json!({"type":"program","caller_id":"forged"}),
+            json!({"type":"programmatic"}),
+            json!({}),
+        ] {
+            let mut call = base.clone();
+            call["caller"] = caller;
+            assert!(direct_caller(&call).is_err());
+        }
+    }
+
+    #[test]
+    fn ordinary_function_caller_policy_is_enforced_without_a_discovery_registry() {
+        let request: crate::responses_wire::ResponseRequest = serde_json::from_value(json!({"model":"agent","input":"hello","tools":[
+            {"type":"function","name":"ordinary","parameters":{"type":"object"},"allowed_callers":["programmatic"]}
+        ]})).unwrap();
+        let call = json!({"type":"function_call","id":"item","call_id":"call","name":"ordinary","arguments":"{}","status":"completed"});
+        let completion: Completion = serde_json::from_value(json!({"id":"provider","model":"native",
+            "message":Message::text("assistant", ""),"finish_reason":"tool_calls","usage":Usage::default(),
+            "native":{"provider_response_id":"provider","status":"completed","output":[call],"usage_details":null,"cache_write_tokens":null,"error":null,"incomplete_details":null}
+        })).unwrap();
+        request.validate().unwrap();
+        assert!(validate_policy(&completion, &request, true).is_err());
+        let mut direct_request = request;
+        direct_request.tools[0].options.remove("allowed_callers");
+        assert!(validate_policy(&completion, &direct_request, true).is_ok());
+        let mut forged = completion;
+        forged.native.as_mut().unwrap().output[0]["caller"] =
+            json!({"type":"program","caller_id":"no-runtime-proof"});
+        assert!(validate_policy(&forged, &direct_request, true).is_err());
+    }
 
     fn request() -> crate::responses_wire::ResponseRequest {
         serde_json::from_value(json!({"model":"agent","input":"hello","tools":[

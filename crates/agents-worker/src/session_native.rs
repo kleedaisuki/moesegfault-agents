@@ -273,7 +273,11 @@ fn conversation_projection(
         }
         let mut item = source.clone();
         if let Some(fields) = item.as_object_mut() {
-            fields.remove("id");
+            if !crate::client_tool_items::is_call(source)
+                && !crate::client_tool_items::is_output(source)
+            {
+                fields.remove("id");
+            }
             fields.remove("created_by");
         }
         adapted.push(item);
@@ -692,10 +696,11 @@ pub(super) fn completion_failure(completion: &Completion) -> Option<&'static str
         TerminalStatus::Failed => Some("provider_response_failed"),
         TerminalStatus::Cancelled => Some("provider_response_cancelled"),
         _ if native.output.iter().any(|item| {
-            !matches!(
-                item["type"].as_str(),
-                Some("message" | "reasoning" | "function_call" | "custom_tool_call")
-            )
+            !crate::client_tool_items::is_call(item)
+                && !matches!(
+                    item["type"].as_str(),
+                    Some("message" | "reasoning" | "function_call" | "custom_tool_call")
+                )
         }) =>
         {
             Some("native_output_binding_required")
