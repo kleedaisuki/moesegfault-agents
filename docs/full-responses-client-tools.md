@@ -90,3 +90,24 @@ Primary contracts:
 [legacy local shell guide](https://developers.openai.com/api/docs/guides/tools-local-shell),
 [apply patch guide](https://developers.openai.com/api/docs/guides/tools-apply-patch),
 and [official SDK types](https://github.com/openai/openai-node/blob/main/src/resources/responses/responses.ts).
+
+## First compiled execution
+
+Source `86a7e7a7c4e258a8cc14c464c14a3f326436c4e1` built in Actions run
+`40310608529`, Worker artifact `12645310389`, Wasm SHA-256
+`b34a37c5732549373a29bdb0c5b9736b5a52cb0f95615196264311004ba8279e`.
+Its new Rust, native and container checks passed. The first client journey
+stopped on fixture accounting/upload issues, not a tool execution replay.
+
+The same retained Wasm subsequently passed all four actual local workerd
+handoff/continuation/fork cases with the current Python SDK 3.37.0. Local-shell,
+shell and patch passed after joining ledger ownership through the reservation;
+only the remaining computer case was rerun. The computer fixture now sends the
+required raw-upload checksum and uses a PNG with a valid IDAT checksum. Redirect
+denial is checked by zero requests to either redirect target, not by the new
+Request object's default mode at the outbound-service boundary. No production
+validation was relaxed and no external provider/model was called.
+
+These are controlled native-provider and real Rust-runtime results, not a live
+computer, real BYOK-provider acceptance or a passing aggregate Actions job.
+Detailed outputs remain under this topic worktree's `.temp/client-86-*.log`.

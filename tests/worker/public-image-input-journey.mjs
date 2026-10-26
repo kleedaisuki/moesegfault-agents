@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 export const publicImageOrigin = 'https://public-image-fixture.example.com';
-export const publicImagePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOSkAAAAASUVORK5CYII=', 'base64');
+export const publicImagePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 
 // Only Miniflare's controlled outbound boundary imports this fixture. The
 // production Worker uses native public-Internet Fetch, not this test service.
@@ -16,7 +16,8 @@ export function createPublicImageInputFixture() {
       for (const header of ['authorization', 'cookie', 'proxy-authorization', 'traceparent', 'tracestate', 'baggage', 'x-api-key']) {
         assert.equal(request.headers.get(header), null, `Public image fetch leaked ${header}`);
       }
-      assert.equal(request.redirect, 'manual');
+      // The outbound service receives a new Request; client redirect mode is
+      // verified by the redirect-target call counter, not this Request's default.
       calls.push({ path: url.pathname, query: url.search });
       if (url.pathname === '/redirect-public') return new Response(null, { status: 302, headers: { Location: publicImageOrigin + '/redirect-target' } });
       if (url.pathname === '/redirect-private') return new Response(null, { status: 307, headers: { Location: 'https://127.0.0.1/metadata' } });
