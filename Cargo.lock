@@ -94,6 +94,7 @@ dependencies = [
  "base64 0.22.1",
  "console_error_panic_hook",
  "deepseek-recipe",
+ "deepseek-recipe-core",
  "deepseek-recipe-encoding",
  "eventsource-stream",
  "flate2",
