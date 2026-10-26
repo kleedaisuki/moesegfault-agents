@@ -31,37 +31,100 @@ export function createMcpTransport(native) {
       state.seenAuth.push(state.expectedAuth);
       const body = await request.json();
       assert.equal(body.jsonrpc, '2.0');
-      assert.equal(request.headers.get('mcp-protocol-version'), '2026-07-28');
-      assert.equal(request.headers.get('mcp-method'), body.method);
-      assert.equal(body.params._meta['io.modelcontextprotocol/protocolVersion'], '2026-07-28');
       const response = result => Response.json({ jsonrpc: '2.0', id: body.id, result });
+      if (state.legacyVersion && body.method !== 'server/discover') {
+        assert.equal(request.headers.get('mcp-method'), null);
+        assert.equal(body.params?._meta?.['io.modelcontextprotocol/protocolVersion'], undefined);
+        if (body.method === 'initialize') {
+          state.initialize = (state.initialize ?? 0) + 1;
+          assert.equal(request.headers.get('mcp-protocol-version'), null, 'Do not send an unnegotiated version header');
+          assert.equal(request.headers.get('mcp-session-id'), null);
+          assert.equal(body.params.protocolVersion, '2025-11-25');
+          return Response.json({ jsonrpc: '2.0', id: body.id, result: {
+            protocolVersion: state.legacyVersion, capabilities: { tools: {} }, serverInfo: { name: 'legacy-fixture', version: '1' },
+          } }, { headers: { 'Mcp-Session-Id': 'owned-legacy-session' } });
+        }
+        assert.equal(request.headers.get('mcp-protocol-version'), state.legacyVersion);
+        assert.equal(request.headers.get('mcp-session-id'), 'owned-legacy-session');
+        if (body.method === 'notifications/initialized') {
+          state.initialized = (state.initialized ?? 0) + 1;
+          assert.equal(body.id, undefined);
+          return new Response(null, { status: 202 });
+        }
+      } else {
+        assert.equal(request.headers.get('mcp-protocol-version'), '2026-07-28');
+        assert.equal(request.headers.get('mcp-method'), body.method);
+        assert.equal(body.params._meta['io.modelcontextprotocol/protocolVersion'], '2026-07-28');
+      }
       if (body.method === 'server/discover') {
         state.discover++;
+        if (state.legacyVersion) return Response.json({ jsonrpc: '2.0', id: body.id,
+          error: { code: -32600, message: 'Unsupported protocol version: 2026-07-28. Supported: 2025-11-25, 2025-06-18, 2025-03-26' },
+        }, { status: 400 });
         return response({ resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {} }, ttlMs: 60000, cacheScope: 'private' });
       }
       if (body.method === 'tools/list') {
         state.list++;
         if (state.listFailure) return new Response('Unavailable', { status: 503 });
-        return response({ resultType: 'complete', tools: [{ name: 'echo', description: 'Echo one value.', inputSchema: mcpSchema }] });
+        return response({ ...(state.legacyVersion ? {} : { resultType: 'complete' }), tools: [{ name: 'echo', description: 'Echo one value.', inputSchema: mcpSchema }] });
       }
       assert.equal(body.method, 'tools/call');
       state.calls++;
       assert.equal(body.params.name, 'echo');
       assert.deepEqual(body.params.arguments, { value: '雪' });
-      assert.equal(request.headers.get('mcp-name'), 'echo');
-      assert.equal(request.headers.get('mcp-param-value'), '=?base64?6Zuq?=');
+      assert.equal(request.headers.get('mcp-name'), state.legacyVersion ? null : 'echo');
+      assert.equal(request.headers.get('mcp-param-value'), state.legacyVersion ? null : '=?base64?6Zuq?=');
       if (state.invalidCallReply) return new Response('{truncated', { headers: { 'Content-Type': 'application/json' } });
       const content = [{ type: 'text', text: 'echo:雪' }];
       if (state.richCallResult) content.push(
         { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOSkAAAAASUVORK5CYII=' },
         { type: 'text', text: 'USER-ONLY-MCP-CONTENT', annotations: { audience: ['user'] } },
         { type: 'resource', resource: { uri: 'memo:owned', text: 'Controlled MCP memo' } });
-      const result = { resultType: 'complete', content, structuredContent: { echo: '雪' } };
+      const result = { ...(state.legacyVersion ? {} : { resultType: 'complete' }), content, structuredContent: { echo: '雪' } };
       // Use the real native SSE parser, including a request-scoped progress event.
       const events = [{ jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: body.id, progress: 1 } }, { jsonrpc: '2.0', id: body.id, result }];
       return new Response(': heartbeat\n\n' + events.map(value => `event: message\ndata: ${JSON.stringify(value)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
     },
   };
+}
+
+export async function runMcpLegacyJourney(context) {
+  const state = context.providers.state;
+  state.legacyVersion = '2025-06-18';
+  state.expectedAuth = 'MCP-LEGACY-SECRET';
+  const call = { type: 'function_call', id: 'legacy-private', call_id: 'legacy-call', name: 'resolved-at-discovery', arguments: '{"value":"雪"}', status: 'completed' };
+  const scenario = await createNativeSemanticsScenario(context, 'mcp-legacy', [
+    { output: [call], check(body) { call.name = body.tools[0].name; } },
+    { output: [{ type: 'message', id: 'legacy-answer', role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text: 'Legacy MCP completed.', annotations: [], logprobs: [] }] }], check(body) {
+      const output = body.input.find(item => item.type === 'function_call_output' && item.call_id === call.call_id);
+      assert.ok(output.output.some(part => part.type === 'input_text' && part.text === 'echo:雪'));
+    } },
+  ]);
+  const tools = [mcpTool('MCP-LEGACY-SECRET')];
+  const first = await scenario.client.responses.create({ model: scenario.agent.id, input: 'Read the legacy echo.', tools, reasoning: { effort: 'none' } });
+  const approval = first.output.find(item => item.type === 'mcp_approval_request');
+  assert.ok(approval);
+  assert.equal(state.discover, 1);
+  assert.equal(state.initialize, 1);
+  assert.equal(state.initialized, 1);
+  assert.equal(state.calls, 0, 'Negotiation and an approval request cannot execute the remote tool');
+  context.validateWire(await (await scenario.client.responses.retrieve(first.id).asResponse()).json(), []);
+  const final = await (await scenario.client.responses.create({ model: scenario.agent.id, previous_response_id: first.id,
+    input: [{ type: 'mcp_approval_response', approval_request_id: approval.id, approve: true }], tools,
+    reasoning: { effort: 'none' } }).asResponse()).json();
+  assert.equal(final.status, 'completed');
+  assert.ok(final.output.find(item => item.type === 'mcp_call')?.output.includes('echo:雪'));
+  assert.equal(state.calls, 1);
+  assert.equal(state.initialize, 1, 'Approval continuation retains the negotiated binding rather than renegotiating');
+  const before = { model: scenario.state.calls, rpc: state.calls };
+  const stored = await (await scenario.client.responses.retrieve(final.id).asResponse()).json();
+  assert.deepEqual(stored, final);
+  context.validateWire(stored, []);
+  assert.deepEqual({ model: scenario.state.calls, rpc: state.calls }, before);
+  return { negotiated_version: state.legacyVersion, initial_modern_probe_rejected: true, initialize_without_version_header: true,
+    model_calls: scenario.state.calls, remote_tool_calls: state.calls, approval_preserved_negotiated_binding: true,
+    legacy_result_without_result_type: true, readonly_tail_dispatches: 0 };
 }
 
 function text(item) {

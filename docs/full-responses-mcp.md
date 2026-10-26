@@ -53,6 +53,36 @@ acceptance receipt; compiler/runtime outcomes must be attached after execution.
 - https://developers.openai.com/api/docs/guides/tools-connectors-mcp
 - https://developers.openai.com/api/docs/guides/tools-tool-search
 
+## Modern / legacy HTTP negotiation
+
+The anonymous DeepWiki metadata probe on 2026-10-26 rejected a modern
+`server/discover` request with HTTP 400 and JSON-RPC `-32600`, advertising
+2025-11-25, 2025-06-18 and 2025-03-26 (plus the older HTTP+SSE revision).
+This is an era-detection response, not a failed tool execution. The previous
+adapter accepted only method-not-found or non-JSON-RPC errors as fallback signals.
+
+The metadata-only probe now follows the modern HTTP compatibility rule: HTTP 400
+without a recognized modern protocol error can enter one legacy initialization.
+The typed rmcp error constants distinguish header mismatch, missing client
+capability and unsupported modern version, including pre-routing errors with a
+null request ID; none authorizes legacy downgrade. Only `server/discover` may
+take this transition. `tools/call`, unknown methods and ambiguous effects never
+retry or fall back. The fixed endpoint, caller credential envelope and redirect
+prohibition remain unchanged.
+
+Legacy initialization offers 2025-11-25 in its body without sending a premature
+`MCP-Protocol-Version` header. rmcp's `InitializeResult` validates the response;
+the supported server-selected revision and session ID remain on the owned
+binding and its frozen approval intent. Subsequent requests use that exact
+version. rmcp already accepts legacy tool results without `resultType`; no JSON
+normalization or removal of typed permission/output fields is needed. The
+deprecated two-endpoint HTTP+SSE transport is not introduced by this increment.
+
+References:
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#protocol-version-header
+
 The production limitations of global Fetch DNS authority remain relevant: a
 future deployment adding private origins must review SSRF protection rather than
 mistaking hostname syntax validation for resolved-address pinning.

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider, collectNativeEvents } from './native-semantics-journey.mjs';
-import { createMcpTransport, runMcpApprovalJourney, runMcpDeferredJourney, runMcpDeniedAndUnknown, runMcpApprovalReuse } from './mcp-journey.mjs';
+import { createMcpTransport, runMcpApprovalJourney, runMcpDeferredJourney, runMcpDeniedAndUnknown, runMcpApprovalReuse, runMcpLegacyJourney } from './mcp-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -124,7 +124,7 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
   const receipt = {};
   const chosen = process.env.MAGENTS_MCP_CASE?.split(',');
   let selected = 0;
-  for (const [id, run] of [['mcp_approval', () => runMcpApprovalJourney(context, reference)], ['mcp_deferred', () => runMcpDeferredJourney(context)], ['mcp_negative', () => runMcpDeniedAndUnknown(context)], ['mcp_claim', () => runMcpApprovalReuse(context)]]) {
+  for (const [id, run] of [['mcp_approval', () => runMcpApprovalJourney(context, reference)], ['mcp_deferred', () => runMcpDeferredJourney(context)], ['mcp_negative', () => runMcpDeniedAndUnknown(context)], ['mcp_claim', () => runMcpApprovalReuse(context)], ['mcp_legacy', () => runMcpLegacyJourney(context)]]) {
     if (chosen && !chosen.includes(id)) continue;
     selected++;
     await t.test(id, async () => {
