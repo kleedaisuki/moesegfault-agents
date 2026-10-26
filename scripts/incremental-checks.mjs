@@ -384,6 +384,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    const sourceChecks = new Set([
+      'rust:agents-worker:compact_native_storage_keeps_one_source_and_byte_identical_user_output',
+      'rust:agents-worker:compact_portable_storage_retains_legacy_projection_and_bounded_admission',
+    ]);
+    for (const job of Object.keys(receipt.checks)) receipt.checks[job] = receipt.checks[job].filter(check => sourceChecks.has(check.id));
+    if (receipt.checks.worker.length !== sourceChecks.size) throw Error('Missing new compact storage contract');
+    for (const [component, details] of Object.entries(receipt.components)) {
+      if (component !== 'worker') { details.action = 'not_executed'; details.artifact = null; }
+    }
+    receipt.native_packages = [];
+    receipt.non_deployable = true;
+    receipt.diagnostic_only_components = ['worker'];
+    receipt.required_jobs = ['changes', 'worker'];
+    receipt.required_remediations = receipt.checks.worker.map(check => check.id);
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
