@@ -94,3 +94,22 @@ rejected before another effect. Cleanup cannot overwrite that consumption claim.
 Mixed direct/programmatic declarations keep their direct capability, while the
 programmatic permission never grants direct execution authority. No JavaScript
 executor is claimed by accepting that permission metadata.
+
+## Deferred and single-consumption acceptance
+
+Run 40339077048 compiled source `57c76961ef12817a9c9a76f9e82a0fe5f4153053`
+(Wasm SHA-256 `0dead210415cca2a71e5312e9638c0159a032f61937a7c2efc9472d5077be979`).
+All four new Rust contracts passed. The actual Worker completed deferred search,
+approval, one MCP RPC, typed image/resource continuation and strict SDK SSE
+validation. The single-destination approval journey passed, including a 409 for a
+second destination, no second RPC/model action, and an immutable public parent.
+
+The remaining deferred assertion incorrectly compared an SDK object containing
+its synthesized `output_text` helper with an original HTTP body. New creation
+observations now capture `.asResponse().clone().json()` before parsing the same
+promise; no payload fields are deleted or filtered. The retained local fixture
+was then reopened with the exact Wasm for a read-only tail: raw SDK
+`.asResponse().json()` GET, native stored SSE and strict current SDK validation
+agreed, with zero model/tool dispatch and no new API grants. The typed SDK helper
+was checked separately. This tail passed in 3.97 seconds. Gateway authentication
+is not re-claimed from the fixture's internal namespace read.

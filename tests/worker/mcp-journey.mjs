@@ -205,15 +205,19 @@ export async function runMcpDeferredJourney(context) {
   assert.deepEqual(pending.output.map(item => item.type), ['mcp_list_tools', 'tool_search_call', 'tool_search_output', 'mcp_approval_request']);
   assert.equal(state.calls, before, 'Loading schemas and requesting approval cannot execute MCP');
   const approval = pending.output.at(-1);
-  const approved = await scenario.client.responses.create({ model: scenario.agent.id, previous_response_id: pending.id,
+  const approvalPromise = scenario.client.responses.create({ model: scenario.agent.id, previous_response_id: pending.id,
     tools, input: [{ type: 'mcp_approval_response', approval_request_id: approval.id, approve: true }], reasoning: { effort: 'none' } },
   { headers: { 'Idempotency-Key': 'deferred-mcp-once' } });
+  const originalApproved = await (await approvalPromise.asResponse()).clone().json();
+  const approved = await approvalPromise;
   assert.equal(approved.status, 'completed');
   assert.equal(approved.output.find(item => item.type === 'mcp_call')?.name, 'echo');
   assert.equal(state.calls, before + 1);
   assert.equal(scenario.state.calls, 3);
-  assert.deepEqual(await scenario.read(approved.id), approved);
-  context.validateWire(approved, []);
+  const rawApproved = await scenario.read(approved.id);
+  assert.equal(approved.output_text, "Deferred MCP completed.");
+  assert.deepEqual(rawApproved, originalApproved, "Compare original HTTP bodies, not SDK convenience projections");
+  context.validateWire(rawApproved, []);
   assert.ok(!JSON.stringify(approved).includes('__agents_'));
   assert.ok(!JSON.stringify(approved).includes(state.expectedAuth));
   state.richCallResult = false;

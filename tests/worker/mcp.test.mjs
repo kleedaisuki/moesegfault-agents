@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import OpenAI from 'openai';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
-import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
+import { createNativeSemanticsProvider, collectNativeEvents } from './native-semantics-journey.mjs';
 import { createMcpTransport, runMcpApprovalJourney, runMcpDeferredJourney, runMcpDeniedAndUnknown, runMcpApprovalReuse } from './mcp-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -29,7 +30,7 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
   const providers = createMcpTransport(createNativeSemanticsProvider());
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   await mkdir(path.join(root, '.temp'), { recursive: true });
-  const directory = await mkdtemp(path.join(root, '.temp/mcp-worker-'));
+  const directory = process.env.MAGENTS_MCP_REPLAY_STORAGE ? path.resolve(root, process.env.MAGENTS_MCP_REPLAY_STORAGE) : await mkdtemp(path.join(root, '.temp/mcp-worker-'));
   const mf = new Miniflare(convertV4MiniflareOptions({
     modulesRoot: build,
     modules: [
@@ -72,6 +73,33 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
   }));
   t.after(() => mf.dispose());
   const db = await mf.getD1Database('DB');
+  if (process.env.MAGENTS_MCP_REPLAY_STORAGE) {
+    const owner = process.env.MAGENTS_MCP_REPLAY_OWNER;
+    const responseId = process.env.MAGENTS_MCP_REPLAY_RESPONSE;
+    const sessionId = process.env.MAGENTS_MCP_REPLAY_SESSION;
+    assert.ok(owner && responseId && sessionId, 'Read-only tail requires the exact retained fixture boundary');
+    const namespace = await mf.getDurableObjectNamespace('SESSIONS');
+    const stub = namespace.get(namespace.idFromName(`${owner}:${sessionId}`));
+    const client = new OpenAI({ apiKey: 'unused-local-namespace-fixture', baseURL: 'https://session.test', maxRetries: 0,
+      fetch(input, init) {
+        const request = new Request(input, init);
+        assert.equal(request.method, 'GET', 'The retained tail may not create grants, Responses or model/tool dispatches');
+        return stub.fetch(request);
+      } });
+    const before = await db.prepare("SELECT COUNT(*) n FROM usage_ledger WHERE resource='model'").first();
+    const original = await (await client.responses.retrieve(responseId).asResponse()).json();
+    const events = await collectNativeEvents(await client.responses.retrieve(responseId, { stream: true }).asResponse());
+    assert.deepEqual(events.findLast(event => event.type === 'response.completed')?.response, original);
+    const parsed = await client.responses.retrieve(responseId);
+    assert.equal(parsed.output_text, 'Deferred MCP completed.');
+    const wire = validateWire(original, events);
+    assert.deepEqual(await db.prepare("SELECT COUNT(*) n FROM usage_ledger WHERE resource='model'").first(), before);
+    assert.equal(providers.state.calls, 0);
+    await writeFile(path.join(directory, 'receipt-mcp-replay-tail.json'), JSON.stringify({ source: process.env.MAGENTS_TEST_EXPECTED_BUILD,
+      wasm_sha256: createHash('sha256').update(await readFile(path.join(build, 'index_bg.wasm'))).digest('hex'),
+      case_id: 'mcp_raw_replay_tail', model_calls: 0, remote_tool_calls: 0, strict_wire: wire, status: 'passed_current' }, null, 2));
+    return;
+  }
   await migrate(db);
   async function request(method, endpoint, body, expected = 200, bearer) {
     const response = await mf.dispatchFetch('https://agents.test' + endpoint, {
