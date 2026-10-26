@@ -298,7 +298,10 @@ impl SessionInner {
             .response
             .as_ref()
             .ok_or_else(|| fault("hosted_response_missing"))?;
-        response.images.admit_final(MAX_IMAGE_BYTES)?;
+        response.images.admit_final_with_metadata(
+            MAX_IMAGE_BYTES,
+            serde_json::to_vec(&response.value())?.len(),
+        )?;
         let meter = ResourceMeter::new(&self.env, &record.owner_id, &record.id, &run.id)?;
         for (resource, unit) in [
             (Resource::R2Operation, "class_a"),
