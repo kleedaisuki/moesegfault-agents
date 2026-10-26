@@ -25,13 +25,8 @@ jobs:
           cache-on-failure: true
       - run: cargo fmt --check
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
-      - name: Run only new MCP and discovery Rust contracts
-        run: |
-          cargo test --locked -p agents-worker --lib mcp_ -- --nocapture
-          cargo test --locked -p agents-worker --lib tool_discovery::tests -- --nocapture
-          cargo test --locked -p agents-worker --lib custom_tool_formats::tests -- --nocapture
-          cargo test --locked -p agents-worker --lib client_search_completion_waits_for_final_schema_validation -- --nocapture
-          cargo test --locked -p agents-worker --lib server_choice_binds_alias_and_namespace -- --nocapture
+      - name: Run only the new deferred MCP dispatch contract
+        run: cargo test --locked -p agents-worker --lib deferred_mcp_search_loads_schema_policy_and_owned_dispatch_alias -- --exact tool_discovery::tests::deferred_mcp_search_loads_schema_policy_and_owned_dispatch_alias --nocapture
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
         working-directory: crates/agents-worker
@@ -46,16 +41,25 @@ jobs:
           name: worker
           path: crates/agents-worker/build
           retention-days: 7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - run: |
+          python3 -m venv .temp/mcp-sdk-venv
+          .temp/mcp-sdk-venv/bin/pip install -r tests/e2e/requirements-current.lock
       - name: Actual compiled Worker MCP and current SDK discovery journeys
         run: |
+          set -o pipefail
           mkdir -p .temp/mcp-verification
           node --test --test-reporter=tap tests/worker/mcp.test.mjs tests/worker/tool-discovery.test.mjs 2>&1 | tee .temp/mcp-verification/journeys.log
+        env:
+          MAGENTS_CURRENT_SCHEMA_PYTHON: .temp/mcp-sdk-venv/bin/python
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: mcp-verification
           path: |
             .temp/mcp-verification
-            .temp/mcp-worker-*/receipt.json
+            .temp/mcp-worker-*/receipt*.json
             .cache/v0.3-ci/tool-discovery*.json
           retention-days: 14
