@@ -112,9 +112,10 @@ fn observe() -> io::Result<(GuestObservation, Option<AllocationProfile>)> {
                 return None;
             }
             let kib = fields.next()?.parse::<u64>().ok()?;
-            (fields.next()? == "kB")
-                .then(|| kib.checked_mul(1024))
-                .flatten()
+            if fields.next()? != "kB" {
+                return None;
+            }
+            kib.checked_mul(1024)
         })
         .ok_or_else(invalid)?;
     let allocation = match std::env::var("MAGENTS_CF_ALLOCATION") {
@@ -206,10 +207,8 @@ fn discover_process(root: &Path, pid: u32) -> io::Result<PathBuf> {
         if visited > 128 || depth > 8 {
             return Err(invalid());
         }
-        if contains_process(&directory, pid)? {
-            if found.replace(directory.clone()).is_some() {
-                return Err(invalid());
-            }
+        if contains_process(&directory, pid)? && found.replace(directory.clone()).is_some() {
+            return Err(invalid());
         }
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
