@@ -21,7 +21,7 @@ Help the user manage their own agents and durable sessions from a terminal. Pref
 - Create, edit, validate, publish, or transfer TOML, including native model transport and independent tool-service routes: [configuration](references/configuration.md).
 - Manage server-side named instructions: [personalized skills](references/personalized-skills.md). These are not filesystem `SKILL.md` packages; this folder is not automatically uploaded or discovered by the cloud harness.
 - Run, continue, steer, close, or resume work: [sessions](references/sessions.md).
-- Create/branch/recover a Response, stream typed events, return local results, or choose the appropriate SDK-only advanced interface: [Responses](references/responses.md).
+- Create/branch/recover a Response, count/compact input, manage Conversations or code containers, stream typed events, or return local results: [Responses](references/responses.md).
 - Upload/manage Space files or persist/discover/restore workspace versions: [Space](references/space.md).
 - Retrieve conversations or workspace files: [exports](references/exports.md).
 

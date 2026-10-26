@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -25,11 +25,21 @@ fn offline(args: &[&str]) -> Output {
 }
 
 fn request(args: &[&str], response: &[u8], extra_headers: &str) -> (Output, Vec<u8>) {
+    request_fixture(args, 200, response, extra_headers, None)
+}
+
+fn request_fixture(
+    args: &[&str],
+    status: u16,
+    response: &[u8],
+    extra_headers: &str,
+    input: Option<&[u8]>,
+) -> (Output, Vec<u8>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let mut wire = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n",
+        "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n",
         response.len()
     )
     .into_bytes();
@@ -73,15 +83,26 @@ fn request(args: &[&str], response: &[u8], extra_headers: &str) -> (Output, Vec<
         request
     });
     let temp = directory();
-    let output = Command::new(env!("CARGO_BIN_EXE_magents"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_magents"))
         .args(["--api-url", &origin])
         .args(args)
         .env("MAGENTS_API_KEY", "fixture-only-key")
         .env("TMP", temp.path())
         .env("TEMP", temp.path())
         .env("TMPDIR", temp.path())
-        .output()
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    if let Some(input) = input {
+        child.stdin.take().unwrap().write_all(input).unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
     (output, server.join().unwrap())
 }
 
@@ -760,4 +781,292 @@ fn progressive_help_and_local_rejections_require_no_login() {
     let output = offline(&["space", "files", "upload", path.to_str().unwrap()]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no larger than 64 MiB"));
+}
+
+#[test]
+fn auxiliary_commands_preserve_native_requests_and_complete_compacted_windows() {
+    let temp = directory();
+    let path = temp.path().join("request.json");
+    let input = json!({"model":"owned_agent","instructions":"Keep this exact layer.  研究",
+        "input":[{"role":"user","content":"Original user request"},
+        {"type":"compaction","id":"cmp_old","encrypted_content":"opaque-old"}]});
+    let bytes = serde_json::to_vec(&input).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let window = json!({"object":"response.compaction","id":"cmp_new","created_at":1,
+        "output":[{"role":"user","content":"Original user request"},
+        {"type":"compaction","id":"cmp_new","encrypted_content":"opaque-new"}],
+        "usage":{"input_tokens":23,"output_tokens":7,"total_tokens":30}});
+    for file in [path.to_str().unwrap(), "-"] {
+        for (command, route, response) in [
+            (
+                "count",
+                "input_tokens",
+                json!({"object":"response.input_tokens","input_tokens":23}),
+            ),
+            ("compact", "compact", window.clone()),
+        ] {
+            let mut args = vec!["responses", command, file];
+            if command == "compact" {
+                args.extend(["--idempotency-key", "explicit-compact-1"]);
+            }
+            let (output, raw) = request_fixture(
+                &args,
+                200,
+                &serde_json::to_vec(&response).unwrap(),
+                "Content-Type: application/json\r\n",
+                (file == "-").then_some(bytes.as_slice()),
+            );
+            success(&output);
+            assert!(headers(&raw).starts_with(&format!("POST /v1/responses/{route} HTTP/1.1")));
+            assert_eq!(serde_json::from_slice::<Value>(body(&raw)).unwrap(), input);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                response
+            );
+            assert!(output.stderr.is_empty());
+            if command == "compact" {
+                assert!(
+                    headers(&raw)
+                        .to_ascii_lowercase()
+                        .contains("idempotency-key: explicit-compact-1")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_conversation_crud_items_and_container_routes_preserve_json() {
+    let temp = directory();
+    let path = temp.path().join("request.json");
+    let file = path.to_str().unwrap();
+    let request_body = json!({"metadata":{"label":"Research"},"items":[]});
+    std::fs::write(&path, serde_json::to_vec(&request_body).unwrap()).unwrap();
+    for (args, method, route, expected) in [
+        (
+            vec![
+                "conversations",
+                "create",
+                file,
+                "--idempotency-key",
+                "explicit-create-1",
+            ],
+            "POST",
+            "/v1/conversations",
+            Some(request_body.clone()),
+        ),
+        (
+            vec!["conversations", "show", "conv_1"],
+            "GET",
+            "/v1/conversations/conv_1",
+            None,
+        ),
+        (
+            vec!["conversations", "update", "conv_1", file],
+            "POST",
+            "/v1/conversations/conv_1",
+            Some(json!({"metadata":{"label":"Updated"}})),
+        ),
+        (
+            vec!["conversations", "delete", "conv_1"],
+            "DELETE",
+            "/v1/conversations/conv_1",
+            None,
+        ),
+        (
+            vec!["conversations", "purge", "conv_1"],
+            "POST",
+            "/v1/conversations/conv_1/purge",
+            None,
+        ),
+        (
+            vec![
+                "conversations",
+                "items",
+                "conv_1",
+                "list",
+                "--limit",
+                "7",
+                "--after",
+                "item_1",
+                "--order",
+                "desc",
+            ],
+            "GET",
+            "/v1/conversations/conv_1/items?limit=7&after=item_1&order=desc",
+            None,
+        ),
+        (
+            vec!["conversations", "items", "conv_1", "show", "item_1"],
+            "GET",
+            "/v1/conversations/conv_1/items/item_1",
+            None,
+        ),
+        (
+            vec!["conversations", "items", "conv_1", "create", file],
+            "POST",
+            "/v1/conversations/conv_1/items",
+            Some(json!({"items":[{"role":"user","content":"Preserved original"}]})),
+        ),
+        (
+            vec!["conversations", "items", "conv_1", "delete", "item_1"],
+            "DELETE",
+            "/v1/conversations/conv_1/items/item_1",
+            None,
+        ),
+        (
+            vec!["containers", "show", "cntr_1"],
+            "GET",
+            "/v1/containers/cntr_1",
+            None,
+        ),
+    ] {
+        if let Some(expected) = &expected {
+            std::fs::write(&path, serde_json::to_vec(expected).unwrap()).unwrap();
+        }
+        let response = json!({"id":"owned_object","typed":{"nested":[1,"unchanged"]}});
+        let (output, raw) = request(
+            &args,
+            &serde_json::to_vec(&response).unwrap(),
+            "Content-Type: application/json\r\n",
+        );
+        success(&output);
+        assert!(headers(&raw).starts_with(&format!("{method} {route} HTTP/1.1")));
+        assert!(
+            headers(&raw)
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-only-key")
+        );
+        if let Some(expected) = expected {
+            assert_eq!(
+                serde_json::from_slice::<Value>(body(&raw)).unwrap(),
+                expected
+            );
+        } else {
+            assert!(body(&raw).is_empty());
+        }
+        if args[1] == "create" {
+            assert!(
+                headers(&raw)
+                    .to_ascii_lowercase()
+                    .contains("idempotency-key: explicit-create-1")
+            );
+        }
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            response
+        );
+    }
+    let (output, raw) = request_fixture(&["containers", "delete", "cntr_1"], 204, b"", "", None);
+    success(&output);
+    assert!(headers(&raw).starts_with("DELETE /v1/containers/cntr_1 HTTP/1.1"));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn native_context_help_and_local_rejections_work_without_login() {
+    for (args, expected) in [
+        (vec!["--help"], "conversations"),
+        (vec!["--help"], "containers"),
+        (vec!["responses", "--help"], "count"),
+        (vec!["responses", "--help"], "compact"),
+        (vec!["responses", "compact", "--help"], "--idempotency-key"),
+        (vec!["conversations", "--help"], "purge"),
+        (vec!["conversations", "items", "conv_1", "--help"], "list"),
+        (vec!["containers", "--help"], "delete"),
+    ] {
+        let output = offline(&args);
+        success(&output);
+        assert!(String::from_utf8_lossy(&output.stdout).contains(expected));
+    }
+    for args in [
+        vec!["conversations", "show", "../account"],
+        vec!["conversations", "purge", "conv_1?other"],
+        vec!["conversations", "items", "conv_1", "show", "../../account"],
+        vec!["conversations", "items", "conv_1", "list", "--limit", "101"],
+        vec![
+            "conversations",
+            "items",
+            "conv_1",
+            "list",
+            "--after",
+            "item?other",
+        ],
+        vec![
+            "conversations",
+            "items",
+            "conv_1",
+            "list",
+            "--order",
+            "random",
+        ],
+        vec!["containers", "delete", "../account"],
+    ] {
+        let output = offline(&args);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    let temp = directory();
+    let path = temp.path().join("request.json");
+    std::fs::write(&path, "[]").unwrap();
+    for command in ["count", "compact"] {
+        let output = offline(&["responses", command, path.to_str().unwrap()]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("JSON object"));
+    }
+    std::fs::write(&path, "{}").unwrap();
+    for command in ["compact", "create"] {
+        let output = offline(&[
+            "responses",
+            command,
+            path.to_str().unwrap(),
+            "--idempotency-key",
+            "invalid key",
+        ]);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Idempotency key"));
+    }
+}
+
+#[test]
+fn failed_native_operations_report_http_failure_without_replay_or_body_leaks() {
+    let temp = directory();
+    let path = temp.path().join("request.json");
+    std::fs::write(&path, r#"{"model":"owned_agent","input":"hello"}"#).unwrap();
+    for (args, code) in [
+        (
+            vec![
+                "responses",
+                "compact",
+                path.to_str().unwrap(),
+                "--idempotency-key",
+                "explicit-compact-1",
+            ],
+            "idempotency_conflict",
+        ),
+        (
+            vec!["responses", "count", path.to_str().unwrap()],
+            "token_count_unavailable",
+        ),
+        (
+            vec!["conversations", "purge", "conv_1"],
+            "conversation_purge_conflict",
+        ),
+    ] {
+        let response = json!({"error":{"code":code,"message":"Explicit recovery required"}});
+        let (output, _) = request_fixture(
+            &args,
+            409,
+            &serde_json::to_vec(&response).unwrap(),
+            "Content-Type: application/json\r\n",
+            None,
+        );
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("409"));
+        assert!(error.contains("correlation ID"));
+        assert!(!error.contains(code));
+        assert!(!error.contains("Explicit recovery required"));
+    }
 }

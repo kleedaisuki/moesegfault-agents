@@ -41,14 +41,45 @@ can report unavailable history rather than inventing a workspace snapshot.
 A branch is new authorized work, not observation recovery. Save a new intent/key
 for it. An omitted model resolves from the parent; choosing another owned agent
 is deliberate branching, not a way to bypass quotas. Conversation-bound request
-semantics are separate; do not invent a `magents conversations`, `ws`, `compact`
-or `count` command unless the installed subgroup help actually exposes it. Use
-an accepted SDK/HTTP interface when the CLI has no dedicated operation.
+semantics are separate. The candidate CLI exposes `responses count`, `responses
+compact`, `conversations` and `containers`; check installed subgroup help and
+selected realm activation before using them. WebSocket lanes still require an
+accepted SDK/HTTP interface when no installed CLI operation exposes them.
 
 Server/agent instructions stay pinned. Request `instructions` survives compaction
 inside its response but is not inherited as a later top-level override. Resend
 that customization deliberately; neither instructions nor historical context
 grant server-tool or cross-owner permissions.
+
+## Count, compact, and manage retained context
+
+```sh
+magents responses count request.json
+magents responses compact request.json --idempotency-key COMPACT_OPERATION
+magents conversations create conversation.json --idempotency-key CREATE_OPERATION
+magents conversations items CONVERSATION_ID list --limit 20 --order asc
+magents containers show CONTAINER_ID
+```
+
+Count and compact forward native JSON unchanged; `-` reads stdin. The server
+owns rendering, pin resolution and exact count availability; never substitute a
+local tokenizer or text estimate. Compaction is paid, never automatically
+retried, and its complete `output` (retained user roles plus opaque compaction
+item) is the next input window. Do not extract a text summary. Save the explicit
+key and exact request before dispatch; resubmission without that original key is
+new work. Compact's `instructions` guides that operation, not ongoing agent
+instructions. Count does not invoke compaction.
+
+Conversation create takes `{"metadata":{},"items":[]}`, update takes
+`{"metadata":{...}}`, and `items ID create` takes `{"items":[...]}` from a file
+or stdin. Use `show`, `update`, `delete`, and `items ID list/show/create/delete`
+as exposed by help; list defaults descending and pages with `--after`.
+Conversation IDs are not session IDs; attach them in `responses create` JSON.
+`conversations delete ID` changes visibility; explicitly authorized `purge ID`
+irreversibly removes retained items only after deletion and active work finishes.
+It does not erase response snapshots, workspace versions or financial history.
+Owned `containers show/delete ID` never starts a model run or revives its creator
+session. Do not delete either resource merely to repair uncertain observation.
 
 ## Return local results, never infer an executable
 
