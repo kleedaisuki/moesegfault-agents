@@ -206,6 +206,8 @@ impl std::ops::Deref for PendingChunk {
 #[path = "file_index_effects.rs"]
 pub mod effects;
 
+#[path = "file_index_funding.rs"]
+pub mod funding;
 #[path = "file_index_storage.rs"]
 pub mod storage;
 
@@ -309,6 +311,8 @@ pub struct IngestJob {
     pub chunking_json: String,
     pub chunking_revision: String,
     pub source_staged: u8,
+    #[serde(default)]
+    pub staged_chunks: usize,
     pub chunk_count: usize,
 }
 
@@ -398,9 +402,10 @@ pub async fn claim_job(
         now_ms.to_string(),
         until.to_string(),
         lease,
+        event.to_string(),
     ];
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET lease_id=?6,lease_until=CAST(?5 AS INTEGER),updated_at=CAST(?4 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND status='in_progress' AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) RETURNING account_id,vector_store_id,file_id,file_sha256,generation,lease_id,chunking_json,chunking_revision,source_staged,chunk_count")
+    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET lease_id=?6,lease_turn=?7,lease_until=CAST(?5 AS INTEGER),updated_at=CAST(?4 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND status='in_progress' AND funding_blocked=0 AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) RETURNING account_id,vector_store_id,file_id,file_sha256,generation,lease_id,chunking_json,chunking_revision,source_staged,chunk_count,staged_chunks")
         .bind(&values(&bindings))?.all().await?;
     meter.record_d1(event, &result).await?;
     Ok(result.results::<IngestJob>()?.into_iter().next())
@@ -455,6 +460,9 @@ pub async fn stage_chunks(
         statements.push(db.prepare("INSERT INTO file_search_chunks(chunk_id,account_id,vector_store_id,file_id,file_sha256,generation,ordinal,text,byte_start,byte_end,embedding_model,embedding_dimensions,embedding_revision) SELECT ?7,?1,?2,?3,?8,?4,CAST(?9 AS INTEGER),?10,CAST(?11 AS INTEGER),CAST(?12 AS INTEGER),?13,CAST(?14 AS INTEGER),?15 WHERE EXISTS(SELECT 1 FROM vector_store_files vf JOIN space_files sf ON sf.id=vf.file_id JOIN vector_stores vs ON vs.id=vf.vector_store_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.generation=?4 AND vf.lease_id=?5 AND vf.lease_until>CAST(?6 AS INTEGER) AND vf.status='in_progress' AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=?8 AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) ON CONFLICT(chunk_id) DO NOTHING")
             .bind(&values(&bindings))?);
     }
+    let first = chunks[0].ordinal;
+    statements.push(db.prepare("UPDATE vector_store_files SET staged_chunks=CAST(?7 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND lease_id=?5 AND lease_until>CAST(?6 AS INTEGER) AND status='in_progress' AND funding_blocked=0 AND staged_chunks=CAST(?8 AS INTEGER) RETURNING file_id")
+        .bind(&values(&[job.account_id.clone(),job.vector_store_id.clone(),job.file_id.clone(),job.generation.clone(),job.lease_id.clone(),now_ms.to_string(),(first+chunks.len()).to_string(),first.to_string()]))?);
     for ordinal in 0..statements.len() {
         meter.require_d1(&format!("{event}:{ordinal}")).await?;
     }
@@ -463,6 +471,15 @@ pub async fn stage_chunks(
         meter
             .record_d1(&format!("{event}:{ordinal}"), result)
             .await?;
+    }
+    if results
+        .last()
+        .ok_or_else(|| fail("file_search_stage_cursor_missing"))?
+        .results::<Value>()?
+        .len()
+        != 1
+    {
+        return Err(fail("file_search_effect_lease_lost"));
     }
     Ok(())
 }

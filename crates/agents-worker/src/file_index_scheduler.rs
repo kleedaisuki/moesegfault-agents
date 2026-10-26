@@ -1,11 +1,6 @@
 //! Recoverable D1 ingest queue; no model or index is created by token counting.
 
-use crate::{
-    file_ingest,
-    file_vector::{self, IngestProgress},
-    resources::ResourceMeter,
-    util,
-};
+use crate::{file_ingest, file_vector, resources::ResourceMeter, util};
 use serde::Deserialize;
 use std::cell::Cell;
 use worker::{Env, Result};
@@ -44,13 +39,14 @@ struct Job {
 
 pub(crate) async fn run(env: &Env) -> Result<()> {
     gc::run(env).await?;
+    crate::file_index::funding::settle_known(env).await?;
     crate::file_index::storage::run(env).await?;
     if env.var("FILE_SEARCH_PROFILE_JSON").is_err() {
         return Ok(());
     }
     // This bounded cross-account discovery is platform maintenance, not an
     // owner query. Each selected job funds its own effects before claiming work.
-    let jobs=env.d1("DB")?.prepare("SELECT vf.account_id,vf.vector_store_id,vf.file_id,vf.generation,vf.service_profile_json FROM vector_store_files vf WHERE vf.status='in_progress' AND vf.removed_at IS NULL AND vf.retry_at<=CAST(?1 AS INTEGER) AND vf.lease_until<=CAST(?1 AS INTEGER) ORDER BY vf.retry_at,vf.created_at LIMIT 4")
+    let jobs=env.d1("DB")?.prepare("SELECT vf.account_id,vf.vector_store_id,vf.file_id,vf.generation,vf.service_profile_json FROM vector_store_files vf WHERE vf.status='in_progress' AND vf.funding_blocked=0 AND vf.removed_at IS NULL AND vf.retry_at<=CAST(?1 AS INTEGER) AND vf.lease_until<=CAST(?1 AS INTEGER) ORDER BY vf.retry_at,vf.created_at LIMIT 4")
         .bind(&[util::now_ms().to_string().into()])?.all().await?.results::<Job>()?;
     for job in jobs {
         if run_job(env, &job, util::now_ms() + 25000).await.is_err() {
@@ -76,7 +72,7 @@ pub(crate) async fn kickoff(
     let file = file
         .map(wasm_bindgen::JsValue::from)
         .unwrap_or(wasm_bindgen::JsValue::NULL);
-    let jobs=env.d1("DB")?.prepare("SELECT account_id,vector_store_id,file_id,generation,service_profile_json FROM vector_store_files WHERE account_id=?1 AND vector_store_id=?2 AND (?3 IS NULL OR file_id=?3) AND status='in_progress' AND removed_at IS NULL AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) ORDER BY retry_at,created_at LIMIT 4")
+    let jobs=env.d1("DB")?.prepare("SELECT account_id,vector_store_id,file_id,generation,service_profile_json FROM vector_store_files WHERE account_id=?1 AND vector_store_id=?2 AND (?3 IS NULL OR file_id=?3) AND status='in_progress' AND funding_blocked=0 AND removed_at IS NULL AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) ORDER BY retry_at,created_at LIMIT 4")
         .bind(&[owner.as_str().into(),store.as_str().into(),file,util::now_ms().to_string().into()])?.all().await?.results::<Job>()?;
     for job in jobs {
         if util::now_ms() + 2000 >= deadline {
@@ -99,15 +95,23 @@ async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
         })?)?;
     profile.validate()?;
     profile.validate_bindings(env)?;
-    let run = format!("file-ingest:{}", job.generation);
-    let meter = ResourceMeter::account(env, &job.account_id, &run)?;
-    file_ingest::preflight(&profile, &meter)?;
     crate::allowances::sync(env, &job.account_id).await?;
-    crate::reconcile::maintenance_account_reservation(env, &job.account_id, &run).await?;
     if util::now_ms() + 1000 >= deadline {
         return Ok(());
     }
     let attempt = uuid::Uuid::new_v4().simple().to_string();
+    let scope = crate::file_index::funding::Scope {
+        owner: &job.account_id,
+        store: &job.vector_store_id,
+        file: &job.file_id,
+        generation: &job.generation,
+        lease: None,
+    };
+    let funding =
+        crate::file_index::funding::fund(env, &scope, &format!("turn:{attempt}"), None, 0).await?;
+    let run = &funding.id;
+    let meter = funding.meter(env, &job.account_id)?;
+    file_ingest::preflight(&profile, &meter)?;
     let event = format!("ingest:{attempt}");
     let wall = format!("{event}:worker");
     meter
@@ -134,6 +138,13 @@ async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
             "file_search_ingest_turn_timeout".into(),
         )),
     };
+    if outcome.is_err() {
+        let release = format!("{event}:failed_turn");
+        meter.require_d1(&release).await?;
+        let released=env.d1("DB")?.prepare("UPDATE vector_store_files SET lease_id=NULL,lease_until=0,retry_at=CAST(?6 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND lease_turn=?5 AND status='in_progress'")
+            .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into(),format!("{event}:claim").into(),(util::now_ms()+2000).to_string().into()])?.run().await?;
+        meter.record_d1(&release, &released).await?;
+    }
     meter
         .record_wall_time(
             &wall,
@@ -142,16 +153,16 @@ async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
             util::now_ms(),
         )
         .await?;
-    match outcome {
-        Ok(IngestProgress::Completed) => {
-            meter.settle_run().await?;
-        }
-        Ok(_) => {}
-        Err(_) => util::emit(
+    if outcome.is_err() {
+        util::emit(
             "file_search.ingest_deferred",
             serde_json::json!({"operation":run}),
-        ),
+        );
     }
+    // A completed bounded turn releases its unused I/O reserve even while the
+    // generation continues. Unknown measurements keep their own hold instead.
+    let _ = meter.settle_run().await;
+
     Ok(())
 }
 

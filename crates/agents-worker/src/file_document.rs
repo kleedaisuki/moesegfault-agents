@@ -267,33 +267,37 @@ pub(super) async fn text<'a>(
         };
     }
     let prepared = prepare(env, profile, kind, bytes)?;
-    let effect = format!("{event}:convert");
-    meter
-        .require_observation(&effect, allocation.resource.clone(), &allocation.unit)
-        .await?;
+    let funded = crate::file_index::funding::fund(
+        env,
+        &job.into(),
+        "convert",
+        Some((allocation, bytes.len() as u64, 1)),
+        crate::file_index::funding::io_budget(env)?,
+    )
+    .await?;
+    let paid = funded.meter(env, &job.account_id)?;
+    let effect = "provider";
     meter.require_d1(&format!("{event}:intent")).await?;
     let result=env.d1("DB")?.prepare("INSERT INTO file_search_extractions(account_id,vector_store_id,file_id,generation,source_sha256,status,created_at_ms) SELECT ?1,?2,?3,?4,?5,'dispatched',CAST(?7 AS INTEGER) WHERE EXISTS(SELECT 1 FROM vector_store_files vf JOIN space_files sf ON sf.id=vf.file_id AND sf.account_id=vf.account_id WHERE vf.account_id=?1 AND vf.vector_store_id=?2 AND vf.file_id=?3 AND vf.generation=?4 AND vf.lease_id=?6 AND vf.status='in_progress' AND vf.lease_until>CAST(?7 AS INTEGER) AND sf.status='processed' AND sf.sha256=?5) ON CONFLICT(vector_store_id,file_id,generation) DO NOTHING RETURNING file_id")
         .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into(),job.file_sha256.as_str().into(),job.lease_id.as_str().into(),crate::util::now_ms().to_string().into()])?.all().await?;
     meter.record_d1(&format!("{event}:intent"), &result).await?;
     if result.results::<Value>()?.is_empty() {
-        meter
-            .record_observation(&effect, allocation.resource.clone(), &allocation.unit, 0)
-            .await?;
         return Err(fail("file_search_extraction_lease_lost"));
     }
+    paid.require_observation(effect, allocation.resource.clone(), &allocation.unit)
+        .await?;
     let outcome = convert(prepared).await;
     if matches!(&outcome,Err(Error::RustError(code)) if code=="file_search_document_service_failed")
     {
         return outcome.map(Cow::Owned);
     }
-    meter
-        .record_observation(
-            &effect,
-            allocation.resource.clone(),
-            &allocation.unit,
-            bytes.len() as u64,
-        )
-        .await?;
+    paid.record_observation(
+        effect,
+        allocation.resource.clone(),
+        &allocation.unit,
+        bytes.len() as u64,
+    )
+    .await?;
     let (state, text, error) = match &outcome {
         Ok(text) => ("completed", Some(text.as_str()), None),
         Err(Error::RustError(code)) => ("failed", None, Some(code.as_str())),
@@ -306,6 +310,7 @@ pub(super) async fn text<'a>(
     if result.results::<Value>()?.is_empty() {
         return Err(fail("file_search_extraction_lease_lost"));
     }
+    paid.settle_run().await?;
     outcome.map(Cow::Owned)
 }
 

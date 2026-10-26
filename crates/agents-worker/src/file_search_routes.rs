@@ -56,6 +56,9 @@ async fn query(
 }
 
 pub(crate) async fn handle(req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
+    if let Some(response) = cancel_unfunded(&req, env, owner).await? {
+        return Ok(response);
+    }
     let operation = ConversationOperation::account(env, owner).await?;
     let meter = ResourceMeter::account(env, owner, operation.id())?;
     let result = match dispatch(req, env, owner, &meter).await {
@@ -90,6 +93,27 @@ pub(crate) async fn handle(req: Request, env: &RouteContext<'_>, owner: &str) ->
         result => result,
     };
     operation.finish_result(env, owner, result, false).await
+}
+
+async fn cancel_unfunded(req: &Request, env: &Env, owner: &str) -> Result<Option<Response>> {
+    if req.method() != Method::Delete {
+        return Ok(None);
+    }
+    let path = req.path();
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    let ["v1", "vector_stores", store, "files", file] = parts.as_slice() else {
+        return Ok(None);
+    };
+    // Stopping an already unfunded job cannot require more credit. This bounded,
+    // authenticated control-plane tombstone is platform overhead; physical GC
+    // remains separately funded and unknown provider holds are never released.
+    let rows=env.d1("DB")?.prepare("UPDATE vector_store_files SET status='cancelled',removed_at=COALESCE(removed_at,CAST(?4 AS INTEGER)),lease_id=NULL,lease_until=0 WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND funding_blocked=1 AND status IN ('in_progress','cancelled') AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=?2 AND vs.account_id=?1) RETURNING file_id")
+        .bind(&[owner.into(),(*store).into(),(*file).into(),util::now_ms().to_string().into()])?.all().await?;
+    if rows.results::<Value>()?.is_empty() {
+        return Ok(None);
+    }
+    Response::from_json(&json!({"id":file,"object":"vector_store.file.deleted","deleted":true}))
+        .map(Some)
 }
 
 async fn dispatch(
@@ -471,6 +495,24 @@ async fn file_route(
         };
     }
     let id = tail[0];
+    if tail.len() == 2 && tail[1] == "retry" && method == Method::Post {
+        let body: Value = match routes::body(&mut req).await {
+            Ok(body) => body,
+            Err(response) => return Ok(response),
+        };
+        if body.as_object().is_none_or(|fields| !fields.is_empty()) {
+            return invalid();
+        }
+        let result=query(env,meter,"UPDATE vector_store_files SET funding_blocked=0,funding_required_microusd=0,last_error_json=NULL,retry_at=0 WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND status='in_progress' AND funding_blocked=1 AND removed_at IS NULL AND EXISTS(SELECT 1 FROM usage_accounts ua WHERE ua.account_id=?1 AND ua.budget_microusd-ua.spent_microusd-ua.reserved_microusd>=funding_required_microusd) AND NOT EXISTS(SELECT 1 FROM file_search_chunks c WHERE c.account_id=?1 AND c.vector_store_id=?2 AND c.file_id=?3 AND c.generation=vector_store_files.generation AND c.vector_status='embedding') AND NOT EXISTS(SELECT 1 FROM file_search_funding f JOIN resource_observations o ON o.run_id=f.id AND o.account_id=f.account_id WHERE f.account_id=?1 AND f.vector_store_id=?2 AND f.file_id=?3 AND f.generation=vector_store_files.generation AND f.operation='convert' AND o.status='pending') RETURNING file_id",&[json!(owner),json!(store),json!(id)]).await?;
+        if result.results::<Value>()?.is_empty() {
+            return util::json_error(
+                409,
+                "file_search_retry_not_admitted",
+                "Retry requires an owned paused membership, sufficient resource credit and no unknown submitted conversion or embedding",
+            );
+        }
+        return file_response(env, owner, store, id, meter).await;
+    }
     if tail.len() == 2 && tail[1] == "content" && method == Method::Get {
         let rows=query(env,meter,"SELECT c.text FROM file_search_chunks c JOIN vector_store_files vf ON vf.vector_store_id=c.vector_store_id AND vf.file_id=c.file_id JOIN space_files sf ON sf.id=c.file_id WHERE c.account_id=?1 AND c.vector_store_id=?2 AND c.file_id=?3 AND vf.account_id=?1 AND vf.status='completed' AND vf.generation=c.generation AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=c.file_sha256 ORDER BY c.ordinal LIMIT 100",&[json!(owner),json!(store),json!(id)]).await?.results::<Value>()?;
         return Response::from_json(

@@ -492,7 +492,20 @@ async fn vectors_for_batch(
         "pending" => {}
         _ => return Err(fail("invalid_file_search_effect_phase")),
     }
-    let effect = format!("{event}:embed");
+    let quantity = chunks
+        .iter()
+        .try_fold(0u64, |n, c| n.checked_add(c.text.len() as u64))
+        .ok_or_else(|| fail("file_search_usage_overflow"))?;
+    let funded = file_index::funding::fund(
+        env,
+        &job.into(),
+        &format!("embed:{}:{}", chunks[0].ordinal, chunks.len()),
+        Some((&profile.embedding_allocation, quantity, 1)),
+        file_index::funding::io_budget(env)?,
+    )
+    .await?;
+    let paid = funded.meter(env, &job.account_id)?;
+    let effect = funded.id.clone();
     if !file_index::effects::begin(env, job, chunks, "embedding", &effect, meter).await? {
         return Err(fail("file_search_effect_lease_lost"));
     }
@@ -500,7 +513,7 @@ async fn vectors_for_batch(
         .iter()
         .map(|chunk| chunk.text.clone())
         .collect::<Vec<_>>();
-    let vectors = embed(env, profile, &texts, meter, &effect).await?;
+    let vectors = embed(env, profile, &texts, &paid, "provider").await?;
     file_index::effects::save_vectors(
         env,
         job,
@@ -511,6 +524,7 @@ async fn vectors_for_batch(
         &format!("{effect}:receipt"),
     )
     .await?;
+    paid.settle_run().await?;
     Ok(vectors)
 }
 
@@ -641,14 +655,39 @@ pub async fn ingest_turn(
             }
             Err(error) => return Err(error),
         };
-        for (ordinal, ranges) in chunks.chunks(32).enumerate() {
+        if job.staged_chunks > chunks.len() {
+            return Err(fail("file_search_stage_cursor_invalid"));
+        }
+        let stage_deadline = crate::util::now_ms() + 20_000;
+        for (ordinal, ranges) in chunks[job.staged_chunks..].chunks(32).enumerate() {
+            if crate::util::now_ms() >= stage_deadline {
+                file_index::release_job(
+                    env,
+                    &job,
+                    crate::util::now_ms(),
+                    meter,
+                    &format!("{attempt}:stage_yield"),
+                )
+                .await?;
+                return Ok(IngestProgress::Pending);
+            }
+            let start = job.staged_chunks;
+            let funded = file_index::funding::fund(
+                env,
+                &(&job).into(),
+                &format!("stage:{start}:{}", ranges.len()),
+                None,
+                file_index::funding::io_budget(env)?,
+            )
+            .await?;
+            let staging = funded.meter(env, owner)?;
             // Keep only one D1 batch of owned strings, not a second overlapping
             // copy of the complete source beside the warm tokenizer.
             let batch = ranges
                 .iter()
                 .enumerate()
                 .map(|(index, range)| file_index::Chunk {
-                    ordinal: ordinal * 32 + index,
+                    ordinal: start + index,
                     byte_start: range.start,
                     byte_end: range.end,
                     text: text[range.clone()].into(),
@@ -671,10 +710,12 @@ pub async fn ingest_turn(
                 &batch,
                 &profile.embedding,
                 crate::util::now_ms(),
-                meter,
+                &staging,
                 &format!("{attempt}:stage:{ordinal}"),
             )
             .await?;
+            staging.settle_run().await?;
+            job.staged_chunks += ranges.len();
         }
         if !file_index::seal_source(
             env,
@@ -760,29 +801,52 @@ pub async fn ingest_turn(
             })
             .collect::<Result<Vec<_>>>()?;
         if matches!(phase, "pending" | "embedded") {
-            let effect = format!("{attempt}:upsert:{batch}");
+            let quantity = (records.len() * profile.embedding.dimensions) as u64;
+            let funded = file_index::funding::fund(
+                env,
+                &(&job).into(),
+                &format!("upsert:{}:{}", chunks[0].ordinal, chunks.len()),
+                Some((&profile.upsert_allocation, quantity, 1)),
+                file_index::funding::io_budget(env)?,
+            )
+            .await?;
+            let paid = funded.meter(env, owner)?;
+            let effect = funded.id.clone();
             if !file_index::effects::begin(env, &job, &chunks, "upserting", &effect, meter).await? {
                 return Ok(IngestProgress::Unavailable);
             }
-            let mutation = upsert(env, profile, &records, meter, &effect).await?;
+            let mutation = upsert(env, profile, &records, &paid, "provider").await?;
             file_index::effects::save_mutation(
                 env,
                 &job,
                 &chunks,
                 &mutation,
                 meter,
-                &format!("{effect}:receipt"),
+                &format!("{attempt}:upsert:{batch}:receipt"),
             )
             .await?;
+            paid.settle_run().await?;
         }
-        let found = visible(
+        let visibility = file_index::funding::fund(
             env,
-            profile,
-            &records,
-            meter,
-            &format!("{attempt}:visibility:{batch}"),
+            &(&job).into(),
+            &format!(
+                "visibility:{}:{}:{}",
+                chunks[0].ordinal,
+                chunks.len(),
+                job.lease_id
+            ),
+            Some((
+                &profile.query_allocation,
+                profile.embedding.dimensions as u64,
+                records.len().div_ceil(16) as u64,
+            )),
+            file_index::funding::io_budget(env)?,
         )
         .await?;
+        let observed = visibility.meter(env, owner)?;
+        let found = visible(env, profile, &records, &observed, "provider").await?;
+        observed.settle_run().await?;
         if !found {
             if chunks
                 .first()
@@ -813,14 +877,14 @@ pub async fn ingest_turn(
         if phase == "upserting" {
             let effect = file_index::effects::original_effect(&chunks)?;
             let allocation = &profile.upsert_allocation;
-            meter
-                .record_observation(
-                    effect,
-                    allocation.resource.clone(),
-                    &allocation.unit,
-                    (records.len() * profile.embedding.dimensions) as u64,
-                )
-                .await?;
+            file_index::funding::settle_upsert(
+                env,
+                &job,
+                effect,
+                allocation,
+                (records.len() * profile.embedding.dimensions) as u64,
+            )
+            .await?;
         }
         let ids = records
             .into_iter()
