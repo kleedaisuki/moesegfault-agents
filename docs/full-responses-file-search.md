@@ -272,6 +272,17 @@ local RAII admission guard allows one active ingestion buffer per isolate;
 durable leases and ordinary polling/maintenance still provide cross-isolate
 recovery and horizontal concurrency. Cancellation releases admission directly.
 
+## Remaining admission boundary
+
+Ingestion currently shares one generation-level maintenance reservation across
+its batches and visibility observations. This is a small-document delivery,
+not proof that every allowed sixteen-MiB source fits that fixed resource hold.
+A sufficiently large generation can exhaust the hold before its remaining
+observations settle. Do not bypass the immutable reservation or write zero for
+unknown effects: the follow-up is recoverable bounded batch funding through the
+shared financial interface, with an explicit terminal budget outcome. The
+per-isolate buffer guard does not change this financial boundary.
+
 ## Primary references
 
 - [OpenAI file search](https://developers.openai.com/api/docs/guides/tools-file-search)
