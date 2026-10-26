@@ -4,7 +4,7 @@
 use std::io::Cursor;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use image::{ImageFormat, ImageReader, Limits, imageops::FilterType};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, imageops::FilterType};
 use serde_json::{Value, json};
 
 use super::{Message, ProviderConfig};
@@ -129,10 +129,20 @@ fn image_url(url: &str, detail: &str) -> Result<String, String> {
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
-    reader.limits(limits);
-    let decoded = reader.decode().map_err(|_| MEDIA_UNAVAILABLE)?;
-    let resized = decoded.resize(512, 512, FilterType::Triangle);
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().map_err(|_| MEDIA_UNAVAILABLE)?;
+    let orientation = decoder.orientation().map_err(|_| MEDIA_UNAVAILABLE)?;
+    // Match ImageReader::decode's allocation fence when using the decoder API
+    // to retain orientation metadata; from_decoder alone does not reserve it.
+    limits
+        .reserve(decoder.total_bytes())
+        .map_err(|_| MEDIA_UNAVAILABLE)?;
+    decoder.set_limits(limits).map_err(|_| MEDIA_UNAVAILABLE)?;
+    let decoded = DynamicImage::from_decoder(decoder).map_err(|_| MEDIA_UNAVAILABLE)?;
+    let mut resized = decoded.resize(512, 512, FilterType::Triangle);
     drop(decoded);
+    // Rotate the small raster, not another full-size smartphone-photo buffer.
+    resized.apply_orientation(orientation);
     let mut output = Cursor::new(Vec::new());
     resized
         .write_to(&mut output, ImageFormat::Png)
@@ -218,6 +228,30 @@ mod tests {
         let header = crate::input_image_metadata::inspect(&bytes).unwrap();
         assert_eq!((header.width, header.height), (512, 256));
         assert_eq!(source[0]["content"][0]["detail"], "low");
+    }
+
+    #[test]
+    fn compact_low_detail_keeps_exif_orientation_in_the_final_raster() {
+        use image::{ImageEncoder, codecs::jpeg::JpegEncoder};
+        let mut bytes = Vec::new();
+        let mut encoder = JpegEncoder::new(&mut bytes);
+        // One little-endian TIFF orientation entry: Rotate90.
+        encoder
+            .set_exif_metadata(
+                b"II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0".to_vec(),
+            )
+            .unwrap();
+        encoder
+            .encode_image(&DynamicImage::new_rgb8(1024, 512))
+            .unwrap();
+        let image = image_url(
+            &format!("data:image/jpeg;base64,{}", STANDARD.encode(bytes)),
+            "low",
+        )
+        .unwrap();
+        let bytes = STANDARD.decode(image.split_once(',').unwrap().1).unwrap();
+        let actual = crate::input_image_metadata::inspect(&bytes).unwrap();
+        assert_eq!((actual.width, actual.height), (256, 512));
     }
 
     #[test]
