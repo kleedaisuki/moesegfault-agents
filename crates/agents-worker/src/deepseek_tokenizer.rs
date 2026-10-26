@@ -357,6 +357,39 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn vision_rendering_preserves_the_plain_messages_reservation_bound() {
+        let config = ProviderConfig {
+            protocol: agents_core::ProviderProtocol::Anthropic,
+            base_url: "https://api.deepseek.com/anthropic".into(),
+            api_key: "unused-offline".into(),
+            model: "deepseek-flash".into(),
+            max_output_tokens: Some(64),
+            session_id: None,
+            traceparent: None,
+        };
+        let body = json!({"model":config.model,"max_tokens":64,"thinking":{"type":"disabled"},
+            "messages":[{"role":"user","content":[{"type":"text","text":"Shared transport α 雪: {\"source\":\"unchanged\"}"}]}]});
+        let count = count_anthropic_plain(&config, &body).unwrap();
+        let request: deepseek_recipe::anthropic::MessagesRequest =
+            serde_json::from_value(body).unwrap();
+        let converted = request
+            .convert(
+                ConversionOptions::default()
+                    .with_model_alias(&config.model, Profile::Flash1017.version()),
+            )
+            .unwrap();
+        let reference = WARM.with_borrow(|warm| {
+            let tokenizer = warm.as_ref().unwrap().1.clone();
+            DeepseekV41Encoding::new()
+                .with_tokenizer(tokenizer)
+                .encode(&converted.conversation)
+                .unwrap()
+                .len() as u64
+        });
+        assert_eq!(count.input_tokens, reference);
+    }
+
+    #[test]
     fn official_prepared_vision_reference_corpus_counts_each_image_once() {
         let corpus: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/deepseek-image-count.json"
