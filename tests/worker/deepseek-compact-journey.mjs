@@ -96,12 +96,17 @@ export async function runDeepseekCompactJourney({ mf, encryptionKey, request, pr
     assert.equal(await db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE account_id=?').bind(principal.owner).first('n'), 0);
     const count = await sdk.responses.inputTokens.count({ model: agent.id, input: window.output });
     assert.ok(count.input_tokens > 0);
-    const resumed = await sdk.responses.create({ model: agent.id, input: [...window.output, { role: 'user', content: 'Continue.' }] });
+    const generation = await sdk.responses.create({ model: agent.id, input: [...window.output, { role: 'user', content: 'Continue.' }] }).withResponse();
+    const resumed = generation.data;
     assert.equal(resumed.status, 'completed');
     assert.equal(resumed.usage, null, 'Native generation still keeps its unreported cache-write unknown');
     assert.equal(provider.state.generations.length, 1);
     assert.ok(JSON.stringify(provider.state.generations[0].input).includes(summary));
     assert.ok(JSON.stringify(provider.state.generations[0].input).includes(policy));
+    const session = generation.response.headers.get('X-Agents-Session');
+    assert.ok(session);
+    await request('DELETE', `/v1/sessions/${session}`, undefined, 200, principal.apiKey);
+    assert.equal((await request('GET', `/v1/sessions/${session}`, undefined, 200, principal.apiKey)).status, 'closed');
     await assert.rejects(sdk.responses.compact({ ...body, input: 'Different.' }, options), error => error.status === 409);
     for (const mode of ['missingWrite', 'thinking', 'partial']) {
       provider.state[mode] = true;
