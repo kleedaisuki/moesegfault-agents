@@ -65,17 +65,19 @@ function strictCompaction(value) {
     stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }).trim(), 'strict_compaction_contract_pass');
 }
 
-export async function runDeepseekCompactJourney({ mf, encryptionKey, request, provider, configure }) {
-  const registry = [{ provider: 'deepseek', protocol: 'responses', model: 'deepseek-flash', context_window: 8192, max_output_tokens: 64 }];
+export async function runDeepseekCompactJourney({ mf, encryptionKey, request, provider, configure, budgetOnly = false }) {
+  const contextWindow = budgetOnly ? 1_000_000 : 8192;
+  const registry = [{ provider: 'deepseek', protocol: 'responses', model: 'deepseek-flash', context_window: contextWindow, max_output_tokens: 64 }];
   const prices = { 'deepseek/deepseek-flash': { input_microusd_per_million: 150000,
     cached_input_microusd_per_million: 3000, output_microusd_per_million: 600000, revision: 'compaction-fixture' } };
   const db = await configure({ MODEL_REGISTRY_JSON: JSON.stringify(registry), MODEL_PRICING_JSON: JSON.stringify(prices), DEEPSEEK_API_KEY: key });
   provider.state.enabled = true;
   try {
-    const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'deepseek-compaction-owner' });
+    const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: budgetOnly ? 'deepseek-compaction-budget-owner' : 'deepseek-compaction-owner' });
     await principal.browser('GET', '/v1/account');
+    if (budgetOnly) await db.prepare('UPDATE usage_accounts SET budget_microusd=100000 WHERE account_id=?').bind(principal.owner).run();
     const agent = await request('POST', '/v1/agents', { name: 'Explicit compaction transport',
-      model: { provider: 'deepseek', protocol: 'responses', model: 'deepseek-flash', context_window: 8192, max_output_tokens: 64 },
+      model: { provider: 'deepseek', protocol: 'responses', model: 'deepseek-flash', context_window: contextWindow, max_output_tokens: 64 },
       instructions: policy, tools: ['time'], workspace: false }, 201, principal.apiKey);
     const sdk = new OpenAI({ apiKey: principal.apiKey, baseURL: 'https://agents.test/v1', maxRetries: 0,
       fetch: (input, init) => mf.dispatchFetch(input, init) });
@@ -85,6 +87,13 @@ export async function runDeepseekCompactJourney({ mf, encryptionKey, request, pr
     assert.equal(raw.status, 200);
     const window = await raw.json();
     strictCompaction(window);
+    if (budgetOnly) {
+      assert.equal(window.object, 'response.compaction');
+      const reserved = await db.prepare("SELECT MAX(reserved_microusd) AS amount FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'completion:%'").bind(principal.owner).first('amount');
+      assert.ok(reserved > 0 && reserved < 5000, 'A small prompt must not reserve the entire one-million-token model window');
+      assert.equal(await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND state='reserved'").bind(principal.owner).first('n'), 0);
+      return;
+    }
     assert.deepEqual(window.usage, { input_tokens: 14, input_tokens_details: { cached_tokens: 2, cache_write_tokens: 0 },
       output_tokens: 3, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 17 });
     assert.match(window.output.at(-1).encrypted_content, /^mcmp1\./);

@@ -433,15 +433,6 @@ impl Inner {
             )
             .await?;
         }
-        store
-            .reserve_operation_completion(
-                &receipt.owner,
-                &receipt.operation,
-                "compact",
-                &input.model,
-                u64::from(input.model.context_window),
-            )
-            .await?;
         let meter = crate::resources::ResourceMeter::account(
             &self.env,
             &receipt.owner,
@@ -519,6 +510,15 @@ impl Inner {
                 .map_err(failure)?,
             );
         }
+        store
+            .reserve_operation_completion(
+                &receipt.owner,
+                &receipt.operation,
+                "compact",
+                &input.model,
+                rendered_input_tokens.unwrap_or(u64::from(input.model.context_window)),
+            )
+            .await?;
         Ok((config, messages, options, rendered_input_tokens))
     }
 
