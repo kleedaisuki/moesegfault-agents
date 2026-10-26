@@ -67,6 +67,7 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
       assert.ok(request.headers.get('authorization')?.startsWith('Bearer '));
       order.push(`${request.method} ${url.pathname}`);
       if (url.pathname === '/health') return Response.json({ boot_id: 'supervisor-known-boot' });
+      if (url.pathname === '/v1/status') return Response.json({ running: false, dirty_bytes: 0 });
       if (url.pathname === '/v1/python/contexts') {
         const body = await request.json();
         assert.equal(body.memory_limit, '1g');
@@ -121,7 +122,8 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
       model: { provider: 'byok', credential_id: key.id, protocol: 'responses', model: model.model, context_window: 32768, max_output_tokens: 512 } }) });
   assert.equal(agentResponse.status, 201);
   const agent = await agentResponse.json();
-  const input = { model: agent.id, input: 'Compute and publish CSV.', tools: [{ type: 'code_interpreter', container: { type: 'auto' } }] };
+  const input = { model: agent.id, input: 'Compute and publish CSV.', include: ['code_interpreter_call.outputs'],
+    tools: [{ type: 'code_interpreter', container: { type: 'auto' } }] };
   const diagnostics = setTimeout(async () => {
     try {
       const route = await db.prepare('SELECT session_id FROM response_routes WHERE account_id=? ORDER BY created_at DESC LIMIT 1').bind(principal.owner).first();
@@ -135,6 +137,7 @@ test('compiled Rust Worker: hosted Code Interpreter auto context publication and
   const events = [];
   for await (const event of await client.responses.create({ ...input, stream: true }, { headers: { 'Idempotency-Key': 'known-code-auto' } })) events.push(event);
   const response = events.find(event => event.type === 'response.completed')?.response;
+  clearTimeout(diagnostics);
   assert.ok(response, 'Code must reach a genuine completed response');
   const item = response.output.find(item => item.type === 'code_interpreter_call');
   assert.ok(item, 'A completed model reply is not evidence that hosted Python executed');
