@@ -4332,5 +4332,244 @@
       "source_sha": "7cc020ae872c3e040d944b74a927d5cd9117201e"
     },
     "status": "verified"
+  },
+  {
+    "artifact_id": 12652001803,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "c93c63a4f97a55f15d93957ed6012e0bdaec2327",
+      "receipts": [
+        {
+          "scope": "execution capacity and unknown finance",
+          "run_id": "40287212807",
+          "reference": "docs/execution-leases.md",
+          "source_sha": "163d7d4f0795288833f974a1e42ce8349c1d5298"
+        },
+        {
+          "scope": "four caller families on the retained compiled Worker",
+          "run_id": "40310608529",
+          "reference": "docs/full-responses-client-tools.md#first-compiled-execution",
+          "source_sha": "86a7e7a7c4e258a8cc14c464c14a3f326436c4e1"
+        },
+        {
+          "scope": "Code Rust and lost-VM resource journey",
+          "run_id": "40309240632",
+          "reference": "docs/full-responses-code-contexts.md",
+          "source_sha": "4c2ab39382af999cb44b5a16513175420ceeb286"
+        },
+        {
+          "scope": "owned-CID journey and foreign-owner refusal",
+          "run_id": "40311223550",
+          "reference": "docs/full-responses-code-contexts.md",
+          "source_sha": "7bc1ac293bc58198f870181bcc70a3e940c97dca"
+        },
+        {
+          "scope": "full twenty-minute funding window",
+          "run_id": "40317071691",
+          "reference": "docs/full-responses-code-contexts.md",
+          "source_sha": "432c7fc30df60d4735b668ee71f4ccb5dc437232"
+        },
+        {
+          "scope": "compiled native Search multi-item and Code lifecycle",
+          "run_id": "40309533230",
+          "reference": "docs/full-responses-search.md",
+          "source_sha": "76d6c9fb7bbb8fc948cc28455b46e172b9d0ff73"
+        },
+        {
+          "scope": "UTF8 indexing query and citations before completed-state read repair",
+          "run_id": "40313866981",
+          "reference": "https://github.com/kleedaisuki/moesegfault-agents/blob/dd561b1f64522dbcbbc6b3d25508b75890c2283a/docs/full-responses-file-search.md",
+          "source_sha": "d5273099d7357b9ae57eeedd14f8a632d8d06901"
+        },
+        {
+          "scope": "retained completed-state GET/schema/replay/delete with no provider dispatch",
+          "run_id": "40317203899",
+          "reference": "https://github.com/kleedaisuki/moesegfault-agents/blob/dd561b1f64522dbcbbc6b3d25508b75890c2283a/docs/full-responses-file-search.md",
+          "source_sha": "0ce7afc70dc317f7ac3e5392893ec95df5e433c8"
+        },
+        {
+          "scope": "five retained-artifact image journeys, not aggregate CI success",
+          "run_id": "40315096372",
+          "reference": "docs/full-responses-image-generation.md",
+          "source_sha": "4f767153449cb0601a562c2412eee832ffa2e2c1"
+        },
+        {
+          "scope": "funded image delivery tail on the retained Worker",
+          "run_id": "40320354539",
+          "reference": "docs/full-responses-image-generation.md",
+          "source_sha": "8c4889aecadf2b04832fe57158d41e0c536f3611"
+        },
+        {
+          "scope": "new Rust contracts and positive sealed native create/count/continuation",
+          "run_id": "40318548395",
+          "reference": "docs/full-responses-native-context.md#compiled-native-item-checkpoint",
+          "source_sha": "9681a8dda350e734a65358b183ce649890d7f441"
+        },
+        {
+          "scope": "zero-dispatch invalid count tail",
+          "run_id": "40319817718",
+          "reference": "docs/full-responses-native-context.md#compiled-native-item-checkpoint",
+          "source_sha": "144a6cb3466fa565889fb8e1f4bb515649b36a12"
+        },
+        {
+          "run_id": "40317810324",
+          "reference": "docs/full-responses-auxiliary.md",
+          "source_sha": "7b757b41edb88ffc4bbe4e85bddfe59b71a68b8d",
+          "scope": "five new official-renderer and purpose-specific compact Rust contracts"
+        },
+        {
+          "run_id": "40320804651",
+          "reference": "docs/full-responses-auxiliary.md",
+          "source_sha": "ebb84c682c30c8169983eb77bd976258b1b32936",
+          "scope": "typed-user compact window contract and actual reported Messages usage"
+        },
+        {
+          "run_id": "40324562217",
+          "reference": "docs/full-responses-auxiliary.md",
+          "source_sha": "37cee0fefa92664fe42215234504972482de62d9",
+          "scope": "actual default DeepSeek compact continuation, no retry, final accounting closure"
+        },
+        {
+          "scope": "exact composed Worker build and six new tooling cases passed; one shallow-checkout selection fixture remains unresolved",
+          "source_sha": "c93c63a4f97a55f15d93957ed6012e0bdaec2327",
+          "reference": "docs/incremental-acceptance.md#composed-selection-and-immutable-artifact-baselines",
+          "run_id": "40326236543"
+        }
+      ],
+      "unresolved_checks": []
+    },
+    "receipt_artifact": "verification-worker",
+    "status": "verified",
+    "receipt_artifact_id": 12651402595,
+    "components": [
+      "worker"
+    ],
+    "source_sha": "c93c63a4f97a55f15d93957ed6012e0bdaec2327",
+    "run_id": "40326236543"
+  },
+  {
+    "run_id": "40310608529",
+    "source_sha": "86a7e7a7c4e258a8cc14c464c14a3f326436c4e1",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "c93c63a4f97a55f15d93957ed6012e0bdaec2327",
+      "receipts": [
+        {
+          "scope": "execution capacity and unknown finance",
+          "run_id": "40287212807",
+          "reference": "docs/execution-leases.md",
+          "source_sha": "163d7d4f0795288833f974a1e42ce8349c1d5298"
+        },
+        {
+          "scope": "four caller families on the retained compiled Worker",
+          "run_id": "40310608529",
+          "reference": "docs/full-responses-client-tools.md#first-compiled-execution",
+          "source_sha": "86a7e7a7c4e258a8cc14c464c14a3f326436c4e1"
+        },
+        {
+          "scope": "Code Rust and lost-VM resource journey",
+          "run_id": "40309240632",
+          "reference": "docs/full-responses-code-contexts.md",
+          "source_sha": "4c2ab39382af999cb44b5a16513175420ceeb286"
+        },
+        {
+          "scope": "owned-CID journey and foreign-owner refusal",
+          "run_id": "40311223550",
+          "reference": "docs/full-responses-code-contexts.md",
+          "source_sha": "7bc1ac293bc58198f870181bcc70a3e940c97dca"
+        },
+        {
+          "scope": "full twenty-minute funding window",
+          "run_id": "40317071691",
+          "reference": "docs/full-responses-code-contexts.md",
+          "source_sha": "432c7fc30df60d4735b668ee71f4ccb5dc437232"
+        },
+        {
+          "scope": "compiled native Search multi-item and Code lifecycle",
+          "run_id": "40309533230",
+          "reference": "docs/full-responses-search.md",
+          "source_sha": "76d6c9fb7bbb8fc948cc28455b46e172b9d0ff73"
+        },
+        {
+          "scope": "UTF8 indexing query and citations before completed-state read repair",
+          "run_id": "40313866981",
+          "reference": "https://github.com/kleedaisuki/moesegfault-agents/blob/dd561b1f64522dbcbbc6b3d25508b75890c2283a/docs/full-responses-file-search.md",
+          "source_sha": "d5273099d7357b9ae57eeedd14f8a632d8d06901"
+        },
+        {
+          "scope": "retained completed-state GET/schema/replay/delete with no provider dispatch",
+          "run_id": "40317203899",
+          "reference": "https://github.com/kleedaisuki/moesegfault-agents/blob/dd561b1f64522dbcbbc6b3d25508b75890c2283a/docs/full-responses-file-search.md",
+          "source_sha": "0ce7afc70dc317f7ac3e5392893ec95df5e433c8"
+        },
+        {
+          "scope": "five retained-artifact image journeys, not aggregate CI success",
+          "run_id": "40315096372",
+          "reference": "docs/full-responses-image-generation.md",
+          "source_sha": "4f767153449cb0601a562c2412eee832ffa2e2c1"
+        },
+        {
+          "scope": "funded image delivery tail on the retained Worker",
+          "run_id": "40320354539",
+          "reference": "docs/full-responses-image-generation.md",
+          "source_sha": "8c4889aecadf2b04832fe57158d41e0c536f3611"
+        },
+        {
+          "scope": "new Rust contracts and positive sealed native create/count/continuation",
+          "run_id": "40318548395",
+          "reference": "docs/full-responses-native-context.md#compiled-native-item-checkpoint",
+          "source_sha": "9681a8dda350e734a65358b183ce649890d7f441"
+        },
+        {
+          "scope": "zero-dispatch invalid count tail",
+          "run_id": "40319817718",
+          "reference": "docs/full-responses-native-context.md#compiled-native-item-checkpoint",
+          "source_sha": "144a6cb3466fa565889fb8e1f4bb515649b36a12"
+        },
+        {
+          "run_id": "40317810324",
+          "reference": "docs/full-responses-auxiliary.md",
+          "source_sha": "7b757b41edb88ffc4bbe4e85bddfe59b71a68b8d",
+          "scope": "five new official-renderer and purpose-specific compact Rust contracts"
+        },
+        {
+          "run_id": "40320804651",
+          "reference": "docs/full-responses-auxiliary.md",
+          "source_sha": "ebb84c682c30c8169983eb77bd976258b1b32936",
+          "scope": "typed-user compact window contract and actual reported Messages usage"
+        },
+        {
+          "run_id": "40324562217",
+          "reference": "docs/full-responses-auxiliary.md",
+          "source_sha": "37cee0fefa92664fe42215234504972482de62d9",
+          "scope": "actual default DeepSeek compact continuation, no retry, final accounting closure"
+        },
+        {
+          "scope": "exact composed Worker build and six new tooling cases passed; one shallow-checkout selection fixture remains unresolved",
+          "source_sha": "c93c63a4f97a55f15d93957ed6012e0bdaec2327",
+          "reference": "docs/incremental-acceptance.md#composed-selection-and-immutable-artifact-baselines",
+          "run_id": "40326236543"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:scripts/incremental-checks.test.mjs",
+          "env": {},
+          "reason": "Only the failed shallow-checkout-independent artifact/selection fixture; compiled Worker and other six new contracts are retained",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=^composed selection never",
+            "scripts/incremental-checks.test.mjs"
+          ]
+        }
+      ]
+    },
+    "receipt_artifact": "verification-tooling",
+    "receipt_artifact_id": 12644567285,
+    "components": [
+      "tooling"
+    ],
+    "status": "verified"
   }
 ]
