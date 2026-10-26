@@ -1,0 +1,61 @@
+name: MCP discovery increment
+on:
+  push:
+    branches: [codex/mcp-runtime]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mcp-discovery-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c
+        with:
+          shared-key: worker
+          cache-all-crates: true
+          cache-on-failure: true
+      - run: cargo fmt --check
+      - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
+      - name: Run only new MCP and discovery Rust contracts
+        run: |
+          cargo test --locked -p agents-worker --lib mcp_ -- --nocapture
+          cargo test --locked -p agents-worker --lib tool_discovery::tests -- --nocapture
+          cargo test --locked -p agents-worker --lib custom_tool_formats::tests -- --nocapture
+          cargo test --locked -p agents-worker --lib client_search_completion_waits_for_final_schema_validation -- --nocapture
+          cargo test --locked -p agents-worker --lib server_choice_binds_alias_and_namespace -- --nocapture
+      - run: cargo install --locked worker-build --version 0.8.7
+      - run: worker-build --release
+        working-directory: crates/agents-worker
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/bundle-worker.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: worker
+          path: crates/agents-worker/build
+          retention-days: 7
+      - name: Actual compiled Worker MCP and current SDK discovery journeys
+        run: |
+          mkdir -p .temp/mcp-verification
+          node --test --test-reporter=tap tests/worker/mcp.test.mjs tests/worker/tool-discovery.test.mjs 2>&1 | tee .temp/mcp-verification/journeys.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: mcp-verification
+          path: |
+            .temp/mcp-verification
+            .temp/mcp-worker-*/receipt.json
+            .cache/v0.3-ci/tool-discovery*.json
+          retention-days: 14
