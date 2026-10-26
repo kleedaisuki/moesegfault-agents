@@ -3462,5 +3462,393 @@
       }
     ],
     "unresolved_checks": []
+  },
+  {
+    "source_sha": "2ffa1fbf520a2fe4906555ed5ee00226007143ef",
+    "run_id": "40309873615",
+    "components": [],
+    "status": "verified",
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12644417857,
+    "verified_checks": [
+      {
+        "id": "rust:agents-worker:only_real_context_ids_enter_owned_routing",
+        "status": "passed_current",
+        "input_fingerprint": "80b9677d0d888cf7e2e1c9005856e650dab0847a21bfc9f7d90816f9974f200b",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:unsupported_inputs_are_not_silently_dropped",
+        "status": "passed_current",
+        "input_fingerprint": "de0deace994dea800c54537be2d332abc46fcd65c99b652a5686aa8db38c7743",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:retrieval_plain_vocabulary_is_shared_and_unicode_offsets_are_safe",
+        "status": "passed_current",
+        "input_fingerprint": "cee2bc9fff56c76f830a0e9a562871f04760727c6ffcbccd5b920a1259fa0ccb",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:vector_shape_finite_and_nonzero_required",
+        "status": "passed_current",
+        "input_fingerprint": "700b1fa532cc927304e4a36ed2c09e50465cd2f5046e88e52e25aba0c9fab4fc",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:static_chunks_use_shared_real_tokens_and_source_byte_offsets",
+        "status": "passed_current",
+        "input_fingerprint": "25f541965e69e69135c99696596919bc34ca27a05fb1dd80dfe18fa9efd94251",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:native_static_chunk_limits_are_not_reinterpreted_as_characters",
+        "status": "passed_current",
+        "input_fingerprint": "a09296da39ef28df6700b391ce015ebf78cd781d7bfd11f2aa95b89c195ce6b5",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:frequent_observers_preserve_fractional_capacity_without_roundup",
+        "status": "passed_current",
+        "input_fingerprint": "6c886f6075bfc03ff241fd66f35d0c5876a93325ef74c829d55e98cf3df5d4f4",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:capacity_intervals_split_at_signed_ledger_limit_without_gaps",
+        "status": "passed_current",
+        "input_fingerprint": "020de0a1e2f40d9222df3668703e28f2fcb1265907ec9d0d1f929c8de7e5b1c1",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:arbitrary_observation_boundaries_charge_only_the_same_final_allocation",
+        "status": "passed_current",
+        "input_fingerprint": "ba7ea84b5caa734fa6b62c2c68c9d87ec35587c3c8de3b7aeafb74f2157718d2",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:file_citations_anchor_actual_unicode_text_and_owned_evidence_once",
+        "status": "passed_current",
+        "input_fingerprint": "cb468a2e1a6bd0de15839d3cfd55e721ae5d0a24e5035709af5e11d821f7a0b3",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:generation_and_counting_share_aliases_and_choices_without_changing_client_tools",
+        "status": "passed_current",
+        "input_fingerprint": "20bc06b45bf9369e89ef70869e3242f6a852406cd7451a0d91d500724a7c20ad",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:byok_does_not_require_platform_service_and_bindings_remain_secret_free",
+        "status": "passed_current",
+        "input_fingerprint": "3acd50eb7729c3b9ffd33f673daf55eeccbd5d59b6fe52ea417604fdefa4df88",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:image_profile_freezes_the_same_menu_and_provenance_without_upstream_calls",
+        "status": "passed_current",
+        "input_fingerprint": "79bf66a6d4b61792c5dbc0221a3b20128556204191c93b6c2813ee9b6bf76710",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:frozen_image_capabilities_reject_advanced_options_before_rendering",
+        "status": "passed_current",
+        "input_fingerprint": "1e2a0073774f6c91bb21a790c50a187c00b565081e14e41db4962d48be0a663e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:declared_code_inputs_and_image_masks_join_response_file_retention",
+        "status": "passed_current",
+        "input_fingerprint": "fec59261c61f0d2f518f026bdc7c93901bf03400a64501d5f1ce029bbacec6a7",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:platform_route_and_price_are_explicit_not_model_prefix_guesses",
+        "status": "passed_current",
+        "input_fingerprint": "1404638ce14296f94ae7f30adf3eb1d331f43e3a303a451e2006430558335bd1",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:byok_profiles_bind_exact_origin_model_and_funding",
+        "status": "passed_current",
+        "input_fingerprint": "c07af219df90a2801e13a34184fbda3a25cb2a2a06cf4bfcd04e6d055ebba5ea",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:profile_registry_version_duplicates_and_secret_free_roundtrip",
+        "status": "passed_current",
+        "input_fingerprint": "d670d9d8c626bfdd300e1c7d4aa0d81a9aaf2181b5d057e86cf5b6f965180177",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:owned_ids_and_operation_ids_are_not_provider_supplied_capabilities",
+        "status": "passed_current",
+        "input_fingerprint": "7f7191b112c24f0f2b4f334933d07dbfcc4eab1497771d449397018dfd3d5a86",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:seedream_size_shorthand_does_not_grant_unadvertised_4k",
+        "status": "passed_current",
+        "input_fingerprint": "1a14d7dc3967389aaec4e85429bc10155527420b5d6d75fe24773d2b9a01ce23",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:unknown_byok_model_without_operator_registry_has_minimal_declared_contract",
+        "status": "passed_current",
+        "input_fingerprint": "f40ef6b3f3f40af4c1e050450ee0218ecc26eff72bc7da714883590fe8351e33",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:owner_declared_advanced_profile_and_verified_precedence_are_not_model_guesses",
+        "status": "passed_current",
+        "input_fingerprint": "d6bed972caa54d6546fec815de51cc8b97e0d82b035215cab412f568245a03fb",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:public_item_uses_our_identity_and_actual_native_action_without_private_details",
+        "status": "passed_current",
+        "input_fingerprint": "99c30ac6e006f018f9535be7039edf662be38ba80be52839f5dbb9bb3e10df27",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:modern_openai_generation_omits_retired_response_format_and_uses_resolved_model",
+        "status": "passed_current",
+        "input_fingerprint": "6d3171274d2821c1aad7ec6a93331d0d134c76a7129ec7270ab36b982bd7765f",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:declared_minimal_byok_sends_only_protocol_claimed_model_prompt_and_single_image",
+        "status": "passed_current",
+        "input_fingerprint": "2cbf53749c4bd0d241882f485686d93b1d4c94ecd3196a9a65f26034fd14a7e9",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:seedream_default_accepts_native_auto_without_pretending_to_stream",
+        "status": "passed_current",
+        "input_fingerprint": "4ac61c92d7ecaf10a6e4711dda5b994d863b3c1660b9574c12daaf7c8dc753e6",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:seedream_dedicated_api_inline_contract_needs_no_cdn_origin_or_format_selector",
+        "status": "passed_current",
+        "input_fingerprint": "ef34dd0d43258014256cbe24ffcada7c6afe08194ad4fa5b3c77c57432fbc469",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:canonical_assets_are_reference_only_and_each_preview_has_its_own_identity",
+        "status": "passed_current",
+        "input_fingerprint": "a41de2289b16fe396e499f9d3682d3ce478218d5d23a3f4838da49649ab0b9d5",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:completed_and_partial_locations_do_not_hydrate_in_progress_or_unrelated_data",
+        "status": "passed_current",
+        "input_fingerprint": "1648076553ecdc5dea1c0d6ca17062c165ca5687c67984964a631c6256c70f00",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:paid_generation_admission_accounts_for_base64_expansion_before_dispatch",
+        "status": "passed_current",
+        "input_fingerprint": "db15dc606e49048f1871593930bbeb7d4fc428a15e596e0d9ac8f8c5077158f9",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:initialization_retry_checks_identity_without_replacing_mutable_state",
+        "status": "passed_current",
+        "input_fingerprint": "cf7fdc5a0ab4700852fb62a66d433209d169007fbb01eb75bfb3c268eeba8e9b",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:harness_timeout_does_not_expire_code_or_renew_its_resource_clock",
+        "status": "passed_current",
+        "input_fingerprint": "971d7602642e61e35f2ae434b623d65a4605776fb6fd9fac84a39f2e5c6bf9ae",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:a_stale_due_scan_cannot_revoke_a_subsequently_renewed_kernel",
+        "status": "passed_current",
+        "input_fingerprint": "2db18a6cd055a7652d926f8944f5dc33f5961010f1b8afb4c375ba21781f1bf0",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:reserved_prepare_and_failed_release_always_keep_a_cleanup_alarm",
+        "status": "passed_current",
+        "input_fingerprint": "13d7625cd7cbdf205e1dc8faf274c9b3155711de6ae5ed8fb81d1065d26eb964",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:every_preview_has_an_independent_stable_capacity_and_identity",
+        "status": "passed_current",
+        "input_fingerprint": "e40a23869ae72b6f0c9d7e8068c0dab53ea7691cc986b43e146ffdd12a494f5b",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:model_credit_is_independent_of_resource_capacity_and_byok_zero",
+        "status": "passed_current",
+        "input_fingerprint": "37ac12d0348238a48796ac1690f47b57500f6f4f5341a1ce35338d2c4237f15e",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:known_metadata_cannot_serialize_provider_image_bytes_or_secrets",
+        "status": "passed_current",
+        "input_fingerprint": "a9b95c4d0d0c159ef029e06edb86b3088830024cc419dbdd6bfb63a2ad917749",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:cold_unknown_state_retains_dispatch_fence_and_no_inline_payload",
+        "status": "passed_current",
+        "input_fingerprint": "23758ba5ce88b7e8525e0b8aa6f45027a01b667c73655ded6f1adc86268878cc",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:delivery_hour_starts_at_terminal_ack_not_request_or_connection_creation",
+        "status": "passed_current",
+        "input_fingerprint": "09f0c01ff4a0bfeb1b6c7b37d1f61f91787dc9f1ae8275fdbb928ad336cce9cb",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:cleanup_quote_uses_existing_tariffs_and_grows_with_accepted_slots",
+        "status": "passed_current",
+        "input_fingerprint": "acff5bc3f9d46a8ce651322cc00132f81843eb58e24d44942efe7f1c1420e3e1",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:a_terminal_retry_never_renews_private_delivery",
+        "status": "passed_current",
+        "input_fingerprint": "425fe6e82f3ba31ac41e57aa397fb92e6ab2292bd51d9a674c3cf4ea2368726c",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:operation_funding_identity_is_owner_session_run_and_execution_scoped",
+        "status": "passed_current",
+        "input_fingerprint": "e896c8ec8fd984f64b796eeeb5cd14c76b8302c1c697d64576f0b23a78b57362",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:delivery_expiry_is_fixed_to_first_terminal_ack",
+        "status": "passed_current",
+        "input_fingerprint": "fc987c5d2ad29919469db4c383b9b2cdad107a82bb621bf5d71b39e1d58258e8",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:creation_drop_closes_only_its_pending_observation",
+        "status": "passed_current",
+        "input_fingerprint": "f8037c769fcaf3a014814a21bdf0681dc99cbabfdfa7614f23722b724066f478",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:draining_drops_controller_sender_without_claiming_receiver_finished",
+        "status": "passed_current",
+        "input_fingerprint": "bff9c20f747979736dd09465718e557bd0014d4487c56fc15af6e73c9e46d06d",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:ordinary_image_aware_frames_preserve_legacy_projection",
+        "status": "passed_current",
+        "input_fingerprint": "f30653ff92cb5bbf4e8a37c37e7ab596342d86c79e62965f7af04386ddb52d40",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:unnamed_store_keeps_the_sdk_required_string_name",
+        "status": "passed_current",
+        "input_fingerprint": "daefbce96da0993a8d1c02cda3202584187c524ec4b8ce0fbdea5d301f170ff6",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:mapped_assets_require_exact_generation_blob_and_unique_source_slot",
+        "status": "passed_current",
+        "input_fingerprint": "29288bf0e02c6c88d4c47cbf05a192b696d8b3d36b18bd2d9be16248f5ed5ec7",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:conversation_final_image_identity_has_only_conversation_and_item_scope",
+        "status": "passed_current",
+        "input_fingerprint": "c8ce1f400090b6aaf02af11fdac685c897c2ecf6e6334efd91c3aa32653917c9",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "rust:agents-worker:execution_slots_do_not_alias_scopes_or_artifact_ids",
+        "status": "passed_current",
+        "input_fingerprint": "7d5156292d1592aad41ec10964f3d37676b32eb52eedb46e4249b619cc9d5df1",
+        "receipt_path": "worker-rust.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:tests/worker/hosted-code.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "dede84402b2e68491376f2652e975f9d1a8399cfc96f01604e55e677b2ce089b",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 1
+      },
+      {
+        "id": "node:tests/worker/hosted-search.test.mjs",
+        "status": "passed_current",
+        "input_fingerprint": "13b7c76bd2b45626e9788f1142dbd2cfa8d38f2e25e68039bbc06f5ec809b56a",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "journey:Responses auxiliary compact and count",
+        "status": "passed_current",
+        "input_fingerprint": "f0bd49e1071d63513b6c3a87b7d0deba7de06f16f664946f864c154a6c325cfa",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      },
+      {
+        "id": "journey:DeepSeek exact count-only tokenizer cold warm and profile replacement",
+        "status": "passed_current",
+        "input_fingerprint": "a570b814727d30eb1847766c5bf5daa5fa598531e57ffb152b7393d7ed3f686d",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 2
+      }
+    ]
   }
 ]

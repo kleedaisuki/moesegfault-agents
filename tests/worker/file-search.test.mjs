@@ -40,11 +40,15 @@ function retrievalFixture() {
         return Response.json({ shape: [args[1].text.length, 2], data: args[1].text.map(() => [1, 0]) });
       case '/upsert':
         state.upsertCalls++;
-        for (const record of args[0]) vectors.set(record.id, record);
+        for (const record of args[0]) {
+          assert.deepEqual(record.values, [1, 0], "Native vector values must be numbers, not arbitrary-precision serializer objects");
+          vectors.set(record.id, record);
+        }
         return Response.json({ mutationId: `fixture-mutation-${state.upsertCalls}` });
       case '/query': {
         state.queryCalls++;
         assert.deepEqual(args[0], [1, 0]);
+        assert.equal(typeof args[1].topK, "number");
         assert.equal(args[1].namespace, 'retrieval-fixture');
         assert.ok(args[1].filter.owner_hash.$eq);
         const matches = state.visible ? [...vectors.values()].filter(record =>
