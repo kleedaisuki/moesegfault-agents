@@ -40,6 +40,7 @@ mod image_generation;
 mod input_image_metadata;
 mod metering;
 mod model_operation;
+mod native_window;
 mod observation_registry;
 mod observer_transport;
 mod prompt_templates;

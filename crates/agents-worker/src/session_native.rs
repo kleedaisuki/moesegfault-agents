@@ -128,10 +128,17 @@ async fn read_history(
     if generation.binding != reference.provider_binding || generation.end < reference.end {
         return Err(fault("native_context_unavailable"));
     }
-    let keys = (0..reference.end)
+    let indices = reference
+        .window
+        .as_ref()
+        .map(|window| window.indices(reference.end))
+        .transpose()?
+        .unwrap_or_else(|| (0..reference.end).collect());
+    let keys = indices
+        .iter()
         .map(|index| format!("native:{}:entry:{index}", reference.generation))
         .collect::<Vec<_>>();
-    let mut items = Vec::with_capacity(reference.end);
+    let mut items = Vec::with_capacity(indices.len());
     for bytes in crate::session_storage::read_many(storage, &keys).await? {
         let bytes = bytes.ok_or_else(|| fault("native_context_entry_missing"))?;
         items.push(serde_json::from_slice(&bytes)?);
@@ -169,6 +176,7 @@ async fn mutate_history(
             generation: key(&[session, operation, "generation"]),
             end: 0,
             provider_binding: provider_binding.into(),
+            window: None,
         },
     };
     if history.source_session_id != session || history.provider_binding != provider_binding {
@@ -342,6 +350,22 @@ impl SessionInner {
     }
 
     pub(super) async fn warm_native_input(&self) -> Result<()> {
+        let auto = self
+            .data
+            .borrow()
+            .as_ref()
+            .and_then(|data| data.run.as_ref())
+            .and_then(|run| run.response.as_ref())
+            .is_some_and(|response| response.request.truncation.as_deref() == Some("auto"));
+        if auto {
+            let owner = self.data.borrow().as_ref().unwrap().record.owner_id.clone();
+            return crate::responses_auxiliary::resource_count(
+                &self.env,
+                &owner,
+                self.prepare_warm_native_window(),
+            )
+            .await;
+        }
         let record = self
             .data
             .borrow()
@@ -378,6 +402,7 @@ impl SessionInner {
                 &controls,
                 provider::controls::HarnessControlEffects {
                     max_tool_calls: true,
+                    truncation: request.truncation.as_deref() == Some("auto"),
                     ..Default::default()
                 },
             )
@@ -489,19 +514,35 @@ impl SessionInner {
         if let Some(limit) = config.max_output_tokens {
             controls["max_output_tokens"] = json!(limit);
         }
-        options.native = Some(
-            provider::responses::PreparedRequest::new_with_effects(
-                config,
-                &input,
-                &tools,
-                &controls,
-                provider::controls::HarnessControlEffects {
-                    max_tool_calls: true,
-                    ..Default::default()
-                },
+        let (history, capacity, output) = {
+            let data = self.data.borrow();
+            let data = data.as_ref().unwrap();
+            (
+                data.native_context.as_ref().unwrap().history.clone(),
+                data.record.pinned.model.context_window,
+                config
+                    .max_output_tokens
+                    .unwrap_or(data.record.pinned.model.max_output_tokens),
             )
-            .map_err(Error::RustError)?,
-        );
+        };
+        let fitted = crate::native_window::fit(
+            config,
+            &input,
+            &tools,
+            &controls,
+            capacity,
+            output,
+            provider::controls::HarnessControlEffects {
+                max_tool_calls: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+        if let Some(tokens) = fitted.input_tokens {
+            self.apply_native_window(&history, &input, fitted.cut, tokens)
+                .await?;
+        }
+        options.native = Some(fitted.prepared);
         Ok(())
     }
 

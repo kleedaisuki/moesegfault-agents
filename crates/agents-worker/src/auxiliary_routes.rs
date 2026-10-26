@@ -55,7 +55,15 @@ async fn execute(
                 "Exact counting requires a supported native model renderer",
             );
         }
-        return input_tokens(env, owner, &context.config, &context.prepared).await;
+        return match context.measured_input_tokens {
+            Some(input_tokens) => {
+                Response::from_json(&crate::responses_auxiliary::InputTokenCount {
+                    object: "response.input_tokens".into(),
+                    input_tokens,
+                })
+            }
+            None => input_tokens(env, owner, &context.config, &context.prepared).await,
+        };
     }
     let prepared = PreparedCompact {
         owner: owner.into(),
