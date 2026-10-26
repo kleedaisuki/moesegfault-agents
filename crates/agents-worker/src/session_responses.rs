@@ -355,6 +355,16 @@ impl SessionInner {
             }
             (Method::Get, Some("input_items")) => input_items(&response, &req.url()?),
             (Method::Post, Some("cancel")) => {
+                let cancellation = self.persistence.lock().await;
+                let Some(fresh) = self.read_response(id).await? else {
+                    return util::json_error(404, "not_found", "Response not found");
+                };
+                response = fresh;
+                if response.deleted
+                    || (!response.request.store && terminal_status(&response.status))
+                {
+                    return util::json_error(404, "not_found", "Response not retained");
+                }
                 if !response.request.background {
                     return util::json_error(
                         400,
@@ -363,22 +373,43 @@ impl SessionInner {
                     );
                 }
                 if !terminal_status(&response.status) {
-                    let mut borrowed = self.data.borrow_mut();
-                    let data = borrowed.as_mut().unwrap();
-                    if let Some(active) = data
-                        .run
-                        .as_mut()
-                        .and_then(|r| r.response.as_mut())
-                        .filter(|r| r.id == *id)
-                    {
-                        active.cancel_requested = true;
-                        response.cancel_requested = true;
+                    let accepted = {
+                        let mut borrowed = self.data.borrow_mut();
+                        borrowed
+                            .as_mut()
+                            .and_then(|data| data.run.as_mut())
+                            .filter(|run| run.id == *id)
+                            .map(super::conversations::request_response_cancel)
+                    };
+                    if accepted == Some(false) {
+                        return util::json_error(
+                            409,
+                            "response_finalizing",
+                            "Response has already decided its terminal outcome",
+                        );
                     }
-                    drop(borrowed);
+                    response.cancel_requested |= accepted == Some(true);
+                    let mut committed = self.snapshot()?;
+                    save_state(&self.state.storage(), &mut committed).await?;
+                    drop(cancellation);
                     self.persist().await?;
                     let record = self.snapshot()?.record;
-                    let _ = self.cancel_current_hosted_code(id, &record).await;
+                    let still_current = self
+                        .data
+                        .borrow()
+                        .as_ref()
+                        .and_then(|data| data.run.as_ref())
+                        .is_some_and(|run| run.id == *id);
+                    if still_current && self.cancel_current_hosted_code(id, &record).await.is_err()
+                    {
+                        util::emit(
+                            "tool.cancel_pending",
+                            json!({"session_id":record.id,"response_id":id,"tool_kind":"code_interpreter"}),
+                        );
+                    }
                     self.arm_alarm().await?;
+                } else {
+                    drop(cancellation);
                 }
                 Response::from_json(
                     &self
@@ -1016,6 +1047,51 @@ impl SessionInner {
                 );
             }
         }
+        let capacity_generation = match self
+            .reserve_conversation_capacity(
+                create.execution.conversation.as_ref(),
+                &create.response_id,
+                &original_items,
+                create.execution.warmup,
+            )
+            .await?
+        {
+            Ok(generation) => generation,
+            Err(response) => {
+                if crate::space::release_response_files(
+                    &self.env,
+                    &data.record.owner_id,
+                    &data.record.id,
+                    &create.response_id,
+                )
+                .await
+                .is_err()
+                {
+                    util::emit(
+                        "response.file_pin_release_pending",
+                        json!({"session_id":data.record.id,"response_id":create.response_id}),
+                    );
+                }
+                return Ok(response);
+            }
+        };
+        let ready = self.snapshot()?;
+        if ready.run.is_some()
+            || ready.record.input_revision != data.record.input_revision
+            || ready.response_head != data.response_head
+            || ready.record.status != SessionStatus::Idle
+            || ready.archive_pending
+            || ready.archive_preparing
+            || self.closing.get()
+        {
+            return util::json_error(
+                409,
+                "session_busy",
+                "Session changed while reserving Conversation capacity",
+            );
+        }
+        self.import_conversation_workspace(conversation_seed.as_ref(), &create.response_id)
+            .await?;
         // No await separates this domain preflight from acceptance mutations.
         // Exhausted revisions and non-idle records cannot partially consume tools.
         let _image_observation = self.begin_original_image_observation(
@@ -1063,7 +1139,10 @@ impl SessionInner {
         }
         self.start_run_with_id(create.response_id.clone())?;
         let mut response = ResponseRun {
-            conversation: super::conversations::binding(create.execution.conversation.as_ref()),
+            conversation: super::conversations::binding(
+                create.execution.conversation.as_ref(),
+                capacity_generation,
+            ),
             id: create.response_id.clone(),
             request: request.clone(),
             resolved_prompt,
