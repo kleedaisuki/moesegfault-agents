@@ -527,14 +527,27 @@ impl Dispatch<'_> {
             );
         }
         self.operation.emit(
-            if result.is_ok() {
+            if result
+                .as_ref()
+                .is_ok_and(|response| response.status_code() < 500)
+            {
                 "rpc.completed"
             } else {
                 "rpc.failed"
             },
             fields,
         );
-        result.map_err(|_| Error::RustError("conversation_actor_transport_failed".into()))
+        match result {
+            Ok(response) if response.status_code() >= 500 => util::json_error(
+                503,
+                "conversation_actor_response_failed",
+                "Conversation actor returned a failure; inspect the original request and scope before retrying",
+            ),
+            Ok(response) => Ok(response),
+            Err(_) => Err(Error::RustError(
+                "conversation_actor_transport_failed".into(),
+            )),
+        }
     }
 }
 

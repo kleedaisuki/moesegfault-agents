@@ -428,8 +428,27 @@ async fn reclaim_pending(
         // their admission membership and retain their established retry path.
         record.admitted_responses.remove(response);
     }
+    let abandoned = record.active_response_id.clone();
     record.clear_lease();
     save(context, record).await?;
+    if !known_rejection && let Some(response) = abandoned {
+        let started = util::now_ms();
+        let closed = context
+            .operation
+            .settle_reclaimed_response(context.env, &record.owner, &response)
+            .await;
+        let mut fields =
+            json!({"conversation_id":record.id,"response_id":response,"success":closed.is_ok()});
+        if let Err(error) = &closed {
+            fields.as_object_mut().unwrap().extend(
+                crate::conversation_meter::error_metadata(error, started)
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        }
+        context.operation.emit("reclaim.resources", fields);
+    }
     Ok(true)
 }
 
