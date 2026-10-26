@@ -190,6 +190,9 @@ impl std::ops::Deref for PendingChunk {
 #[path = "file_index_effects.rs"]
 pub mod effects;
 
+#[path = "file_index_storage.rs"]
+pub mod storage;
+
 pub async fn renew_job(
     env: &Env,
     job: &IngestJob,

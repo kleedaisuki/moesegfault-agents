@@ -26,6 +26,7 @@ pub(crate) fn profile(env: &Env) -> Result<VectorServiceProfile> {
 
 pub(crate) fn preflight(profile: &VectorServiceProfile, meter: &ResourceMeter<'_>) -> Result<()> {
     meter.preflight(false)?;
+    crate::file_index::storage::preflight(meter)?;
     for allocation in [
         &profile.embedding_allocation,
         &profile.query_allocation,
@@ -49,6 +50,7 @@ pub(crate) async fn store_profile(
     event: &str,
     pin: bool,
 ) -> Result<VectorServiceProfile> {
+    crate::file_index::storage::require_paid_store(env, owner, store).await?;
     let read = format!("{event}:profile");
     meter.require_d1(&read).await?;
     let result=env.d1("DB")?.prepare("SELECT service_profile_json FROM vector_stores WHERE id=?1 AND account_id=?2 AND status='completed' AND (expires_after_days IS NULL OR last_active_at+expires_after_days*86400000>unixepoch()*1000)")

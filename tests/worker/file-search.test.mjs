@@ -68,7 +68,7 @@ test('compiled Rust Worker: owned file upload indexing query citation and deleti
   const retrieval = retrievalFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const pricing = JSON.parse(deployment.env.staging.vars.RESOURCE_PRICING_JSON);
-  for (const [unit, denominator] of [['embedding_input_bytes', 64], ['queried_dimensions', 100], ['written_dimensions', 100]]) {
+  for (const [unit, denominator] of [['embedding_input_bytes', 64], ['queried_dimensions', 100], ['written_dimensions', 100], ['allocated_vector_dimension_ms', 1000]]) {
     pricing.tariffs.push({ resource: 'worker', unit, microusd_numerator: 1, quantity_denominator: denominator, price_version: pricing.version });
   }
   const profile = { embedding: { model: '@cf/baai/bge-m3', revision: 'controlled-bge-transport-v1', dimensions: 2, input_byte_limit: 32768 },

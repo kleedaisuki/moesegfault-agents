@@ -646,6 +646,14 @@ pub async fn ingest_turn(
         job.chunk_count = chunks.len();
         job.source_staged = 1;
     }
+    file_index::storage::allocate(
+        env,
+        &job,
+        profile.embedding.dimensions,
+        meter,
+        &format!("{attempt}:storage"),
+    )
+    .await?;
     for batch in 0..max_batches {
         if !file_index::renew_job(
             env,
