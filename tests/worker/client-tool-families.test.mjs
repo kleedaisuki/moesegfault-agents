@@ -1,4 +1,4 @@
-import {createPublicImageInputFixture, publicImageOrigin} from './public-image-input-journey.mjs';
+import {createPublicImageInputFixture, publicImageOrigin, publicImagePng} from './public-image-input-journey.mjs';
 import OpenAI from 'openai';
 import {createBrowserPrincipal} from './browser-principal.mjs';
 import assert from 'node:assert/strict';
@@ -86,7 +86,7 @@ test('compiled Rust Worker: caller-owned computer shell and patch lifecycle', { 
     return JSON.parse(text);
   }
   const context = { mf, db, encryptionKey, request, providers };
-  const screenshot='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOSkAAAAASUVORK5CYII=';
+  const screenshot='data:image/png;base64,'+publicImagePng.toString('base64');
   const cases=[
     {name:'computer', tool:{type:'computer'}, call:{type:'computer_call',action:{type:'screenshot'},pending_safety_checks:[{id:'safety-1',code:'sensitive',message:'Confirm'}]}, result:{type:'computer_call_output',output:{type:'computer_screenshot',image_url:screenshot},acknowledged_safety_checks:[{id:'safety-1'}]}},
     {name:'local-shell', tool:{type:'local_shell'}, call:{type:'local_shell_call',action:{type:'exec',command:['echo','hello'],env:{}}},result:{type:'local_shell_call_output',output:'{"stdout":"hello","exit_code":0}'}},
@@ -134,7 +134,7 @@ test('compiled Rust Worker: caller-owned computer shell and patch lifecycle', { 
       assert.equal(state.calls,1,'missing safety acknowledgement must fail before inference');
       const foreign=await createBrowserPrincipal({mf,db,encryptionKey,owner:'client-foreign-screenshot'});
       const png=Buffer.from(screenshot.split(',')[1],'base64');
-      const uploaded=await mf.dispatchFetch('https://agents.test/v1/files?filename=private.png&purpose=user_data',{method:'POST',headers:{Authorization:'Bearer '+foreign.apiKey,'Content-Type':'image/png','Content-Length':String(png.length)},body:png});
+      const uploaded=await mf.dispatchFetch('https://agents.test/v1/files?filename=private.png&purpose=user_data',{method:'POST',headers:{Authorization:'Bearer '+foreign.apiKey,'Content-Type':'image/png','Content-Length':String(png.length),'X-Content-Sha256':createHash('sha256').update(png).digest('hex')},body:png});
       assert.equal(uploaded.status,200);
       const file=await uploaded.json();
       await request('POST','/v1/responses',{model:agent.id,previous_response_id:initial.id,input:[{...spec.result,call_id:callId,output:{type:'computer_screenshot',file_id:file.id}}],tools:[spec.tool]},404,principal.apiKey);
@@ -165,7 +165,7 @@ test('compiled Rust Worker: caller-owned computer shell and patch lifecycle', { 
       const carried=state.requests[1].input.find(item=>item.type==='computer_call_output');
       assert.ok(carried.output.image_url.startsWith('data:image/png;base64,'),'model sees frozen bytes, not mutable URL');
     }
-    const ledger=await db.prepare("SELECT COUNT(*) AS count FROM usage_ledger WHERE account_id=? AND resource='model'").bind(principal.owner).first();
+    const ledger=await db.prepare("SELECT COUNT(*) AS count FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='model'").bind(principal.owner).first();
     assert.equal(ledger.count,3,'each caller handoff/fork settles one known model action');
     receipts.push({family:spec.name,provider_actions:state.calls,root:initial.id,continuation:continuation.id,branch:branch.id});
   });
