@@ -193,7 +193,11 @@ export async function runMcpDeferredJourney(context) {
   ]);
   await scenario.principal.browser('GET', '/v1/account');
   const tools = [{ ...mcpTool(state.expectedAuth), defer_loading: true, server_description: 'Echo tools' }, { type: 'tool_search' }];
-  const events = await collectNativeEvents(await scenario.invoke({ input: 'Discover and use owned echo.', tools, stream: true, reasoning: { effort: 'none' } }));
+  const stream = await context.mf.dispatchFetch('https://agents.test/v1/responses', { method: 'POST',
+    headers: { Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: scenario.agent.id, input: 'Discover and use owned echo.', tools, stream: true, reasoning: { effort: 'none' } }) });
+  assert.equal(stream.status, 200, stream.status === 200 ? '' : await stream.text());
+  const events = await collectNativeEvents(stream);
   const pending = events.findLast(event => event.type === 'response.completed')?.response;
   assert.ok(pending, 'Deferred discovery must finish with a canonical streamed handoff');
   const wire = context.validateWire(pending, events);
@@ -258,4 +262,33 @@ export async function runMcpDeniedAndUnknown(context) {
   assert.equal(unknown.state.calls, 2);
   state.invalidCallReply = false;
   return { model_calls: 4, denied_remote_calls: 0, unknown_remote_calls: 1, unknown_http_not_replayed: true };
+}
+export async function runMcpApprovalReuse(context) {
+  const state = context.providers.state;
+  state.listFailure = false;
+  state.invalidCallReply = false;
+  state.expectedAuth = 'MCP-CLAIM-SECRET';
+  const before = state.calls;
+  const action = { type: 'function_call', id: 'private-claim-call', call_id: 'mcp-claim-call', name: 'assigned', arguments: '{"value":"雪"}', status: 'completed' };
+  const final = { type: 'message', id: 'private-claim-final', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'The approved effect has one destination.', annotations: [] }] };
+  const scenario = await createNativeSemanticsScenario(context, 'mcp-claim', [
+    { output: [action], check(body) { action.name = body.tools.find(tool => tool.name?.startsWith('__agents_mcp_')).name; } },
+    { output: [final] },
+  ]);
+  await scenario.principal.browser('GET', '/v1/account');
+  const tools = [{ ...mcpTool(state.expectedAuth), allowed_callers: ['direct', 'programmatic'] }];
+  const pending = (await scenario.invoke({ input: 'Plan one owned effect.', tools, reasoning: { effort: 'none' } })).value;
+  const approval = pending.output.find(item => item.type === 'mcp_approval_request');
+  assert.ok(approval);
+  const body = { previous_response_id: pending.id, tools, input: [{ type: 'mcp_approval_response', approval_request_id: approval.id, approve: true }], reasoning: { effort: 'none' } };
+  const accepted = (await scenario.invoke(body, 200, 'claim-first')).value;
+  assert.equal(accepted.status, 'completed');
+  assert.equal(state.calls, before + 1);
+  const second = (await scenario.invoke(body, 409, 'claim-second')).value;
+  assert.equal(second.error.code, 'mcp_approval_consumed');
+  assert.equal(state.calls, before + 1, 'A second Response cannot consume the same approval');
+  assert.equal(scenario.state.calls, 2, 'A rejected second destination cannot buy another model action');
+  assert.deepEqual(await scenario.read(pending.id), pending, 'Consent consumption cannot mutate the public parent');
+  context.validateWire(accepted, []);
+  return { model_calls: 2, remote_tool_calls: 1, consumed_approval_rejected: true, parent_immutable: true, mixed_caller_direct_supported: true };
 }

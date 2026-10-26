@@ -20,7 +20,7 @@ const cases = [
 ];
 
 test('compiled Rust Worker: deferred tool discovery and qualified calls', { timeout: 60000 }, async t => {
-  const selected = cases.filter(item => !process.env.MAGENTS_DISCOVERY_CASE || process.env.MAGENTS_DISCOVERY_CASE === item.id);
+  const selected = cases.filter(item => !process.env.MAGENTS_DISCOVERY_CASE || process.env.MAGENTS_DISCOVERY_CASE.split(',').includes(item.id));
   assert.ok(selected.length > 0, 'Select an actual discovery case, never a zero-test pass');
   const encryptionKey = randomBytes(32);
   const identity = createIdentityFixture();
@@ -51,7 +51,7 @@ test('compiled Rust Worker: deferred tool discovery and qualified calls', { time
       DATA_ENCRYPTION_KEY: encryptionKey.toString('base64url'),
       IDENTITY_ISSUER: 'https://identity.test', IDENTITY_WEB_CLIENT_ID: 'test-dashboard', IDENTITY_NATIVE_CLIENT_ID: 'test-native',
       IDENTITY_REDIRECT_URI: 'https://agents.test/auth/callback', IDENTITY_NATIVE_REDIRECT_URI: 'http://127.0.0.1/callback',
-      IDENTITY_CLIENT_PRIVATE_JWK: JSON.stringify(identity.privateJwk), BILLING_PRODUCT_ID: 'agents', BILLING_MODE: 'test',
+      IDENTITY_CLIENT_PRIVATE_JWK: JSON.stringify(identity.privateJwk), BILLING_PRODUCT_ID: 'agents', BILLING_MODE: 'test', HOSTED_TOOL_RUNTIMES: 'tool_search',
       MODEL_REGISTRY_JSON: '[]', MODEL_PRICING_JSON: '{}',
       RESOURCE_PRICING_JSON: deployment.env.staging.vars.RESOURCE_PRICING_JSON,
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000', FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000',

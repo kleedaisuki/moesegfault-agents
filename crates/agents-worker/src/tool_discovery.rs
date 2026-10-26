@@ -899,9 +899,6 @@ impl ToolRegistry {
         }
         let mut registry = Self::default();
         for tool in declarations {
-            if tool["type"] == "mcp" && tool["defer_loading"] == true {
-                return Err("mcp_discovery_binding_required".into());
-            }
             match tool["type"].as_str() {
                 Some("function" | "custom") => registry.add(tool, None, None)?,
                 Some("namespace") => {
@@ -946,7 +943,12 @@ impl ToolRegistry {
                 _ => {}
             }
         }
-        if registry.search.is_none() && registry.entries.iter().any(|entry| entry.deferred) {
+        if registry.search.is_none()
+            && (registry.entries.iter().any(|entry| entry.deferred)
+                || declarations
+                    .iter()
+                    .any(|tool| tool["type"] == "mcp" && tool["defer_loading"] == true))
+        {
             return Err("deferred_tools_require_tool_search".into());
         }
         Ok(Some(registry))
@@ -1610,9 +1612,7 @@ mod tests {
             servers: vec![server],
             discovery_funding: None,
         };
-        let mut registry = ToolRegistry::compile(&[json!({"type":"tool_search"})])
-            .unwrap()
-            .unwrap();
+        let mut registry = ToolRegistry::compile(&[json!({"type":"mcp","server_label":"remote","server_url":"https://mcp.example.com/mcp","defer_loading":true}), json!({"type":"tool_search"})]).unwrap().unwrap();
         registry.register_mcp(&bindings).unwrap();
         registry.encode_input(&[], true, None).unwrap();
         let initial = registry.render(true).unwrap();
