@@ -528,18 +528,21 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
   const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
     .map(name => [name, mfOptions.workers[0].config.env[name]]));
+  const configureCompact = async values => {
+    const env = mfOptions.workers[0].config.env;
+    for (const name of Object.keys(compactBindings)) {
+      if (values) env[name] = { ...env.OPENROUTER_API_KEY, value: values[name] };
+      else if (compactBindings[name] === undefined) delete env[name];
+      else env[name] = compactBindings[name];
+    }
+    await mf.setOptions(mfOptions);
+    db = await mf.getD1Database('DB');
+    return db;
+  };
   await selected(t, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage', { timeout: 60000 }, () =>
-    runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: async values => {
-      const env = mfOptions.workers[0].config.env;
-      for (const name of Object.keys(compactBindings)) {
-        if (values) env[name] = { ...env.OPENROUTER_API_KEY, value: values[name] };
-        else if (compactBindings[name] === undefined) delete env[name];
-        else env[name] = compactBindings[name];
-      }
-      await mf.setOptions(mfOptions);
-      db = await mf.getD1Database('DB');
-      return db;
-    } }));
+    runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact }));
+  await selected(t, 'DeepSeek compact reserves the exact rendered input rather than the full model window', { timeout: 60000 }, () =>
+    runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact, budgetOnly: true }));
   await selected(t, 'response-wide server tool allowance survives disobedient calls and cold retrieval', { timeout: 40000 }, () =>
     runResponsesToolBudgetJourney(responseContext()));
   await selected(t, 'Responses auxiliary compact and count', { timeout: 60000 }, () =>
