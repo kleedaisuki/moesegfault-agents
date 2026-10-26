@@ -14,6 +14,8 @@ pub(crate) struct ConversationSnapshot {
     pub id: String,
     pub revision: u64,
     pub items: Vec<Value>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub item_provenance: std::collections::BTreeMap<String, ConversationItemProvenance>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

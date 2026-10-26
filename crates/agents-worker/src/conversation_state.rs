@@ -827,7 +827,17 @@ async fn handle(
                 .map(String::as_str)
                 .collect::<Vec<_>>();
             let items = items(storage, &ids).await?;
-            Response::from_json(&json!({"id":record.id,"revision":record.revision,"items":items}))
+            let opaque_ids = items
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .filter_map(|item| item["id"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            let provenance = item_provenance(storage, &opaque_ids).await?;
+            let mut snapshot = json!({"id":record.id,"revision":record.revision,"items":items});
+            if !provenance.is_empty() {
+                snapshot["item_provenance"] = serde_json::to_value(provenance)?;
+            }
+            Response::from_json(&snapshot)
         }
         (Method::Post, "/responses/commit") => {
             let body: Value = req.json().await?;
