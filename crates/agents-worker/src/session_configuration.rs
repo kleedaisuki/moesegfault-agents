@@ -31,6 +31,18 @@ impl SessionInner {
                 &execution_key(&run.id, run.round, &call.id),
             )
             .await
+            .map_err(|error| {
+                let normalized = tool_infrastructure_error(&error);
+                util::emit(
+                    "tool.failed",
+                    json!({
+                        "session_id":data.record.id,"run_id":run.id,"tool_call_id":call.id,
+                        "tool_name":call.function.name,"stage":"issued_recovery",
+                        "error_code":safe_error_code(&normalized),"outcome":error_family(&error),
+                    }),
+                );
+                normalized
+            })
     }
 
     pub(super) async fn refresh_configuration(&self) -> Result<()> {
@@ -146,6 +158,15 @@ impl SessionInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_configuration_issued_preflight_preserves_unknown_error_identity() {
+        let error = Error::RustError("tool_outcome_unknown: an issued Bash operation has no matching live workspace; no command or restore was replayed".into());
+        let normalized = tool_infrastructure_error(&error);
+        assert_eq!(safe_error_code(&normalized), "tool_outcome_unknown");
+        assert!(correctable_tool_error(&normalized).is_none());
+        assert_eq!(error_family(&error), "runtime_error");
+    }
 
     #[test]
     fn session_configuration_boundary_never_applies_over_unresolved_or_terminal_work() {
