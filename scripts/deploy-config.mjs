@@ -13,11 +13,11 @@ export function requireDistinctEnvironmentDatabases(input) {
 
 export function deploymentRuntime(env) {
   const features = env.RUNTIME_FEATURES ?? 'configured';
-  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation'].includes(features)) throw new Error('Invalid runtime feature allowlist');
+  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation', 'web_search,file_search,code_interpreter,mcp', 'web_search,file_search,code_interpreter,mcp,programmatic_tool_calling', 'web_search,file_search,code_interpreter,image_generation,mcp,programmatic_tool_calling'].includes(features)) throw new Error('Invalid runtime feature allowlist');
   if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
   const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
   const workerFeatures = limited && features !== 'none' && features !== 'configured' ? features.split(',') : [];
-  return { features, limited, workerFeatures, legacyContainerCompatible: limited && !workerFeatures.some(feature => feature === 'code_interpreter' || feature === 'image_generation'), webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter'), imageGeneration: workerFeatures.includes('image_generation') };
+  return { features, limited, workerFeatures, legacyContainerCompatible: limited && !workerFeatures.some(feature => feature === 'code_interpreter' || feature === 'image_generation'), webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter'), imageGeneration: workerFeatures.includes('image_generation'), programmatic: workerFeatures.includes('programmatic_tool_calling') };
 }
 
 // Seed endpoint discovery, 2026-10-26: /api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints.
@@ -34,6 +34,20 @@ export const seedreamProfile = {
     router_endpoint: { provider_slug: 'seed', provider_tag: 'seed', passthrough_parameters: [] },
     asset_hosts: [], price_revision: 'seedream-catalog-2026-10-26', reservation_microusd: 18000, platform_funded: true }],
 };
+
+function enableStagingProgrammatic(target) {
+  target.worker_loaders = [{ binding: 'PROGRAM_LOADER' }];
+  const pricing = JSON.parse(target.vars.RESOURCE_PRICING_JSON);
+  for (const [unit, numerator, denominator] of [
+    ['dynamic_worker_creation_day', 2000, 1], ['dynamic_worker_request', 3, 10],
+    ['dynamic_worker_cpu_slot_100ms', 2, 1],
+  ]) {
+    if (pricing.tariffs.some(tariff => tariff.unit === unit)) throw new Error('Duplicate Dynamic Worker allocation tariff');
+    pricing.tariffs.push({ resource: 'worker', unit, microusd_numerator: numerator,
+      quantity_denominator: denominator, price_version: pricing.version });
+  }
+  target.vars.RESOURCE_PRICING_JSON = JSON.stringify(pricing);
+}
 
 function requireFileSearchBindings(target) {
   const profile = JSON.parse(target.vars.FILE_SEARCH_PROFILE_JSON ?? 'null');
@@ -85,6 +99,7 @@ export function renderDeploymentConfig(input, env) {
     }
   }
   if (runtime.fileSearch) requireFileSearchBindings(target);
+  if (runtime.programmatic) enableStagingProgrammatic(target);
   if (runtime.imageGeneration) target.vars.IMAGE_GENERATION_PROFILE_JSON = JSON.stringify(seedreamProfile);
   for (const db of target.d1_databases) db.migrations_dir = resolve(db.migrations_dir);
   for (const container of target.containers) {

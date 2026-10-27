@@ -487,3 +487,46 @@ request was performed. Select this fixture with
 `MAGENTS_REMOTE_FILE_CASE=image-metadata`; the default remote-file case is
 already accepted and must not be replayed merely because this file gained a
 new fragment. The failed aggregate Actions run is not relabeled green.
+
+## Receipt-first standalone compact observation (2026-10-27)
+
+An explicit compact idempotency key selects an immutable account operation, not
+an instruction to resolve the original input sources again. The authenticated
+edge validates the public request and hashes its canonical JSON, then asks the
+same `ModelOperation` for its owner/operation/request-hash-bound receipt **before**
+Agent lookup, Conversation resolution, remote-file retrieval or MCP discovery.
+A missing receipt alone continues normal preparation and the existing acceptance
+CAS. Concurrent first callers still converge through that CAS.
+
+The private `/observe` route is an internal DO transport, not a public debugging
+or execution API. It cannot create a receipt or replace stored context. Existing
+pending and known operations attach to the original terminal observer stream;
+completed operations read their original chunked output; conflicts remain 409;
+an expired tombstone remains 410 even if the Agent or source no longer exists.
+An observer transport failure is not permission to prepare or dispatch again.
+Requests without a key retain the established create-new-operation behavior.
+
+This removes both a correctness dependency on mutable sources and repeated
+remote downloads/discovery on retries. It does not claim measured end-user
+latency, nor does it change the protected-prefix, billing, paid-call fence,
+retention or native-summary contracts.
+
+Actions `40447077095`, source `a81af4a341de0771077b292e3bf14ce824e52541`,
+built Worker artifact `12708917535` and passed only the new
+`MAGENTS_NATIVE_WINDOW_CASE=compact-observe` compiled-Worker journey. Its actual
+WASM SHA-256 is
+`b53b6de7fb6cf7d798122f46b2ab6117e733b25e7dc89a6dc2c8cbc0a5efda20`;
+verification artifact `12708234615` records the selected check and two TAP test
+nodes (one journey nested in its harness), not two independent model cases.
+The journey submits exactly one synthetic provider request and downloads its
+remote source once, deletes the Agent and makes that source unavailable, then
+observes pending and durably known work, cold completed output, owner/body
+conflicts and permanent expiry. The sole model ledger entry is settled BYOK.
+All external-network/provider calls are intercepted; no real inference occurs.
+
+The first new-case run `40446055494` remains failed: immutable fetch-response
+headers turned a direct 409 conflict into HTTP500 when adding public receipt
+headers. The repair retains the original response-header ownership step for
+both streamed observer output and direct actor JSON. The successful run retries
+only this newly failing journey; it does not replay any previously accepted
+compact, Conversation, SDK, remote-file or paid-model acceptance.

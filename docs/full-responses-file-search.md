@@ -325,3 +325,21 @@ is intentionally non-promoting: it runs two new Rust contracts and one new
 compiled-Worker rejected HTTP conversion, not the previously accepted UTF-8,
 PDF/DOCX, chunking, embedding, search or batch-funding journeys. Actual repaired
 Cloudflare PDF acceptance remains pending until the repaired Worker is deployed.
+
+
+Focused proof completed successfully in [GHA 40446113827](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40446113827),
+source `0a2a53fbee523462948e6d38678e19c314dd0a1a`. Retained Worker artifact
+`12709051148`; verification artifact `12709120598`. Both new Rust contracts
+executed exactly once (306 ms and 300 ms); the one compiled-Worker/SDK journey
+passed in 3,954 ms. The fresh 593-byte PDF received a controlled HTTP 422 with
+numeric error 10042, request ID `native-document-rejected-1`, and ray
+`abc123-SIN`. Its immutable owner/generation receipt retained these fields;
+repeated status and maintenance did not repeat conversion. Embedding/model calls
+were zero. This proves the changed real Worker integration and error receipts,
+not successful actual Cloudflare conversion; the latter remains a new staging
+acceptance item.
+
+Build-path timings explain this slice's elapsed time: `cargo install worker-build`
+2m40s and Worker release build 4m36s; total Worker job 11m58s. Selected behavioral
+checks consumed approximately 4.56 seconds. This is evidence for caching the
+pinned build tool and compiled artifacts, not justification for more regressions.

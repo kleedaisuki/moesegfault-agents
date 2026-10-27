@@ -220,3 +220,26 @@ test('image-only staging preserves verified cleanup apps while Code rejects befo
   assert.equal(stage.vars.HOSTED_TOOL_RUNTIMES.includes('code_interpreter'), false);
   assert.equal(stage.vars.DAEMON_IMAGE_SOURCE, env.CONTAINER_SOURCE_SHA);
 });
+
+test('staging MCP and programmatic opt-in preserves accepted runtimes and prices its native loader only', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const base = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha,
+    ACCEPTANCE_PROFILE: 'none', RUNTIME_FEATURES: 'web_search,file_search,code_interpreter,mcp,programmatic_tool_calling' };
+  const result = renderDeploymentConfig(source, base), stage = result.env.staging;
+  assert.equal(stage.vars.HOSTED_TOOL_RUNTIMES, base.RUNTIME_FEATURES);
+  assert.deepEqual(stage.worker_loaders, [{ binding: 'PROGRAM_LOADER' }]);
+  const pricing = JSON.parse(stage.vars.RESOURCE_PRICING_JSON);
+  assert.deepEqual(pricing.tariffs.filter(t => t.unit.startsWith('dynamic_worker_')).map(t =>
+    [t.unit, t.microusd_numerator, t.quantity_denominator, t.price_version]), [
+    ['dynamic_worker_creation_day', 2000, 1, pricing.version],
+    ['dynamic_worker_request', 3, 10, pricing.version],
+    ['dynamic_worker_cpu_slot_100ms', 2, 1, pricing.version],
+  ]);
+  assert.deepEqual(result.env.production, source.env.production);
+  assert.equal(source.env.staging.worker_loaders, undefined);
+  assert.ok(!JSON.parse(stage.vars.HOSTED_TOOL_CAPABILITIES_JSON).platform_images);
+  const mcpOnly = renderDeploymentConfig(source, { ...base, RUNTIME_FEATURES: 'web_search,file_search,code_interpreter,mcp' }).env.staging;
+  assert.equal(mcpOnly.worker_loaders, undefined);
+  assert.ok(!JSON.parse(mcpOnly.vars.RESOURCE_PRICING_JSON).tariffs.some(t => t.unit.startsWith('dynamic_worker_')));
+  assert.throws(() => renderDeploymentConfig(source, { ...base, DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
+});

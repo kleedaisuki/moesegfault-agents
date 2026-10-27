@@ -52,6 +52,38 @@ pub(crate) struct PreparedCompact {
     pub traceparent: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompactLookup {
+    pub owner: String,
+    pub operation: String,
+    pub request_hash: String,
+}
+
+impl CompactLookup {
+    fn validate(&self) -> Result<()> {
+        if self.owner.is_empty()
+            || self.owner.len() > 1024
+            || !self.operation.starts_with("cmp_")
+            || self.operation.len() > 128
+            || self.request_hash.len() != 64
+            || !self
+                .request_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(failure("invalid_compaction_operation"));
+        }
+        Ok(())
+    }
+
+    fn matches(&self, receipt: &Receipt) -> bool {
+        self.owner == receipt.owner
+            && self.operation == receipt.operation
+            && self.request_hash == receipt.request_hash
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Phase {
@@ -119,19 +151,32 @@ impl DurableObject for ModelOperation {
     }
 
     async fn fetch(&self, mut request: Request) -> Result<Response> {
-        if request.method() != Method::Post || request.path() != "/compact" {
+        if request.method() != Method::Post
+            || !matches!(request.path().as_str(), "/compact" | "/observe")
+        {
             return util::json_error(404, "not_found", "Unknown model operation");
         }
-        let prepared: PreparedCompact = request.json().await?;
-        prepared.validate()?;
+        let (identity, prepared) = if request.path() == "/observe" {
+            let identity: CompactLookup = request.json().await?;
+            identity.validate()?;
+            (identity, None)
+        } else {
+            let prepared: PreparedCompact = request.json().await?;
+            prepared.validate()?;
+            (
+                CompactLookup {
+                    owner: prepared.owner.clone(),
+                    operation: prepared.operation.clone(),
+                    request_hash: prepared.request_hash.clone(),
+                },
+                Some(prepared),
+            )
+        };
         let inner = &self.inner;
         let _guard = inner.initialization.lock().await;
         let mut receipt = inner.state.storage().get::<Receipt>(RECEIPT).await?;
         if let Some(existing) = &receipt {
-            if existing.owner != prepared.owner
-                || existing.operation != prepared.operation
-                || existing.request_hash != prepared.request_hash
-            {
+            if !identity.matches(existing) {
                 return util::json_error(
                     409,
                     "idempotency_conflict",
@@ -139,6 +184,13 @@ impl DurableObject for ModelOperation {
                 );
             }
         } else {
+            let Some(prepared) = prepared else {
+                return util::json_error(
+                    404,
+                    "compaction_not_found",
+                    "No original operation exists",
+                );
+            };
             let now = util::now_ms();
             let accepted = Receipt {
                 owner: prepared.owner.clone(),
@@ -167,45 +219,7 @@ impl DurableObject for ModelOperation {
             receipt = Some(accepted);
         }
         let mut receipt = receipt.ok_or_else(|| failure("operation_missing"))?;
-        if retention_expired(receipt.phase, receipt.expires_at_ms, util::now_ms()) {
-            inner.expire(&mut receipt).await?;
-            return terminal(
-                410,
-                "compaction_expired",
-                "Compaction receipt expired; this key cannot execute again",
-            );
-        }
-        if receipt.phase == Phase::Complete {
-            let bytes = read_chunks(&inner.state.storage(), OUTPUT)
-                .await?
-                .ok_or_else(|| failure("operation_output_missing"))?;
-            let (sender, response) = observer_transport::channel("compact")?;
-            observer_transport::publish(sender, 200, serde_json::from_slice(&bytes)?);
-            return Ok(response);
-        }
-        if receipt.phase == Phase::Failed {
-            return terminal(
-                rejection_status(receipt.error.as_deref().unwrap_or("compaction_failed")),
-                receipt.error.as_deref().unwrap_or("compaction_failed"),
-                rejection_message(receipt.error.as_deref().unwrap_or("compaction_failed")),
-            );
-        }
-        let mut followers = inner.followers.borrow_mut();
-        followers.retain(|sender| !sender.is_closed());
-        if followers.len() >= MAX_FOLLOWERS {
-            return util::json_error(429, "observer_limit", "Too many compaction observers");
-        }
-        let (sender, response) = observer_transport::channel("compact")?;
-        followers.push(sender);
-        drop(followers);
-        if !inner.running.get() {
-            inner
-                .state
-                .storage()
-                .set_alarm(util::alarm_at(util::now_ms() + 1))
-                .await?;
-        }
-        Ok(response)
+        inner.observe(&mut receipt).await
     }
 
     async fn alarm(&self) -> Result<Response> {
@@ -276,6 +290,47 @@ impl PreparedCompact {
 }
 
 impl Inner {
+    async fn observe(&self, receipt: &mut Receipt) -> Result<Response> {
+        if retention_expired(receipt.phase, receipt.expires_at_ms, util::now_ms()) {
+            self.expire(receipt).await?;
+            return terminal(
+                410,
+                "compaction_expired",
+                "Compaction receipt expired; this key cannot execute again",
+            );
+        }
+        if receipt.phase == Phase::Complete {
+            let bytes = read_chunks(&self.state.storage(), OUTPUT)
+                .await?
+                .ok_or_else(|| failure("operation_output_missing"))?;
+            let (sender, response) = observer_transport::channel("compact")?;
+            observer_transport::publish(sender, 200, serde_json::from_slice(&bytes)?);
+            return Ok(response);
+        }
+        if receipt.phase == Phase::Failed {
+            return terminal(
+                rejection_status(receipt.error.as_deref().unwrap_or("compaction_failed")),
+                receipt.error.as_deref().unwrap_or("compaction_failed"),
+                rejection_message(receipt.error.as_deref().unwrap_or("compaction_failed")),
+            );
+        }
+        let mut followers = self.followers.borrow_mut();
+        followers.retain(|sender| !sender.is_closed());
+        if followers.len() >= MAX_FOLLOWERS {
+            return util::json_error(429, "observer_limit", "Too many compaction observers");
+        }
+        let (sender, response) = observer_transport::channel("compact")?;
+        followers.push(sender);
+        drop(followers);
+        if !self.running.get() {
+            self.state
+                .storage()
+                .set_alarm(util::alarm_at(util::now_ms() + 1))
+                .await?;
+        }
+        Ok(response)
+    }
+
     async fn advance(&self) -> Result<()> {
         let Some(mut receipt) = self.state.storage().get::<Receipt>(RECEIPT).await? else {
             return Ok(());
