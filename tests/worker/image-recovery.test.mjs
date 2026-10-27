@@ -18,7 +18,7 @@ const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-
 const origin = 'https://agents.test';
 const digest = value => createHash('sha256').update(value).digest('hex');
 const jpeg = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDyeiiivQOQ/9k=';
-const cases = ['default_jpeg', 'receipt_ack', 'image_put', 'mime_mismatch', 'complete_error', 'transport_gap', 'diagnostic_gc'];
+const cases = ['default_jpeg', 'receipt_ack', 'image_put', 'mime_mismatch', 'complete_error', 'transport_gap', 'diagnostic_gc', 'stream_json_error'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(probe, label, milliseconds = 30000) {
   const stop = Date.now() + milliseconds;
@@ -38,16 +38,23 @@ async function migrate(db) {
 test('compiled Rust Worker: paid image response recovery and precise failure boundaries', { timeout: 240000 }, async t => {
   const requested = process.env.MAGENTS_IMAGE_RECOVERY_CASE?.split(',');
   assert.ok(!requested || requested.every(name => cases.includes(name)), 'Select only known image recovery increments');
-  const selected = requested ? cases.filter(name => requested.includes(name)) : cases.filter(name => name !== 'diagnostic_gc');
+  const selected = requested ? cases.filter(name => requested.includes(name)) : cases.filter(name => !['diagnostic_gc', 'stream_json_error'].includes(name));
   assert.ok(selected.length, 'Select a known image recovery increment');
   const receipts = {};
   for (const name of selected) await t.test(name, { timeout: 45000 }, async () => {
-    const completeError = ['complete_error', 'diagnostic_gc'].includes(name);
+    const streamingError = name === 'stream_json_error';
+    const completeError = ['complete_error', 'diagnostic_gc', 'stream_json_error'].includes(name);
+    const documentedFree = completeError && !streamingError;
+    const unknownBilling = name === 'transport_gap' || streamingError;
+    const ownedOrigin = 'https://controlled-owned-images.example.com/v1';
     const encryptionKey = randomBytes(32), identity = createIdentityFixture(), providers = createNativeSemanticsProvider();
     const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
     const profile = structuredClone(hostedImageProfile);
     delete profile.profiles[0].capabilities.parameters.output_format;
     profile.profiles[0].capabilities.omit_default_output_format = true;
+    if (streamingError) profile.profiles.push({ api: 'openai', base_url: ownedOrigin, model: 'controlled-owned-stream', public_model: null,
+      capabilities: { streaming: true, parameters: { output_format: { type: 'enum', values: ['png'] } }, max_references: 0, mask: false },
+      router_endpoint: null, asset_hosts: [], price_revision: 'controlled-owned-stream-v1', reservation_microusd: 0, platform_funded: false });
     await mkdir(path.join(root, '.temp'), { recursive: true });
     const directory = await mkdtemp(path.join(root, '.temp/image-recovery-'));
     let imagePosts = 0;
@@ -76,15 +83,16 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
           available_container_profiles: [], code_network_disabled: false, code_network_allowlist: false }),
         RESOURCE_PRICING_JSON: deployment.env.staging.vars.RESOURCE_PRICING_JSON, RUN_RESOURCE_RESERVATION_MICROUSD: '20000', FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000' },
       async outboundService(request) {
-        if (new URL(request.url).origin === 'https://openrouter.ai') {
+        if (new URL(request.url).origin === 'https://openrouter.ai' || request.url === `${ownedOrigin}/images/generations`) {
           imagePosts++;
           assert.equal(imagePosts, 1, 'A receive, codec or R2 failure cannot repeat the paid generation');
-          assert.equal(request.headers.get('authorization'), 'Bearer synthetic-platform-image-key');
+          assert.equal(request.headers.get('authorization'), streamingError ? 'Bearer synthetic-owned-stream-key' : 'Bearer synthetic-platform-image-key');
           const body = await request.json();
-          assert.equal(body.output_format, undefined, 'Omitted output format must remain provider default');
+          if (streamingError) { assert.equal(body.stream, true); assert.equal(body.partial_images, 1); }
+          else assert.equal(body.output_format, undefined, 'Omitted output format must remain provider default');
           const db = await mf.getD1Database('DB');
           admission = await db.prepare('SELECT state,capacity_bytes,max_frames FROM provider_response_operations').first();
-          assert.equal(admission.state, 'reserved'); assert.equal(admission.max_frames, 1); assert.ok(admission.capacity_bytes >= 24 * 1024 * 1024);
+          assert.equal(admission.state, 'reserved'); assert.equal(admission.max_frames, streamingError ? 2 : 1); assert.ok(admission.capacity_bytes >= 24 * 1024 * 1024);
           if (name === 'transport_gap') throw Error('Controlled transport gap after provider dispatch');
           const headers = { 'x-request-id': 'request-controlled', 'x-generation-id': 'gen-img-controlled', 'cf-ray': 'controlled-ray' };
           if (completeError) return Response.json({ error: { code: 502, message: 'Controlled complete upstream failure' } }, { status: 502, headers });
@@ -104,12 +112,14 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         { output: [{ id: 'controlled-image-answer', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'The original image operation has a durable outcome.', annotations: [], logprobs: [] }] }] },
       ]);
       const credential = await principal.browser('POST', '/v1/provider-keys', { protocol: 'openai', base_url: model.baseUrl, api_key: model.key }, 201);
+      const imageKey = streamingError ? await principal.browser('POST', '/v1/provider-keys', { protocol: 'openai', base_url: ownedOrigin, api_key: 'synthetic-owned-stream-key' }, 201) : null;
+      const imageService = streamingError ? { provider: 'openai_images', credential_id: imageKey.id, model: 'controlled-owned-stream' } : { provider: 'platform' };
       const client = new OpenAI({ apiKey: principal.apiKey, baseURL: `${origin}/v1`, maxRetries: 0, timeout: 15000, fetch: (input, init) => mf.dispatchFetch(input, init) });
       const agentResponse = await mf.dispatchFetch(`${origin}/v1/agents`, { method: 'POST', headers: { Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Image recovery increment', workspace: false, tools: [], model: { provider: 'byok', credential_id: credential.id, protocol: 'responses', model: model.model, context_window: 32768, max_output_tokens: 512 }, tool_services: { image_generation: { provider: 'platform' } } }) });
+        body: JSON.stringify({ name: 'Image recovery increment', workspace: false, tools: [], model: { provider: 'byok', credential_id: credential.id, protocol: 'responses', model: model.model, context_window: 32768, max_output_tokens: 512 }, tool_services: { image_generation: imageService } }) });
       assert.equal(agentResponse.status, 201, await agentResponse.clone().text());
       const agent = await agentResponse.json();
-      const requestBody = { model: agent.id, input: 'Run one controlled image operation.', background: true, tools: [{ type: 'image_generation' }], max_tool_calls: 1 };
+      const requestBody = { model: agent.id, input: 'Run one controlled image operation.', background: true, tools: [{ type: 'image_generation', ...(streamingError ? { partial_images: 1 } : {}) }], max_tool_calls: 1 };
       const initial = await (await client.responses.create(requestBody, { headers: { 'Idempotency-Key': `image-recovery-${name}` } }).asResponse()).json();
       const route = await until(() => db.prepare('SELECT id,session_id FROM response_routes WHERE account_id=?').bind(principal.owner).first(), 'Response route');
       async function inspect() {
@@ -156,6 +166,15 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         const privateState = await inspect();
         const operation = privateState.operations[0].value;
         assert.equal(operation.observation?.upstream_status ?? null, name === 'transport_gap' ? 500 : completeError ? 502 : 200);
+        if (streamingError) {
+          assert.equal(operation.observation.phase, 'check_status');
+          assert.equal(operation.observation.content_type, 'application/json');
+          assert.equal(operation.observation.provider_error_code, '502');
+          assert.equal(operation.failure, 'image_generation_upstream_error');
+          assert.equal(operation.provider_replies.length, 1);
+          assert.equal(operation.provider_replies[0].complete, true);
+          assert.equal(operation.observation.confirmed_no_charge, false, 'An owned provider does not inherit OpenRouter no-charge guarantees');
+        }
         if (name === 'transport_gap') {
           assert.equal(operation.observation.confirmed_no_charge, false, 'A fixture gateway HTTP500 is not authenticated provider no-charge evidence');
           assert.equal(operation.observation.provider_completed, false);
@@ -168,14 +187,19 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
           assert.equal(operation.failure, 'image_generation_format_mismatch');
         }
         const retained = await db.prepare('SELECT state,capacity_bytes,expires_at_ms FROM provider_response_operations WHERE account_id=?').bind(principal.owner).first();
-        assert.equal(retained.state, completeError ? 'diagnostic' : 'recovery');
-        assert.equal(retained.expires_at_ms !== null, completeError);
+        assert.equal(retained.state, documentedFree ? 'diagnostic' : 'recovery');
+        assert.equal(retained.expires_at_ms !== null, documentedFree);
         if (name !== 'transport_gap') assert.ok(retained.capacity_bytes > 0);
       }
-      const imageHolds = (await db.prepare("SELECT state,CAST(reserved_microusd AS TEXT) AS reserved,CAST(settled_microusd AS TEXT) AS settled FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'tool:seedream5:%'").bind(principal.owner).all()).results;
+      const imageHolds = (await db.prepare("SELECT state,CAST(reserved_microusd AS TEXT) AS reserved,CAST(settled_microusd AS TEXT) AS settled FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE ?").bind(principal.owner, streamingError ? 'tool:reported_cost:%' : 'tool:seedream5:%').all()).results;
       assert.equal(imageHolds.length, 1);
-      assert.equal(imageHolds[0].state, name === 'transport_gap' ? 'reserved' : 'settled');
-      assert.equal(imageHolds[0].settled, name === 'transport_gap' ? null : completeError ? '0' : '18000');
+      if (streamingError) {
+        assert.equal(imageHolds[0].reserved, '0');
+        const platformDebits = await db.prepare("SELECT COALESCE(SUM(l.amount_microusd),0) AS amount FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit='generated_image'").bind(principal.owner).first();
+        assert.equal(platformDebits.amount, 0);
+      }
+      assert.equal(imageHolds[0].state, unknownBilling ? 'reserved' : 'settled');
+      assert.equal(imageHolds[0].settled, unknownBilling ? null : documentedFree ? '0' : '18000');
       await mf.unsafeEvictDurableObject('', 'Session', { name: `${principal.owner}:${route.session_id}` });
       const observed = await (await client.responses.retrieve(response.id).asResponse()).json();
       assert.deepEqual(observed, response, 'Cold retrieval preserves the original canonical outcome');
