@@ -18,6 +18,9 @@ mod util;
 mod workspace;
 
 pub use auth::AuthSession;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub use provider::{FunctionCall, Message, ToolCall};
 pub use session::Session;
 use worker::*;
 

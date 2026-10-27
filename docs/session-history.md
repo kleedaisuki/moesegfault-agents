@@ -32,8 +32,17 @@ would break existing SDK/CLI consumers and the source-journal acceptance contrac
 
 ## Bounded, reproducible measurement
 
-The opt-in probe uses the **actual** provider `Message` and `ToolCall` types, not a
-reimplementation. It creates 128 complete bash call/result rounds, one initial
+The opt-in probe imports the **actual compiled library** `Message`, `FunctionCall`
+and `ToolCall` types through native-only, documentation-hidden exports. It does not
+path-import provider internals or reimplement their types, so provider module
+dependencies resolve through the same library graph as normal native builds.
+Compilation can be checked without executing the probe:
+
+```sh
+cargo test --locked -p agents-worker --test history_perf --no-run
+```
+
+It creates 128 complete bash call/result rounds, one initial
 user message and one final answer: 258 source messages. Each assistant includes a
 short continuation-reasoning field and a real-shaped JSON tool call. Tool results
 wrap deterministic varied test-log lines in the daemon's stdout/stderr/exit shape.
