@@ -636,7 +636,7 @@ impl SessionInner {
         )))
     }
 
-    pub(super) async fn cleanup_image_provider_replies(
+    pub(in crate::session) async fn cleanup_image_provider_replies(
         &self,
         owner: &str,
         execution: &str,
