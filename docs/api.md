@@ -6,9 +6,15 @@ are limited to 1 MiB. Error responses use
 `{"error":{"message":"…","type":"…","code":"…"}}` and meaningful HTTP status
 codes. API responses are private and `Cache-Control: no-store`.
 
-This document distinguishes the implemented subset from the complete upstream
-OpenAI API: the platform runs its own tools and maintains session history. It is
-not a transparent proxy accepting arbitrary OpenAI request fields.
+Production remains v0.2.0 (Chat Completions and established management APIs).
+Responses, account Space/Files, workspace versions, Conversations and related
+full-contract additions below describe the v0.3 candidate until its promotion
+receipt explicitly says otherwise. The v0.2 tag has no Responses route. Choose
+the realm and released capabilities before running an example.
+
+This document distinguishes platform behavior from unrelated upstream products.
+The platform runs its own tools and maintains session history; it is not a
+transparent proxy accepting arbitrary OpenAI request fields.
 
 ## Authentication
 
@@ -112,6 +118,23 @@ across all of an owner's sessions, including API keys and browser/CLI callers.
 
 ## Responses
 
+### Release boundary
+
+Production remains the v0.2.0 Chat API until the v0.3 promotion gate completes.
+The examples below originated with the initial linear v0.3 implementation; they
+are not an exclusion list for the expanded Responses implementation. For candidate capabilities, provider-specific
+limits and executed evidence, start with the [full Responses work graph](full-responses.md),
+[contract inventory](full-responses-contract.md) and [release audit](v0.3-release-audit.md).
+A source implementation or staging flag is not a production availability claim.
+
+The v0.3 candidate additionally wires standalone `POST /v1/responses/input_tokens`
+and `/compact`, WebSocket `/v1/responses`, Conversations/items, historical branches,
+rich caller-local tools and independently bound hosted services. See
+[context APIs](full-responses-auxiliary.md), [WebSocket](full-responses-websocket.md),
+[state](full-responses-state.md), [local tools](full-responses-client-tools.md) and
+[hosted tools](full-responses-tools.md). Only selected capabilities are activated
+in each realm; check the deployment receipt and actual service binding.
+
 Responses is an additive API, not a relaxation of the Chat Completions schema
 above. `model` still names an owned agent. The public wire protocol is independent
 of whether that agent uses an OpenAI-compatible or Anthropic upstream. Use the
@@ -182,7 +205,7 @@ layers apply behind the stable prefix and cannot grant permissions. The agent pi
 still persists; agent updates do not rewrite it. Resend a desired top-level
 customization deliberately, without replaying historical input items.
 
-| Parameter | Implemented contract |
+| Parameter | Initial linear v0.3 baseline; expanded policy is linked above |
 |---|---|
 | `previous_response_id` | Continue the current head of the same owned agent/session |
 | `instructions` | Response-scoped text; combined custom instructions at most 64 KiB |
@@ -202,9 +225,12 @@ customization deliberately, without replaying historical input items.
 JSON schema controls use the provider's native format configuration, not an
 instruction pretending to enforce a schema. Endpoint/model capabilities still
 matter; upstream wire compatibility does not guarantee every model supports each
-option. Hosted OpenAI tools, image/audio generation, nonempty `include`, and
-`text.verbosity` are not supported. Files have the explicit attachment path below;
-file storage alone is not native multimodal inference support.
+option. In the initial linear baseline, hosted tools, image generation, nonempty
+`include` and `text.verbosity` were unavailable. This is not the v0.3 capability policy:
+its [native provider adapter](full-responses-provider.md) and [tool services](full-responses-tools.md)
+implement supported effects and reject unsupported provider combinations before
+inference. Audio input and unrelated standalone media APIs are not implied by
+Responses compatibility. File storage alone is not native multimodal inference support.
 Schema validation is bounded: schemas at most 64 KiB and depth 32, instances at
 most 1 MiB and depth 64. Only acyclic local `#` references are supported;
 recursive/reference cycles and nested `$id` resources are rejected, and
@@ -220,9 +246,11 @@ For user image input, explicitly use `input_image` with an owned image `file_id`
 or bounded PNG/JPEG/GIF/WebP base64 `image_url`, and optional `detail` of `auto`,
 `low`, or `high`. At most eight images, 5 MiB decoded per image and 4 MiB aggregate
 inline attachment content are accepted; the ordinary JSON body limit still
-applies to inline data. Remote image/file URLs are not fetched. Native image
-parts require a vision-capable upstream model; choosing `input_file` instead
-does not silently request native vision. Audio input is not supported.
+applies to inline data. The initial linear baseline did not fetch remote attachments.
+The v0.3 candidate has [bounded anonymous remote freezing](full-responses-auxiliary.md):
+public HTTPS, no forwarded credentials or redirects, verified content and aggregate
+budgets. Native image parts require a vision-capable upstream model; choosing
+`input_file` instead does not silently request native vision. Audio input is not supported.
 
 An `input_file` part can contain either an owned `file_id`, or `filename` plus
 `file_data` as base64 or a `data:<mime>;base64,...` URL, never both. Inline files are
@@ -231,22 +259,28 @@ admission of that same operation cannot substitute different bytes or duplicate
 its completed upload. This is real storage with quota/resource accounting, not an
 unmetered transient field. Inline files share the 4 MiB decoded attachment budget
 and the tighter 1 MiB JSON request bound. Prefer the Files upload path for reusable
-or larger content. Remote `file_url` inputs are rejected, not fetched.
+or larger content. Remote `file_url` was unavailable in the initial baseline; the expanded renderer
+resolves supported remote files using the same bounded preparation and owned
+retention rules, rather than forwarding a URL as if its contents were read.
 
-### Linear continuation and local functions
+### Continuation and local functions
 
 A response identifies one durable input/output boundary. Retrieval remains tied to
-that boundary after later turns, steering, or compaction. Only the current response
-head is eligible for continuation. Stale parents return 409
-`response_fork_not_supported`; busy-session continuations conflict rather than
-launching a second loop. There is no arbitrary historical conversation or workspace
-fork. Omit previous history; use another fresh chain for independent work.
-For continuation, `model` can be omitted and is resolved from the owned parent;
-an explicitly supplied model must match. An optional `X-Agents-Session` binding
-must select the same session as the parent. Without either binding, creation
-starts a new session. Archived Responses continuations are readmitted under
-current owner limits without changing the pin or cloning the workspace; this does
-not change Chat's explicit-resume contract.
+that boundary after later turns, steering, or compaction. The initial linear
+baseline permitted only its current same-agent head and rejected stale parents
+with `response_fork_not_supported`.
+The expanded v0.3 contract removes that scope restriction: the eligible current
+head can reuse its Session; historical, concurrent or different-agent children
+receive independent Sessions from an immutable source boundary and trustworthy
+workspace seed. A missing historical seed fails explicitly instead of substituting
+current files. See [branch ownership and pins](full-responses-state.md).
+
+For continuation, omitted `model` resolves from the owned parent. In v0.3 an
+explicitly different owned agent selects a new target pin; it does not inherit
+the parent's permissions. An optional `X-Agents-Session` binding must select
+the source Session. Without a parent or Session binding, creation starts a new
+Session. Archived current-head continuation is readmitted under current owner
+limits without changing its pin. Chat retains its explicit-resume contract.
 
 Local functions are declared in the Responses format, not Chat tool schemas:
 

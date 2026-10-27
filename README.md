@@ -9,6 +9,11 @@ Rust agent sessions on Cloudflare Workers, Durable Objects and on-demand contain
 
 Production and staging are deployed; [v0.2.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.2.0) provides Linux and Windows CLI downloads. BYOK supports OpenAI-compatible and Anthropic endpoints; TOML publication and conversation/workspace downloads use the same owner-scoped account. Signed-out adash has its own responsive entry page. Real production acceptance includes new CLI operations against preserved v0.1-era user data. Subscribe management returns refresh verified grants; access still uses activation grants, not automatic charging. See [acceptance](docs/acceptance.md) for exact releases, evidence and limits.
 
+The expanded v0.3 Responses, Space and hosted-tool implementation is a separate
+release candidate, not yet the production release. Its [current scope and delivery graph](docs/full-responses.md)
+and [release audit](docs/v0.3-release-audit.md) distinguish implemented/verified
+capabilities from remaining activation and release gates.
+
 For another agent to use the CLI, integrate the API, or contribute to the
 platform, choose the corresponding [portable skill pack](skills/README.md).
 Each loads task-specific references on demand rather than the full manual.

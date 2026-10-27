@@ -1,4 +1,12 @@
-# v0.3 Responses, Space and workspace versions
+# Historical initial Responses, Space and workspace contract
+
+**Superseded scope:** this document records the initial linear-only implementation
+plan, not the current v0.3 acceptance boundary. The later user requirement includes
+historical conversation/workspace branches, Conversations, WebSocket, context
+APIs and real hosted services. Those are governed by [delivery decisions](full-responses-decisions.md),
+[full contract](full-responses-contract.md) and [current work graph](full-responses.md).
+The exclusions and `response_fork_not_supported` behavior below describe that
+earlier baseline only; they must not be used to reject required v0.3 work.
 
 This is the implementation contract for v0.3.0, not an acceptance receipt.
 The existing [session runtime](session-runtime.md), [workspace protocol](workspace.md)
