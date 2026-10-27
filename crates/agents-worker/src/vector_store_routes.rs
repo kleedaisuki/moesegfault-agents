@@ -131,10 +131,10 @@ async fn create_validated_store(
         .as_ref()
         .map(|v| JsValue::from_f64(f64::from(v.days)))
         .unwrap_or(JsValue::NULL);
-    meter.require_d1(event).await?;
+    meter.require_d1_batched(event).await?;
     let result=env.d1("DB")?.prepare("INSERT INTO vector_stores(id,account_id,name,metadata_json,created_at,last_active_at,expires_after_days) SELECT ?1,?2,?3,?4,CAST(?5 AS INTEGER),CAST(?5 AS INTEGER),?6 WHERE (SELECT COUNT(*) FROM vector_stores WHERE account_id=?2 AND status IN ('in_progress','completed'))<CAST(?7 AS INTEGER)")
         .bind(&[JsValue::from_str(&id),JsValue::from_str(owner),name,JsValue::from_str(&metadata),JsValue::from_str(&now),days,JsValue::from_f64(f64::from(store_limit))])?.run().await?;
-    meter.record_d1(event, &result).await?;
+    meter.record_d1_batched(event, &result).await?;
     get_store(env, owner, &id, meter, &format!("{event}:read"))
         .await?
         .ok_or_else(|| fail("vector_store_limit_reached"))
@@ -147,10 +147,10 @@ pub async fn get_store(
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<Option<StoreRow>> {
-    meter.require_d1(event).await?;
+    meter.require_d1_batched(event).await?;
     let result=env.d1("DB")?.prepare(format!("{STORE_SELECT} WHERE vs.account_id=?1 AND vs.id=?2 AND vs.status NOT IN ('deleted','deleting') GROUP BY vs.id"))
         .bind(&[JsValue::from_str(owner),JsValue::from_str(id)])?.all().await?;
-    meter.record_d1(event, &result).await?;
+    meter.record_d1_batched(event, &result).await?;
     Ok(result.results::<StoreRow>()?.into_iter().next())
 }
 
@@ -164,10 +164,10 @@ pub async fn list_stores(
     if !(1..=101).contains(&limit) {
         return Err(fail("invalid_vector_store_list_limit"));
     }
-    meter.require_d1(event).await?;
+    meter.require_d1_batched(event).await?;
     let result=env.d1("DB")?.prepare(format!("{STORE_SELECT} WHERE vs.account_id=?1 AND vs.status NOT IN ('deleted','deleting') GROUP BY vs.id ORDER BY vs.created_at DESC,vs.id DESC LIMIT ?2"))
         .bind(&[JsValue::from_str(owner),JsValue::from_f64(f64::from(limit))])?.all().await?;
-    meter.record_d1(event, &result).await?;
+    meter.record_d1_batched(event, &result).await?;
     result.results()
 }
 
@@ -178,10 +178,10 @@ pub async fn delete_store(
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<bool> {
-    meter.require_d1(event).await?;
+    meter.require_d1_batched(event).await?;
     let result=env.d1("DB")?.prepare("UPDATE vector_stores SET status='deleting' WHERE account_id=?1 AND id=?2 AND status NOT IN ('deleted','deleting') RETURNING id")
         .bind(&[JsValue::from_str(owner),JsValue::from_str(id)])?.all().await?;
-    meter.record_d1(event, &result).await?;
+    meter.record_d1_batched(event, &result).await?;
     Ok(!result.results::<Value>()?.is_empty())
 }
 
@@ -250,10 +250,10 @@ pub async fn attach_file(
         serde_json::to_string(&strategy)?,
         serde_json::to_string(&profile)?,
     ];
-    meter.require_d1(event).await?;
+    meter.require_d1_batched(event).await?;
     let result=env.d1("DB")?.prepare("INSERT INTO vector_store_files(vector_store_id,file_id,account_id,file_sha256,attributes_json,status,created_at,updated_at,generation,chunking_json,service_profile_json) SELECT ?1,sf.id,?2,sf.sha256,?4,'in_progress',CAST(?5 AS INTEGER),CAST(?5 AS INTEGER),?6,?8,?9 FROM space_files sf JOIN vector_stores vs ON vs.id=?1 AND vs.account_id=?2 AND vs.status='completed' WHERE sf.id=?3 AND sf.account_id=?2 AND sf.status='processed' AND (SELECT COUNT(*) FROM vector_store_files WHERE vector_store_id=?1 AND removed_at IS NULL)<CAST(?7 AS INTEGER) ON CONFLICT(vector_store_id,file_id) DO UPDATE SET generation=excluded.generation,attributes_json=excluded.attributes_json,chunking_json=excluded.chunking_json,service_profile_json=excluded.service_profile_json,status='in_progress',created_at=excluded.created_at,updated_at=excluded.updated_at,removed_at=NULL,source_staged=0,chunk_count=0,usage_bytes=0,last_error_json=NULL,lease_id=NULL,lease_until=0,retry_at=0,embedding_model=NULL,embedding_dimensions=NULL,embedding_revision=NULL,vector_mutation_id=NULL,batch_id=NULL WHERE vector_store_files.removed_at IS NOT NULL RETURNING generation")
         .bind(&values(&bindings))?.all().await?;
-    meter.record_d1(event, &result).await?;
+    meter.record_d1_batched(event, &result).await?;
     if result.results::<Value>()?.is_empty() {
         return Err(fail("vector_store_source_unavailable_or_limit"));
     }
@@ -268,10 +268,10 @@ pub async fn detach_file(
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<bool> {
-    meter.require_d1(event).await?;
+    meter.require_d1_batched(event).await?;
     let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET status='cancelled',lease_id=NULL,lease_until=0,removed_at=unixepoch()*1000 WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND removed_at IS NULL AND EXISTS(SELECT 1 FROM vector_stores WHERE id=?2 AND account_id=?1 AND status='completed') RETURNING file_id")
         .bind(&[JsValue::from_str(owner),JsValue::from_str(store),JsValue::from_str(file)])?.all().await?;
-    meter.record_d1(event, &result).await?;
+    meter.record_d1_batched(event, &result).await?;
     Ok(!result.results::<Value>()?.is_empty())
 }
 
@@ -321,14 +321,14 @@ pub(crate) async fn attach_batch(
     let db = env.d1("DB")?;
     let insert_batch=db.prepare("INSERT INTO vector_store_file_batches(id,account_id,vector_store_id,created_at,status) SELECT ?3,?1,?2,CAST(?4 AS INTEGER),'in_progress' WHERE EXISTS(SELECT 1 FROM vector_stores WHERE id=?2 AND account_id=?1 AND status='completed') AND (SELECT COUNT(*) FROM space_files sf WHERE sf.account_id=?1 AND sf.status='processed' AND sf.id IN (SELECT value FROM json_each(?5)))=json_array_length(?5) AND NOT EXISTS(SELECT 1 FROM vector_store_files vf WHERE vf.vector_store_id=?2 AND vf.removed_at IS NULL AND vf.file_id IN (SELECT value FROM json_each(?5))) AND (SELECT COUNT(*) FROM vector_store_files WHERE vector_store_id=?2 AND removed_at IS NULL)+json_array_length(?5)<=10000").bind(&values(&bindings[..5]))?;
     let insert_files=db.prepare("INSERT INTO vector_store_files(vector_store_id,file_id,account_id,file_sha256,attributes_json,status,created_at,updated_at,generation,batch_id,chunking_json,service_profile_json) SELECT ?2,sf.id,?1,sf.sha256,?6,'in_progress',CAST(?4 AS INTEGER),CAST(?4 AS INTEGER),lower(hex(randomblob(16))),?3,?7,?8 FROM space_files sf JOIN json_each(?5) f ON f.value=sf.id WHERE sf.account_id=?1 AND sf.status='processed' AND EXISTS(SELECT 1 FROM vector_store_file_batches b WHERE b.id=?3 AND b.account_id=?1 AND b.vector_store_id=?2) ON CONFLICT(vector_store_id,file_id) DO UPDATE SET generation=excluded.generation,attributes_json=excluded.attributes_json,chunking_json=excluded.chunking_json,service_profile_json=excluded.service_profile_json,status='in_progress',created_at=excluded.created_at,updated_at=excluded.updated_at,removed_at=NULL,source_staged=0,chunk_count=0,usage_bytes=0,last_error_json=NULL,lease_id=NULL,lease_until=0,retry_at=0,embedding_model=NULL,embedding_dimensions=NULL,embedding_revision=NULL,vector_mutation_id=NULL,batch_id=excluded.batch_id WHERE vector_store_files.removed_at IS NOT NULL").bind(&values(&bindings))?;
-    meter.require_d1(&format!("{event}:batch")).await?;
-    meter.require_d1(&format!("{event}:files")).await?;
+    meter.require_d1_batched(&format!("{event}:batch")).await?;
+    meter.require_d1_batched(&format!("{event}:files")).await?;
     let results = db.batch(vec![insert_batch, insert_files]).await?;
     meter
-        .record_d1(&format!("{event}:batch"), &results[0])
+        .record_d1_batched(&format!("{event}:batch"), &results[0])
         .await?;
     meter
-        .record_d1(&format!("{event}:files"), &results[1])
+        .record_d1_batched(&format!("{event}:files"), &results[1])
         .await?;
     let rows = results[0]
         .meta()?

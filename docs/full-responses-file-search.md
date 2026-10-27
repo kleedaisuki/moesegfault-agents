@@ -343,3 +343,35 @@ Build-path timings explain this slice's elapsed time: `cargo install worker-buil
 2m40s and Worker release build 4m36s; total Worker job 11m58s. Selected behavioral
 checks consumed approximately 4.56 seconds. This is evidence for caching the
 pinned build tool and compiled artifacts, not justification for more regressions.
+
+## File management accounting round trips (2026-10-27 increment)
+
+A new actual Cloudflare PDF user journey on source `e4e6777` observed upload
+5,952 ms, Vector Store creation 13,384 ms, attach 19,960 ms, and two membership
+polls 9,757/9,895 ms. The native PDF conversion itself returned HTTP 200 in 98 ms.
+That journey had no per-D1 management spans, so these timings do **not** establish
+an internal latency ratio or blame conversion/embedding for the management delay.
+
+Source inspection found the same nineteen binding round trips per measured D1
+statement already established by the Conversation investigation. This increment
+reuses its accepted `require_d1_batched` / `record_d1_batched` implementation for
+Vector Store CRUD, attachment/membership queries, and the shared service-profile
+read/pin path. No business SQL, source file bytes, background ingest state machine,
+provider call, tariff, ledger key, account/Session binding or API contract changes.
+Other FileSearch indexing/GC callers retain their existing paths. Space upload's
+R2 publication is not claimed optimized by this D1-only change.
+
+New `resource.d1.batch` events preserve operation/event/Session correlation,
+funding/observation elapsed time and exact rows read/written. Those structural
+fields are explicitly retained by telemetry; they are not discarded as arbitrary
+content. Future Cloudflare diagnosis can separate actual SQL from accounting
+without another native conversion or embedding call.
+
+The focused new benchmark `tests/worker/file-management-perf.test.mjs` compares
+actual compiled Workers, native D1/R2 and OpenAI SDK file/store management at a
+fixed 20 ms request-D1 round-trip delay. It explicitly defers background ingestion
+discovery on both sides: only queued attachment/observation/removal is in scope.
+It must prove unchanged business SQL count, actual application D1 row quantities,
+pinned exact D1 charges, zero remaining holds and zero external/model/embedding
+calls. The already accepted Conversation benchmark and seven SQL tests are not
+rerun. Controlled timing is not a real-Cloudflare latency SLO.

@@ -161,6 +161,8 @@ pub fn sanitize_fields(fields: Value) -> Value {
                 | "observation_ms"
                 | "pending_deadline_ms"
                 | "duration_ms"
+                | "rows_read"
+                | "rows_written"
                 | "prompt_tokens"
                 | "completion_tokens"
                 | "cached_tokens"
@@ -192,6 +194,7 @@ pub fn sanitize_fields(fields: Value) -> Value {
                 | "response_sha256"
                 | "conversation_id"
                 | "operation_id"
+                | "event_key"
                 | "response_id"
                 | "grant_event"
                 | "request_path"
@@ -268,7 +271,8 @@ fn event_name(event: &str) -> &str {
         | "session.projection_pending"
         | "workspace.checkpoint"
         | "workspace.restored"
-        | "diagnostics.accepted" => event,
+        | "diagnostics.accepted"
+        | "resource.d1.batch" => event,
         event if event.starts_with("conversation.") && token(event, 96) => event,
         _ => "operation",
     }
@@ -713,5 +717,19 @@ mod document_diagnostic_tests {
         assert_eq!(safe["body_complete"], true);
         assert!(safe.get("body").is_none());
         assert!(safe.get("authorization").is_none());
+    }
+}
+
+#[cfg(test)]
+mod d1_batch_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn batched_d1_phases_keep_actual_rows_and_operation_correlation() {
+        let fields = json!({"operation_id":"conversation:owned","session_id":"session-1",
+            "event_key":"vs:attach:service:profile","phase":"observed","rows_read":11,
+            "rows_written":3,"duration_ms":175});
+        assert_eq!(sanitize_fields(fields.clone()), fields);
+        assert_eq!(event_name("resource.d1.batch"), "resource.d1.batch");
     }
 }
