@@ -263,6 +263,21 @@ contracts ran, for causal publication and the steering epoch. No accepted
 client, approval, time/MCP or external-model journey was repeated. This proves
 the real workerd Loader path, not deployed Cloudflare staging or its invoice.
 
+For the separately authorized first Cloudflare Loader invocation,
+`tests/e2e/programmatic-sdk.mjs` accepts `--source <assembly-sha>`,
+`--current-python <current-SDK-python>`, `--output .temp/<new-receipt>.json`
+and the explicit `--allow-paid-program` gate. Set `MAGENTS_TEST_API_KEY`,
+`MAGENTS_TEST_TRACE_SEED` and `MAGENTS_TEST_DEPLOYMENT_PROVENANCE` through the
+operator environment, never command-line credentials. It verifies the deployed
+Worker source and direct DeepSeek model pin, sends exactly one SDK POST with a
+durably recorded idempotency key, and requires one program with two nested time
+calls containing the actual causal results. Existing receipts are not replayed;
+an ambiguous outcome preserves its original identities for observation. It does
+not invoke the controlled journeys or use Conversations, MCP, workspace or image
+tools. Dynamic allocation expectations (2000/1/2 micro-USD) are recorded separately
+from the still-required original-scope ledger settlement. Preparing this operator
+does not itself authorize or claim its execution.
+
 ## Verification boundary
 
 The earlier workerd/Miniflare component proof passed eight isolation/duplex checks;
