@@ -217,3 +217,38 @@ with `unsafeEvict`; a supported runtime configuration restart with persistent
 D1/R2/DO storage can test the cold boundary without editing production state.
 A corrected fixture must reuse the retained exact Wasm and select only failed or
 unexecuted cases, not replay already successful effect journeys.
+
+### Promote a prebuilt native release without replaying checks
+
+The artifact-only package run executes the five v0.3 cases on both actual native
+platforms once. After the root release gate approves an immutable tag and creates
+its draft release, dispatch `Package magents` with that `release_tag` and the
+successful artifact-only `reuse_run`. This is promotion, not another build.
+
+The protected upload path reads both successful platform jobs, both original
+native plans/results, package metadata and LF checksum sidecars. All five exact
+release recipes must have positive counts. The archived compiler must match the
+pinned toolchain, and the complete native dependency fingerprint from the
+existing incremental verifier must match the tag. Documentation or operator-only
+commits may therefore follow the binary build; native/dependency changes cannot.
+The archives and `BUILD-INFO.json` remain byte-for-byte original, including their
+**actual** binary source commit, source ref and producer run. They are never
+relabeled as compiled from the later tag.
+
+Promotion uploads only absent assets and never uses `--clobber`. A partial upload
+can resume only with the explicit original run and byte-equal existing assets.
+After publication, the ordinary release event sees the complete assets, validates
+them against their same successful producer and skips both the native build matrix
+and uploads. If no assets or reuse run exist, the original build-and-attach flow
+remains. No helper creates, publishes, edits or moves a release/tag; those actions
+remain the root gate.
+
+This uses GitHub's [cross-run artifact downloads](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
+and [existing-release uploads](https://cli.github.com/manual/gh_release_upload),
+not another proof catalog or a custom signing format. Six new offline promotion
+contracts exercise archive/checksum safety, exact native receipts, source identity,
+failed producer rejection, partial uploads and publication idempotence. The real
+artifact-only run `40457558376` (source `bb18283f80cdc1a9cf87a020de174eb828fc0a8c`)
+was also downloaded and validated read-only: both archives, sidecars and ten
+already executed native-case receipts passed. No native executable or old test
+was rerun, and no tag/release/production mutation was performed for this check.

@@ -6,11 +6,11 @@ are limited to 1 MiB. Error responses use
 `{"error":{"message":"…","type":"…","code":"…"}}` and meaningful HTTP status
 codes. API responses are private and `Cache-Control: no-store`.
 
-Production remains v0.2.0 (Chat Completions and established management APIs).
-Responses, account Space/Files, workspace versions, Conversations and related
-full-contract additions below describe the v0.3 candidate until its promotion
-receipt explicitly says otherwise. The v0.2 tag has no Responses route. Choose
-the realm and released capabilities before running an example.
+This document describes the v0.3 agent API. A v0.2 deployment has Chat Completions
+and its established management APIs, but no Responses route. Select the realm
+and inspect its `GET /healthz` build and [release receipt](v0.3-release-audit.md)
+before running a version-specific example. A source implementation, Actions
+artifact or staging flag does not establish production availability.
 
 This document distinguishes platform behavior from unrelated upstream products.
 The platform runs its own tools and maintains session history; it is not a
@@ -120,14 +120,12 @@ across all of an owner's sessions, including API keys and browser/CLI callers.
 
 ### Release boundary
 
-Production remains the v0.2.0 Chat API until the v0.3 promotion gate completes.
-The examples below originated with the initial linear v0.3 implementation; they
-are not an exclusion list for the expanded Responses implementation. For candidate capabilities, provider-specific
-limits and executed evidence, start with the [full Responses work graph](full-responses.md),
+Responses is available in v0.3; v0.2 deployments retain the Chat API only.
+The examples below are introductions, not a linear-only exclusion list. For the
+full contract and provider-specific limits, start with the [v0.3 notes](releases/v0.3.0.md),
 [contract inventory](full-responses-contract.md) and [release audit](v0.3-release-audit.md).
-A source implementation or staging flag is not a production availability claim.
 
-The v0.3 candidate additionally wires standalone `POST /v1/responses/input_tokens`
+The v0.3 API also includes standalone `POST /v1/responses/input_tokens`
 and `/compact`, WebSocket `/v1/responses`, Conversations/items, historical branches,
 rich caller-local tools and independently bound hosted services. See
 [context APIs](full-responses-auxiliary.md), [WebSocket](full-responses-websocket.md),
@@ -155,14 +153,13 @@ The SDK uses ordinary Responses objects: `response.id`, `response.status`, order
 `X-Agents-Response` and `X-Agents-Session`. Persist the response ID immediately;
 retain these headers when handling an ambiguous observer error.
 
-Usage never fabricates unknown reasoning-token counts. When the provider reports
-authoritative reasoning usage, standard `usage` includes input/output/total tokens,
-cached input details, and reasoning output details. If it reports totals but no
-separate reasoning count, standard `usage` is `null` and additive `agents_usage`
-preserves those exact totals with `output_tokens_details:{reasoning_tokens:null}`.
-Consumers may read `agents_usage` for totals but must not turn unknown reasoning
-into zero. With no reported provider usage, neither a standard usage object nor
-an extension is invented.
+Usage never fabricates unknown reasoning or cache-write counts. When both are
+authoritative, standard `usage` includes input/output/total tokens and their
+required detail counters. If either detail is unknown, standard `usage` is
+`null`; additive `agents_usage` preserves the exact known totals and counters,
+with unknown details remaining `null`. Consumers may read that extension but
+must not turn unknown into zero. With no reported provider usage, neither a
+standard usage object nor an extension is invented.
 
 ```python
 response = client.responses.create(
@@ -247,7 +244,7 @@ or bounded PNG/JPEG/GIF/WebP base64 `image_url`, and optional `detail` of `auto`
 `low`, or `high`. At most eight images, 5 MiB decoded per image and 4 MiB aggregate
 inline attachment content are accepted; the ordinary JSON body limit still
 applies to inline data. The initial linear baseline did not fetch remote attachments.
-The v0.3 candidate has [bounded anonymous remote freezing](full-responses-auxiliary.md):
+The v0.3 API has [bounded anonymous remote freezing](full-responses-auxiliary.md):
 public HTTPS, no forwarded credentials or redirects, verified content and aggregate
 budgets. Native image parts require a vision-capable upstream model; choosing
 `input_file` instead does not silently request native vision. Audio input is not supported.

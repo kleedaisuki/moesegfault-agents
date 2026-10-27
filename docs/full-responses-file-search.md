@@ -529,3 +529,51 @@ explicitly deferred, so no PDF conversion, embedding, Vectorize call or original
 paid operation was replayed. These figures are the controlled mechanism result,
 not a measured Cloudflare production/staging SLO. A subsequent composed field
 operation can consume the new preserved phase metadata without another model.
+
+
+### Actual alarm-backed PDF acceptance and first natural cleanup observation
+
+The distinct actual native PDF journey on Worker/assembly
+`4f8f19fb245458cf8dd4023ae88d085e6e8790d9` passed all five SDK business checks:
+owned upload/attach, background ingestion, native text conversion/index/hybrid
+lookup, source File deletion, and Store deletion. Total operator elapsed time
+was 86,887 ms. Native document/query embedding allocations were 34 + 18 bytes;
+two observed embedding allocations charged 2 microUSD. One 1,024-dimensional
+upsert and five visibility/query observations (5,120 dimensions) were real.
+Actual ingest DO wall measurements totalled 52,290 ms / 107 microUSD. The first
+postflight scoped 366 microUSD of known resources, zero new reserved holds and
+zero pending observations; nine historical holds remained unchanged. This was a
+new input, not a resubmission of either prior PDF or the prior paid BGE operation.
+
+The first natural 06:00 UTC cleanup pass did not immediately remove the derived
+chunk. Readonly D1 observation at 06:07:36 identified the specific normal path,
+rather than treating every remaining cleanup job as an exception:
+
+| Cleanup `file-cleanup:5692d603646549c99e0297e51171c73a` | Original observed fact |
+| --- | --- |
+| Funding | `settled`, 33 microUSD; no pending observations |
+| Pinned profile | valid JSON, `VECTORIZE`, 1,024 dimensions |
+| Pre-delete lookup | 1,024 queried dimensions, observed |
+| Delete mutation call | 2,583 ms, observed |
+| Post-delete lookup | 1,024 queried dimensions, observed |
+| Chunk `forget` statement | not attempted |
+| Extraction-forget / storage-close / finish writes | all zero |
+| Lease release | completed; next retry left for normal maintenance |
+
+The original visible chunk remained, and the successful path reached every later
+statement. In `cleanup_batch`, this combination means the immediate post-delete
+`getByIds` still returned the ID: `removable` was empty. No provider/codec error
+occurred in this scoped pass. [Cloudflare documents Vectorize deletion as
+asynchronous](https://developers.cloudflare.com/vectorize/reference/client-api/#delete-vectors-by-id);
+a successful mutation acknowledgment is not a deletion visibility barrier.
+The deletion receipt, retained chunk ID, cleanup job and storage clock therefore
+must not be erased or prematurely refunded. A past-due `retry_at` does not imply
+an active worker: normal maintenance runs on the next Cron invocation.
+
+This observation performed only scoped readonly D1 queries. It did not call
+Vectorize get/query/delete, embedding, a language model, manual Cron, or SQL
+mutation. The first cleanup's 33 microUSD is a separate scope, **not** a final
+journey total or final storage settlement. The clock remains unfinalized until a
+natural pass confirms removal. A generic content-free deferred log elsewhere
+cannot override this scoped financial and control-flow evidence. No source fix
+or regression run is justified by this normal asynchronous observation alone.
