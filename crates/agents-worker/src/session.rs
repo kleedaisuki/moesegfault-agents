@@ -2160,7 +2160,7 @@ impl SessionInner {
                 &run.id,
                 &event,
                 &data.record.pinned.model,
-                rendered_input_tokens,
+                u64::from(data.record.pinned.model.context_window),
             )
             .await?;
         {

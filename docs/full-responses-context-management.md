@@ -192,9 +192,12 @@ The outer Response's `reasoning.effort=none` was therefore not a summary policy.
 Automatic DeepSeek compaction now passes its actual native working input to the
 same `provider::compaction::prepare_deepseek` implementation. The summary uses a
 cloned provider configuration, preserves the original generation configuration,
-and reserves its exact rendered input rather than the full model window. Native
+and retains the established automatic-summary reservation quote. Native
 source items, protected instructions and media use the existing source renderer;
-there is no second Chat-only projection or alternate summary harness. The known
+there is no second Chat-only projection or alternate summary harness. Exact
+rendered summary input is observable, but changing the existing automatic escrow
+bound would break a pre-dispatch reservation replay after an upgrade. Standalone
+compaction retains its separately accepted exact-input quote. The known
 summary and usage still persist before normal settlement and projection.
 Incomplete or tool-bearing summaries still fail the strict existing validator.
 Non-DeepSeek legacy and native compaction transports keep their prior paths.

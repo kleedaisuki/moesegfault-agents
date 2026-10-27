@@ -45,8 +45,6 @@ export async function runDeepseekAutomaticCompactJourney({ mf, encryptionKey, re
     const reservations=await db.prepare('SELECT state FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE ?').bind(principal.owner,'completion:%').all();
     assert.equal(reservations.results.length,2);
     assert.ok(reservations.results.every(row=>row.state==='settled'));
-    const compactLedger=await db.prepare("SELECT reserved_microusd FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE '%compact:0'").bind(principal.owner).first();
-    assert.ok(compactLedger && compactLedger.reserved_microusd<1000,'Summary escrow uses exact rendered source, not whole context window');
     const usage=response.usage ?? response.agents_usage;
     assert.equal(usage.output_tokens_details.reasoning_tokens,0);
     console.log(JSON.stringify({ execution:'automatic_deepseek_compaction_purpose', status:'passed',
