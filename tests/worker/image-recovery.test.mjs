@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -58,7 +59,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         { type: 'ESModule', path: path.join(build, 'index.js') }, { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') }],
       compatibilityDate: '2026-10-23', compatibilityFlags: ['enable_request_signal'],
       handleStructuredLogs({ level, message }) {
-        try { const value = JSON.parse(message); if (value.event) telemetry.push(value); } catch {}
+        try { const value = JSON.parse(message); if (value.event) { telemetry.push(value); appendFileSync(path.join(directory, 'telemetry-live.jsonl'), JSON.stringify(value) + '\n'); } } catch {}
         if (level === 'error') console.error(message);
       },
       resourcePersistencePath: path.join(directory, 'storage'), d1Databases: ['DB'], r2Buckets: ['WORKSPACES', 'CONVERSATIONS', 'DIAGNOSTICS'],
@@ -103,7 +104,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         { output: [{ id: 'controlled-image-answer', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'The original image operation has a durable outcome.', annotations: [], logprobs: [] }] }] },
       ]);
       const credential = await principal.browser('POST', '/v1/provider-keys', { protocol: 'openai', base_url: model.baseUrl, api_key: model.key }, 201);
-      const client = new OpenAI({ apiKey: principal.apiKey, baseURL: `${origin}/v1`, maxRetries: 0, fetch: (input, init) => mf.dispatchFetch(input, init) });
+      const client = new OpenAI({ apiKey: principal.apiKey, baseURL: `${origin}/v1`, maxRetries: 0, timeout: 15000, fetch: (input, init) => mf.dispatchFetch(input, init) });
       const agentResponse = await mf.dispatchFetch(`${origin}/v1/agents`, { method: 'POST', headers: { Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Image recovery increment', workspace: false, tools: [], model: { provider: 'byok', credential_id: credential.id, protocol: 'responses', model: model.model, context_window: 32768, max_output_tokens: 512 }, tool_services: { image_generation: { provider: 'platform' } } }) });
       assert.equal(agentResponse.status, 201, await agentResponse.clone().text());
