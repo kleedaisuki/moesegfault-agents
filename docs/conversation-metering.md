@@ -122,3 +122,39 @@ same logical work, metadata-delete retention, explicit physical purge, exact
 settlement and zero model/external calls. Fixed-delay figures are a controlled
 mechanism comparison, not a staging latency SLO. Compilation and actual Worker
 execution are required before claiming this implementation is accepted.
+
+### Controlled compiled-Worker result
+
+Focused Actions [40447050803](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40447050803)
+passed on proof source `7ed16536f9fa2dc1b49f95e64522f21bcb86c0ea` (pure product
+change `08e17163bbc49989aafad7d0c360b1de4827956f`). Worker artifact `12709510201`,
+verification artifact `12708982895`. The source-only CI selector and baseline
+artifact download are not product changes and must not be merged.
+
+The one new actual Rust Worker/SDK/D1 benchmark executes equivalent management
+work against the retained `02d483b` Worker and the optimized Worker. Both use the
+same 20 ms delay per actor D1 binding call; account funding, native database
+statements, immutable content publication and actual metering execute normally.
+
+| Measurement | Retained baseline | Batched | Change |
+| --- | ---: | ---: | ---: |
+| SDK metadata update elapsed | 2,307.987 ms | 558.062 ms | -75.82% |
+| Metadata update actor D1 round trips | 87 | 23 | -73.56% |
+| Metadata update application SQL statements | 5 | 5 | unchanged |
+| Full management journey actor D1 round trips | 309 | 85 | -72.49% |
+| Full management journey application SQL statements | 17 | 17 | unchanged |
+| Pending observations / reserved funding at completion | 0 / 0 | 0 / 0 | unchanged |
+| External / model calls | 0 / 0 | 0 / 0 | unchanged |
+
+The journey includes metadata deletion retaining its original item, then explicit
+purge, and verifies normal exact-ledger settlement. Seven new production-SQL
+contracts passed in the same run (0.379 s), covering account/Session isolation,
+same-event replay, conflicting ledger/quantity, missing funding, unknown result
+holds, rollback on budget failure, and real zero usage. The actual Worker
+comparison took 15.5 s; the CI job's major elapsed costs were tool installation
+(118 s) and release compilation (207 s), not broad regression execution.
+
+These controlled elapsed times demonstrate the causal round-trip mechanism,
+not production or staging latency. A fresh model-free management operation on a
+subsequent composed deployment is the remaining field measurement; the original
+paid Context request must not be replayed for it.
