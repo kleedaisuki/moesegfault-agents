@@ -109,6 +109,9 @@ export function selections(source, base, files) {
   }
   const executionLease = files.some(file => /execution[-_]lease/.test(file));
   const journeys = [
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context appends instruction changes and reset across cold continuation and exact count'],
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context tool revisions preserve historical forks without revoked aliases'],
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context compaction retains the latest revision and resets without stale policy'],
     [/execution[-_]lease/, 'ModelOperation execution lease cold loss and terminal admission rejection'],
     [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
