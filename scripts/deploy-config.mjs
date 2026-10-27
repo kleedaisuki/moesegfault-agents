@@ -13,13 +13,20 @@ export function requireDistinctEnvironmentDatabases(input) {
 
 export const supportedWorkerRuntimes = Object.freeze(['web_search', 'file_search', 'code_interpreter', 'image_generation', 'mcp', 'programmatic_tool_calling']);
 
-export function deploymentRuntime(env) {
+export function deploymentRuntime(env, configuredFeatures = '') {
   const features = env.RUNTIME_FEATURES ?? 'configured';
   if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation', 'web_search,file_search,code_interpreter,mcp', 'web_search,file_search,code_interpreter,mcp,programmatic_tool_calling', 'web_search,file_search,code_interpreter,image_generation,mcp,programmatic_tool_calling'].includes(features)) throw new Error('Invalid runtime feature allowlist');
   if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
   const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
-  const workerFeatures = limited && features !== 'none' && features !== 'configured' ? features.split(',') : [];
+  const selected = features === 'configured' ? configuredFeatures : features === 'none' ? '' : features;
+  if (typeof selected !== 'string') throw new Error('Invalid configured runtime feature allowlist');
+  const workerFeatures = selected ? selected.split(',') : [];
+  if (new Set(workerFeatures).size !== workerFeatures.length || workerFeatures.some(feature => !supportedWorkerRuntimes.includes(feature))) throw new Error('Invalid configured runtime feature allowlist');
   return { features, limited, workerFeatures, legacyContainerCompatible: limited && !workerFeatures.some(feature => feature === 'code_interpreter' || feature === 'image_generation'), webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter'), imageGeneration: workerFeatures.includes('image_generation'), programmatic: workerFeatures.includes('programmatic_tool_calling') };
+}
+
+export function configuredDeploymentRuntime(input, env) {
+  return deploymentRuntime(env, input.env?.[env.DEPLOY_ENVIRONMENT]?.vars?.HOSTED_TOOL_RUNTIMES);
 }
 
 // Seed endpoint discovery, 2026-10-26: /api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints.
@@ -37,27 +44,35 @@ export const seedreamProfile = {
     asset_hosts: [], price_revision: 'seedream-catalog-2026-10-26', reservation_microusd: 18000, platform_funded: true }],
 };
 
-function enableStagingProgrammatic(target) {
-  target.worker_loaders = [{ binding: 'PROGRAM_LOADER' }];
+function enableProgrammatic(target) {
+  const loaders = target.worker_loaders ?? [];
+  if (loaders.filter(loader => loader.binding === 'PROGRAM_LOADER').length > 1) throw new Error('Duplicate Dynamic Worker loader');
+  if (!loaders.some(loader => loader.binding === 'PROGRAM_LOADER')) loaders.push({ binding: 'PROGRAM_LOADER' });
+  target.worker_loaders = loaders;
   const pricing = JSON.parse(target.vars.RESOURCE_PRICING_JSON);
   for (const [unit, numerator, denominator] of [
     ['dynamic_worker_creation_day', 2000, 1], ['dynamic_worker_request', 3, 10],
     ['dynamic_worker_cpu_slot_100ms', 2, 1],
   ]) {
-    if (pricing.tariffs.some(tariff => tariff.unit === unit)) throw new Error('Duplicate Dynamic Worker allocation tariff');
+    const existing = pricing.tariffs.filter(tariff => tariff.unit === unit);
+    if (existing.length) {
+      if (existing.length !== 1 || existing[0].resource !== 'worker' || existing[0].microusd_numerator !== numerator
+        || existing[0].quantity_denominator !== denominator || existing[0].price_version !== pricing.version) throw new Error('Conflicting Dynamic Worker allocation tariff');
+      continue;
+    }
     pricing.tariffs.push({ resource: 'worker', unit, microusd_numerator: numerator,
       quantity_denominator: denominator, price_version: pricing.version });
   }
   target.vars.RESOURCE_PRICING_JSON = JSON.stringify(pricing);
 }
 
-function requireFileSearchBindings(target) {
+function requireFileSearchBindings(target, environment) {
   const profile = JSON.parse(target.vars.FILE_SEARCH_PROFILE_JSON ?? 'null');
   const vector = target.vectorize?.find(binding => binding.binding === 'VECTORIZE');
-  if (target.ai?.binding !== 'AI' || vector?.index_name !== 'moesegfault-agents-file-search-staging-v1'
-    || profile?.ai_binding !== 'AI' || profile.vector_binding !== 'VECTORIZE' || profile.namespace !== 'agents-staging'
+  if (target.ai?.binding !== 'AI' || vector?.index_name !== `moesegfault-agents-file-search-${environment}-v1`
+    || profile?.ai_binding !== 'AI' || profile.vector_binding !== 'VECTORIZE' || profile.namespace !== `agents-${environment}`
     || profile.embedding?.model !== '@cf/baai/bge-m3' || profile.embedding.dimensions !== 1024
-    || profile.embedding.revision !== 'workers-ai-bge-m3-2026-10-26' || profile.embedding.input_byte_limit !== 8192) throw new Error('Missing explicit staging FileSearch profile/bindings');
+    || profile.embedding.revision !== 'workers-ai-bge-m3-2026-10-26' || profile.embedding.input_byte_limit !== 8192) throw new Error(`Missing explicit ${environment} FileSearch profile/bindings`);
   const pricing = JSON.parse(target.vars.RESOURCE_PRICING_JSON ?? 'null');
   for (const unit of ['embedding_input_bytes', 'queried_dimensions', 'written_dimensions', 'allocated_vector_dimension_ms']) {
     const tariffs = pricing?.tariffs?.filter(tariff => tariff.resource === 'worker' && tariff.unit === unit) ?? [];
@@ -68,7 +83,7 @@ function requireFileSearchBindings(target) {
 export function renderDeploymentConfig(input, env) {
   const environment = env.DEPLOY_ENVIRONMENT;
   if (!['staging', 'production'].includes(environment)) throw new Error('Invalid deployment environment');
-  const runtime = deploymentRuntime(env);
+  const runtime = configuredDeploymentRuntime(input, env);
   const account = env.CLOUDFLARE_ACCOUNT_ID;
   const sha = env.GITHUB_SHA;
   const workerSource = env.WORKER_SOURCE_SHA ?? sha;
@@ -83,6 +98,8 @@ export function renderDeploymentConfig(input, env) {
   if (runtime.limited) {
     target.vars.HOSTED_TOOL_RUNTIMES = runtime.workerFeatures.join(',');
     if (runtime.legacyContainerCompatible) target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
+  }
+  if (runtime.limited || runtime.workerFeatures.length) {
     target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
       version: 1, platform_images: runtime.imageGeneration, platform_search: runtime.webSearch, file_search: runtime.fileSearch,
       container_memory: null, available_container_profiles: runtime.codeInterpreter ? ['1g', '4g'] : [],
@@ -100,8 +117,8 @@ export function renderDeploymentConfig(input, env) {
       if (apps.length !== 1 || apps[0].instance_type !== instanceType) throw new Error('Missing explicit Code executor profile app');
     }
   }
-  if (runtime.fileSearch) requireFileSearchBindings(target);
-  if (runtime.programmatic) enableStagingProgrammatic(target);
+  if (runtime.fileSearch) requireFileSearchBindings(target, environment);
+  if (runtime.programmatic) enableProgrammatic(target);
   if (runtime.imageGeneration) target.vars.IMAGE_GENERATION_PROFILE_JSON = JSON.stringify(seedreamProfile);
   for (const db of target.d1_databases) db.migrations_dir = resolve(db.migrations_dir);
   for (const container of target.containers) {

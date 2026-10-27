@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deploymentRuntime, renderDeploymentConfig, requireDistinctEnvironmentDatabases } from './deploy-config.mjs';
+import { configuredDeploymentRuntime, deploymentRuntime, renderDeploymentConfig, requireDistinctEnvironmentDatabases, supportedWorkerRuntimes } from './deploy-config.mjs';
 import { readFile } from 'node:fs/promises';
 
 const sha = '0123456789abcdef0123456789abcdef01234567';
@@ -242,4 +242,75 @@ test('staging MCP and programmatic opt-in preserves accepted runtimes and prices
   assert.equal(mcpOnly.worker_loaders, undefined);
   assert.ok(!JSON.parse(mcpOnly.vars.RESOURCE_PRICING_JSON).tariffs.some(t => t.unit.startsWith('dynamic_worker_')));
   assert.throws(() => renderDeploymentConfig(source, { ...base, DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
+});
+
+test('configured v0.3 production resolves the full reviewed runtime without changing legacy routes or tariffs', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const original = structuredClone(source);
+  for (const environment of ['staging', 'production']) {
+    const selected = structuredClone(source);
+    selected.env[environment].vars.HOSTED_TOOL_RUNTIMES = 'web_search,file_search,code_interpreter,image_generation,mcp,programmatic_tool_calling';
+    const env = { DEPLOY_ENVIRONMENT: environment, CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha,
+      WORKER_SOURCE_SHA: 'c'.repeat(40), CONTAINER_SOURCE_SHA: 'd'.repeat(40), RUNTIME_FEATURES: 'configured' };
+    const runtime = configuredDeploymentRuntime(selected, env);
+    assert.deepEqual(runtime.workerFeatures, supportedWorkerRuntimes);
+    assert.equal(runtime.limited, false); assert.equal(runtime.legacyContainerCompatible, false);
+    const rendered = renderDeploymentConfig(selected, env), target = rendered.env[environment];
+    assert.deepEqual(target.worker_loaders, [{ binding: 'PROGRAM_LOADER' }]);
+    const capabilities = JSON.parse(target.vars.HOSTED_TOOL_CAPABILITIES_JSON);
+    assert.equal(capabilities.platform_images, true); assert.equal(capabilities.platform_search, true); assert.equal(capabilities.file_search, true);
+    assert.deepEqual(capabilities.available_container_profiles, ['1g', '4g']);
+    assert.equal(capabilities.code_network_disabled, true);
+    assert.equal(target.vectorize[0].index_name, `moesegfault-agents-file-search-${environment}-v1`);
+    assert.equal(JSON.parse(target.vars.FILE_SEARCH_PROFILE_JSON).namespace, `agents-${environment}`);
+    assert.equal(JSON.parse(target.vars.IMAGE_GENERATION_PROFILE_JSON).profiles[0].capabilities.omit_default_output_format, true);
+    assert.deepEqual(target.containers.map(app => [app.class_name, app.instance_type]), [['Session', 'basic'], ['Session4G', 'standard-1']]);
+    assert.ok(target.containers.every(app => app.image.endsWith(':' + 'd'.repeat(40))));
+    assert.equal(target.vars.DAEMON_IMAGE_SOURCE, 'd'.repeat(40));
+    const before = JSON.parse(selected.env[environment].vars.RESOURCE_PRICING_JSON), after = JSON.parse(target.vars.RESOURCE_PRICING_JSON);
+    assert.equal(after.version, before.version);
+    for (const tariff of before.tariffs) assert.deepEqual(after.tariffs.find(t => t.resource === tariff.resource && t.unit === tariff.unit), tariff);
+    assert.deepEqual(after.tariffs.filter(t => t.unit.startsWith('dynamic_worker_')).map(t => [t.unit,t.microusd_numerator,t.quantity_denominator]),
+      [['dynamic_worker_creation_day',2000,1],['dynamic_worker_request',3,10],['dynamic_worker_cpu_slot_100ms',2,1]]);
+    assert.equal(target.vars.MODEL_REGISTRY_JSON, selected.env[environment].vars.MODEL_REGISTRY_JSON);
+    assert.equal(target.vars.DEFAULT_PROVIDER, selected.env[environment].vars.DEFAULT_PROVIDER);
+    assert.equal(target.vars.DEFAULT_MODEL, selected.env[environment].vars.DEFAULT_MODEL);
+    assert.equal(target.vars.IDENTITY_ISSUER, selected.env[environment].vars.IDENTITY_ISSUER);
+    assert.deepEqual(renderDeploymentConfig(rendered, env).env[environment], target, 'Repeated rendering cannot duplicate reviewed allocation tariffs');
+  }
+  assert.deepEqual(source, original);
+  const production = source.env.production;
+  assert.equal(JSON.parse(production.vars.RESOURCE_PRICING_JSON).version, '2026-10-23-platform-v1');
+  assert.equal(JSON.parse(production.vars.MODEL_PRICING_JSON)['openrouter/openai/gpt-4.1-mini'].input_microusd_per_million, 400000);
+  for (const model of ['deepseek-flash', 'deepseek-v4-pro']) assert.ok(JSON.parse(production.vars.MODEL_PRICING_JSON)[`deepseek/${model}`]);
+});
+
+test('configured runtime rejects wrong realms, unknown features and conflicting allocation prices', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const env = { DEPLOY_ENVIRONMENT: 'production', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha };
+  const invalid = structuredClone(source);
+  invalid.env.production.vectorize = structuredClone(source.env.staging.vectorize);
+  assert.throws(() => renderDeploymentConfig(invalid, env), /explicit production FileSearch/);
+  invalid.env.production.vectorize = structuredClone(source.env.production.vectorize);
+  invalid.env.production.vars.FILE_SEARCH_PROFILE_JSON = source.env.staging.vars.FILE_SEARCH_PROFILE_JSON;
+  assert.throws(() => renderDeploymentConfig(invalid, env), /explicit production FileSearch/);
+  for (const features of ['mcp,mcp', 'mcp,unknown', ' mcp', 'mcp,']) assert.throws(() => configuredDeploymentRuntime(
+    { env: { production: { vars: { HOSTED_TOOL_RUNTIMES: features } } } }, env), /configured runtime feature/);
+  const tariff = JSON.parse(source.env.production.vars.RESOURCE_PRICING_JSON);
+  tariff.tariffs.push({ resource:'worker',unit:'dynamic_worker_creation_day',microusd_numerator:1,quantity_denominator:1,price_version:tariff.version });
+  source.env.production.vars.RESOURCE_PRICING_JSON = JSON.stringify(tariff);
+  assert.throws(() => renderDeploymentConfig(source, env), /Conflicting Dynamic Worker/);
+  assert.throws(() => renderDeploymentConfig(source, { ...env, RUNTIME_FEATURES: 'mcp' }), /staging-only|allowlist/);
+});
+
+test('legacy configured absence keeps hosted capabilities disabled and provenance reads the same configured plan', () => {
+  const source = input();
+  const env = { DEPLOY_ENVIRONMENT:'production',CLOUDFLARE_ACCOUNT_ID:account,GITHUB_SHA:sha };
+  assert.deepEqual(configuredDeploymentRuntime(source, env).workerFeatures, []);
+  const target = renderDeploymentConfig(source, env).env.production;
+  assert.equal(target.vars.HOSTED_TOOL_CAPABILITIES_JSON, undefined);
+  assert.equal(target.vars.HOSTED_TOOL_RUNTIMES, undefined);
+  assert.equal(target.worker_loaders, undefined);
+  assert.equal(target.ai, undefined); assert.equal(target.vectorize, undefined);
+  assert.equal(target.vars.EXISTING, 'retained');
 });

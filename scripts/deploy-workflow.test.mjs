@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
+import { configuredDeploymentRuntime } from './deploy-config.mjs';
 
 const workflow = readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
 const before = (first, second) => assert.ok(workflow.indexOf(first) >= 0 && workflow.indexOf(first) < workflow.indexOf(second), `${first} must precede ${second}`);
@@ -25,7 +26,7 @@ test('native FileSearch workflow accepts an explicit additive Worker allowlist w
   assert.doesNotThrow(() => run({ RUNTIME_FEATURES: 'file_search' }));
   assert.throws(() => run({ RUNTIME_FEATURES: 'file_search,code_interpreter' }), /allowlist/);
   assert.throws(() => run({ DEPLOY_ENVIRONMENT: 'production' }), /staging-only/);
-  assert.ok(workflow.includes('const compatible=deploymentRuntime(process.env).limited;'));
+  assert.ok(workflow.includes('configuredDeploymentRuntime(JSON.parse(readFileSync'));
   assert.ok(workflow.includes("const accepted=profile==='none'?'not_selected'"));
   assert.equal(workflow.includes('node tests/e2e/file-search-sdk.mjs'), false);
 });
@@ -135,4 +136,20 @@ test('operator-only critical proof and one global immutable intent precede the o
 
 test('usable core deployment does not pay for compact with an unavailable provider usage field', () => {
   assert.ok(deploymentJob.includes('--scope core --omit-compact --allow-model-calls --max-paid-submissions 7'));
+});
+
+test('configured production credentials and provenance use the actual reviewed runtime before infrastructure changes', () => {
+  const source = { env: { production: { vars: { HOSTED_TOOL_RUNTIMES: 'web_search,image_generation' } } } };
+  for (const [marker, name, expected] of [['SEARCH_CREDENTIAL','DEEPSEEK_API_KEY',/Missing existing direct DeepSeek/], ['IMAGE_CREDENTIAL','OPENROUTER_API_KEY',/Missing existing image/]]) {
+    const code = workflow.match(new RegExp(`<<'${marker}'\\n([\\s\\S]*?)\\n\\s+${marker}`))[1].replace(/^\s*import[^\n]+\n/gm, '');
+    const run = (config, key) => vm.runInNewContext(code, { readFileSync: () => JSON.stringify(config), configuredDeploymentRuntime,
+      process: { env: { DEPLOY_ENVIRONMENT:'production',RUNTIME_FEATURES:'configured', [name]:key } } });
+    assert.throws(() => run(source, undefined), expected);
+    assert.doesNotThrow(() => run(source, 'synthetic-existing-key'));
+    assert.doesNotThrow(() => run({ env: { production: { vars: {} } } }, undefined));
+    before(`<<'${marker}'`, 'npx wrangler d1 migrations apply');
+  }
+  const verifier = readFileSync(new URL('./deploy-provenance.mjs', import.meta.url), 'utf8');
+  assert.ok(verifier.includes("configuredDeploymentRuntime(JSON.parse(readFileSync('wrangler.jsonc', 'utf8')), process.env)"));
+  assert.ok(workflow.includes("const compatible=configuredDeploymentRuntime(JSON.parse(readFileSync('wrangler.jsonc', 'utf8')), process.env).legacyContainerCompatible;"));
 });

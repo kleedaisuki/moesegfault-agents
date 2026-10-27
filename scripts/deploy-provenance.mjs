@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { deploymentRuntime, supportedWorkerRuntimes } from './deploy-config.mjs';
+import { configuredDeploymentRuntime, supportedWorkerRuntimes } from './deploy-config.mjs';
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -189,7 +189,7 @@ export function verifyDeploymentEvidence({ plan, expectedPlan, catalog, source, 
 async function main() {
   const { values } = parseArgs({ options: { plan: { type: 'string' }, run: { type: 'string' }, directory: { type: 'string', default: '.temp/deploy-verification' } } });
   const source = process.env.GITHUB_SHA, repository = process.env.GITHUB_REPOSITORY;
-  const runtime = deploymentRuntime(process.env);
+  const runtime = configuredDeploymentRuntime(JSON.parse(readFileSync('wrangler.jsonc', 'utf8')), process.env);
   const coreContainer = runtime.legacyContainerCompatible;
   need(SHA.test(source ?? '') && ID.test(values.run ?? ''), 'explicit_source_run_required');
   need(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? ''), 'invalid_ci_repository');

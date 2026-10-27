@@ -128,12 +128,13 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
-          import { deploymentRuntime } from './scripts/deploy-config.mjs';
+          import { readFileSync } from 'node:fs';
+          import { configuredDeploymentRuntime } from './scripts/deploy-config.mjs';
           const repository = process.env.GITHUB_REPOSITORY, source = process.env.SOURCE_RUN;
           if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? '') || !/^[1-9][0-9]{0,14}$/.test(source ?? '')) throw Error('Invalid CI identity');
           if (process.env.DEPLOY_ENVIRONMENT !== 'staging' && process.env.ACCEPTANCE_PROFILE !== 'none') throw Error('Paid acceptance is staging-only');
           const run = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/actions/runs/${source}`], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 }));
-          const compatible=deploymentRuntime(process.env).legacyContainerCompatible;
+          const compatible=configuredDeploymentRuntime(JSON.parse(readFileSync('wrangler.jsonc', 'utf8')), process.env).legacyContainerCompatible;
           if (run.id !== Number(source) || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
             || run.status !== 'completed' || (!compatible && run.conclusion !== 'success') || run.head_sha !== process.env.GITHUB_SHA
             || run.path !== '.github/workflows/ci.yml' || !['push', 'workflow_dispatch'].includes(run.event)
@@ -182,15 +183,25 @@ jobs:
             test -n "$MAGENTS_TEST_OTHER_API_KEY" || { echo 'Missing secondary owner key'; exit 1; }
           fi
       - name: Require the existing selected Worker search service credential
-        if: inputs.environment == 'staging' && contains(inputs.runtime_features, 'web_search')
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: test -n "$DEEPSEEK_API_KEY" || { echo 'Missing existing direct DeepSeek search route'; exit 1; }
+        run: |
+          node --input-type=module <<'SEARCH_CREDENTIAL'
+          import { readFileSync } from 'node:fs';
+          import { configuredDeploymentRuntime } from './scripts/deploy-config.mjs';
+          const runtime = configuredDeploymentRuntime(JSON.parse(readFileSync('wrangler.jsonc', 'utf8')), process.env);
+          if (runtime.webSearch && !process.env.DEEPSEEK_API_KEY) throw Error('Missing existing direct DeepSeek search route');
+          SEARCH_CREDENTIAL
       - name: Require the selected Seedream image service credential without a paid probe
-        if: inputs.environment == 'staging' && contains(inputs.runtime_features, 'image_generation')
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: test -n "$OPENROUTER_API_KEY" || { echo 'Missing existing image service credential'; exit 1; }
+        run: |
+          node --input-type=module <<'IMAGE_CREDENTIAL'
+          import { readFileSync } from 'node:fs';
+          import { configuredDeploymentRuntime } from './scripts/deploy-config.mjs';
+          const runtime = configuredDeploymentRuntime(JSON.parse(readFileSync('wrangler.jsonc', 'utf8')), process.env);
+          if (runtime.imageGeneration && !process.env.OPENROUTER_API_KEY) throw Error('Missing existing image service credential');
+          IMAGE_CREDENTIAL
       - name: Never replay paid stage work through an Actions rerun
         if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         run: test "$GITHUB_RUN_ATTEMPT" = 1 || { echo 'Inspect the original accepted operations; paid stage actions are not replayable'; exit 1; }

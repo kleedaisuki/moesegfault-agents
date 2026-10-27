@@ -253,3 +253,57 @@ Subscribe/Billing production promotion 40102195561 preceded Agents. The
 records the authoritative bindings/versions and actual production return journey.
 CLI `v0.2.0` is the immutable `265e0ea` tag with four verified public Linux/Windows
 assets; production export acceptance includes the original v0.1 user snapshot.
+
+## v0.3 configured production readiness (2026-10-27)
+
+This is prepared configuration, **not a production deployment or authorization**.
+The production target now explicitly selects all six hosted runtimes. A target
+with no `HOSTED_TOOL_RUNTIMES` still selects none: enabling new services is never
+an implicit fallback for an old configuration. Staging's explicit finite feature
+overrides remain staging-only.
+
+`configuredDeploymentRuntime` is the single resolution boundary used by rendering,
+CI provenance and credential preflight. In particular, `configured` means the
+selected target's actual vars, not an empty runtime list. The common renderer
+materializes reviewed capabilities, native Loader and Seedream profile for either
+realm. Re-rendering retains an identical Loader allocation tariff rather than
+appending duplicates; conflicting values fail before deployment. No provider call
+is used to validate configuration.
+
+The production Vectorize binding names
+`moesegfault-agents-file-search-production-v1`, with namespace `agents-production`,
+1024-dimensional BGE-M3 and the reviewed byte/dimension allocation rates. It may
+not point to staging's index or namespace. Existing production D1/R2 identities,
+model registry/default route, model rates, core resource rates and price version
+are unchanged. Added resource units do not rewrite old observation prices. The
+1g/4g executor classes retain their existing SKUs and both reference the actual
+verified daemon image source, separately from the assembly SHA. FileIngest's
+existing additive migration/binding is retained.
+
+### Read-only live prerequisites
+
+At **2026-10-27 04:55:44 UTC**, existing Wrangler authentication was used only for
+`secret list --env production --format json` and `vectorize list --json`:
+
+| Check | Actual finding | Required action after root release clearance |
+| --- | --- | --- |
+| Production secret names | `DATA_ENCRYPTION_KEY`, `IDENTITY_CLIENT_PRIVATE_JWK`, `OPENROUTER_API_KEY`; no `DEEPSEEK_API_KEY` | Add the approved direct DeepSeek key before the full Worker is promoted. Do not rotate or overwrite the existing envelope/signing keys. |
+| Vectorize index names | Only `moesegfault-agents-file-search-staging-v1` | Create `moesegfault-agents-file-search-production-v1`, dimensions 1024, cosine metric; verify the exact binding/profile pair. Never reuse or rename the staged index. |
+
+No secrets/OAuth values, model requests, index creation, secret writes, D1 mutation,
+Worker deployment or production activation were performed by this readiness work.
+The safe receipt is `.temp/readiness/production-inventory.json` in the configuration
+worktree; these durable facts do not depend on retaining that temporary file.
+
+The ordinary deployment still requires completed normal incremental CI and the
+root's explicit production release decision. Credential preflight now checks the
+resolved selected services for both realms before infrastructure changes. Because
+the existing secret sync step follows Worker rollout, the missing production
+DeepSeek secret must be separately provisioned under that release clearance before
+the first full rollout; otherwise there would be a short missing-key window.
+Staging success does not prove production resource or secret presence.
+
+Focused configuration verification ran only three new rendering contracts and
+one new workflow/credential/provenance contract, plus the single affected workflow
+assertion updated for the common resolver. They passed without a Rust build or
+paid/remote model call; no old deployment suite or accepted runtime journey ran.
