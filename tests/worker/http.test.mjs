@@ -34,6 +34,8 @@ import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
 import { runPromptCacheInstructionsJourney, runPromptCacheToolForkJourney, runPromptCacheCompactionJourney,
   runPromptCacheExplicitSessionCountJourney } from './prompt-cache-journey.mjs';
+import { runSessionConfigLifecycleJourney, runSessionConfigBusyRevocationJourney,
+  runSessionConfigHistoricalForkJourney } from './session-config-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -552,6 +554,12 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     t.diagnostic(JSON.stringify(await runPromptCacheCompactionJourney(promptCacheContext()))));
   await selected(t, 'Responses cache explicit Session counting preserves legacy and versioned pins without admission', { timeout: 60000 }, async () =>
     t.diagnostic(JSON.stringify(await runPromptCacheExplicitSessionCountJourney(promptCacheContext()))));
+  await selected(t, 'Agent revisions append to an existing Session and survive compaction and cold recovery', { timeout: 90000 }, async () =>
+    t.diagnostic(JSON.stringify(await runSessionConfigLifecycleJourney(promptCacheContext()))));
+  await selected(t, 'Busy Agent revisions revoke queued tools only at safe execution boundaries', { timeout: 60000 }, async () =>
+    t.diagnostic(JSON.stringify(await runSessionConfigBusyRevocationJourney(promptCacheContext()))));
+  await selected(t, 'Agent revision historical forks preserve sealed context before adopting new configuration', { timeout: 60000 }, async () =>
+    t.diagnostic(JSON.stringify(await runSessionConfigHistoricalForkJourney(promptCacheContext()))));
   const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
     .map(name => [name, mfOptions.workers[0].config.env[name]]));
   const configureCompact = async values => {

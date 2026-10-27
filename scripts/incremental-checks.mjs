@@ -157,6 +157,9 @@ export function selections(source, base, files) {
   }
   const executionLease = files.some(file => /execution[-_]lease/.test(file));
   const journeys = [
+    [/^tests\/worker\/session-config-journey\.mjs$/, 'Agent revisions append to an existing Session and survive compaction and cold recovery'],
+    [/^tests\/worker\/session-config-journey\.mjs$/, 'Busy Agent revisions revoke queued tools only at safe execution boundaries'],
+    [/^tests\/worker\/session-config-journey\.mjs$/, 'Agent revision historical forks preserve sealed context before adopting new configuration'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context appends instruction changes and reset across cold continuation and exact count'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context tool revisions preserve historical forks without revoked aliases'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context compaction retains the latest revision and resets without stale policy'],
