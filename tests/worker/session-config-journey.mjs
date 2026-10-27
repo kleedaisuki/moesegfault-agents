@@ -307,3 +307,54 @@ export async function runSessionConfigHistoricalForkJourney(context) {
     branch_count_preview_equals_generation: true, independent_branch_session: true,
     model_ledger_rows: await modelRows(scenario, 3), external_network_calls: 0 };
 }
+
+export async function runSessionConfigIssuedRecoveryJourney(context) {
+  const db = await context.configureIssued(true);
+  try {
+    const scenario = await createNativeSemanticsScenario({ ...context, db }, 'config-issued', []);
+    await patch(scenario, { instructions: initial, tools: ['bash'], workspace: true });
+    const record = await scenario.request('POST', `/v1/agents/${scenario.agent.id}/sessions`, {}, 201, scenario.principal.apiKey);
+    const namespace = await context.mf.getDurableObjectNamespace('SESSIONS');
+    const actor = namespace.get(namespace.idFromName(`${scenario.principal.owner}:${record.id}`));
+    const runId = 'run_configuration_issued_fixture';
+    const callId = 'configuration_issued_bash';
+    const execution = `${runId.length}:${runId}:1:${callId.length}:${callId}`;
+    const boot = 'configuration-issued-original-boot';
+    const response = await actor.fetch('https://fixture/__test/configuration-issued-seed', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_id: runId, call_id: callId, execution_id: execution, boot }),
+    });
+    assert.equal(response.status, 200);
+    const seeded = await response.json();
+    await patch(scenario, { instructions: changed, tools: [] });
+    await context.restart();
+    let observed;
+    const deadline = Date.now() + 12000;
+    do {
+      observed = await session(scenario, record.id);
+      if (observed.last_error === 'tool_outcome_unknown') break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    } while (Date.now() < deadline);
+    assert.equal(observed.last_error, 'tool_outcome_unknown', JSON.stringify(observed));
+    assert.equal(observed.configuration ?? null, null,
+      'The new revocation cannot overwrite authority needed to reconcile the original issued operation');
+    const effects = observed.messages.filter(message => message.role === 'tool');
+    assert.equal(effects.length, 1);
+    assert.equal(effects[0].tool_call_id, callId);
+    assert.equal(JSON.parse(effects[0].content).error.code, 'tool_outcome_unknown');
+    assert.ok(!JSON.stringify(observed.messages).includes('tool_revoked'));
+    const currentNamespace = await context.mf.getDurableObjectNamespace('SESSIONS');
+    const currentActor = currentNamespace.get(currentNamespace.idFromName(`${scenario.principal.owner}:${record.id}`));
+    const inspect = await (await currentActor.fetch('https://fixture/__test/configuration-issued-inspect')).json();
+    assert.equal(inspect.boot, boot);
+    assert.deepEqual(inspect.fences, { [seeded.fence]: boot }, 'Recovery retains the exact original execution fence/identity');
+    assert.deepEqual(inspect.attempts, [], 'No container start, restore, new command POST or original-daemon request is possible after loss');
+    assert.equal(scenario.state.calls, 0, 'Reconciliation cannot buy another inference decision');
+    assert.equal((await (await context.mf.getD1Database('DB')).prepare('SELECT COUNT(*) AS n FROM response_routes WHERE account_id=?')
+      .bind(scenario.principal.owner).first('n')), 0, 'The fixture uses persisted issued state, not a fresh public Response POST');
+    return { fixture: 'synthetic-persisted-issued-bash-with-lost-container', provider_calls: 0,
+      actual_container_effect_success_claimed: false, original_execution_id: execution,
+      unknown_preserved_not_revoked: true, original_boot_and_dispatch_fence_retained: true,
+      new_container_and_command_dispatches: 0, model_ledger_rows: await modelRows(scenario, 0), external_network_calls: 0 };
+  } finally { await context.configureIssued(false); }
+}

@@ -8,6 +8,7 @@ test('Agent configuration increments select only their new current-Session journ
     'Agent revisions append to an existing Session and survive compaction and cold recovery',
     'Busy Agent revisions revoke queued tools only at safe execution boundaries',
     'Agent revision historical forks preserve sealed context before adopting new configuration',
+    'Issued workspace effects remain unknown instead of revoked or replayed after Agent edits',
   ]);
   assert.ok(selected.worker.every(check => check.argv.at(-1) === 'tests/worker/http.test.mjs'));
   assert.equal(selected.worker.some(check => check.env.MAGENTS_WORKER_CASE.startsWith('Responses cache')), false,

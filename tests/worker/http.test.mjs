@@ -35,7 +35,7 @@ import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
 import { runPromptCacheInstructionsJourney, runPromptCacheToolForkJourney, runPromptCacheCompactionJourney,
   runPromptCacheExplicitSessionCountJourney } from './prompt-cache-journey.mjs';
 import { runSessionConfigLifecycleJourney, runSessionConfigBusyRevocationJourney,
-  runSessionConfigHistoricalForkJourney } from './session-config-journey.mjs';
+  runSessionConfigHistoricalForkJourney, runSessionConfigIssuedRecoveryJourney } from './session-config-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -80,6 +80,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     modulesRoot: build,
     modules: [
       { type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
+        contents: await readFile(new URL('./session-config-shim.mjs', import.meta.url), 'utf8') },
+      { type: 'ESModule', path: path.join(build, 'worker/execution-lease-shim.mjs'),
         contents: await readFile(new URL('./execution-lease-shim.mjs', import.meta.url), 'utf8') },
       { type: 'ESModule', path: path.join(build, 'worker/workspace-blob-shim.mjs'),
         contents: await readFile(new URL('./workspace-blob-shim.mjs', import.meta.url), 'utf8') },
@@ -545,6 +547,13 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       await mf.setOptions(mfOptions);
       db = await mf.getD1Database('DB');
     },
+    configureIssued: async enabled => {
+      if (enabled) mfOptions.workers[0].config.env.SESSION_CONFIG_ISSUED_FIXTURE = { type: 'text', value: '1' };
+      else delete mfOptions.workers[0].config.env.SESSION_CONFIG_ISSUED_FIXTURE;
+      await mf.setOptions(mfOptions);
+      db = await mf.getD1Database('DB');
+      return db;
+    },
   });
   await selected(t, 'Responses cache context appends instruction changes and reset across cold continuation and exact count', { timeout: 90000 }, async () =>
     t.diagnostic(JSON.stringify(await runPromptCacheInstructionsJourney(promptCacheContext()))));
@@ -560,6 +569,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     t.diagnostic(JSON.stringify(await runSessionConfigBusyRevocationJourney(promptCacheContext()))));
   await selected(t, 'Agent revision historical forks preserve sealed context before adopting new configuration', { timeout: 60000 }, async () =>
     t.diagnostic(JSON.stringify(await runSessionConfigHistoricalForkJourney(promptCacheContext()))));
+  await selected(t, 'Issued workspace effects remain unknown instead of revoked or replayed after Agent edits', { timeout: 60000 }, async () =>
+    t.diagnostic(JSON.stringify(await runSessionConfigIssuedRecoveryJourney(promptCacheContext()))));
   const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
     .map(name => [name, mfOptions.workers[0].config.env[name]]));
   const configureCompact = async values => {
