@@ -384,6 +384,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // Topic-only incremental compact receipt observation, never old model journeys.
+    for (const job of Object.keys(receipt.checks)) receipt.checks[job] = [];
+    receipt.checks.worker = [{
+      id: 'node:compact-receipt-observe', argv: ['node', '--test', '--test-reporter=tap', 'tests/worker/native-window.test.mjs'],
+      env: { MAGENTS_NATIVE_WINDOW_CASE: 'compact-observe' },
+      reason: 'One new controlled compact plus pending/known/cold/expired observations without mutable-source resolution',
+      expected_test: 'standalone compact retries observe original pending known and expired receipts before mutable sources',
+    }];
+    receipt.native_packages = [];
+    for (const [component, details] of Object.entries(receipt.components)) if (component !== 'worker') details.action = 'reuse';
+    receipt.required_jobs = ['changes', 'worker'];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
