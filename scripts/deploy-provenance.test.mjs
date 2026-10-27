@@ -370,3 +370,14 @@ test('image-only runtime still requires a normal verified daemon for preserved c
   value.coreContainer = true;
   assert.throws(() => verifyDeploymentEvidence(value), /images_require_normal_verified_deployment/);
 });
+
+test('native MCP and programmatic activation reaches the shared normal deployment proof', async () => {
+  const { deploymentRuntime } = await import('./deploy-config.mjs');
+  const runtime = deploymentRuntime({ DEPLOY_ENVIRONMENT: 'staging', RUNTIME_FEATURES: 'web_search,file_search,code_interpreter,mcp,programmatic_tool_calling' });
+  const value = fixture(); value.workerRuntimeFeatures = runtime.workerFeatures;
+  const proof = verifyDeploymentEvidence(value);
+  assert.deepEqual(proof.worker_runtime_features, runtime.workerFeatures);
+  assert.equal(proof.staging_acceptance, 'not_executed');
+  assert.equal(proof.production_authorized, false);
+  assert.throws(() => verifyDeploymentEvidence({ ...value, workerRuntimeFeatures: [...runtime.workerFeatures, 'unknown_future_executor'] }), /unverified_runtime_feature/);
+});
