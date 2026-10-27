@@ -9851,7 +9851,7 @@
           "argv": [
             "python3",
             "tests/test_provider_response_receipt_sql.py",
-            "ReceiptCapacityTests.test_empty_release_keeps_reservation_seconds_and_lease_milliseconds_separate"
+            "ReceiptGcFundingRecoveryTests.test_empty_release_keeps_reservation_seconds_and_lease_milliseconds_separate"
           ],
           "env": {},
           "reason": "Only the newly fixed cleanup reservation seconds versus lease milliseconds SQL fence"
@@ -9979,6 +9979,178 @@
           "reason": "Only the affected deployed default-format profile after the real JPEG/forced-PNG failure"
         }
       ]
+    }
+  },
+  {
+    "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+    "run_id": "40449714892",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12709901873,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12710317273,
+    "verified_phases": [
+      "wasm_build"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "verified_checks": [
+      {
+        "id": "node:image-recovery-put-and-stream-json",
+        "status": "passed_current",
+        "input_fingerprint": "e33a798467140f7d104eff58b754ba920f3662954680da38fd84c3543c8de2ac",
+        "receipt_path": "worker-journeys.json",
+        "executed_tests": 3
+      }
+    ],
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "cc5ac356b2df39ad7833355b5dd4a3b33674fe4a",
+      "receipts": [
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Actual image PUT recovery and new owned streaming-request/JSON-error journeys passed; one changed Seedream deployment profile passed. Aggregate failure is retained: new Rust test namespace compilation blocked two tests and a wrong unittest class blocked the new SQL case. Only those three never-passed checks remain; cfg(test)-only path qualification changes no released Rust logic."
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "rust:agents-worker:received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only the new stable-candidate cold recovery regression",
+          "source_file": "crates/agents-worker/src/session_hosted_image.rs"
+        },
+        {
+          "id": "rust:agents-worker:local_capacity_and_billing_failures_keep_their_exact_known_codes",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "local_capacity_and_billing_failures_keep_their_exact_known_codes",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only new precise internal storage and financial error evidence",
+          "source_file": "crates/agents-worker/src/image_generation_observation.rs"
+        },
+        {
+          "id": "python:receipt-gc-time-units",
+          "argv": [
+            "python3",
+            "tests/test_provider_response_receipt_sql.py",
+            "ReceiptGcFundingRecoveryTests.test_empty_release_keeps_reservation_seconds_and_lease_milliseconds_separate"
+          ],
+          "env": {},
+          "reason": "Only the newly fixed cleanup reservation seconds versus lease milliseconds SQL fence"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "cc5ac356b2df39ad7833355b5dd4a3b33674fe4a",
+      "receipts": [
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Actual image PUT recovery and new owned streaming-request/JSON-error journeys passed; one changed Seedream deployment profile passed. Aggregate failure is retained: new Rust test namespace compilation blocked two tests and a wrong unittest class blocked the new SQL case. Only those three never-passed checks remain; cfg(test)-only path qualification changes no released Rust logic."
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "cc5ac356b2df39ad7833355b5dd4a3b33674fe4a",
+      "receipts": [
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Actual image PUT recovery and new owned streaming-request/JSON-error journeys passed; one changed Seedream deployment profile passed. Aggregate failure is retained: new Rust test namespace compilation blocked two tests and a wrong unittest class blocked the new SQL case. Only those three never-passed checks remain; cfg(test)-only path qualification changes no released Rust logic."
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "cc5ac356b2df39ad7833355b5dd4a3b33674fe4a",
+      "receipts": [
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Actual image PUT recovery and new owned streaming-request/JSON-error journeys passed; one changed Seedream deployment profile passed. Aggregate failure is retained: new Rust test namespace compilation blocked two tests and a wrong unittest class blocked the new SQL case. Only those three never-passed checks remain; cfg(test)-only path qualification changes no released Rust logic."
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+    "run_id": "40449714892",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "cc5ac356b2df39ad7833355b5dd4a3b33674fe4a",
+      "receipts": [
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Actual image PUT recovery and new owned streaming-request/JSON-error journeys passed; one changed Seedream deployment profile passed. Aggregate failure is retained: new Rust test namespace compilation blocked two tests and a wrong unittest class blocked the new SQL case. Only those three never-passed checks remain; cfg(test)-only path qualification changes no released Rust logic."
+        }
+      ],
+      "unresolved_checks": []
     }
   }
 ]

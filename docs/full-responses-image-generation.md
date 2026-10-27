@@ -725,3 +725,24 @@ regressions, one failed PUT journey, and one newly added streaming-request / JSO
 HTTP-error journey are the only image checks scheduled for the next normal
 composed CI. The five already passing image boundaries, GC tail, and twelve
 passing Rust contracts are not replayed.
+
+The next normal run `40449714892`, source
+`949ada495c195c0deb4fc0a1d5a4de5b124d99cc`, built Worker artifact `12709901873`
+and passed both previously outstanding runtime journeys (6.694 seconds total):
+original-candidate cold artifact-PUT recovery and an owned streaming request
+receiving a JSON HTTP 502 response. The latter retains the JSON receipt, status,
+IDs and provider code before decoder selection, with `check_status` diagnostics
+and zero platform image debit. An unrelated BYOK service does not inherit
+OpenRouter's no-charge guarantee. The changed deployed Seedream default-format
+contract also passed.
+
+That aggregate remains **failed**: three new unit-test codec paths accidentally
+resolved the local `image` module instead of the external crate, blocking both
+new Rust tests at compilation; the new SQL selector named the wrong unittest
+class. Qualifying only `cfg(test)` paths changes no released Rust logic. The
+normal immutable source fingerprint nevertheless includes inline test source,
+so its next exact Worker build is retained rather than pretending the old
+artifact has a new source identity. Only the two never-executed Rust tests and
+the correctly named SQL test remain selected. Neither of the newly passing
+runtime journeys, the deployment-profile contract, nor any older cases are run
+again for these test-only corrections.
