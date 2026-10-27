@@ -626,6 +626,15 @@ impl SessionInner {
             .map_err(Error::RustError)
     }
 
+    pub(super) async fn compaction_source(&self, config: &ProviderConfig) -> Result<Vec<Value>> {
+        if config.protocol == ProviderProtocol::Responses {
+            self.native_generation_input(config).await
+        } else {
+            provider::responses::message_items(&self.snapshot()?.messages[1..])
+                .map_err(Error::RustError)
+        }
+    }
+
     async fn native_generation_input(&self, config: &ProviderConfig) -> Result<Vec<Value>> {
         let _guard = self.persistence.lock().await;
         let data = self.snapshot()?;

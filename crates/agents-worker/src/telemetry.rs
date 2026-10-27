@@ -148,6 +148,8 @@ pub fn sanitize_fields(fields: Value) -> Value {
         let numeric = matches!(
             key.as_str(),
             "parser_line"
+                | "reasoning_tokens"
+                | "rendered_input_tokens"
                 | "parser_column"
                 | "request_bytes"
                 | "response_bytes"
@@ -178,6 +180,11 @@ pub fn sanitize_fields(fields: Value) -> Value {
         let identifier = matches!(
             key.as_str(),
             "codec"
+                | "protocol"
+                | "model"
+                | "provider_request_id"
+                | "thinking_mode"
+                | "finish_reason"
                 | "ray_id"
                 | "content_type"
                 | "content_encoding"
@@ -251,6 +258,8 @@ fn event_name(event: &str) -> &str {
         | "run.failed"
         | "provider.completed"
         | "provider.failed"
+        | "provider.compaction_started"
+        | "provider.compaction_completed"
         | "tool.completed"
         | "tool.failed"
         | "session.checkpoint"
@@ -493,6 +502,22 @@ impl Drop for NativeSpan {
 mod tests {
     use super::*;
     const VALID: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    #[test]
+    fn automatic_compaction_diagnostics_keep_transport_and_terminal_evidence() {
+        let fields = sanitize_fields(json!({"phase":"compaction","protocol":"anthropic",
+            "thinking_mode":"disabled","finish_reason":"length","reasoning_tokens":512,
+            "rendered_input_tokens":135,"provider_request_id":"original-summary",
+            "output_tokens":512,"success":false,"summary":"private context"}));
+        assert_eq!(fields["thinking_mode"], "disabled");
+        assert_eq!(fields["finish_reason"], "length");
+        assert_eq!(fields["reasoning_tokens"], 512);
+        assert_eq!(fields["provider_request_id"], "original-summary");
+        assert_eq!(
+            event_name("provider.compaction_completed"),
+            "provider.compaction_completed"
+        );
+        assert!(fields.get("summary").is_none());
+    }
     #[test]
     fn deployment_build_id_is_only_a_full_validated_git_sha() {
         let sha = "0123456789abcdef0123456789abcdef01234567";

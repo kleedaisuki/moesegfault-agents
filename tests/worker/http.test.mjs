@@ -23,6 +23,7 @@ import { runSpaceJourney } from './space-journey.mjs';
 import { runWorkspaceBlobJourney } from './workspace-blob-journey.mjs';
 import { runJsonObserverJourney } from './json-observer-journey.mjs';
 import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
+import { runDeepseekAutomaticCompactJourney } from './deepseek-auto-compact-journey.mjs';
 import { createAuxiliaryProviderFixture, runAuxiliaryJourney, runContextManagementJourney } from './auxiliary-journey.mjs';
 import { createDeepseekCompactFixture, runDeepseekCompactJourney } from './deepseek-compact-journey.mjs';
 import { runDeepseekCompactMediaJourney } from './deepseek-compact-media-journey.mjs';
@@ -544,6 +545,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     db = await mf.getD1Database('DB');
     return db;
   };
+  await selected(t, 'DeepSeek automatic context compaction uses the shared disabled-thinking purpose', { timeout:60000 }, () =>
+    runDeepseekAutomaticCompactJourney({ mf, encryptionKey, request, provider:deepseekCompactProvider, configure:configureCompact }));
   await selected(t, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage', { timeout: 60000 }, () =>
     runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact }));
   await selected(t, 'DeepSeek compact keeps frozen images and files through a complete continuation window', { timeout: 60000 }, () =>
