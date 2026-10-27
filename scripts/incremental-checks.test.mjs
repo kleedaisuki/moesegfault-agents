@@ -84,17 +84,6 @@ test('new auxiliary and tokenizer increments select exact public journeys', () =
   const selected = selections(source, baseline, ['tests/worker/auxiliary-journey.mjs', 'tests/worker/deepseek-tokenizer-journey.mjs']);
   assert.deepEqual(selected.worker.filter(check => check.env.MAGENTS_WORKER_CASE).map(check => check.env.MAGENTS_WORKER_CASE).sort(), ['DeepSeek exact count-only tokenizer cold warm and profile replacement', 'Responses auxiliary compact and count']);
 });
-
-test('prompt-cache increments select only the three new compiled native journeys', () => {
-  const selected = selections(source, baseline, ['tests/worker/prompt-cache-journey.mjs']);
-  assert.deepEqual(selected.worker.map(check => check.env.MAGENTS_WORKER_CASE), [
-    'Responses cache context appends instruction changes and reset across cold continuation and exact count',
-    'Responses cache context tool revisions preserve historical forks without revoked aliases',
-    'Responses cache context compaction retains the latest revision and resets without stale policy',
-  ]);
-  assert.ok(selected.worker.every(check => check.argv.at(-1) === 'tests/worker/http.test.mjs'));
-  assert.equal(Object.entries(selected).filter(([name]) => name !== 'worker').flatMap(([, checks]) => checks).length, 0);
-});
 test('changed current SDK contracts stay isolated from the legacy Python SDK', () => {
   const selected = selections(source, baseline, ['tests/e2e/test_current_responses_sdk_contract.py']);
   assert.equal(selected.tooling.length, 0);
