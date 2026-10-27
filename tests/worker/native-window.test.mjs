@@ -9,6 +9,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
 import { runNativeWindowJourney, runNativeWindowToolsJourney, runNativeWindowRejectionJourney, runContextCapacityJourney, runConversationWindowCountJourney, runConversationCapacityRejectionJourney, runNativeWindowCountRejectionJourney } from './native-window-journey.mjs';
+import { runCompactReceiptObserveJourney } from './compact-observer-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -28,13 +29,16 @@ test('compiled Rust Worker: native auto window preserves source and historical t
   const encryptionKey = randomBytes(32);
   const identity = createIdentityFixture();
   const providers = createNativeSemanticsProvider();
+  const compactSource = { available: true, fetches: 0 };
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const directory = await mkdtemp(path.join(root, '.temp/native-semantics-'));
   const mf = new Miniflare(convertV4MiniflareOptions({
     modulesRoot: build,
     modules: [
-      { type: 'ESModule', path: path.join(build, 'worker/shim.mjs') },
+      { type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
+        ...(process.env.MAGENTS_NATIVE_WINDOW_CASE === 'compact-observe'
+          ? { contents: await readFile(new URL('./compact-observer-shim.mjs', import.meta.url), 'utf8') } : {}) },
       { type: 'ESModule', path: path.join(build, 'index.js') },
       { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') },
     ],
@@ -63,6 +67,12 @@ test('compiled Rust Worker: native auto window preserves source and historical t
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000', FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000',
     },
     async outboundService(request) {
+      if (new URL(request.url).hostname === 'compact-source.example.com') {
+        compactSource.fetches++;
+        return new Response(compactSource.available ? 'Frozen compact receipt source 雪.' : 'Gone', {
+          status: compactSource.available ? 200 : 410, headers: { 'Content-Type': 'text/plain' },
+        });
+      }
       const response = await providers.handle(request);
       assert.notEqual(response, undefined, `Native fixtures must not access external services: ${new URL(request.url).origin}`);
       return response;
@@ -80,8 +90,13 @@ test('compiled Rust Worker: native auto window preserves source and historical t
     assert.equal(response.status, expected, `${method} ${endpoint}: ${text}`);
     return JSON.parse(text);
   }
-  const context = { mf, db, encryptionKey, request, providers };
+  const context = { mf, db, encryptionKey, request, providers, compactSource };
   const receipts = {};
+  if (process.env.MAGENTS_NATIVE_WINDOW_CASE === 'compact-observe') {
+    await t.test('standalone compact retries observe original pending known and expired receipts before mutable sources', async () => {
+      receipts.compact_observe = await runCompactReceiptObserveJourney(context);
+    });
+  }
   if (process.env.MAGENTS_NATIVE_WINDOW_CASE === 'count-rejection') {
     await t.test('read-only auto count rejects an unfit latest group with HTTP400 and no generation', async () => {
       receipts.count_rejection = await runNativeWindowCountRejectionJourney(context);
