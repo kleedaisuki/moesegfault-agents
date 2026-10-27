@@ -384,14 +384,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
-    // Topic-only fixed-RTT accounting comparison; no accepted model or tool journeys.
+    // Topic-only queued file management comparison; no accepted Conversation or SQL replay.
     for (const key of Object.keys(receipt.checks)) receipt.checks[key] = [];
     receipt.native_packages = [];
     receipt.required_jobs = ['changes','worker'];
     for (const [name, component] of Object.entries(receipt.components)) component.action = name === 'worker' ? 'build' : 'reuse';
     receipt.checks.worker = [
-      command('new-d1-accounting-sql',['python3','tests/test_d1_accounting_batch_sql.py','-v'],'Seven exact production accounting SQL contracts'),
-      command('new-conversation-accounting-perf',['node','--test','tests/worker/conversation-accounting-perf.test.mjs'],'One new actual Rust management benchmark, two equivalent fixed-RTT artifacts',{MAGENTS_BASELINE_WORKER_DIR:'.cache/conversation-baseline/build'})
+      command('new-file-batch-telemetry',['cargo','test','--locked','-p','agents-worker','--lib','batched_d1_phases_keep_actual_rows_and_operation_correlation','--','--nocapture'],'One new structural batch telemetry preservation contract'),
+      command('new-file-management-perf',['node','--test','tests/worker/file-management-perf.test.mjs'],'One new queued file management comparison, exact same rows and charges, zero ingestion',{MAGENTS_BASELINE_WORKER_DIR:'.cache/file-management-baseline/build'})
     ];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
