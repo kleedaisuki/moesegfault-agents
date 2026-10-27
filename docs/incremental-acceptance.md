@@ -372,3 +372,94 @@ description text from names/headers and retain the exact discovery stage; it mus
 not loosen credential validation or call `ask_wiki_question`. The original failed
 count is not evidence of a completed remote tool call. Receipt:
 `.temp/features-staging/mcp-legacy-live-activated-receipt.json`.
+
+## Actual joint v0.3 staging closures (Worker `4f8f19f`)
+
+Normal `40453269200` and full-runtime staging deploy `40454377622` succeeded.
+The incremental operators below used that exact Worker, the previously accepted
+`3539c1c` daemon and `1b7f2cd` dashboard. Direct DeepSeek handled language-model
+turns; only the one explicitly selected new image used OpenRouter/Seedream.
+No accepted Code, Chat, workspace, standalone compact, native-window or earlier
+programmatic generation was replayed.
+
+| New real operator | Observed result | Exact scoped ledger closure |
+| --- | --- | --- |
+| DeepWiki MCP | Metadata count before any Session; explicit approval; exactly one `read_wiki_structure` call for the public `openai/openai-python` repository; HTTP 200, 316 ms, 4,209 output bytes; 8 + 333 canonical SSE events and actual Python SDK 3.37.0 validation | **737 microUSD**, no new hold/pending observation, owned Session closed and Agent deleted |
+| Distinct Seedream image | New turquoise-robot task, not the original paid red-panda operation; JPEG 1024 x 1024, 203,929 bytes; 32 SSE events, strict SDK, JSON/event retrieval and matching Files download; deleting its File preserves the accepted canonical image | **18,317 microUSD**, including exactly one 18,000 image charge; no new hold/pending observation, normal Session/Agent cleanup |
+| Automatic Context compact | One new submission; sealed native compaction item plus answer preserves fixed server, current custom, historical developer and corrected decision markers; 26 typed SSE events; independent Conversation/Response counts agree at 174 | **322 microUSD**: summary 47, continuation 34, resources 241; no new hold/pending observation |
+| Native alarm PDF | Distinct golden-marker 593-byte PDF; actual native conversion, background embedding/indexing, hybrid lookup and normal source/store deletion; all five SDK checks in 86,887 ms; zero language-model calls | **437 microUSD** after natural cleanup; no new hold/pending observation, chunks/jobs zero and exact capacity clock finalized |
+
+The MCP metadata count was 415, while the first generation reported input 420.
+The operator omitted its forced `tool_choice` from the read-only count, so these
+are different request options and **not** an exact count-versus-generation claim.
+The second model round reported 384 cached input tokens. Typed transport logs now
+retain modern HTTP rejection, legacy initialize/notification/list and the single
+approved call's status, ray, request identity, byte counts and stage. The
+question-answering MCP tool was never allowed or called.
+
+The new image supplier generation is
+`gen-img-1793078912-o2p5pINp5D2tI2ZAoBMp`. Actual HTTP 200/12,023 ms reception
+retained 272,327 raw response bytes as a 363,142-byte encrypted recovery receipt
+before parsing. Validation recorded JPEG, dimensions and reported cost **0.018**.
+After canonical publication, the operation is `released` with capacity zero,
+its one frame is marked deleted, and the encrypted storage clock is `removed`.
+No raw recovery body or quota is stranded. The original earlier failed image and
+its historical financial state remain separate; this does not reconstruct its
+previously discarded body or charge its old hold by fiat.
+
+The successful Context escrow is `converted` with zero remaining bytes. Explicit
+purge physically released every body allocation with `content_removed` proof;
+the 4,096-byte identity/header allocation remains retained. Metadata DELETE first
+preserved items, and the independent immutable Response/count remained available
+after purge. This is the new repaired automatic path, not a replay of the earlier
+failed thinking-only summary or the accepted standalone compaction.
+
+The PDF's two real native embeddings totalled 52 bytes (34 document + 18 query),
+charged 2 microUSD. One 1,024-dimensional upsert and nine native visibility/query/
+cleanup reads totalled 9,216 queried dimensions. Four actual DO wall observations
+sum to 52,290 ms, with no prematurely cancelled 26-second Worker turn. The first
+natural cleanup pass retained the vector until its asynchronous deletion became
+observable; the second natural pass removed the chunk/job and closed the clock:
+`1024 * 1,871,132 ms = 1,916,039,168 dimension-ms`, charged 1 microUSD, zero debt,
+zero fractional carry and no pending observation. No manual cron, provider delete,
+extra embedding/query, or SQL balance edit was used to force closure. All nine
+pre-existing unrelated holds stayed unchanged.
+
+A separate zero-model performance measurement used one new Conversation and empty
+Vector Store: create/update/delete/purge took 4,157/2,584/2,660/3,382 ms; store
+create/retrieve/delete took 1,720/1,317/1,226 ms. It created no file, native index,
+Session or model turn, and settled **54 microUSD** with zero new hold/pending
+observation. These are seven actual observations, not a p95 or a percentage claim
+against the old, different pending-writer recovery workload. The controlled
+fixed-RTT mechanism comparisons remain in their owning performance documents.
+
+Authoritative local receipts are `.temp/features-staging/mcp-fixed-live-*`,
+`image-fixed-*`, `context-fixed-*`, `pdf-alarm-*` and `management-fixed-*`.
+The PDF final scope is `pdf-alarm-finance/postflight-after-second-cron.json`;
+Image raw-body retirement is `image-fixed-receipt-cleanup.json`. Rich owned trace
+collectors preserve the deployed producer schema and were stopped after their
+respective acceptance windows; old discarded bodies are not invented.
+
+## Final source and native packages
+
+Normal `40457317258` built final runtime source
+`bb18283f80cdc1a9cf87a020de174eb828fc0a8c`, including the separately accepted
+central D1 batching optimization and production dependency preparation. Only its
+five new fake-provider preparation contracts ran; no earlier business journey or
+native test was rerun. Deploy `40459145729` succeeded for that exact Worker.
+
+Artifact-only packaging `40457558376` succeeded on Windows and Linux, running the
+five newly scoped actual native release-profile cases per platform. Archives,
+LF checksum sidecars and BUILD-INFO retain their actual **bb18283** producer
+source. No tag or public release asset was created. Later documentation and
+promotion workflow revisions may reuse them only after native fingerprint and
+archive/receipt verification; they must not relabel the original build metadata.
+
+Metadata-only `40460395278` executed all six promotion contracts successfully
+(`Ran 6 tests`, `OK`, 0.081 s), then its reporting layer rejected direct unittest
+scripts outside `tests/`. That aggregate remains failed. The basename-based
+reporting repair and one new parser regression passed in normal `40461082895`,
+with every application/native artifact reused and no repeat of the six successful
+cases. Source `2f62f92` includes the promotion workflow and truthful source gates;
+production deployment, compatibility readback and public tag/publication remain
+separate root-controlled gates.
