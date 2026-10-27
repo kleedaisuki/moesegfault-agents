@@ -173,6 +173,18 @@ jobs:
           cache-on-failure: true
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
         if: needs.changes.outputs.worker_build == 'true'
+      - name: Compile changed Worker tests without replaying accepted cases
+        id: worker_unit_compile
+        run: |
+          has_rust=$(node --input-type=module -e "import fs from 'node:fs'; const plan=JSON.parse(fs.readFileSync('.cache/verification/plan.json','utf8')); console.log(plan.checks.worker.some(check => check.argv[0] === 'cargo'))")
+          if [ "$has_rust" = true ]; then
+            cargo test --locked -p agents-worker --lib --no-run
+          else
+            echo 'No changed Rust test contracts; execute only the selected Worker journeys.'
+          fi
+      - run: node scripts/incremental-checks.mjs run worker-rust
+        id: worker_unit_tests
+        if: ${{ !cancelled() && steps.worker_unit_compile.outcome == 'success' }}
       - name: Identify the exact Worker build tool
         id: worker_build_tool
         run: node scripts/worker-build-cache.mjs key
@@ -187,13 +199,16 @@ jobs:
         run: node scripts/worker-build-cache.mjs ensure
         if: needs.changes.outputs.worker_build == 'true'
       - run: worker-build --release
+        id: worker_release
         if: needs.changes.outputs.worker_build == 'true'
         working-directory: crates/agents-worker
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        if: ${{ !cancelled() && (steps.worker_release.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         with:
           node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
+        if: ${{ !cancelled() && (steps.worker_release.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
       - run: node scripts/bundle-worker.mjs
         id: worker_bundle
         if: needs.changes.outputs.worker_build == 'true'
@@ -204,18 +219,6 @@ jobs:
           name: worker
           path: crates/agents-worker/build
           retention-days: 7
-      - name: Compile changed Worker tests without replaying accepted cases
-        id: worker_unit_compile
-        if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
-        run: |
-          has_rust=$(node --input-type=module -e "import fs from 'node:fs'; const plan=JSON.parse(fs.readFileSync('.cache/verification/plan.json','utf8')); console.log(plan.checks.worker.some(check => check.argv[0] === 'cargo'))")
-          if [ "$has_rust" = true ]; then
-            cargo test --locked -p agents-worker --lib --no-run
-          else
-            echo 'No changed Rust test contracts; execute only the selected Worker journeys.'
-          fi
-      - run: node scripts/incremental-checks.mjs run worker-rust
-        if: ${{ !cancelled() && steps.worker_unit_compile.outcome == 'success' }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         with:

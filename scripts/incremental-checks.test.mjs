@@ -257,10 +257,23 @@ test('ignored benchmarks are not converted into automatic zero-test or expensive
   const text='#[test]\n#[ignore]\nfn expensive_benchmark() {}\n#[ignore = "manual"]\n#[test]\nfn second_benchmark() {}\n#[test]\nfn actual_increment() {}\n';
   assert.deepEqual(changedRustTests(text,[[1,20]]),['actual_increment']);
 });
-test('a built exact Worker can run actual journeys despite independent unit assertion failures', () => {
+test('selected Worker Rust contracts gate tool installation and release builds before actual journeys', () => {
   const workflow=readFileSync('.github/workflows/ci.yml','utf8');
   const worker=workflow.slice(workflow.indexOf('\n  worker:'),workflow.indexOf('\n  container:'));
-  assert.ok(worker.indexOf('node scripts/bundle-worker.mjs')<worker.indexOf('Compile changed Worker tests'));
+  const compile=worker.indexOf('Compile changed Worker tests');
+  const selected=worker.indexOf('node scripts/incremental-checks.mjs run worker-rust');
+  const install=worker.indexOf('worker-build-cache.mjs ensure');
+  const release=worker.indexOf('run: worker-build --release');
+  assert.ok(compile>=0 && compile<selected && selected<install && install<release);
+  assert.ok(worker.indexOf('cargo check --locked -p agents-worker --target wasm32-unknown-unknown')<compile);
+  assert.match(worker,/if \[ "\$has_rust" = true \]; then\n\s+cargo test --locked -p agents-worker --lib --no-run/);
+  assert.match(worker,/plan\.checks\.worker\.some\(check => check\.argv\[0\] === 'cargo'\)/);
+  const gates=worker.slice(compile,worker.indexOf('      - uses: actions/setup-node@',compile));
+  assert.doesNotMatch(gates,/continue-on-error|always\(\)|steps\.worker_bundle|steps\.worker_reuse/);
+  assert.match(gates,/id: worker_unit_tests/);
+  assert.match(worker,/id: worker_release/);
+  assert.match(worker,/run: npm ci --ignore-scripts\n\s+if: \$\{\{ !cancelled\(\) && \(steps\.worker_release\.outcome == 'success' \|\| steps\.worker_reuse\.outcome == 'success'\)/);
+  assert.match(worker,/if: always\(\) && needs\.changes\.outputs\.worker_build == 'true' && steps\.worker_bundle\.outcome == 'success'/);
   assert.match(worker,/worker-journeys\n\s+if: \$\{\{ !cancelled\(\) && \(steps\.worker_bundle\.outcome == 'success' \|\| steps\.worker_reuse\.outcome == 'success'\)/);
   assert.match(worker,/name: worker\n/);
 });

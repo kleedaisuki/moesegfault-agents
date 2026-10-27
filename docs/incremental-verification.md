@@ -88,6 +88,16 @@ repairs, with direct DeepSeek preflight for all paid language-model calls.
 
 ## Installed Worker build-tool cache
 
+The Worker job first compiles `cfg(test)` when its plan selects Rust contracts,
+then runs only those selected contracts, before installing the build tool or
+producing release Wasm. This catches test-only namespace/type errors before the
+expensive release build. No library tests are executed by `--no-run`, and an
+empty Rust selection does not trigger test compilation. Default step success
+gates stop tool setup/release work after either early failure. A valid reused
+artifact can still run its selected actual journeys independently of a unit
+assertion failure; existing artifact receipts and failure conclusions remain
+separate and are never rewritten as an aggregate pass.
+
 The normal Worker job caches `worker-build` 0.8.7 separately from compiled
 application artifacts. In the PDF repair run `40446113827`, installing this same
 locked tool cost several minutes before the release build; this was tool setup,
