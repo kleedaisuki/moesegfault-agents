@@ -341,6 +341,10 @@ export function executedTests(argv, output) {
   throw Error('Unknown selected test runner');
 }
 
+export function historyCompileRequired(plan) {
+  return plan.changed_files.includes('crates/agents-worker/tests/history_perf.rs');
+}
+
 export function runChecks(receipt, job, execute = spawnSync, directory = OUTPUT) {
   const sourceJob = job.startsWith('worker-') ? 'worker' : job;
   if (!Object.hasOwn(receipt.checks, sourceJob)) throw Error('Unknown check job');

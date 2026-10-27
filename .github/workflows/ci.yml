@@ -176,6 +176,20 @@ jobs:
       - name: Compile changed Worker tests without replaying accepted cases
         id: worker_unit_compile
         run: |
+          has_history=$(node --input-type=module -e "import fs from 'node:fs'; import { historyCompileRequired } from './scripts/incremental-checks.mjs'; console.log(historyCompileRequired(JSON.parse(fs.readFileSync('.cache/verification/plan.json','utf8'))))")
+          if [ "$has_history" = true ]; then
+            set -o pipefail
+            cargo test --locked -p agents-worker --test history_perf --no-run 2>&1 | tee .cache/verification/history-perf-compile.log
+            node --input-type=module <<'RECEIPT'
+          import fs from 'node:fs';
+          const output=fs.readFileSync('.cache/verification/history-perf-compile.log','utf8').replace(/\u001b\[[0-9;]*m/g,'');
+          if (!/Executable[^\n]*history_perf-/.test(output)) throw Error('History target executable was not compiled');
+          fs.writeFileSync('.cache/verification/history-perf-compile.json',JSON.stringify({
+            source_sha:process.env.GITHUB_SHA,kind:'compilation',status:'compiled_only',exit_code:0,executed_tests:0,
+            argv:['cargo','test','--locked','-p','agents-worker','--test','history_perf','--no-run']
+          },null,2)+'\n');
+          RECEIPT
+          fi
           has_rust=$(node --input-type=module -e "import fs from 'node:fs'; const plan=JSON.parse(fs.readFileSync('.cache/verification/plan.json','utf8')); console.log(plan.checks.worker.some(check => check.argv[0] === 'cargo'))")
           if [ "$has_rust" = true ]; then
             cargo test --locked -p agents-worker --lib --no-run
@@ -251,7 +265,9 @@ jobs:
         if: always()
         with:
           name: verification-worker
-          path: .cache/verification/*.json
+          path: |
+            .cache/verification/*.json
+            .cache/verification/history-perf-compile.log
           retention-days: 14
 
   container:

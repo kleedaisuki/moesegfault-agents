@@ -319,3 +319,13 @@ test('unittest reporting recognizes test script basenames outside the tests dire
   }
   assert.throws(() => executedTests(['python3', 'scripts/ordinary_command.py'], report), /Unknown selected test runner/);
 });
+
+test('native history target compilation is selected only for its changed fixture', async () => {
+  const { historyCompileRequired } = await import('./incremental-checks.mjs');
+  assert.equal(historyCompileRequired({ changed_files: ['crates/agents-worker/tests/history_perf.rs'] }), true);
+  assert.equal(historyCompileRequired({ changed_files: ['docs/session-history.md'] }), false);
+  assert.equal(historyCompileRequired({ changed_files: [] }), false);
+  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.ok(workflow.indexOf('cargo test --locked -p agents-worker --test history_perf --no-run') < workflow.indexOf('worker-build --release'));
+  assert.ok(workflow.includes("kind:'compilation',status:'compiled_only',exit_code:0,executed_tests:0"));
+});
