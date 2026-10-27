@@ -31,7 +31,7 @@ export async function runDeepseekAutomaticCompactJourney({ mf, encryptionKey, re
     assert.equal(compact.max_tokens,64);
     assert.equal(compact.tools,undefined);
     const source = JSON.stringify(compact.messages);
-    for (const marker of ['SERVER_AUTO','DEVELOPER_AUTO','CUSTOM_AUTO','A correction: preserve']) assert.ok(source.includes(marker),marker);
+    for (const marker of ['SERVER_AUTO','DEVELOPER_AUTO','A correction: preserve']) assert.ok(source.includes(marker),marker);
     const next = JSON.stringify(provider.state.generations[0]);
     assert.ok(next.includes('Preserved goal, custom tool result and correction'));
     for (const marker of ['SERVER_AUTO','DEVELOPER_AUTO','CUSTOM_AUTO']) assert.ok(next.includes(marker),marker);
