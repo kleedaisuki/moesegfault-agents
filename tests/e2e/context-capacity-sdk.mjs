@@ -92,6 +92,10 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     const response = events.find(event => event.type === 'response.completed')?.response;
     const terminal = events.find(event => ['response.completed', 'response.failed', 'response.incomplete'].includes(event.type));
     if (terminal) receipt.pending = null;
+    receipt.checks.terminal = terminal ? { event: terminal.type, id: terminal.response?.id,
+      status: terminal.response?.status, error: terminal.response?.error,
+      incomplete_details: terminal.response?.incomplete_details, usage: terminal.response?.usage,
+      output_types: terminal.response?.output?.map(item => item.type), events: events.length } : null;
     save();
     assert.ok(response, 'new_context_response_not_completed');
     assertCanonicalEvents(events);
@@ -131,7 +135,9 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       retainedHeaderAllocations: true, observedFromClient: false };
     receipt.status = 'live_context_capacity_behavior_passed_financial_postflight_pending'; save();
   } catch (error) {
-    receipt.status = 'failed'; receipt.failure = { status: error.status ?? null, type: error.name ?? 'Error', code: error.code ?? null };
+    receipt.status = 'failed'; receipt.failure = { phase: receipt.phase, status: error.status ?? null,
+      type: error.name ?? 'Error', code: error.code ?? null,
+      ...(error.code === 'ERR_ASSERTION' ? { assertion: error.message, operator: error.operator } : {}) };
     save(); throw error;
   } finally {
     const failures = [];

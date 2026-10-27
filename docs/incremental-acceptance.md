@@ -291,3 +291,39 @@ investigation without replaying any paid request. The local authoritative receip
 is `.temp/features-staging/context-original-recovery-02d.json`; it preserves the
 exact original scope, API timings, capacity state and accounting rows. The old
 failed response remains an old failure, not a newly completed generation.
+
+### New real-provider summary did not complete
+
+The fresh, separately owned Context operation on Worker `02d483b` passed the
+previous admission/reset boundary: the client received HTTP 200 and the actual
+Session/Response headers. It then failed in `compaction_accounting` with the
+specific runtime code `compaction_incomplete`, not another Conversation guard
+reset. Retained Response `resp_032ceda34a484ac2ba5ee5642e14abc3` is `failed` with
+no output. This is not a successful automatic compaction and must not be replayed
+to manufacture one. The original request key is
+`response-dc47885c-7389-4eeb-9e63-864c5e2aef9a`.
+
+The owned Session closed normally and its temporary Agent was deleted. A scoped
+read found its single direct-DeepSeek reservation settled at 655 microusd, the
+Conversation resource scope at 305, execution resources at 64 and maintenance at
+7: **1,031 microusd** across these exact scopes, with no reserved hold or pending
+observation. This is the failure's observed accounting, not a full acceptance
+bill or evidence of a second answer generation. Independent metadata DELETE and
+purge cleanup of this fresh failed Conversation remains a separately recorded
+operation.
+
+The operator now records the actual terminal event/status/error, incomplete
+reason, usage, output types and event count before assertions. Its known local
+assertion failure also retains the assertion and phase, instead of reducing every
+failure to `ERR_ASSERTION`. This change needs no paid replay; a syntax check
+covers the edited JavaScript. Production diagnostics still require the deeper
+provider-terminal reason behind `compaction_incomplete`.
+
+The new phase collector also found a concrete management-latency mechanism:
+19 completed Conversation D1 phases totalled 63,315 ms, of which actual D1 RPC
+was 3,314 ms, funding 13,392 ms and observation bookkeeping 46,609 ms (73.6%).
+These are additive completed-phase durations, not end-to-end wall time. The
+phase summary is `.temp/features-staging/context-phase-summary-02d.json` and
+owned trace `.temp/features-staging/trace-context-repaired-02d/receipt.json`.
+The next optimization should remove redundant sequential accounting round trips
+without discarding observations or weakening capacity/funding fences.
