@@ -262,3 +262,32 @@ structured fields and no Authorization/prompt fields, with zero network clients.
 Full sensitive execution bodies belong in authorized encrypted short-retention
 receipts, not plaintext global tail output. Missing source-emitted upstream detail
 cannot be reconstructed by pretending that a generic error is sufficiently precise.
+
+## Actual staging recovery after the slow-I/O guard repair
+
+Normal CI `40369812194` and deployment `40445875291` succeeded for assembly and
+Worker `02d483b024386874c3a9c64d476cce0cec0c1130`. The daemon remains the exact
+accepted `3539c1c` artifact and dashboard the exact accepted `1b7f2cd` artifact.
+The feature allowlist is `web_search,file_search,code_interpreter`; Image remains
+disabled pending the separate response-receipt repair. Deployment selected no
+old model journey or Code cell, and does not itself claim product acceptance.
+
+The original failed Conversation submission
+`response-59ded45a-aba8-46a1-8582-69b1fc24921c` was not resubmitted. Its recovered
+Session was already closed with no model execution. Normal metadata DELETE and
+explicit purge returned HTTP 200 on the new Worker. The original resource scope
+`conv-response:resp_78a70f2f64e24b659f72c9cbf73e67c0` settled **137 microusd**
+from its existing observed ledger; its original 20,000-microusd reservation was
+not replaced or manually edited. All 20 observations are observed, the output
+escrow is released with zero remaining bytes, and body allocations are physically
+removed before release. The original test Agent was deleted normally afterward.
+There were zero new Response submissions or model calls for this recovery.
+
+This is also real Cloudflare evidence that a purge can now finish beyond the
+old 30-second initialization-guard limit: metadata DELETE took 22,392 ms and
+purge 49,151 ms. Those are unacceptably slow management operations, not a
+performance success. They justify a narrow phase-attributed funding/D1 latency
+investigation without replaying any paid request. The local authoritative receipt
+is `.temp/features-staging/context-original-recovery-02d.json`; it preserves the
+exact original scope, API timings, capacity state and accounting rows. The old
+failed response remains an old failure, not a newly completed generation.
