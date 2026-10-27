@@ -3,6 +3,10 @@ export * from '../index.js';
 
 const state = { armed:false,rttMs:20,rpcs:0,batches:0,businessStatements:0,deferredIngest:0 };
 const unavailable = () => { throw Error('Management benchmark must not execute embedding, conversion or Vectorize'); };
+class Ai {
+  run() { return unavailable(); }
+  toMarkdown() { return unavailable(); }
+}
 function database(target) {
   const original = new WeakMap();
   const sqls = new WeakMap();
@@ -46,7 +50,7 @@ function database(target) {
   }});
 }
 function bindings(env){
-  return {...env,DB:database(env.DB),AI:{run:unavailable,toMarkdown:unavailable},
+  return {...env,DB:database(env.DB),AI:new Ai(),
     VECTORIZE:Object.fromEntries(['query','upsert','deleteByIds','getByIds','describe'].map(name=>[name,unavailable]))};
 }
 export default class extends RustWorker {
