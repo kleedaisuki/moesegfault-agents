@@ -9648,5 +9648,125 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+    "run_id": "40447538513",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12709167366,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+    "run_id": "40447538513",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:native-runtime-provenance-activation",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=native MCP and programmatic activation",
+            "scripts/deploy-provenance.test.mjs"
+          ],
+          "env": {},
+          "reason": "One new proof-vocabulary correction after actual pre-infrastructure failure; no old five contracts or runtime journeys"
+        }
+      ]
+    }
   }
 ]
