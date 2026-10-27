@@ -49,9 +49,9 @@ async fn query(
             _ => Err(fail("invalid_vector_store_binding")),
         })
         .collect::<Result<Vec<_>>>()?;
-    meter.require_d1_batched(&event).await?;
+    meter.require_d1(&event).await?;
     let result = env.d1("DB")?.prepare(sql).bind(&bindings)?.all().await?;
-    meter.record_d1_batched(&event, &result).await?;
+    meter.record_d1(&event, &result).await?;
     Ok(result)
 }
 

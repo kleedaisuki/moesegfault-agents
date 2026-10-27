@@ -205,6 +205,11 @@ jobs:
       - name: Never replay paid stage work through an Actions rerun
         if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         run: test "$GITHUB_RUN_ATTEMPT" = 1 || { echo 'Inspect the original accepted operations; paid stage actions are not replayable'; exit 1; }
+      - name: Prepare reviewed production dependencies before the full Worker changes
+        if: inputs.environment == 'production'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: node scripts/prepare-deployment-dependencies.mjs
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: worker
@@ -298,6 +303,7 @@ jobs:
           path: |
             .temp/deploy-verification/deployment-provenance.json
             .temp/deploy-verification/deployment-receipt.json
+            .temp/deploy-verification/dependency-preparation.json
             .temp/v0.3-full-acceptance/${{ github.sha }}/${{ github.run_id }}-responses.json
             .temp/v0.3-full-acceptance/${{ github.sha }}/${{ github.run_id }}-responses-current-python.json
           retention-days: 14

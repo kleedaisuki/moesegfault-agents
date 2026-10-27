@@ -15,7 +15,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const digest = value => hash(JSON.stringify(value));
 
 export function imageRequest(agent) {
-  return { model: agent, input: 'Use image_generation exactly once to draw a small cheerful red panda reading a book beside a blue flower, flat illustration, plain cream background, no text. Then answer in one short sentence. Do not use any other tool.',
+  return { model: agent, input: 'Use image_generation exactly once to draw a tiny turquoise robot watering a sunflower, flat illustration, pale lavender background, no text. Then answer in one short sentence. Do not use any other tool.',
     tools: [{ type: 'image_generation', size: '1024x1024' }], max_tool_calls: 1, max_output_tokens: 256, reasoning: { effort: 'none' } };
 }
 
@@ -133,7 +133,8 @@ export async function main(argv = process.argv.slice(2), environment = process.e
       if (['response.completed', 'response.failed', 'response.incomplete'].includes(event.type) && receipt.resources.responses.includes(event.response?.id)) {
         receipt.pending = null;
         receipt.checks.terminal = { type: event.type, responseId: event.response.id, status: event.response.status,
-          errorCode: event.response.agents_error_code ?? event.response.error?.code ?? null };
+          errorCode: event.response.agents_error_code ?? event.response.error?.code ?? null,
+          output: event.response.output?.map(item => ({ type: item.type, id: item.id, status: item.status })) };
         save();
       }
     }
@@ -166,7 +167,9 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     receipt.checks.files = { id: file.id, bytes: bytes.length, sha256: hash(bytes), deleted: true, canonicalImageRetained: true }; save();
     receipt.status = 'live_image_behavior_passed_financial_postflight_pending'; save();
   } catch (error) {
-    receipt.status = 'failed'; receipt.failure = { name: error.name, status: error.status ?? null }; save(); throw error;
+    receipt.status = 'failed'; receipt.failure = { phase: receipt.phase, name: error.name, code: error.code ?? null,
+      status: error.status ?? null, requestId: error.requestID ?? null,
+      message: error.message?.split('\n')[0].slice(0, 500), operator: error.operator ?? null }; save(); throw error;
   } finally {
     await cleanup(request, receipt, save); receipt.endedAt = new Date().toISOString(); save();
     if (receipt.cleanup.failures.length) process.exitCode = 1;
