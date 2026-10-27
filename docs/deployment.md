@@ -307,3 +307,43 @@ Focused configuration verification ran only three new rendering contracts and
 one new workflow/credential/provenance contract, plus the single affected workflow
 assertion updated for the common resolver. They passed without a Rust build or
 paid/remote model call; no old deployment suite or accepted runtime journey ran.
+
+### Authorized production provisioning sequence
+
+The following are **operator instructions, not commands executed by this change**.
+Wait for the root's production clearance and use the production credential it
+approves. A staging key's presence does not authorize copying it or establish a
+production credential. The runtime preflight reads the GitHub environment's
+`DEEPSEEK_API_KEY` and fails before migrations, container publication or Worker
+rollout if selected search has no key.
+
+1. Inventory by exact name again before writing; create only the absent index:
+
+   ```sh
+   npx wrangler vectorize get moesegfault-agents-file-search-production-v1 --json
+   npx wrangler vectorize create moesegfault-agents-file-search-production-v1 --dimensions 1024 --metric cosine
+   npx wrangler vectorize get moesegfault-agents-file-search-production-v1 --json
+   ```
+
+   An existing index with a different dimension or metric is a stop/review condition,
+   not permission to delete/recreate it. Do not modify the staged index.
+
+2. Provision the same approved production value through a non-logged secret-manager
+   stdin/interactive integration into both the GitHub **production environment** and
+   the already-serving production Worker, before full rollout:
+
+   ```sh
+   gh secret set DEEPSEEK_API_KEY --env production
+   npx wrangler secret put DEEPSEEK_API_KEY --env production --config wrangler.jsonc
+   npx wrangler secret list --env production --config wrangler.jsonc --format json
+   ```
+
+   The first two commands accept the secret through their protected input; do not
+   use command-line arguments, shell history, diagnostic artifacts or chat for its
+   value. Read back secret **names**, never values. Keep existing production
+   identity/encryption credentials untouched. Do not use the bulk-sync helper with
+   partially populated identity/encryption inputs just to add this one secret.
+
+3. After readback, let the existing normal artifact/provenance and protected
+   production-environment workflow perform the approved full deployment. Check its
+   serving build/component identities; resource existence alone is not acceptance.
