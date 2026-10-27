@@ -11141,5 +11141,32 @@
       ],
       "unresolved_checks": []
     }
+  },
+  {
+    "source_sha": "bbbae652dd645a32d0aaccca05a447156211ddd7",
+    "run_id": "40471168005",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "bbbae652dd645a32d0aaccca05a447156211ddd7",
+      "receipts": [
+        {
+          "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+          "run_id": "40463892529",
+          "reference": "docs/v0.3-release-audit.md",
+          "scope": "Preserved v0.3 accepted tooling baseline and its exact unchanged historical evidence"
+        },
+        {
+          "source_sha": "bbbae652dd645a32d0aaccca05a447156211ddd7",
+          "run_id": "40471168005",
+          "reference": "docs/prompt-cache-engineering.md",
+          "scope": "Downloaded verification-tooling receipt: native-release-draft-permissions new check passed_current, executed_tests=1; reuse this unchanged result instead of replaying it for cache work"
+        }
+      ],
+      "unresolved_checks": []
+    }
   }
 ]
