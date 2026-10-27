@@ -480,3 +480,20 @@ assembly or documentation SHA. Full typed preparation/provenance, serving-versio
 bindings, traffic, migration-name and secret-name-only receipts are retained in
 `.temp/features-staging/prod-40464754760-attempt2/`; the permanent facts above do
 not depend on keeping transient collector processes alive.
+
+### v0.3.0 public closure
+
+The separate root production preservation gate subsequently passed using the
+actual v0.3 Windows binary: the original twelve messages, 378-byte archive and
+known-file bytes survived unchanged, with no new model/container events. See
+[the production acceptance](identity-billing.md#public-v030-production-preservation-acceptance).
+PR #9 merged normally and immutable `v0.3.0` points to
+`b54d91fc2721bb15560f3d40154f7c23e17cf8de`.
+
+The release was published at 2026-10-27 07:57:19 UTC. Native promotion run
+`40470023926` uploaded the four verified package/sidecar assets from producer
+`bb18283` without rebuilding. The public release event `40470263539` then verified
+those existing bytes, uploaded zero assets and skipped native build jobs. A
+workflow-only draft-read permission repair is on main; no tag or prebuilt binary
+was rewritten. [Final release audit](v0.3-release-audit.md) records each completed
+requirement and the exact source/acceptance boundaries.
