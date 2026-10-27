@@ -383,6 +383,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [mode, job] = process.argv.slice(2);
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
+    // Private topic proof has explicit checks below, not the unrelated composed deployment selection.
+    for (const baseline of baselines) delete baseline.selection_base;
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
     // Topic-only queued file management comparison; no accepted Conversation or SQL replay.
     for (const key of Object.keys(receipt.checks)) receipt.checks[key] = [];
