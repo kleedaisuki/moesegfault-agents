@@ -278,3 +278,28 @@ normalized only the old artifact's platform profile to locate the next boundary:
 two time calls and two dependent MCP calls actually completed, and the remaining
 strict SDK failure was the old terminal item's synthetic running phase. That
 instrumented probe is mechanism evidence, not acceptance of the repaired binary.
+
+## Staging activation prerequisites
+
+The first actual MCP metadata count on Worker `02d483b` returned
+`400 unsupported_tool` before a Response, Session, provider request or remote tool
+call: the deployment's finite runtime allowlist did not include `mcp`. Its
+temporary Agent was removed normally. This is an activation/configuration defect,
+not evidence that legacy negotiation failed. Receipt:
+`.temp/features-staging/mcp-legacy-live-02d-receipt.json`.
+
+Deployment selection now has explicit staging-only MCP and MCP+programmatic
+combinations alongside the accepted Search/FileSearch/Code runtimes. The combined
+programmatic selection adds the native `PROGRAM_LOADER` binding plus the reviewed
+creation/request/100-ms-capacity tariffs (2000/1, 3/10 and 2/1 micro-USD per
+quantity). They retain the existing shared pricing version and are not inserted
+for MCP-only operation. Production, configured/default operation and original
+source configuration are unchanged. Image remains independently selected.
+
+This uses Cloudflare's documented `worker_loaders: [{binding: ...}]`, not a
+second executor or an external dispatch service:
+https://developers.cloudflare.com/dynamic-workers/getting-started/ . One new
+cheap render contract covers the runtime flags, exact binding and tariffs,
+MCP-only absence, source non-mutation and production isolation. No accepted
+runtime journey or paid model call was repeated to check this configuration.
+A new coherent deployment and actual remote MCP/Loader operation remain required.
