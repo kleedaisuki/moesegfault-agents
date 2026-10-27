@@ -10853,5 +10853,155 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+    "run_id": "40457317258",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12713441826,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "365613f53f4c5eb94d7a06ad5fea558bc12f6b8f",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Accepted runtime/financial staging closures and final central batching; exact prior static Worker retained as baseline, no business/native execution repeated for a native-only DTO benchmark compile fix"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four new fixed-origin nonbillable credential readiness guards passed with all apps reused; six promotion and five dependency preparation executions remain accepted"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "365613f53f4c5eb94d7a06ad5fea558bc12f6b8f",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Accepted runtime/financial staging closures and final central batching; exact prior static Worker retained as baseline, no business/native execution repeated for a native-only DTO benchmark compile fix"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four new fixed-origin nonbillable credential readiness guards passed with all apps reused; six promotion and five dependency preparation executions remain accepted"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "365613f53f4c5eb94d7a06ad5fea558bc12f6b8f",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Accepted runtime/financial staging closures and final central batching; exact prior static Worker retained as baseline, no business/native execution repeated for a native-only DTO benchmark compile fix"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four new fixed-origin nonbillable credential readiness guards passed with all apps reused; six promotion and five dependency preparation executions remain accepted"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "365613f53f4c5eb94d7a06ad5fea558bc12f6b8f",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Accepted runtime/financial staging closures and final central batching; exact prior static Worker retained as baseline, no business/native execution repeated for a native-only DTO benchmark compile fix"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four new fixed-origin nonbillable credential readiness guards passed with all apps reused; six promotion and five dependency preparation executions remain accepted"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+    "run_id": "40462572818",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "365613f53f4c5eb94d7a06ad5fea558bc12f6b8f",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Accepted runtime/financial staging closures and final central batching; exact prior static Worker retained as baseline, no business/native execution repeated for a native-only DTO benchmark compile fix"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four new fixed-origin nonbillable credential readiness guards passed with all apps reused; six promotion and five dependency preparation executions remain accepted"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:native-history-compile-selection",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=native history target compilation",
+            "scripts/incremental-checks.test.mjs"
+          ],
+          "env": {},
+          "reason": "One new compile-only target selection/receipt guard; native history_perf --no-run is a separate zero-executed-tests workflow compilation step, not a test-case count"
+        }
+      ]
+    }
   }
 ]
