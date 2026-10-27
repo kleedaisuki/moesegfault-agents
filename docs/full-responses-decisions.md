@@ -46,12 +46,16 @@ credential authentication families independently from richer wire transports.
 
 ## Delegated delivery
 
-Subsystem leads own implementation integration, independent review, validation
-and failure resolution within their workstreams, including their child agents.
-The Responses lead is the shared Git integration captain and owns coherent
-commits, pushes and CI. Only one owner writes the shared Git index at a time;
-finished work crosses teams as explicit interfaces and scoped patches, not a
-pile of leaf changes for the root to assemble.
+Delivery is flat: each bounded component owner implements, verifies and directly
+integrates coherent pure commits, including its own failure resolution. Do not
+reintroduce manager layers or a root/captain queue for every patch. Owners
+coordinate a single shared Git index writer briefly and keep substantial reusable
+findings in the relevant shared document. One explicitly designated owner
+composes the next normal CI candidate and deploys staging; other owners provide
+only their genuinely new, changed or failing checks. Do not duplicate a live
+build or cancel it merely because observation timed out. Root owns global
+contract decisions and the production/public-release gate, not routine leaf
+integration.
 
 The root owns user decisions, global contract/dependency arbitration and the
 final production/public-release decision. Existing staging evidence is a

@@ -38,7 +38,7 @@ remains explicitly non-promoting and independent.
 ## Sealing and reusing evidence
 
 `scripts/verification-baselines.json` is the reviewed catalog. After accepting
-an increment, the integration captain records its immutable source/run and the
+an increment, its component owner records the immutable source/run and the
 components actually accepted. A source with a failed aggregate job is not
 silently called successful. The b1 Worker baseline records successful Wasm
 build, bundling and 363 library tests, the exact retained artifact, and three
@@ -197,3 +197,23 @@ platform-specific receipt, not a new global proof catalog. Its artifact name
 cannot match the public `magents-*` download pattern. Existing tag/source checks,
 actual distributable `--version`, archive metadata, byte-exact SHA-256 sidecars,
 two-platform package dependency and no-clobber attachment remain unchanged.
+
+
+## Cheap checks before a compiled-Worker journey
+
+Use the actual native target: Worker library tests use `--lib`, not an implicit
+all-target command that also compiles unrelated benchmark harnesses. Selected
+`cfg(test)` compilation and execution precede build-tool installation and release
+Wasm compilation in normal CI; they do not execute historical tests.
+
+When interposing Miniflare bindings for latency or crash injection, preserve
+`constructor` unchanged and bind native methods to their original target.
+worker-rs checks native binding constructor identities; wrapping the constructor
+as an ordinary function changes its name and can reject a valid D1/AI binding
+before the intended fault. Reuse the established Conversation/native-binding
+wrappers rather than synthesizing plain objects. Verify that property cheaply
+before waiting for an application build. Active actors cannot always be evicted
+with `unsafeEvict`; a supported runtime configuration restart with persistent
+D1/R2/DO storage can test the cold boundary without editing production state.
+A corrected fixture must reuse the retained exact Wasm and select only failed or
+unexecuted cases, not replay already successful effect journeys.
