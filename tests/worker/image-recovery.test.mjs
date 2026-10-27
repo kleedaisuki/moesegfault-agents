@@ -214,7 +214,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         assert.equal(terminal.fields.observation.upstream_status, 200);
         assert.equal(terminal.fields.observation.generation_id, 'gen-img-controlled');
         assert.equal(Number(terminal.fields.observation.reported_cost_usd), 0.018);
-        assert.equal(terminal.fields.observation.phase, 'decode_image');
+        assert.equal(terminal.fields.observation.phase, 'validate_image');
         assert.equal(terminal.fields.error_code, 'image_generation_format_mismatch');
       }
       const serializedLogs = JSON.stringify(logs);
