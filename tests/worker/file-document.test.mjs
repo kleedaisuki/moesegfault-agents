@@ -48,16 +48,25 @@ test('compiled Rust Worker: document conversion is bounded recoverable and not b
     async outboundService(request) {
       const url = new URL(request.url);
       assert.equal(url.origin, 'https://retrieval.fixture.test', 'No model or external service is permitted');
-      const args = await request.json();
+      const native = url.pathname === '/native-convert';
+      const submitted = await request.json();
+      const args = native ? [submitted.files.map(file => ({name:file.name,bytes:Array.from(Buffer.from(file.data,'base64'))})),submitted.options] : submitted;
+      if (native) {
+        assert.equal(submitted.files[0].mimeType,submitted.files[0].name.endsWith('.pdf')?'application/pdf':'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        assert.equal(request.headers.get('authorization'),null);
+      }
       switch (url.pathname) {
+        case '/native-convert':
         case '/convert': {
           conversions++;
-          assert.deepEqual(args[1], { conversionOptions: { output: { format: 'text' }, pdf: { metadata: false } } });
+          assert.deepEqual(args[1], { conversionOptions: { output: { format: 'text' }, pdf: { metadata: false, images:{convert:false} }, docx:{images:{convert:false}} } });
           assert.equal(args[0].length, 1);
           const input = args[0][0]; convertedInputs.push(Buffer.from(input.bytes));
           assert.ok(['source.pdf', 'source.docx'].includes(input.name));
-          return Response.json([{ name: input.name, format: 'text', mimetype: input.name.endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            data: Buffer.from(input.bytes).includes(Buffer.from('empty-text-layer')) ? '' : 'Text-layer extraction: silver-lantern-513 雪', tokens: 999999999 }]);
+          if (process.env.MAGENTS_DOCUMENT_CASE === 'native-contract') return Response.json({errors:[{code:10042,message:'private provider body containing synthetic secret and source text'}]}, {status:422,headers:{'x-request-id':'native-document-rejected-1','cf-ray':'abc123-SIN'}});
+          const result = [{ name: input.name, format: 'text', mimeType: input.name.endsWith('.pdf') ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            data: Buffer.from(input.bytes).includes(Buffer.from('empty-text-layer')) ? '' : 'Text-layer extraction: silver-lantern-513 雪', tokens: 999999999 }];
+          return Response.json(native ? {result} : result);
         }
         case '/embed': embeddings++; return Response.json({ shape: [args[1].text.length, 2], data: args[1].text.map(() => [1, 0]) });
         case '/upsert': for (const vector of args[0]) vectors.set(vector.id, vector); return Response.json({ mutationId: 'known-upsert' });
@@ -81,6 +90,33 @@ test('compiled Rust Worker: document conversion is bounded recoverable and not b
   }
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'capacity-owner' });
   const sdk = new OpenAI({ baseURL: 'https://agents.test/v1', apiKey: principal.apiKey, maxRetries: 0, fetch: (input, init) => dispatchSDKFetch(mf, input, init) });
+  if (process.env.MAGENTS_DOCUMENT_CASE === 'native-contract') {
+    const bytes=await readFile(path.join(root,'tests/fixtures/retrieval/text-layer.pdf'));
+    const file=await sdk.files.create({purpose:'assistants',file:await toFile(bytes,'new-native-contract.pdf',{type:'application/pdf'})});
+    const store=await sdk.vectorStores.create({});
+    await sdk.vectorStores.files.create(store.id,{file_id:file.id});
+    let member;const deadline=Date.now()+12000;
+    do {await new Promise(resolve=>setTimeout(resolve,100));member=await sdk.vectorStores.files.retrieve(file.id,{vector_store_id:store.id});}
+    while(member.status==='in_progress'&&Date.now()<deadline);
+    assert.equal(member.status,'failed');
+    assert.equal(member.last_error.message,'file_search_document_upstream_rejected');
+    const cached=await db.prepare('SELECT status,error_code,diagnostics_json,provider_receipt_id FROM file_search_extractions WHERE account_id=? AND file_id=?').bind(principal.owner,file.id).first();
+    assert.equal(cached.status,'failed');
+    const diagnostics=JSON.parse(cached.diagnostics_json);
+    assert.equal(diagnostics.status,422);assert.equal(diagnostics.request_id,'native-document-rejected-1');
+    assert.equal(diagnostics.ray_id,'abc123-SIN');assert.equal(diagnostics.phase,'http_error');
+    assert.equal(diagnostics.codec,'application/pdf');assert.equal(diagnostics.input_bytes,593);
+    assert.equal(diagnostics.body_complete,true);assert.equal(diagnostics.upstream_error_code,10042);
+    assert.ok(diagnostics.request_bytes>593&&diagnostics.response_bytes>0);
+    assert.ok(!cached.diagnostics_json.includes('private provider body')&&!cached.diagnostics_json.includes('synthetic secret'));
+    assert.deepEqual(convertedInputs,[bytes]);assert.equal(conversions,1);assert.equal(embeddings,0);
+    await sdk.vectorStores.files.retrieve(file.id,{vector_store_id:store.id});
+    await mf.dispatchFetch('https://agents.test/__test/retrieval-maintenance',{method:'POST'});
+    assert.equal(conversions,1,'Known rejected native request is never resubmitted');
+    await sdk.files.delete(file.id);await sdk.vectorStores.delete(store.id);
+    await writeFile(path.join(directory,'native-contract-receipt.json'),JSON.stringify({source:process.env.GITHUB_SHA??null,conversions,embeddings,model_calls:0,status:diagnostics.status,request_id:diagnostics.request_id,raw_body_in_diagnostics:false},null,2));
+    return;
+  }
   const makeOffice = spawnSync(process.env.PYTHON ?? 'python', ['-c',
     'import io,zipfile,sys\nb: io.BytesIO=io.BytesIO()\nwith zipfile.ZipFile(b,"w",compression=zipfile.ZIP_STORED) as z:\n z.writestr("[Content_Types].xml", \'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>\')\n z.writestr("_rels/.rels", \'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>\')\n z.writestr("word/document.xml", \'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>silver-lantern-513</w:t></w:r></w:p></w:body></w:document>\')\nsys.stdout.buffer.write(b.getvalue())']);
   assert.equal(makeOffice.status, 0, makeOffice.stderr.toString());
