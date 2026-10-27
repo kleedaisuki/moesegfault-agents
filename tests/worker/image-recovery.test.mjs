@@ -17,7 +17,7 @@ const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-
 const origin = 'https://agents.test';
 const digest = value => createHash('sha256').update(value).digest('hex');
 const jpeg = '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDyeiiivQOQ/9k=';
-const cases = ['default_jpeg', 'receipt_ack', 'image_put', 'mime_mismatch', 'complete_error', 'transport_gap'];
+const cases = ['default_jpeg', 'receipt_ack', 'image_put', 'mime_mismatch', 'complete_error', 'transport_gap', 'diagnostic_gc'];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(probe, label, milliseconds = 30000) {
   const stop = Date.now() + milliseconds;
@@ -35,10 +35,11 @@ async function migrate(db) {
 }
 
 test('compiled Rust Worker: paid image response recovery and precise failure boundaries', { timeout: 240000 }, async t => {
-  const selected = process.env.MAGENTS_IMAGE_RECOVERY_CASE ? cases.filter(name => name === process.env.MAGENTS_IMAGE_RECOVERY_CASE) : cases;
+  const selected = process.env.MAGENTS_IMAGE_RECOVERY_CASE ? cases.filter(name => name === process.env.MAGENTS_IMAGE_RECOVERY_CASE) : cases.filter(name => name !== 'diagnostic_gc');
   assert.ok(selected.length, 'Select a known image recovery increment');
   const receipts = {};
   for (const name of selected) await t.test(name, { timeout: 45000 }, async () => {
+    const completeError = ['complete_error', 'diagnostic_gc'].includes(name);
     const encryptionKey = randomBytes(32), identity = createIdentityFixture(), providers = createNativeSemanticsProvider();
     const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
     const profile = structuredClone(hostedImageProfile);
@@ -83,7 +84,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
           assert.equal(admission.state, 'reserved'); assert.equal(admission.max_frames, 1); assert.ok(admission.capacity_bytes >= 24 * 1024 * 1024);
           if (name === 'transport_gap') throw Error('Controlled transport gap after provider dispatch');
           const headers = { 'x-request-id': 'request-controlled', 'x-generation-id': 'gen-img-controlled', 'cf-ray': 'controlled-ray' };
-          if (name === 'complete_error') return Response.json({ error: { code: 502, message: 'Controlled complete upstream failure' } }, { status: 502, headers });
+          if (completeError) return Response.json({ error: { code: 502, message: 'Controlled complete upstream failure' } }, { status: 502, headers });
           return Response.json({ id: 'gen-img-controlled', created: 123, data: [{ b64_json: jpeg, media_type: name === 'mime_mismatch' ? 'image/png' : 'image/jpeg' }], usage: { cost: 0.018 } }, { headers });
         }
         const response = await providers.handle(request);
@@ -147,7 +148,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         assert.equal(image.result, null);
         const privateState = await inspect();
         const operation = privateState.operations[0].value;
-        assert.equal(operation.observation?.upstream_status ?? null, name === 'transport_gap' ? null : name === 'complete_error' ? 502 : 200);
+        assert.equal(operation.observation?.upstream_status ?? null, name === 'transport_gap' ? null : completeError ? 502 : 200);
         if (name === 'mime_mismatch') {
           assert.equal(operation.observation.actual_format, 'jpeg');
           assert.equal(operation.observation.provider_completed, true);
@@ -156,18 +157,46 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
           assert.equal(operation.failure, 'image_generation_format_mismatch');
         }
         const retained = await db.prepare('SELECT state,capacity_bytes,expires_at_ms FROM provider_response_operations WHERE account_id=?').bind(principal.owner).first();
-        assert.equal(retained.state, name === 'complete_error' ? 'diagnostic' : 'recovery');
-        assert.equal(retained.expires_at_ms !== null, name === 'complete_error');
+        assert.equal(retained.state, completeError ? 'diagnostic' : 'recovery');
+        assert.equal(retained.expires_at_ms !== null, completeError);
         if (name !== 'transport_gap') assert.ok(retained.capacity_bytes > 0);
       }
       const imageHolds = (await db.prepare("SELECT state,CAST(reserved_microusd AS TEXT) AS reserved,CAST(settled_microusd AS TEXT) AS settled FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'tool:seedream5:%'").bind(principal.owner).all()).results;
       assert.equal(imageHolds.length, 1);
       assert.equal(imageHolds[0].state, name === 'transport_gap' ? 'reserved' : 'settled');
-      assert.equal(imageHolds[0].settled, name === 'transport_gap' ? null : name === 'complete_error' ? '0' : '18000');
+      assert.equal(imageHolds[0].settled, name === 'transport_gap' ? null : completeError ? '0' : '18000');
       await mf.unsafeEvictDurableObject('', 'Session', { name: `${principal.owner}:${route.session_id}` });
       const observed = await (await client.responses.retrieve(response.id).asResponse()).json();
       assert.deepEqual(observed, response, 'Cold retrieval preserves the original canonical outcome');
       assert.equal(imagePosts, 1, 'Cold public observation never reissues generation');
+      let gcReceipt;
+      if (name === 'diagnostic_gc') {
+        async function sweep(offset, reserve_ack = false) {
+          const result = await mf.dispatchFetch(origin + '/__test/image-recovery-sweep', { method: 'POST', body: JSON.stringify({ offset, reserve_ack }) });
+          assert.equal(result.status, 200); return result.json();
+        }
+        const first = await sweep(86_401_000, true);
+        assert.equal(first.fault.injected, true, 'The actual Rust GC reserved before the controlled lost acknowledgement');
+        const abandoned = await db.prepare('SELECT state FROM usage_reservations WHERE id=?').bind(first.fault.reservation).first();
+        assert.equal(abandoned.state, 'reserved');
+        assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM resource_observations WHERE run_id=?').bind(first.fault.reservation).first()).count, 0);
+        const beforeSecond = await db.prepare('SELECT state FROM provider_response_operations WHERE account_id=?').bind(principal.owner).first();
+        assert.equal(beforeSecond.state, 'deleting');
+        await sweep(86_702_000);
+        const finalized = await db.prepare('SELECT state,capacity_bytes,gc_attempt FROM provider_response_operations WHERE account_id=?').bind(principal.owner).first();
+        assert.deepEqual(finalized, { state: 'released', capacity_bytes: 0, gc_attempt: 2 });
+        const funding = (await db.prepare("SELECT id,state,CAST(settled_microusd AS TEXT) AS settled FROM usage_reservations WHERE account_id=? AND id LIKE 'receipt-gc:%' ORDER BY id").bind(principal.owner).all()).results;
+        assert.equal(funding.length, 2);
+        assert.equal(funding.find(row => row.id === first.fault.reservation).state, 'released', 'Retry closes the original empty scope, not a fabricated zero ledger');
+        const measured = funding.find(row => row.id !== first.fault.reservation);
+        assert.equal(measured.state, 'settled');
+        const observations = (await db.prepare("SELECT status,CAST(quantity AS INTEGER) AS quantity FROM resource_observations WHERE run_id=? AND CAST(quantity AS INTEGER)>0").bind(measured.id).all()).results;
+        assert.deepEqual(observations, [{ status: 'observed', quantity: 1 }], 'The one retained chunk incurs exactly one actual HEAD');
+        assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM usage_reservations WHERE account_id=? AND id LIKE 'receipt-gc:%' AND state='reserved'").bind(principal.owner).first()).count, 0);
+        assert.equal((await (await mf.getR2Bucket('WORKSPACES')).list({ prefix: 'provider-response-receipts/' })).objects.length, 0);
+        assert.equal(imagePosts, 1); assert.equal(model.calls, 2);
+        gcReceipt = { attempts: 2, original_scope: first.fault.reservation, original_state: 'released', measured_state: measured.state, measured_microusd: measured.settled, actual_heads: 1, raw_objects: 0, pending_holds: 0, timestamp_unit_correction: 'pending_final_composed_source' };
+      }
       const logs = await until(() => {
         const matching = telemetry.filter(value => value.event.startsWith('tool.image_generation.'));
         return matching.some(value => value.event === (success ? 'tool.image_generation.validated' : 'tool.image_generation.failed')) ? matching : null;
@@ -176,7 +205,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
       assert.ok(terminal.fields.observation, 'Real emit sanitizer must preserve structured observation, not only actor state');
       if (name !== 'transport_gap') {
         const headers = logs.find(value => value.event === 'tool.image_generation.headers');
-        assert.equal(headers.fields.upstream_status, name === 'complete_error' ? 502 : 200);
+        assert.equal(headers.fields.upstream_status, completeError ? 502 : 200);
         assert.equal(headers.fields.provider_request_id, 'request-controlled');
         assert.equal(headers.fields.provider_generation_id, 'gen-img-controlled');
       }
@@ -192,7 +221,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
       assert.ok(!serializedLogs.includes(jpeg), 'Binary payload belongs to restricted receipt storage, not spans');
       assert.ok(!serializedLogs.includes('synthetic-platform-image-key'), 'Credentials are not diagnostic data');
       await writeFile(path.join(directory, 'telemetry.json'), JSON.stringify(logs, null, 2));
-      receipts[name] = { telemetry_events: logs.map(value => value.event), response_id: response.id, generation_posts: imagePosts, model_calls: model.calls, cold_recovery: !!faultReceipt, encrypted_before_codec: faultReceipt?.fault.encrypted ?? null,
+      receipts[name] = { gc: gcReceipt ?? null, telemetry_events: logs.map(value => value.event), response_id: response.id, generation_posts: imagePosts, model_calls: model.calls, cold_recovery: !!faultReceipt, encrypted_before_codec: faultReceipt?.fault.encrypted ?? null,
         image_status: image.status, reservation_state: imageHolds[0].state, image_microusd: imageHolds[0].settled, external_network_calls: 0 };
     } finally { await mf.dispose(); }
   });

@@ -59,4 +59,54 @@ export class Session extends RustSession {
     return Response.json({ fault: this.fixtureFault, operations });
   }
 }
-export default RustWorker;
+const NativeDate = Date;
+let clockOffset = 0;
+globalThis.Date = class extends NativeDate {
+  constructor(...values) { super(...(values.length ? values : [NativeDate.now() + clockOffset])); }
+  static now() { return NativeDate.now() + clockOffset; }
+};
+
+function database(target, fault) {
+  function statement(object, sql, values = []) {
+    return new Proxy(object, { get(value, key) {
+      if (key === 'constructor') return value.constructor;
+      if (key === 'bind') return (...args) => statement(value.bind(...args), sql, args);
+      if (key === 'run') return async (...args) => {
+        const result = await value.run(...args);
+        if (fault.reserve && sql.startsWith('INSERT INTO usage_reservations ') && String(values[0]).startsWith('receipt-gc:')) {
+          fault.reserve = false; fault.injected = true; fault.reservation = values[0];
+          throw Error('Controlled GC reservation committed before its acknowledgement was lost');
+        }
+        return result;
+      };
+      const result = Reflect.get(value, key, value);
+      return typeof result === 'function' ? result.bind(value) : result;
+    } });
+  }
+  return new Proxy(target, { get(object, key) {
+    if (key === 'constructor') return object.constructor;
+    if (key === 'prepare') return sql => statement(object.prepare(sql), sql);
+    const result = Reflect.get(object, key, object);
+    return typeof result === 'function' ? result.bind(object) : result;
+  } });
+}
+
+export default class extends RustWorker {
+  constructor(ctx, env) {
+    const fault = { reserve: false, injected: false, reservation: null };
+    const wrapped = new Proxy(env, { get(object, key) {
+      return key === 'DB' ? database(object.DB, fault) : Reflect.get(object, key, object);
+    } });
+    super(ctx, wrapped); this.fixtureGc = fault;
+  }
+  async fetch(request) {
+    if (new URL(request.url).pathname !== '/__test/image-recovery-sweep') return super.fetch(request);
+    const body = await request.json();
+    if (!Number.isSafeInteger(body.offset) || body.offset < 0) throw Error('Invalid fixture clock');
+    clockOffset = body.offset; this.fixtureGc.reserve = body.reserve_ack === true;
+    const pending = []; const ctx = { waitUntil(promise) { pending.push(promise); } };
+    await RustWorker.prototype.scheduled.call({ env: this.env, ctx }, { scheduledTime: Date.now(), cron: '* * * * *', noRetry() {} });
+    await Promise.all(pending);
+    return Response.json({ fault: this.fixtureGc, now: Date.now() });
+  }
+}
