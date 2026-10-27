@@ -47,9 +47,11 @@ pub(crate) async fn prepare(
     let mut pending_search = Vec::new();
     let mut context_revision = None;
     let mut context_updates = vec![];
+    let requested_profile =
+        crate::runtime_profiles::requested_tools_for(&request.tools, &pinned.tool_services)?;
     let mut profile = selected
         .runtime_profile
-        .or(crate::runtime_profiles::requested_tools(&request.tools)?)
+        .or(requested_profile)
         .unwrap_or_default();
     if let Some(context) = source {
         if context
@@ -62,7 +64,7 @@ pub(crate) async fn prepare(
         if context.record.owner_id != owner {
             return Err(fail("response_not_found"));
         }
-        if crate::runtime_profiles::requested_tools(&request.tools)?.is_none() {
+        if requested_profile.is_none() {
             profile = context.record.runtime_profile;
         }
         context_revision = context.context_revision;
