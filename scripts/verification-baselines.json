@@ -10704,5 +10704,154 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+    "run_id": "40457317258",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12713441826,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "df17b44b4ae1c96cb6e41eefe4d9878deb536e2c",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Final runtime build and five production dependency tests passed; actual staging joint operator closures and437microdollar nativeGC are documented separately"
+        },
+        {
+          "source_sha": "2f62f92c960dd02067de18240b0f481f8f9038c7",
+          "run_id": "40461082895",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Parser-only result recognition correction passed; six promotion tests already ran successfully in40460395278, no repeated native or app execution"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "df17b44b4ae1c96cb6e41eefe4d9878deb536e2c",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Final runtime build and five production dependency tests passed; actual staging joint operator closures and437microdollar nativeGC are documented separately"
+        },
+        {
+          "source_sha": "2f62f92c960dd02067de18240b0f481f8f9038c7",
+          "run_id": "40461082895",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Parser-only result recognition correction passed; six promotion tests already ran successfully in40460395278, no repeated native or app execution"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "df17b44b4ae1c96cb6e41eefe4d9878deb536e2c",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Final runtime build and five production dependency tests passed; actual staging joint operator closures and437microdollar nativeGC are documented separately"
+        },
+        {
+          "source_sha": "2f62f92c960dd02067de18240b0f481f8f9038c7",
+          "run_id": "40461082895",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Parser-only result recognition correction passed; six promotion tests already ran successfully in40460395278, no repeated native or app execution"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "df17b44b4ae1c96cb6e41eefe4d9878deb536e2c",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Final runtime build and five production dependency tests passed; actual staging joint operator closures and437microdollar nativeGC are documented separately"
+        },
+        {
+          "source_sha": "2f62f92c960dd02067de18240b0f481f8f9038c7",
+          "run_id": "40461082895",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Parser-only result recognition correction passed; six promotion tests already ran successfully in40460395278, no repeated native or app execution"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "2f62f92c960dd02067de18240b0f481f8f9038c7",
+    "run_id": "40461082895",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "df17b44b4ae1c96cb6e41eefe4d9878deb536e2c",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Final runtime build and five production dependency tests passed; actual staging joint operator closures and437microdollar nativeGC are documented separately"
+        },
+        {
+          "source_sha": "2f62f92c960dd02067de18240b0f481f8f9038c7",
+          "run_id": "40461082895",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Parser-only result recognition correction passed; six promotion tests already ran successfully in40460395278, no repeated native or app execution"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:nonbillable-deepseek-credential-readiness",
+          "argv": [
+            "node",
+            "--test",
+            "scripts/deepseek-credential-check.test.mjs"
+          ],
+          "env": {},
+          "reason": "Only four new fixed-origin nonbillable vendor metadata/credential-order guards; no real vendor request, old production preparation/promotion/native/business repeat"
+        }
+      ]
+    }
   }
 ]
