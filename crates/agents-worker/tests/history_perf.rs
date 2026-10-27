@@ -1,16 +1,7 @@
 //! Opt-in native history-cost probe. No provider, Cloudflare or filesystem workspace calls.
 #![allow(dead_code)]
 
-#[path = "../src/provider.rs"]
-mod provider;
-#[path = "../src/telemetry.rs"]
-mod telemetry;
-#[path = "../src/tools.rs"]
-mod tools;
-#[path = "../src/util.rs"]
-mod util;
-
-use provider::{FunctionCall, Message, ToolCall};
+use agents_worker::{FunctionCall, Message, ToolCall};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{hint::black_box, path::Path, time::Instant};

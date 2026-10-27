@@ -102,6 +102,9 @@ pub use auth::AuthSession;
 pub use conversation_state::ConversationState;
 pub use file_index_actor::FileIngest;
 pub use model_operation::ModelOperation;
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub use provider::{FunctionCall, Message, ToolCall};
 pub use session::{Session, Session4G};
 use worker::*;
 
