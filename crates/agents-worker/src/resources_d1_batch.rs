@@ -67,6 +67,7 @@ impl ResourceMeter<'_> {
     }
 
     pub(crate) async fn record_d1_batched(&self, event: &str, result: &D1Result) -> Result<()> {
+        let started = crate::util::now_ms();
         let meta = result
             .meta()?
             .ok_or_else(|| fail("d1_usage_metadata_missing"))?;
