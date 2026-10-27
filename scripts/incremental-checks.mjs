@@ -384,6 +384,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // Topic-only alarm lifetime proof; fixture binding edits do not replay old journeys.
+    for (const key of Object.keys(receipt.checks)) receipt.checks[key] = [];
+    receipt.native_packages = [];
+    receipt.required_jobs = ['changes','worker'];
+    for (const [name, component] of Object.entries(receipt.components)) component.action = name === 'worker' ? 'build' : 'reuse';
+    receipt.checks.worker = [
+      command('new-ingest-generation-key',['cargo','test','--locked','-p','agents-worker','--lib','actor_identity_is_owner_store_file_and_generation_not_just_a_filename','--','--nocapture'],'New immutable actor identity'),
+      command('new-ingest-long-ack',['node','--test','tests/worker/file-document.test.mjs'],'New actual Rust alarm lifetime and vector acknowledgment',{MAGENTS_DOCUMENT_CASE:'alarm-receipt'})
+    ];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
