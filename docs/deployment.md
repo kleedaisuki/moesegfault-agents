@@ -287,7 +287,7 @@ At **2026-10-27 04:55:44 UTC**, existing Wrangler authentication was used only f
 
 | Check | Actual finding | Required action after root release clearance |
 | --- | --- | --- |
-| Production secret names | `DATA_ENCRYPTION_KEY`, `IDENTITY_CLIENT_PRIVATE_JWK`, `OPENROUTER_API_KEY`; no `DEEPSEEK_API_KEY` | Add the approved direct DeepSeek key before the full Worker is promoted. Do not rotate or overwrite the existing envelope/signing keys. |
+| Production secret names | `DATA_ENCRYPTION_KEY`, `IDENTITY_CLIENT_PRIVATE_JWK`, `OPENROUTER_API_KEY`; no `DEEPSEEK_API_KEY` | The protected deployment preparation installs the approved GitHub key before full Worker promotion. Do not rotate or overwrite existing envelope/signing keys. |
 | Vectorize index names | Only `moesegfault-agents-file-search-staging-v1` | Create `moesegfault-agents-file-search-production-v1`, dimensions 1024, cosine metric; verify the exact binding/profile pair. Never reuse or rename the staged index. |
 
 No secrets/OAuth values, model requests, index creation, secret writes, D1 mutation,
@@ -297,10 +297,9 @@ worktree; these durable facts do not depend on retaining that temporary file.
 
 The ordinary deployment still requires completed normal incremental CI and the
 root's explicit production release decision. Credential preflight now checks the
-resolved selected services for both realms before infrastructure changes. Because
-the existing secret sync step follows Worker rollout, the missing production
-DeepSeek secret must be separately provisioned under that release clearance before
-the first full rollout; otherwise there would be a short missing-key window.
+resolved selected services for both realms before infrastructure changes. The standard protected deployment now prepares the missing production
+dependencies before the full Worker changes, closing the former missing-key
+window. The later environment-paired bulk sync remains an authoritative reassertion.
 Staging success does not prove production resource or secret presence.
 
 Focused configuration verification ran only three new rendering contracts and
@@ -308,10 +307,45 @@ one new workflow/credential/provenance contract, plus the single affected workfl
 assertion updated for the common resolver. They passed without a Rust build or
 paid/remote model call; no old deployment suite or accepted runtime journey ran.
 
-### Authorized production provisioning sequence
+### Protected dependency preparation before full rollout
 
-The following are **operator instructions, not commands executed by this change**.
-Wait for the root's production clearance and use the production credential it
+`prepare-deployment-dependencies.mjs` runs only in the existing `Deploy` workflow
+`deploy` job for **production only**, after exact artifact provenance, environment credential checks and
+the paid-rerun guard, but before container publication, D1 migrations or full
+Worker deployment. The job still uses its selected protected GitHub environment;
+this script does not authorize a release. Staging keeps its already-accepted
+provisioning/secret flow and is not given a new metadata permission or write requirement.
+
+It uses the same reviewed configured/overridden feature plan as deployment. For
+selected FileSearch it checks the fixed realm-specific Vectorize V2 index through
+the [official Cloudflare API](https://developers.cloudflare.com/api/resources/vectorize/subresources/indexes/methods/create/).
+Only an authenticated JSON HTTP 404 allows creating the absent 1024/cosine index,
+then exact readback is required. A mismatched existing index, denied request,
+malformed response or ambiguous create stops the job. It never deletes, recreates
+or modifies an existing index. A retry observes the exact existing resource first.
+
+When the selected route needs DeepSeek, the script first verifies the existing
+serving Worker, then sends only `DEEPSEEK_API_KEY` via Wrangler secret-put stdin.
+It neither reads nor copies staging keys, nor sends identity/encryption/OpenRouter
+credentials to that command. Repository/environment GitHub secret resolution
+supplies the approved value; no production-specific duplicate is required when
+the repository value is intentionally approved. Missing keys fail before any
+preparation mutation. No provider inference or credential-value readback occurs.
+
+The retained `dependency-preparation.json` records stage, exact resource, method,
+HTTP status, request ID, response bytes/hash, Cloudflare error codes and bounded
+redacted diagnostics. Metadata is captured before parsing; transport ambiguity is
+not reported as successful creation. CLI key material is never in arguments or
+ordinary logs, and known secret values are redacted before diagnostic truncation.
+Five new offline Fake-CF/command/workflow contracts cover existing/create/readback,
+non-404 rejection, configuration mismatch, legacy no-op, stdin-only scope and
+pre-upload ordering. They passed without a Worker build or actual production write.
+
+### Authorized manual inspection / recovery commands
+
+The following are **manual inspection/recovery instructions, not commands executed by this change**.
+Ordinary delivery uses the automatic protected preparation above. For manual recovery,
+wait for the root's production clearance and use the production credential it
 approves. A staging key's presence does not authorize copying it or establish a
 production credential. The runtime preflight reads the GitHub environment's
 `DEEPSEEK_API_KEY` and fails before migrations, container publication or Worker
