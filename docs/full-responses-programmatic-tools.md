@@ -228,8 +228,16 @@ Mailbox delivery has an additional non-persisted `delivery_ready` gate: a live
 future can see callback memory while storage acknowledgement is yielding, so
 only successful durable acceptance (or same-key durability repair) releases the
 batch. Deserializing a saved mailbox cannot recreate this I/O-context readiness.
-The new approval journey is pending; none of these follow-up changes is claimed
-by the already accepted client checkpoint above.
+The approval-only increment passed in
+[GHA 40370107355](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40370107355),
+source `3b823b1c4a53d479b97cd1897ace7d0db09e70de`, Worker artifact `12671299545`,
+verification artifact `12671913412`. Its retained receipt records three public
+Responses, two controlled model rounds, one approved remote call and zero denied
+remote calls. Fresh credentials, one-use approval, immutable raw GET/SSE and one
+originating native program fetch were checked. Missing callback authorization
+was rejected before dispatch; replay did not repeat the approved effect. This
+did not repeat the accepted client or time/MCP journeys and made no external
+model or network calls. Conversation execution remains a separate increment.
 
 ## Verification boundary
 
