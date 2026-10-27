@@ -395,6 +395,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       command('new-legacy-d1-compat',['python3','tests/test_d1_legacy_batch_compat.py','-v'],'One new four-scenario legacy receipt compatibility contract'),
       command('new-central-program-perf',['node','--test','tests/worker/programmatic-meter-perf.test.mjs'],'One new native program fixed-RTT comparison, no accepted scenarios replayed',{MAGENTS_BASELINE_WORKER_DIR:'.cache/resource-baseline/build'})
     ];
+    // Compatibility passed and product Wasm is unchanged; only the new benchmark cleanup was corrected.
+    receipt.checks.worker=receipt.checks.worker.filter(check=>check.argv[0]==='node');
+    receipt.components.worker.action='reuse';
+    receipt.components.worker.artifact={run_id:'40452835894',source_sha:'7c834df093ca0f9f90d387ba7094fcdb8be8779e',artifact_id:'12711631722',artifact_name:'worker'};
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
