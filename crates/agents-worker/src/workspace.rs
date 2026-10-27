@@ -728,10 +728,20 @@ impl<'a> Workspace<'a> {
     pub(crate) async fn operation_issued(&self, name: &str, operation: &str) -> Result<bool> {
         let storage = self.state.storage();
         match name {
-            "bash" => Ok(storage
-                .get::<String>(&format!("workspace:dispatch:{}", digest_key(operation)))
-                .await?
-                .is_some()),
+            "bash" => {
+                let Some(boot) = storage
+                    .get::<String>(&format!("workspace:dispatch:{}", digest_key(operation)))
+                    .await?
+                else {
+                    return Ok(false);
+                };
+                if storage.get::<String>("workspace:boot").await?.as_deref() != Some(boot.as_str())
+                    || !self.container().is_ok_and(|container| container.running())
+                {
+                    return Err(Error::RustError("tool_outcome_unknown: an issued Bash operation has no matching live workspace; no command or restore was replayed".into()));
+                }
+                Ok(true)
+            }
             "workspace_commit" => Ok(crate::workspace_versions::find_operation(
                 self.env,
                 &self.owner,
