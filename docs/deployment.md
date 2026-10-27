@@ -436,3 +436,47 @@ perform a local production mutation, or blindly rerun the failed job. A subseque
 single standard run requires explicit root authorization after the credential
 configuration change is confirmed. The old production source stays authoritative
 until a later deployment actually succeeds.
+
+## Authorized retry and production control-plane closure
+
+After the user confirmed the deployment-token permission update, root authorized
+one retry of **only the failed job in the same run `40464754760`**, attempt 2.
+The immutable source and artifacts remained `6bb7e90` / normal `40463892529`;
+there was no rebuild, paid provider smoke, user-data acceptance, tag or release
+operation in that retry. Attempt 1 remains a separately retained failure.
+
+Attempt 2 completed successfully. Its exact artifact is `12717050101` (not the
+older failed-attempt artifact `12715732692`). The receipt proves official
+nonbillable DeepSeek model metadata HTTP 200 in 561 ms, 802 bytes; existing Worker
+settings HTTP 200; isolated production Vectorize lookup HTTP 404, create HTTP 201,
+and 1024-dimensional cosine configuration readback HTTP 200. The DeepSeek secret
+was prepared before the full Worker rollout. Preparation writes only that approved
+secret; regular deployment subsequently uses the existing environment-paired
+secret synchronization. Secret-value equality is not inferred from name-only
+reads, and no secret value was read or printed by the operator.
+
+Public production `/healthz` returned HTTP 200 with exact Worker build
+`6bb7e90f9c8b048f18c1d0152c777ac542551448`. Control-plane readback distinguishes
+upload version `ebd68243-6382-4da3-ab91-88f96862a48d` from the actual post-secret-sync
+serving version **`907e57a5-6d58-4ed9-941f-c6e8f1a5d59d`**, which receives 100% of
+traffic in deployment `33ea9d17-6192-4b3e-8580-c296edd345d1`.
+
+The serving version exposes the expected full six runtime flags, native
+`PROGRAM_LOADER`, Rust `FILE_INGEST` binding, production-only namespace
+`agents-production` and isolated index
+`moesegfault-agents-file-search-production-v1` (1024 dimensions, cosine).
+Read-only D1 migration-name inventory contains all 30 additive migrations through
+`0030_document_conversion_diagnostics.sql`. Name-only secret inventory contains
+`DATA_ENCRYPTION_KEY`, `IDENTITY_CLIENT_PRIVATE_JWK`, `OPENROUTER_API_KEY` and the
+new `DEEPSEEK_API_KEY`. No Identity service logic or user-data read/write was
+performed by this control-plane operator. Legacy production data compatibility
+and public main/tag/release remain separate root-authorized gates; a successful
+rollout alone is not relabelled as those acceptances.
+
+Actual component identities remain Worker `6bb7e90`, daemon `3539c1c` and dashboard
+`1b7f2cd`. Native Linux/Windows archives retain their original `bb18283` build
+metadata, validated by native fingerprint rather than rewritten to the later
+assembly or documentation SHA. Full typed preparation/provenance, serving-version
+bindings, traffic, migration-name and secret-name-only receipts are retained in
+`.temp/features-staging/prod-40464754760-attempt2/`; the permanent facts above do
+not depend on keeping transient collector processes alive.
