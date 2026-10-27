@@ -625,3 +625,50 @@ Five focused SQL tests exercise the actual admission/transition statements,
 owner separation, maximum frame and byte capacity, immutable descriptors,
 delete-before-release, single cleanup leases, and the absence of Recovery expiry.
 These are not an actual R2 encryption, production deployment, or paid-image receipt.
+
+## Live upstream success and receive-path repair (2026-10-27)
+
+The first live Seedream call is **not** a failed/free provider operation. The
+operator-supplied OpenRouter screenshot shows HTTP 200, finish reason `complete`,
+$0.018, 57 input / 4096 output tokens, 8.2 s provider latency and 9.3 s total.
+The displayed generation ID is truncated; it cannot be used as a full recovery
+identifier. The original Response is
+`resp_62549f6166614e6db9475806aba6dbd9`. Its original raw body was not retained.
+Do not replay that image request or silently settle an unknown ledger row to zero.
+
+The old receive path discarded status/IDs and mapped transport, JSON, raster and
+storage failures together. A concrete adapter defect also forced PNG despite the
+Seedream endpoint not advertising an output-format capability. A legitimate
+service-default JPEG could therefore be rejected after an otherwise paid success.
+This defect is reproduced in a controlled contract; the missing original bytes
+mean the original response's exact raster format is **not established**.
+
+The repaired boundary reserves private runtime capacity before dispatch, records
+HTTP metadata before reading, and stores encrypted owner/operation-bound raw
+bytes before JSON or raster parsing. Generation and HTTP request IDs remain
+separate. Actual raster format, dimensions and bytes are recorded before MIME or
+requested-format validation. A completed paid result remains known for billing
+even when local validation fails. Only a complete authenticated documented
+OpenRouter error can establish no charge; timeout, malformed JSON and local codec
+errors cannot.
+
+Cold execution reads the same retained body when the receipt acknowledgement or
+image CAS write is lost. It does not repeat the generation POST. Canonical terminal
+Responses remain immutable. Successful publication deletes the redundant raw
+copy through the funded lifecycle; unpublished paid and unknown results stay in
+Recovery, independently of user-managed Files/Space.
+
+The actual telemetry filter now preserves the typed one-level observation,
+`tool.image_generation.*` event names, HTTP status, request/generation IDs, byte
+counts, timing, parser position, expected/actual format, provider cost and stage.
+A separate lifecycle failure preserves storage/publication/settlement diagnosis
+without replacing upstream evidence. Raw bodies and credentials are not ordinary
+logs. This follows the distinction between a low-cardinality error type and
+associated structured facts in [OpenTelemetry GenAI conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-spans.md),
+and uses the existing [Cloudflare custom spans and correlated logs](https://developers.cloudflare.com/workers/observability/traces/custom-spans/).
+
+Source commit `00ab372` and its composed integration merge `5a7104b` have targeted
+rustfmt/diff checks. The six new compiled-Worker/R2 fault journeys are pending
+Actions verification; this section is an implementation/incident record, not a
+successful repaired live Seedream receipt. Earlier accepted image journeys are
+not repeated by this increment.
