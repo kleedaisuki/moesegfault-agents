@@ -175,3 +175,38 @@ the error path, which clears the known pending summary without publishing a
 compaction item. This reuses the already exercised terminal-policy helper; no
 accepted summary/answer generation is replayed to prove the same predicate.
 The changed Session call site still belongs to the next coherent artifact build.
+
+## Automatic DeepSeek transport correction (2026-10-27)
+
+The actual `02d483b` Context request `resp_032ceda34a484ac2ba5ee5642e14abc3`
+finished its paid summary with 135 input tokens, 512 output tokens and 512
+reasoning tokens, then failed `compaction_incomplete`. The original outcome is
+retained; it is not replayed. Its model reservation settled 655 microusd and its
+entire observed new scope settled 1,031 microusd without outstanding new holds.
+
+The automatic Session manager had prepared a native Responses summary with
+empty controls, while standalone compaction already selected the shared
+purpose-specific DeepSeek Anthropic transport with thinking explicitly disabled.
+The outer Response's `reasoning.effort=none` was therefore not a summary policy.
+
+Automatic DeepSeek compaction now passes its actual native working input to the
+same `provider::compaction::prepare_deepseek` implementation. The summary uses a
+cloned provider configuration, preserves the original generation configuration,
+and reserves its exact rendered input rather than the full model window. Native
+source items, protected instructions and media use the existing source renderer;
+there is no second Chat-only projection or alternate summary harness. The known
+summary and usage still persist before normal settlement and projection.
+Incomplete or tool-bearing summaries still fail the strict existing validator.
+Non-DeepSeek legacy and native compaction transports keep their prior paths.
+
+Structured `provider.compaction_started` / `provider.compaction_completed`
+evidence records the selected protocol, thinking policy, rendered input,
+provider ID, terminal reason and actual output/reasoning counts. These fields
+survive the telemetry emission filter; source text and summary contents do not
+enter operational logs. See the primary [DeepSeek thinking contract](https://api-docs.deepseek.com/guides/thinking_mode/)
+and [Responses compaction contract](https://developers.openai.com/api/docs/guides/compaction).
+
+Verification is intentionally one new controlled compiled-Worker SDK journey
+plus one new emission-filter contract; old standalone compact, auto-window,
+Conversations and SQL cases are not selected. Actual staging acceptance requires
+one fresh request after deploying the repaired source, not a retry of the old ID.
