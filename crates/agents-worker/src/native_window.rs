@@ -94,14 +94,12 @@ pub(crate) fn kept_indices(input: &[Value], cut: usize) -> Result<Vec<usize>> {
     kept_indices_with_context(input, cut, &[])
 }
 
+#[cfg(test)]
 pub(crate) fn kept_indices_with_context(
     input: &[Value],
     cut: usize,
     updates: &[usize],
 ) -> Result<Vec<usize>> {
-    if input.is_empty() || cut == 0 || cut > input.len() {
-        return Err(fault("native_context_window_invalid"));
-    }
     if updates
         .iter()
         .any(|index| *index == 0 || *index >= input.len())
@@ -109,13 +107,28 @@ pub(crate) fn kept_indices_with_context(
     {
         return Err(fault("native_context_revision_invalid"));
     }
-    let latest = updates.last().copied();
+    kept_indices_with_revisions(input, cut, &updates[..updates.len().saturating_sub(1)])
+}
+
+pub(crate) fn kept_indices_with_revisions(
+    input: &[Value],
+    cut: usize,
+    obsolete: &[usize],
+) -> Result<Vec<usize>> {
+    if input.is_empty() || cut == 0 || cut > input.len() {
+        return Err(fault("native_context_window_invalid"));
+    }
+    if obsolete
+        .iter()
+        .any(|index| *index == 0 || *index >= input.len())
+        || obsolete.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(fault("native_context_revision_invalid"));
+    }
     Ok((0..input.len())
         .filter(|index| {
-            if updates.binary_search(index).is_ok() {
-                return Some(*index) == latest;
-            }
-            *index == 0 || *index >= cut || protected(&input[*index])
+            obsolete.binary_search(index).is_err()
+                && (*index == 0 || *index >= cut || protected(&input[*index]))
         })
         .collect())
 }
@@ -199,6 +212,7 @@ pub(crate) async fn fit(
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn fit_with_context(
     config: &ProviderConfig,
     input: &[Value],
@@ -206,8 +220,31 @@ pub(crate) async fn fit_with_context(
     controls: &Value,
     context_window: u32,
     output_budget: u32,
-    mut effects: HarnessControlEffects,
+    effects: HarnessControlEffects,
     updates: &[usize],
+) -> Result<Fitted> {
+    fit_with_revisions(
+        config,
+        input,
+        tools,
+        controls,
+        context_window,
+        output_budget,
+        effects,
+        &updates[..updates.len().saturating_sub(1)],
+    )
+    .await
+}
+
+pub(crate) async fn fit_with_revisions(
+    config: &ProviderConfig,
+    input: &[Value],
+    tools: &[Value],
+    controls: &Value,
+    context_window: u32,
+    output_budget: u32,
+    mut effects: HarnessControlEffects,
+    obsolete: &[usize],
 ) -> Result<Fitted> {
     if input.is_empty() || !protected(&input[0]) {
         return Err(fault("native_context_window_invalid"));
@@ -223,7 +260,7 @@ pub(crate) async fn fit_with_context(
             .map_err(Error::RustError)
     };
     let selected = |cut| {
-        kept_indices_with_context(input, cut, updates).map(|indices| {
+        kept_indices_with_revisions(input, cut, obsolete).map(|indices| {
             indices
                 .into_iter()
                 .map(|index| input[index].clone())
@@ -407,6 +444,24 @@ mod tests {
             session_id: None,
             traceparent: None,
         }
+    }
+
+    #[test]
+    fn session_configuration_truncation_preserves_each_active_revision_scope() {
+        let input = vec![
+            json!({"role":"system","content":"PIN"}),
+            json!({"role":"system","content":"configA"}),
+            json!({"role":"system","content":"responseA"}),
+            json!({"role":"user","content":"old"}),
+            json!({"role":"system","content":"ordinary"}),
+            json!({"role":"system","content":"configB"}),
+            json!({"role":"user","content":"current"}),
+            json!({"role":"system","content":"responseB"}),
+        ];
+        assert_eq!(
+            kept_indices_with_revisions(&input, 6, &[1, 2]).unwrap(),
+            vec![0, 4, 5, 6, 7]
+        );
     }
 
     #[test]

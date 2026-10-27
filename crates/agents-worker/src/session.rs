@@ -72,6 +72,8 @@ mod hosted;
 #[path = "session_hosted_publication.rs"]
 mod hosted_publication;
 use hosted_publication as hosted_dispatch;
+#[path = "session_configuration.rs"]
+mod configuration;
 #[path = "session_mcp.rs"]
 mod mcp;
 #[path = "session_programmatic.rs"]
@@ -258,6 +260,8 @@ struct PersistedSession {
     image_handoffs: Vec<image_lifecycle::ImageHandoff>,
     #[serde(default)]
     image_handoff_retry_at: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_configurations: Vec<agents_core::SessionConfiguration>,
 }
 
 impl PersistedSession {
@@ -509,6 +513,7 @@ impl DurableObject for Session {
                 *inner.data.borrow_mut() = Some(PersistedSession {
                     record,
                     messages: vec![Message::text("system", prefix)],
+                    pending_configurations: vec![],
                     pending: vec![],
                     input_tokens: 0,
                     last_error: None,
@@ -670,6 +675,7 @@ impl DurableObject for Session {
                     .await
             }
             (Method::Post, "/run") => {
+                inner.refresh_configuration().await?;
                 if inner.snapshot()?.has_pending_client_tools() {
                     return util::json_error(
                         409,
@@ -712,7 +718,7 @@ impl DurableObject for Session {
                     );
                 }
                 let saved = inner.snapshot()?;
-                let mut prefix = system_prefix(&saved.record);
+                let mut prefix = crate::configuration::legacy_prefix(&saved.record, &[], None);
                 for instruction in &saved.history_instructions {
                     prefix.push_str(&format!(
                         "\n\nHistorical {} instruction:\n{}",
@@ -1177,6 +1183,14 @@ impl SessionInner {
     /// One alarm performs one externally visible operation. Provider results are
     /// journaled before billing/tool dispatch; tool IDs survive alarm retries.
     async fn step(&self) -> Result<Option<Value>> {
+        if self
+            .snapshot()?
+            .run
+            .as_ref()
+            .is_some_and(|run| run.admitted)
+        {
+            self.refresh_configuration().await?;
+        }
         let data = self.snapshot()?;
         let record = &data.record;
         let run = data.run.as_ref().unwrap();
@@ -1471,8 +1485,7 @@ impl SessionInner {
                     None => {
                         let failure = tool_infrastructure_error(&error);
                         let tool = if record
-                            .pinned
-                            .tools
+                            .tools()
                             .iter()
                             .any(|tool| tool.name == call.function.name)
                         {
@@ -2015,6 +2028,16 @@ impl SessionInner {
         execution_id: &str,
         call: &provider::ToolCall,
     ) -> Result<hosted_publication::HostedDispatch> {
+        if tools::tool_kind(&call.function.name).is_some()
+            && !record
+                .tools()
+                .iter()
+                .any(|tool| tool.name == call.function.name)
+        {
+            return Ok(hosted_publication::HostedDispatch::Ready(json!({"error":{
+                "code":"tool_revoked","message":"This registered tool is not enabled by the current Agent configuration; no tool was executed."
+            }}).to_string().into()));
+        }
         let trace = crate::telemetry::TraceContext::from_traceparent(
             self.snapshot()?
                 .run
@@ -2055,7 +2078,7 @@ impl SessionInner {
         call: &provider::ToolCall,
     ) -> Result<String> {
         let name = &call.function.name;
-        if !record.pinned.tools.iter().any(|t| t.name == *name) {
+        if !record.tools().iter().any(|t| t.name == *name) {
             return Err(Error::RustError("tool_not_pinned".into()));
         }
         let _resource = if matches!(
@@ -2551,7 +2574,7 @@ fn unresolved_tool(messages: &[Message]) -> Option<provider::ToolCall> {
         .cloned()
 }
 fn tool_definitions(record: &SessionRecord) -> Vec<tools::ToolDefinition> {
-    crate::context_prefix::definitions(&record.pinned)
+    crate::context_prefix::registered_definitions(record.tools())
 }
 fn system_prefix(record: &SessionRecord) -> String {
     crate::context_prefix::prefix(&record.pinned)
@@ -2984,6 +3007,7 @@ mod tests {
             .unwrap()
             .into_config("agent".into(), "owner".into(), 0);
         PersistedSession {
+            pending_configurations: vec![],
             record: SessionRecord {
                 id: "session".into(),
                 owner_id: "owner".into(),
@@ -2993,6 +3017,7 @@ mod tests {
                 last_input_at_ms: 0,
                 input_revision: 0,
                 pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
+                configuration: None,
                 workspace_snapshot: None,
                 runtime_profile: agents_core::RuntimeProfile::Basic1g,
             },

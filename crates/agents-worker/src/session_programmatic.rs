@@ -62,7 +62,7 @@ pub(super) fn prepare_programmatic_policy(
     funding::validate_configuration(env)?;
     let policy = ProgramPolicy::resolve(
         &declarations,
-        record.pinned.tools.iter().any(|tool| tool.name == "time"),
+        record.tools().iter().any(|tool| tool.name == "time"),
     )
     .map_err(fault)?;
     Ok(Some(policy))
@@ -130,7 +130,7 @@ impl SessionInner {
                     .iter()
                     .map(|tool| tool.to_wire_value())
                     .collect::<Vec<_>>(),
-                record.pinned.tools.iter().any(|tool| tool.name == "time"),
+                record.tools().iter().any(|tool| tool.name == "time"),
                 &mcp,
                 registry.as_ref(),
             )
@@ -426,9 +426,12 @@ impl SessionInner {
 
     async fn dispatch_program_call(
         &self,
-        record: &SessionRecord,
+        _record: &SessionRecord,
         proof: &AuthorizedInvocation,
     ) -> Result<Value> {
+        self.refresh_configuration().await?;
+        let current = self.snapshot()?.record;
+        let record = &current;
         proof
             .verify_scope(&record.owner_id, &record.id, util::now_ms())
             .map_err(fault)?;
@@ -453,7 +456,7 @@ impl SessionInner {
         }
         let name = match proof.target() {
             ExecutionTarget::HarnessTime
-                if record.pinned.tools.iter().any(|tool| tool.name == "time") =>
+                if record.tools().iter().any(|tool| tool.name == "time") =>
             {
                 "time"
             }

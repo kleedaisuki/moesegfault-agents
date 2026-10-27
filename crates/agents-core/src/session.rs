@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PinnedContext, SESSION_IDLE_TIMEOUT_MS};
+use crate::{PinnedContext, RegisteredTool, SESSION_IDLE_TIMEOUT_MS, SessionConfiguration};
 
 /// The deployed Container application is selected once, before Session admission.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +66,8 @@ pub struct SessionRecord {
     pub last_input_at_ms: u64,
     pub input_revision: u64,
     pub pinned: PinnedContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<SessionConfiguration>,
     pub workspace_snapshot: Option<WorkspaceSnapshot>,
     #[serde(default)]
     pub runtime_profile: RuntimeProfile,
@@ -82,6 +84,20 @@ pub enum IdleAction {
 }
 
 impl SessionRecord {
+    pub fn tools(&self) -> &[RegisteredTool] {
+        self.configuration
+            .as_ref()
+            .map_or(&self.pinned.tools, |configuration| &configuration.tools)
+    }
+
+    pub fn configuration_revision(&self) -> u64 {
+        self.configuration
+            .as_ref()
+            .map_or(self.pinned.agent_revision, |configuration| {
+                configuration.agent_revision
+            })
+    }
+
     pub fn idle_deadline_ms(&self) -> u64 {
         self.last_input_at_ms
             .saturating_add(SESSION_IDLE_TIMEOUT_MS)
@@ -162,12 +178,45 @@ mod tests {
             last_input_at_ms: now,
             input_revision: 0,
             pinned: PinnedContext::resolve(&agent, vec![], vec![]),
+            configuration: None,
             workspace_snapshot: None,
             runtime_profile: RuntimeProfile::Basic1g,
         }
     }
 
+    #[test]
+    fn session_configuration_overlay_preserves_legacy_pin_and_user_clock() {
+        let mut state = session(42);
+        let legacy = serde_json::to_value(&state).unwrap();
+        assert!(legacy.get("configuration").is_none());
+        let hash = state.pinned.prefix_hash();
+        state.configuration = Some(SessionConfiguration {
+            agent_revision: 9,
+            instructions: "new".into(),
+            tools: vec![],
+            unavailable_tools: vec![],
+        });
+        assert_eq!(state.configuration_revision(), 9);
+        assert_eq!(state.last_input_at_ms, 42);
+        assert_eq!(state.input_revision, 0);
+        assert_eq!(state.pinned.prefix_hash(), hash);
+        assert!(!state.pinned.workspace);
+        let restored: SessionRecord = serde_json::from_value(legacy).unwrap();
+        assert!(restored.configuration.is_none());
+        assert_eq!(restored.pinned.prefix_hash(), hash);
+    }
+
     proptest! {
+        #[test]
+        fn session_configuration_overlay_round_trips_without_mutating_source_identity(text in ".{0,4096}",revision in 2u64..1_000_000) {
+            let mut state = session(42);let original = state.pinned.clone();
+            state.configuration = Some(SessionConfiguration{agent_revision:revision,instructions:text.clone(),tools:vec![],unavailable_tools:vec![]});
+            let restored:SessionRecord = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+            prop_assert_eq!(restored.configuration.unwrap().instructions,text);
+            prop_assert_eq!(restored.pinned,original);prop_assert_eq!(restored.last_input_at_ms,42);
+            prop_assert_eq!(restored.input_revision,0);
+        }
+
         #[test]
         fn long_running_work_is_never_archived(start in 0u64..=u64::MAX-SESSION_IDLE_TIMEOUT_MS, elapsed in SESSION_IDLE_TIMEOUT_MS..=u64::MAX) {
             let mut s = session(start);

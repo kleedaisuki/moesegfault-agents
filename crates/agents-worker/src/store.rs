@@ -3,7 +3,9 @@
 use agents_auth::billing::{
     self, Charge, MicroUsd, PlanPolicy, ReservationState, Resource, Subscription,
 };
-use agents_core::{AgentConfig, ModelConfig, Plan, Provider, SessionRecord, SessionStatus};
+use agents_core::{
+    AgentConfig, ModelConfig, Plan, Provider, SessionConfiguration, SessionRecord, SessionStatus,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{D1PreparedStatement, Env, Error, Result, wasm_bindgen::JsValue};
 
@@ -124,12 +126,53 @@ impl<'a> Store<'a> {
         ).await
     }
 
-    pub async fn update_agent(&self, agent: &AgentConfig) -> Result<bool> {
+    pub async fn update_agent(
+        &self,
+        agent: &AgentConfig,
+        configuration: Option<&SessionConfiguration>,
+    ) -> Result<bool> {
         self.ensure_unblocked(&agent.owner_id).await?;
-        self.changed(
-            "UPDATE agents SET name=?,config_json=?,updated_at=? WHERE account_id=? AND id=? AND deleted_at IS NULL AND CAST(json_extract(config_json,'$.revision') AS INTEGER) < ? RETURNING id",
-            &[agent.name.as_str().into(), encode(agent)?.into(), number(agent.updated_at_ms)?, agent.owner_id.as_str().into(), agent.id.as_str().into(), number(agent.revision)?],
-        ).await
+        let update = self.statement(
+            "UPDATE agents SET name=?,config_json=?,updated_at=? WHERE account_id=? AND id=? AND deleted_at IS NULL AND CAST(json_extract(config_json,'$.revision') AS INTEGER) = ? RETURNING id",
+            &[agent.name.as_str().into(), encode(agent)?.into(), number(agent.updated_at_ms)?, agent.owner_id.as_str().into(), agent.id.as_str().into(), number(agent.revision.saturating_sub(1))?],
+        )?;
+        let Some(configuration) = configuration else {
+            return Ok(update.first::<IdRow>(None).await?.is_some());
+        };
+        let append = self.statement(
+            "INSERT INTO agent_configuration_revisions(account_id,agent_id,revision,payload,created_at) SELECT account_id,id,?, ?,? FROM agents WHERE account_id=? AND id=? AND config_json=? ON CONFLICT(account_id,agent_id,revision) DO NOTHING",
+            &[number(agent.revision)?,encode(configuration)?.into(),number(agent.updated_at_ms)?,agent.owner_id.as_str().into(),agent.id.as_str().into(),encode(agent)?.into()],
+        )?;
+        let results = self.env.d1("DB")?.batch(vec![update, append]).await?;
+        Ok(!results
+            .first()
+            .ok_or_else(|| fail("configuration_write_missing"))?
+            .results::<IdRow>()?
+            .is_empty())
+    }
+
+    pub(crate) async fn configuration_revisions(
+        &self,
+        owner: &str,
+        agent: &str,
+        after: u64,
+        observation: Option<(&crate::resources::ResourceMeter<'_>, &str)>,
+    ) -> Result<Vec<SessionConfiguration>> {
+        if let Some((meter, event)) = observation {
+            meter.require_d1(event).await?;
+        }
+        let result = self.statement(
+            "SELECT payload FROM agent_configuration_revisions WHERE account_id=? AND agent_id=? AND revision>? ORDER BY revision LIMIT 128",
+            &[owner.into(),agent.into(),number(after)?],
+        )?.all().await?;
+        if let Some((meter, event)) = observation {
+            meter.record_d1(event, &result).await?;
+        }
+        result
+            .results::<JsonRow>()?
+            .into_iter()
+            .map(|row| decode(&row.payload))
+            .collect()
     }
 
     pub async fn delete_agent(&self, owner: &str, id: &str, now_ms: u64) -> Result<bool> {
@@ -740,6 +783,7 @@ mod tests {
             last_input_at_ms: 0,
             input_revision: 1,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
+            configuration: None,
             workspace_snapshot: None,
             runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };

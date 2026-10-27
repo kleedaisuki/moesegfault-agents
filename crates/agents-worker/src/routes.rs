@@ -809,10 +809,15 @@ async fn agents(
             }) {
                 return Ok(bad_request("Unknown agent configuration field"));
             }
+            let previous = match id {
+                Some(id) => match store.get_agent(owner, id).await? {
+                    Some(agent) => Some(agent),
+                    None => return util::json_error(404, "not_found", "Agent not found"),
+                },
+                None => None,
+            };
             let value = if req.method() == Method::Patch {
-                let Some(previous) = store.get_agent(owner, id.unwrap_or_default()).await? else {
-                    return util::json_error(404, "not_found", "Agent not found");
-                };
+                let previous = previous.as_ref().unwrap();
                 let mut merged = serde_json::to_value(previous)?;
                 for (key, value) in fields {
                     merged[key] = value.clone();
@@ -838,19 +843,32 @@ async fn agents(
                 owner.into(),
                 now,
             );
-            if let Err(message) = pin(env, &agent).await? {
-                return Ok(bad_request(message));
-            }
-            if let Some(id) = id {
-                let Some(previous) = store.get_agent(owner, id).await? else {
-                    return util::json_error(404, "not_found", "Agent not found");
-                };
+            let resolved = match pin(env, &agent).await? {
+                Ok(resolved) => resolved,
+                Err(message) => return Ok(bad_request(message)),
+            };
+            if let Some(previous) = previous {
                 agent.revision = previous
                     .revision
                     .checked_add(1)
                     .ok_or_else(|| worker::Error::RustError("Agent revision exhausted".into()))?;
                 agent.created_at_ms = previous.created_at_ms;
-                if !store.update_agent(&agent).await? {
+                let configuration = (agent.instructions != previous.instructions
+                    || agent
+                        .tools
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        != previous
+                            .tools
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>())
+                .then(|| agents_core::SessionConfiguration {
+                    agent_revision: agent.revision,
+                    instructions: agent.instructions.clone(),
+                    tools: resolved.tools,
+                    unavailable_tools: vec![],
+                });
+                if !store.update_agent(&agent, configuration.as_ref()).await? {
                     return util::json_error(409, "conflict", "Agent changed concurrently");
                 }
             } else {
@@ -1040,6 +1058,7 @@ async fn create_session_inner_at_pinned(
         last_input_at_ms: now,
         input_revision: 0,
         pinned,
+        configuration: None,
         workspace_snapshot: None,
         runtime_profile,
     };

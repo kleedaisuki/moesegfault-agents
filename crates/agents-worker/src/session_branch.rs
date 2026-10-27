@@ -14,6 +14,8 @@ pub(crate) struct NativeHistoryRef {
     pub window: Option<crate::native_window::Window>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<crate::prompt_context::Revision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<crate::configuration::History>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -43,6 +45,8 @@ pub(crate) struct BranchPoint {
     pub native: Option<NativeHistoryRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<crate::tool_discovery::ToolRegistry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<agents_core::SessionConfiguration>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -345,6 +349,7 @@ impl SessionInner {
             },
             native,
             discovery: response.discovery.clone(),
+            configuration: self.snapshot()?.record.configuration,
         });
         Ok(())
     }
@@ -418,6 +423,7 @@ impl SessionInner {
             && data.run.is_none()
             && data.pending.is_empty()
             && data.response_head.as_deref() == Some(response.id.as_str())
+            && data.record.configuration.is_none()
         {
             self.seal_branch_point(&mut response).await?;
             self.write_response(&response).await?;
@@ -560,6 +566,17 @@ impl SessionInner {
                 .await?;
         }
         let mut imported = data;
+        if imported.record.agent_id == seed.agent_id {
+            imported.record.configuration = seed.point.configuration.clone();
+        } else {
+            let configuration = crate::configuration::initial(&imported.record.pinned);
+            imported.record.configuration = Some(configuration.clone());
+            if imported.record.pinned.model.protocol
+                == Some(agents_core::ProviderProtocol::Responses)
+            {
+                imported.pending_configurations.push(configuration);
+            }
+        }
         if matches!(seed.point.workspace, WorkspaceSeed::Archive { .. }) {
             imported.record.workspace_snapshot =
                 self.workspace(&imported.record).snapshot_metadata().await?;
@@ -596,6 +613,10 @@ impl SessionInner {
                     .context
                     .as_ref()
                     .map(|context| context.rebased(&indices));
+                history.configuration = reference
+                    .configuration
+                    .as_ref()
+                    .map(|configuration| configuration.rebased(&indices));
                 history.window = reference
                     .window
                     .as_ref()

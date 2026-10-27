@@ -4,8 +4,11 @@ use crate::tools::{FunctionDefinition, ToolDefinition};
 use agents_core::PinnedContext;
 
 pub(crate) fn definitions(pinned: &PinnedContext) -> Vec<ToolDefinition> {
-    pinned
-        .tools
+    registered_definitions(&pinned.tools)
+}
+
+pub(crate) fn registered_definitions(tools: &[agents_core::RegisteredTool]) -> Vec<ToolDefinition> {
+    tools
         .iter()
         .map(|tool| ToolDefinition {
             kind: "function".into(),

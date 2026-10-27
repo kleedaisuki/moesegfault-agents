@@ -16,6 +16,8 @@ pub(crate) struct Selection {
     pub previous: Option<ResponseContext>,
     pub conversation: Option<ConversationSnapshot>,
     pub runtime_profile: Option<RuntimeProfile>,
+    pub configuration: Option<agents_core::SessionConfiguration>,
+    pub configurations: Vec<agents_core::SessionConfiguration>,
 }
 
 pub(crate) async fn select(
@@ -125,11 +127,40 @@ pub(crate) async fn select(
         }
     };
     let use_anchor = conversation.is_some() && previous.is_some();
+    let same_agent = previous
+        .as_ref()
+        .is_some_and(|context| context.record.agent_id == request.model);
+    let mut configuration = previous
+        .as_ref()
+        .filter(|_| same_agent)
+        .and_then(|context| context.record.configuration.clone())
+        .or_else(|| root_session.and_then(|session| session.configuration.clone()));
+    let mut configurations = vec![];
+    if previous.is_some() && !same_agent {
+        let initial = crate::configuration::initial(&pinned);
+        configuration = Some(initial.clone());
+        configurations.push(initial);
+    }
+    if previous.is_some() || root_session.is_some() {
+        let cursor = configuration
+            .as_ref()
+            .map_or(pinned.agent_revision, |configuration| {
+                configuration.agent_revision
+            });
+        configurations.extend(
+            crate::configuration::pending(env, owner, &request.model, &pinned, cursor).await?,
+        );
+    }
+    if let Some(latest) = configurations.last() {
+        configuration = Some(latest.clone());
+    }
     Ok(Selection {
         pinned,
         previous,
         conversation: if use_anchor { None } else { conversation },
         runtime_profile: root_session.map(|session| session.runtime_profile),
+        configuration,
+        configurations,
     })
 }
 

@@ -94,6 +94,7 @@ async fn execute(
         model: context.pinned.model.clone(),
         prefix_hash: context.pinned.prefix_hash(),
         instructions: context.instructions,
+        configuration: context.configuration,
         protected: context.protected,
         messages: context.messages,
         native_input: Some(context.native),

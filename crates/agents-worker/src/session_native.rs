@@ -60,10 +60,15 @@ pub(super) fn provider_binding(record: &SessionRecord, config: &ProviderConfig) 
 }
 
 pub(super) fn context_positions(reference: &branch::NativeHistoryRef) -> Result<Vec<usize>> {
-    let Some(context) = &reference.context else {
-        return Ok(vec![]);
-    };
-    if !context.valid(reference.end) {
+    if reference
+        .context
+        .as_ref()
+        .is_some_and(|context| !context.valid(reference.end))
+        || reference
+            .configuration
+            .as_ref()
+            .is_some_and(|configuration| !configuration.valid(reference.end))
+    {
         return Err(fault("native_context_revision_invalid"));
     }
     let indices = reference
@@ -72,7 +77,61 @@ pub(super) fn context_positions(reference: &branch::NativeHistoryRef) -> Result<
         .map(|window| window.indices(reference.end))
         .transpose()?
         .unwrap_or_else(|| (0..reference.end).collect());
-    Ok(context
+    let mut updates = reference
+        .context
+        .as_ref()
+        .map(|context| context.rebased(&indices).updates)
+        .unwrap_or_default();
+    updates.extend(
+        reference
+            .configuration
+            .as_ref()
+            .map(|configuration| configuration.rebased(&indices).updates)
+            .unwrap_or_default(),
+    );
+    updates.sort_unstable();
+    Ok(updates.into_iter().map(|index| index + 1).collect())
+}
+
+pub(super) fn obsolete_positions(reference: &branch::NativeHistoryRef) -> Result<Vec<usize>> {
+    let all = context_positions(reference)?;
+    let indices = reference
+        .window
+        .as_ref()
+        .map(|window| window.indices(reference.end))
+        .transpose()?
+        .unwrap_or_else(|| (0..reference.end).collect());
+    let latest_context = reference
+        .context
+        .as_ref()
+        .and_then(|context| context.updates.last());
+    let latest_configuration = reference
+        .configuration
+        .as_ref()
+        .and_then(|configuration| configuration.updates.last());
+    Ok(all
+        .into_iter()
+        .filter(|position| {
+            Some(&indices[*position - 1]) != latest_context
+                && Some(&indices[*position - 1]) != latest_configuration
+        })
+        .collect())
+}
+
+pub(super) fn configuration_positions(reference: &branch::NativeHistoryRef) -> Result<Vec<usize>> {
+    let Some(configuration) = &reference.configuration else {
+        return Ok(vec![]);
+    };
+    if !configuration.valid(reference.end) {
+        return Err(fault("native_configuration_revision_invalid"));
+    }
+    let indices = reference
+        .window
+        .as_ref()
+        .map(|window| window.indices(reference.end))
+        .transpose()?
+        .unwrap_or_else(|| (0..reference.end).collect());
+    Ok(configuration
         .rebased(&indices)
         .updates
         .into_iter()
@@ -206,6 +265,7 @@ async fn mutate_history(
             provider_binding: provider_binding.into(),
             window: None,
             context: None,
+            configuration: None,
         },
     };
     if history.source_session_id != session || history.provider_binding != provider_binding {
@@ -610,8 +670,8 @@ impl SessionInner {
                     .unwrap_or(data.record.pinned.model.max_output_tokens),
             )
         };
-        let updates = context_positions(&history)?;
-        let mut fitted = crate::native_window::fit_with_context(
+        let obsolete = obsolete_positions(&history)?;
+        let mut fitted = crate::native_window::fit_with_revisions(
             config,
             &input,
             &tools,
@@ -622,7 +682,7 @@ impl SessionInner {
                 max_tool_calls: true,
                 ..Default::default()
             },
-            &updates,
+            &obsolete,
         )
         .await?;
         if fitted.input_tokens.is_none() && history.window.is_some() {
@@ -789,12 +849,37 @@ impl SessionInner {
             .await?;
         }
         context.messages_end = data.messages.len();
+        for configuration in &data.pending_configurations {
+            let index = context.history.end;
+            let mut updates = context
+                .history
+                .configuration
+                .as_ref()
+                .map(|history| history.updates.clone())
+                .unwrap_or_default();
+            updates.push(index);
+            context.history = mutate_history(
+                &self.state.storage(),
+                &data.record.id,
+                Some(&context.history),
+                &provider_binding,
+                &format!("configuration:{}", configuration.agent_revision),
+                Mutation::Append,
+                &[crate::configuration::item(configuration)],
+            )
+            .await?;
+            context.history.configuration = Some(crate::configuration::History {
+                revision: configuration.agent_revision,
+                updates,
+            });
+        }
         let mut input =
             provider::responses::message_items(&data.messages[..1]).map_err(Error::RustError)?;
         input.extend(read_history(&self.state.storage(), &context.history, &data.record.id).await?);
         let mut current = self.data.borrow_mut();
         let current = current.as_mut().unwrap();
         current.native_context = Some(context);
+        current.pending_configurations.clear();
         current.run.as_mut().unwrap().native_input = None;
         Ok(input)
     }
@@ -923,6 +1008,30 @@ impl SessionInner {
         items.extend(
             provider::responses::message_items(&data.messages[1..]).map_err(Error::RustError)?,
         );
+        let configuration = match context.history.configuration.as_ref() {
+            Some(configuration) => {
+                let index = configuration
+                    .updates
+                    .last()
+                    .copied()
+                    .ok_or_else(|| fault("native_configuration_revision_invalid"))?;
+                let key = format!("native:{}:entry:{index}", context.history.generation);
+                let bytes = crate::session_storage::read_many(&self.state.storage(), &[key])
+                    .await?
+                    .into_iter()
+                    .next()
+                    .flatten()
+                    .ok_or_else(|| fault("native_context_entry_missing"))?;
+                let update: Value = serde_json::from_slice(&bytes)?;
+                let index = items.len();
+                items.push(update);
+                Some(crate::configuration::History {
+                    revision: configuration.revision,
+                    updates: vec![index],
+                })
+            }
+            None => None,
+        };
         let revision = match context.history.context.as_ref() {
             Some(revision) => {
                 let index = revision
@@ -958,6 +1067,7 @@ impl SessionInner {
         )
         .await?;
         history.context = revision;
+        history.configuration = configuration;
         self.data.borrow_mut().as_mut().unwrap().native_context = Some(NativeContext {
             history,
             messages_end: data.messages.len(),
