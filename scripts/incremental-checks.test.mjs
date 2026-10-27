@@ -309,3 +309,13 @@ test('direct unittest scripts count the selected case without rerunning it', () 
   assert.equal(executedTests(argv,'Ran 0 tests in 0.000s\nOK'),0);
   assert.equal(executedTests(argv,'unrelated command output'),0);
 });
+
+test('unittest reporting recognizes test script basenames outside the tests directory', () => {
+  const report = '......\n----------------------------------------------------------------------\nRan 6 tests in 0.081s\n\nOK\n';
+  for (const file of ['scripts/test_magents_release_promotion.py', 'tests/test_existing.py', 'tools/checks/test_contract.py', 'scripts\\test_windows.py']) {
+    assert.equal(executedTests(['python3', file], report), 6);
+    assert.equal(executedTests(['python3', file], 'Ran 0 tests in 0.000s\nOK'), 0);
+    assert.equal(executedTests(['python3', file], 'no execution receipt'), 0);
+  }
+  assert.throws(() => executedTests(['python3', 'scripts/ordinary_command.py'], report), /Unknown selected test runner/);
+});

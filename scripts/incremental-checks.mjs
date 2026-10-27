@@ -333,7 +333,7 @@ export function plan(source, baselines, containerScope = 'incremental', verifica
 
 export function executedTests(argv, output) {
   if (argv[0] === 'cargo') return [...output.matchAll(/test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed;/g)].reduce((sum, match) => sum + Number(match[1]) + Number(match[2]), 0);
-  if (argv.includes('unittest') || (/python(?:3(?:\.\d+)?)?(?:\.exe)?$/.test(argv[0]) && argv.some(arg => /^tests\/test_.*\.py$/.test(arg)))) return Number(/Ran (\d+) tests? in/.exec(output)?.[1] ?? 0);
+  if (argv.includes('unittest') || (/python(?:3(?:\.\d+)?)?(?:\.exe)?$/.test(argv[0]) && argv.some(arg => /(?:^|[\\/])test_[^\\/]+\.py$/.test(arg)))) return Number(/Ran (\d+) tests? in/.exec(output)?.[1] ?? 0);
   if (argv.includes('pytest')) return ['passed', 'failed'].reduce((sum, kind) => sum + Number(new RegExp('(?:^|[ ,=])(\\d+) ' + kind + '(?:[ ,=]|$)', 'm').exec(output)?.[1] ?? 0), 0);
   if (argv[0] === 'node' && argv.includes('--test')) return ['pass', 'fail'].reduce((sum, kind) => sum + Number(new RegExp('^# ' + kind + ' (\\d+)$', 'm').exec(output)?.[1] ?? 0), 0);
   if (argv[0] === 'npm' && argv.includes('test:browser')) return Number(/(?:^|\s)(\d+) passed(?:\s|$)/m.exec(output.replace(/\u001b\[[0-9;]*m/g, ''))?.[1] ?? 0);
