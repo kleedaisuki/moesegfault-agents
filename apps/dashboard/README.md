@@ -33,6 +33,12 @@ creation/failure, session steering, diagnostics consent, and API error handling.
 Neither substitutes for the staging Identity → agent → persistent workspace
 acceptance gate. `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` optionally reuses an
 installed browser locally. Test output and screenshots stay in root `.cache/`.
+Native Chromium downloads bypass browser request interception, so the browser
+suite starts a small loopback-only HTTP download fixture on port 5174. Tests
+verify the downloaded bytes and filename, not just the presence of a link. Vite's
+test-only `MAGENTS_DEV_API_ORIGIN` points the dev proxy at that fixture; ordinary
+development still proxies to the local Worker. This is not an authentication or
+R2 acceptance fixture and does not run in the production build.
 
 ## Boundaries
 
@@ -47,6 +53,15 @@ installed browser locally. Test output and screenshots stay in root `.cache/`.
   server for each session. Editing a configuration affects new sessions only.
 - Session messages start an idle run or steer a running run. Archived sessions
   explicitly resume through admission before accepting messages.
+- Space attachment selection retains the server's optional `content_type`.
+  PNG, JPEG, GIF and WebP use native Responses `input_image`; other or missing
+  MIME types retain `input_file` behavior. Filenames are never MIME evidence.
+  MIME is declared upload metadata, not a guarantee of decoded image validity.
+- Journal and queued message content accepts JSON, not only strings. Typed text
+  and nested tool results render as text; unknown structures remain readable
+  JSON. Image previews permit raster data URLs or same-origin authenticated file
+  content only, never remote URLs or SVG data. This is a presentation projection:
+  the original journal is neither rewritten nor compacted by the dashboard.
 - Diagnostics show the exact allowlisted JSON, require fresh consent, and exclude
   logs, user-agent fingerprints, credentials, free-form notes, and conversations.
 - Native `<dialog>` supplies modal focus isolation. The trigger is restored after
@@ -98,6 +113,59 @@ minutes. Mutations invalidate only their affected keys. Personal skill CRUD uses
 not deleted. Agent configuration selects registry names; the server resolves and
 pins instructions/version per session. No registry polling or tool schemas are
 sent by the browser.
+
+## v0.3 Space and Responses
+
+Space is an account singleton, not a client-selected tenant identifier. Its Files
+and Workspace versions views fetch separate cursor-paginated metadata on demand.
+Uploading uses native `FormData`, one file at a time, without base64 conversion or
+an extra JavaScript copy. Same-origin content links let the browser stream large
+downloads directly. A file rename changes metadata, not its ID or content.
+Workspace versions are read-only: the Space view offers no rename, edit or delete
+controls for them.
+
+Idle conversation submissions use Responses with the known session binding and
+current `previous_response_id`. Attachments reference owned Space file IDs.
+The collapsed response-instructions field is separate from pinned agent
+instructions; the client resends its current value on subsequent submissions and
+the server preserves it during compaction. Typed streaming requires a genuine
+terminal event. Unknown network outcomes never cause an automatic inference
+retry or a silent conversion into steering. Running sessions still accept
+deliberate text steering through the existing session API. Pending local function
+calls are shown as a client handoff, with ordinary input disabled until the
+initiating SDK client returns the expected results; the browser never executes
+local code on a function's behalf.
+
+Session polling now uses `/view` metadata with private conditional ETags. A 304
+retains the existing snapshot. The journal initially loads the newest bounded
+50-message page; new message counts trigger only `after` cursor reads, while
+earlier source messages remain discoverable through Load earlier messages.
+Opaque cursors are never interpreted by the client. Sequence-keyed merges preserve
+source order and identity when older reads race appended messages. The legacy full
+session API remains unchanged, but the dashboard does not repeatedly download it.
+Conversation refresh retries metadata and incremental history reads without
+replaying user input.
+
+Workspace persistence and restore are deliberate idle-session actions. Each action
+gets one random `operation_id`; its body and ID remain in the in-memory query cache
+until acknowledged. A failed transport keeps the same action available for an
+explicit Check operation request, including after closing and reopening the
+dialog. It cannot silently become a new restore or checkpoint. The ID is selectable
+for external recovery; a full browser reload does not preserve this in-memory
+receipt and does not automatically retry it. Server rejection of invalid parameters
+allows the form to be corrected. Restore shows that current work is preserved
+before switching versions. Agent configuration exposes functional tool names in a
+collapsed selector; new workspace agents include persistence/version/restore tools,
+while editing an existing configuration retains its exact tool allowlist.
+
+Frontend verification covers multipart/CSRF, paginated metadata, immutable version
+downloads, response input references and instructions, local-function handoff,
+terminal/error streams, opaque journal windows and concurrent prepend/append,
+workspace operation identity and unknown-outcome recovery. Browser journeys cover
+the new flows in English/light desktop and Chinese/dark 390px and 320px layouts,
+plus a narrow-screen Responses attachment and workspace-action journey. These are
+explicit contract fixtures; real provider, R2 and durable recovery verification
+belongs to the release's staging acceptance.
 
 Idle session runs consume actual SSE deltas using `eventsource-parser`; the
 composer remains available for concurrent content-only steering. Polling pauses

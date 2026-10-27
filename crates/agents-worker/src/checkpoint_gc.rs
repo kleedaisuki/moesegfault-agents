@@ -51,6 +51,7 @@ pub async fn record_upload_intent(env: &Env, owner: &str, session: &str, key: &s
 /// Bounded keyset scan, not a bucket listing. Errors advance the scan as well:
 /// poison rows cannot starve other sessions, and the next pass retries them.
 pub async fn run(env: &Env) -> Result<()> {
+    collect_owner_blobs(env).await?;
     let db = env.d1("DB")?;
     let now = crate::util::now_ms();
     let cursor = db
@@ -92,8 +93,52 @@ pub async fn run(env: &Env) -> Result<()> {
     Ok(())
 }
 
+/// Shared archives have no single session fence. The registry's deleting claim
+/// excludes new references before any external I/O, including on retry.
+async fn collect_owner_blobs(env: &Env) -> Result<()> {
+    let rows = crate::workspace_blobs::claim_expired(env, BATCH_LIMIT).await?;
+    let mut completed = 0;
+    for row in &rows {
+        if delete_owner_blob(env, row).await.is_ok() {
+            completed += 1;
+        }
+    }
+    if !rows.is_empty() {
+        crate::util::emit(
+            "workspace.blob_gc_sweep",
+            serde_json::json!({"candidates":rows.len(),"completed":completed,"deferred":rows.len()-completed}),
+        );
+    }
+    Ok(())
+}
+
+async fn delete_owner_blob(
+    env: &Env,
+    archive: &crate::workspace_blobs::OwnedArchiveRef,
+) -> Result<()> {
+    let bucket = env.bucket("WORKSPACES")?;
+    // An upload can outlive its publisher. Recover its physical clock before
+    // deleting it; one object key still owns exactly one account-level clock.
+    if let Some(object) = bucket.head(&archive.object_key).await? {
+        crate::reconcile::register_account_storage_object(
+            env,
+            &archive.account_id,
+            &archive.object_key,
+            object.size(),
+            object.uploaded().as_millis(),
+        )
+        .await?;
+    }
+    bucket.delete(&archive.object_key).await?;
+    crate::reconcile::remove_storage_object(env, &archive.object_key, crate::util::now_ms())
+        .await?;
+    crate::workspace_blobs::finish_delete(env, &archive.object_key).await?;
+    Ok(())
+}
+
 async fn dispatch(env: &Env, row: &Intent) -> Result<bool> {
-    let namespace = env.durable_object("SESSIONS")?;
+    let namespace =
+        crate::runtime_profiles::namespace_for(env, &row.account_id, &row.session_id).await?;
     let id = namespace.id_from_name(&format!("{}:{}", row.account_id, row.session_id))?;
     let stub = id.get_stub()?;
     let mut init = RequestInit::new();
@@ -127,6 +172,13 @@ pub async fn collect(env: &Env, owner: &str, session: &str, key: &str) -> Result
     if row.next_check_ms > now || now.saturating_sub(row.created_at_ms) < RETENTION_MS {
         return Ok(());
     }
+    if crate::workspace_versions::referenced(env, key).await?
+        || crate::workspace_blobs::referenced(env, key).await?
+    {
+        db.prepare("UPDATE workspace_checkpoint_intents SET next_check_ms=MAX(next_check_ms,CAST(? AS INTEGER)) WHERE object_key=?")
+            .bind(&[text(&now.saturating_add(RETENTION_MS).to_string()),text(key)])?.run().await?;
+        return Ok(());
+    }
     let bucket = env.bucket("WORKSPACES")?;
     // Maintenance reads are platform overhead; never invent a user budget hold.
     let current = bucket.get(&expected).execute().await?;
@@ -138,8 +190,13 @@ pub async fn collect(env: &Env, owner: &str, session: &str, key: &str) -> Result
             .body()
             .ok_or_else(|| fail("checkpoint_gc_invalid_manifest"))?;
         let pointer: ManifestPointer = serde_json::from_str(&body.text().await?)?;
-        if pointer.format_version != 1
-            || manifest_key(owner, session, &pointer.object_key)? != expected
+        if pointer.format_version != 1 {
+            return Err(fail("checkpoint_gc_invalid_manifest"));
+        }
+        if !manifest_key(owner, session, &pointer.object_key).is_ok_and(|key| key == expected)
+            && crate::workspace_blobs::find_key(env, owner, &pointer.object_key)
+                .await?
+                .is_none()
         {
             return Err(fail("checkpoint_gc_invalid_manifest"));
         }

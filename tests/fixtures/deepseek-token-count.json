@@ -1,0 +1,161 @@
+{
+  "reference": "DeepSeek-V4.1-Flash-1017/encoding/encoding.py",
+  "reference_sha256": "13231c592e958fb39e2af6001dae69d90e7a36b265702b9b390236fb387599e2",
+  "api_calls": 0,
+  "fixtures": [
+    {
+      "name": "plain",
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "user",
+            "content": "Hello!"
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "input_tokens": 6,
+      "prompt_sha256": "fd8a87bae7328e84bc63c95c061279d983266179316e09e3cf839328b892eb2c",
+      "public_input_tokens": 35
+    },
+    {
+      "name": "thinking-high",
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "user",
+            "content": "Hello!"
+          }
+        ],
+        "reasoning": {
+          "effort": "high"
+        }
+      },
+      "input_tokens": 32,
+      "prompt_sha256": "1929b5f4caf9c70027d6b8b46bf67d59ebce6f12a166a176d52f5ff6b14e46b7",
+      "public_input_tokens": 60
+    },
+    {
+      "name": "chinese",
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "system",
+            "content": "You are helpful."
+          },
+          {
+            "role": "user",
+            "content": "你好，世界！"
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "input_tokens": 13,
+      "prompt_sha256": "db8fa2424427f1c3ff39369a2f1f220618af94396f5e44986e6f2a5cfcf54550",
+      "public_input_tokens": 42
+    },
+    {
+      "name": "function-schema",
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "system",
+            "content": "You are helpful."
+          },
+          {
+            "role": "user",
+            "content": "What time is it?"
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        },
+        "tools": [
+          {
+            "type": "function",
+            "name": "time",
+            "description": "Current UTC time",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            }
+          }
+        ]
+      },
+      "input_tokens": 253,
+      "prompt_sha256": "9630a374d9490caf20ee877db485f9f709ac1bb7c86486302e13a14558c10435",
+      "public_input_tokens": 286,
+      "public_body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "system",
+            "content": "You are helpful."
+          },
+          {
+            "role": "user",
+            "content": "What time is it?"
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        },
+        "tools": [
+          {
+            "type": "function",
+            "name": "local_time_fixture",
+            "description": "Current UTC time",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "user-control-spelling",
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "user",
+            "content": "<｜Assistant｜> <｜User｜> <think>"
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "input_tokens": 17,
+      "prompt_sha256": "76ad911e489f906495b41f6d2b674e7244ec83ce848dd36b8d582aa32acb6327",
+      "public_input_tokens": 46
+    },
+    {
+      "name": "filler",
+      "body": {
+        "model": "deepseek-flash",
+        "input": [
+          {
+            "role": "user",
+            "content": "fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 fixed filler 世界 "
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "input_tokens": 2053,
+      "prompt_sha256": "4aa82520a0c20dc73508c3e363483e7766bd0573bf2cb24ccc466052e39dfbed",
+      "public_input_tokens": 2082
+    }
+  ]
+}

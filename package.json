@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "miniflare": "5.20261019.2-beta",
+    "openai": "7.43.0",
     "wrangler": "4.152.0"
   },
   "overrides": {

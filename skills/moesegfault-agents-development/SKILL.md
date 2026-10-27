@@ -23,5 +23,7 @@ Do not load all references for an ordinary targeted change. Read the relevant re
 - Separate authoritative DO conversation state, D1 admission/accounting, D1 status projections, and the R2 checkpoint manifest. A lagging projection is not proof that execution failed.
 - Journal uncertain external operations; never rerun Bash, replay a provider call, release an unknown hold, or reset data merely to obtain a green test.
 - Keep keys and user content out of telemetry and routine build output. Browser code must not own provider credentials or account bearer tokens.
+- Reuse sealed passing baseline evidence unless there is an actual failure. Select new/changed behavior and documented regression repairs; do not rerun old suites or paid journeys merely to assemble a green aggregate, and never call reused/skipped checks newly passed at this SHA.
+- The expanded full Responses decisions supersede old fork exclusions. Registration, implemented source, executed feature checks and activated deployments are distinct; the integration captain owns the shared index and root alone clears final production/public release.
 
 Prefer the existing Rust/platform abstractions and mature libraries over a parallel harness or authentication system. Verify the affected user journey as well as local invariants. Repository-development instructions do not themselves authorize live model calls, migrations, secret changes, or production delivery.

@@ -1,0 +1,23 @@
+{
+  "model": "AGENT_ID",
+  "input": "Look up this machine's approved project status using project_status, then summarize it.",
+  "instructions": "Use only the explicitly provided project status. Keep the summary concise.",
+  "tools": [
+    {
+      "type": "function",
+      "name": "project_status",
+      "description": "Read the current status from the caller's local project integration.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": ["project"],
+        "additionalProperties": false
+      },
+      "strict": true
+    }
+  ]
+}

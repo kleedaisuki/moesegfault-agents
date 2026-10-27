@@ -14,6 +14,36 @@ from openai.types.chat import ChatCompletionChunk
 
 from stream_usage import reported_stream_usage
 from conftest import Http, correlation_headers
+from inference_diagnostics import _request_started, _response_received
+
+
+def test_observer_failure_diagnostic_retains_recovery_handles_only(capsys: pytest.CaptureFixture[str]) -> None:
+    sentinel = "private prompt, answer, credential, and raw platform failure"
+    trace_id = "a" * 32
+    request = httpx.Request("POST", "https://agents.test/v1/chat/completions", content=sentinel,
+                            headers={"authorization": sentinel, "traceparent": f"00-{trace_id}-{'b' * 16}-00"})
+    _request_started(request)
+    response = httpx.Response(500, request=request, text=sentinel, headers={
+        "x-agents-session": "session_owned", "x-request-id": "request_owned",
+        "x-agents-run": "run_owned", "cf-ray": "0123456789abcdef-SIN", "set-cookie": sentinel,
+    })
+    _response_received(response)
+    captured = capsys.readouterr().out
+    assert sentinel not in captured
+    receipt = json.loads(captured.removeprefix("SDK observer failure: "))
+    assert receipt == {"status": 500, "duration_ms": receipt["duration_ms"], "trace_id": trace_id,
+                       "x-agents-session": "session_owned", "x-request-id": "request_owned",
+                       "x-agents-run": "run_owned", "cf-ray": "0123456789abcdef-SIN"}
+    assert receipt["duration_ms"] >= 0
+
+
+def test_observer_success_is_quiet_and_malformed_handles_are_discarded(capsys: pytest.CaptureFixture[str]) -> None:
+    request = httpx.Request("POST", "https://agents.test/v1/chat/completions", headers={"traceparent": "bad trace"})
+    _response_received(httpx.Response(200, request=request))
+    assert capsys.readouterr().out == ""
+    _response_received(httpx.Response(500, request=request, headers={"x-agents-session": "unsafe receipt"}))
+    receipt = json.loads(capsys.readouterr().out.removeprefix("SDK observer failure: "))
+    assert receipt == {"status": 500}
 
 
 @pytest.mark.parametrize("seed", [None, "40094317517:1"])

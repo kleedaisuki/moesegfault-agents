@@ -35,9 +35,13 @@ same graph. A platform trace and its attributed console events provide the join.
 ## Content-free events and provenance
 
 Use `telemetry::emit`, never raw user/provider errors or arbitrary JSON in console logs.
-The emitter drops unknown keys, nested structures, negative counters and free-form
-strings. String fields are bounded machine identifiers. Event names have a fixed
-allowlist, with unknown names becoming `operation`.
+The emitter drops unknown keys, arbitrary nested structures, negative counters and
+free-form content. The one-level `observation` object is recursively restricted to
+the same typed metadata schema. Signed MCP protocol error codes are not counters:
+retain their real negative values. Bounded Content-Type parameters and numeric
+cost observations have explicit validators rather than header-like blanket string
+rejection. Event names have a fixed allowlist, with unknown names becoming
+`operation`; the bounded `tool.image_generation.*` family is also recognized.
 
 Useful event sequence:
 
@@ -57,13 +61,14 @@ The implemented provenance chain uses the following sources:
 
 | Boundary / event | Fields actually emitted | Source |
 | --- | --- | --- |
-| Deployment render | `env.<target>.vars.BUILD_ID` | Validated full lowercase 40-character `GITHUB_SHA`; the same SHA tags the container image |
+| Deployment render | `BUILD_ID`, `DEPLOYMENT_ASSEMBLY_SHA`, `DAEMON_IMAGE_SOURCE` | Validated Worker artifact source, assembly source and independent exact daemon artifact source; identical reused components must not be relabelled with the assembly SHA |
 | `GET /healthz` | `status`, `build_id` | Worker `BUILD_ID`; absent/invalid local configuration returns `unknown`, never arbitrary environment text |
 | `run.started` | `agent_id`, `session_id`, `run_id`, `trace_id`, `build_id`, `config_revision`, `prefix_hash`, `registry_version` | Owned session record, active run, application trace, deployment variable, and immutable pinned context |
 | `provider.completed` | `session_id`, `run_id`, `trace_id`, `round`, input/output/cache tokens, `usage_reported` | Persisted provider completion and its owning run |
 | `tool.completed` / `tool.failed` | `session_id`, `run_id`, `trace_id`, `round`, `tool_call_id`, `tool_name`; failure also has a stable error code/outcome | Active completion/tool dispatch; run plus round disambiguates provider IDs reused by later completions |
 | `session.checkpoint` | `session_id`, optional `run_id`, `snapshot_id`, `workspace_revision`, `snapshot_bytes` | Observed change in committed snapshot metadata after a tool or archive checkpoint; archive maintenance has no active run |
 | `session.archived` | `session_id`, `agent_id`, `build_id` | Completed session archival and current Worker deployment |
+| `observer.recovery` | `session_id`, `run_id`, `trace_id`, `attempt`, `duration_ms`, `success`, fixed `outcome`/`error_code` | Rare Chat canonical-tail reconstruction or explicit observation failure; not proof of network delivery |
 
 `prefix_hash` is the existing SHA-256 of canonical serialized `PinnedContext`: it
 covers pinned model/budgets, instructions, resolved tools/skills, agent revision,
@@ -94,6 +99,7 @@ Avoid identity subjects in operational logs; ownership belongs in authorized rec
 | --- | --- | --- |
 | User conversations, pinned configuration, workspace snapshots | Session DO, D1 metadata, workspace R2 | User-data policy; owner-authorized export/delete; not telemetry cleanup |
 | Recovery/checkpoint/intermediate state | Explicit recovery namespace | Remove superseded/unreferenced generations after successful commit; preserve latest durable recovery state |
+| Original paid provider HTTP bodies | Encrypted chunked `WORKSPACES` private receipt namespace; actor-owned descriptor | Execution recovery, not diagnostic TTL data. Preserve unpublished paid bytes on parse/decode/archive failures; explicit funded cleanup only after durable publication or authorized abandonment |
 | Operational logs and platform traces | Cloudflare Observability | Sampling and provider retention configured by deployment; no content payloads |
 | Consented client diagnostics | Separate `DIAGNOSTICS` R2 binding, `diagnostics/` prefix | Seven-day lifecycle deletion; support/operator access only, separate from workspace credentials |
 | Billing/audit ledger | D1 billing records | Financial retention policy; never delete as temporary telemetry |
@@ -234,6 +240,47 @@ zero-request observation scope are in `164d0ae-checkpoint-watch.json` beside it.
 This verifies archive-time snapshot metadata and content-free provenance joins, not
 workspace archive contents, ten-minute timing semantics independently of the owner's
 test, native Cloudflare trace-UI ancestry, or R2/diagnostic retention expiration.
+
+## Preserve useful evidence through the operator boundary
+
+An error label alone is insufficient diagnosis. Image reception distinguishes
+send, headers, bounded body read, encrypted retention, JSON parse, image decode,
+validation and publication. Keep the upstream status/request/generation IDs,
+received bytes, hash, Content-Type, duration, dimensions, expected/actual format,
+parser position and known provider cost independently of the final local result.
+Paid responses are retained before decoding in the owner/operation-bound encrypted
+runtime-recovery plane, not dumped into global logs or mixed with user Space files.
+A local publication failure cannot turn known HTTP 200 completion into a free or
+failed supplier operation. Missing headers remain explicitly unknown/null.
+
+MCP emits `mcp.transport` and `mcp.discovery_failed` with method, protocol,
+server label, discovery stage, status, signed protocol error code, typed cause,
+parser position, Fetch-visible response bytes and request/ray IDs. Fetch-visible
+bytes are not an invoice measurement of compressed network traffic. Real server
+catalog descriptions may contain ordinary newlines; descriptions and credentials
+stay out of logs, but their validation stage and structural failure code do not.
+`resource.d1.batch` attributes actual business rows and funding/observation/RPC
+time without pretending accounting round trips are business SQL.
+
+Collectors must preserve these producer records rather than silently reducing them
+back to a generic error. Establish exact owned invocation/trace/session correlation
+first, then reuse the **deployed** `telemetry::sanitize_fields_at` vocabulary for
+bounded structural fields, including its one-level observation object. Keep the
+actual `tool.image_generation.*` and MCP event names; an obsolete second allowlist
+would erase the very evidence added by the producer. Preserve Content-Type with
+charset, negative JSON-RPC codes and bounded locations such as `chunk=23`.
+Do not collect arbitrary headers, prompts, descriptions, bodies or credential text.
+Distinguish operation/execution/frame/request/span identities when reducing events
+from the same millisecond; session/run alone is not an event identity.
+
+The staging operator's offline crafted-record probe covered nested image phase,
+HTTP 200, reported cost, parser line, charset, chunk location and negative MCP code
+retention while rejecting an unowned trace and credential/prompt fields. It opened
+zero network clients. Real subsequent DeepWiki traces retained modern rejection,
+legacy initialize/notification/list and the one approved tool's HTTP 200/316 ms
+completion, rather than losing all details behind `mcp_discovery_failed`.
+The reusable policy is the producer schema plus exact ownership, not those one-off
+collector files or a claim that old discarded response bodies can be reconstructed.
 
 ## Sources and engineering rationale
 

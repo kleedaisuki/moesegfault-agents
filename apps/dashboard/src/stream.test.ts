@@ -29,7 +29,11 @@ describe("progressive completion stream", () => {
     );
     for (const byte of wire) controller.enqueue(Uint8Array.of(byte));
     await vi.waitFor(() => expect(received).toEqual(["你好"]));
-    controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+    controller.enqueue(
+      new TextEncoder().encode(
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      ),
+    );
     controller.close();
     await pending;
   });
@@ -42,6 +46,20 @@ describe("progressive completion stream", () => {
             'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
             { headers: { "content-type": "text/event-stream" } },
           ),
+      ),
+    );
+    await expect(streamCompletion("/stream", {}, () => {})).rejects.toThrow(
+      "Response stream interrupted",
+    );
+  });
+  it("does not accept DONE without a successful terminal chunk", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("data: [DONE]\n\n", {
+            headers: { "content-type": "text/event-stream" },
+          }),
       ),
     );
     await expect(streamCompletion("/stream", {}, () => {})).rejects.toThrow(

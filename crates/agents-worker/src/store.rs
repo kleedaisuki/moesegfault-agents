@@ -7,6 +7,12 @@ use agents_core::{AgentConfig, ModelConfig, Plan, Provider, SessionRecord, Sessi
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use worker::{D1PreparedStatement, Env, Error, Result, wasm_bindgen::JsValue};
 
+#[path = "model_pricing.rs"]
+mod model_pricing;
+
+#[path = "store_auxiliary.rs"]
+mod auxiliary;
+
 const VERIFIED_SUBSCRIPTIONS_SQL: &str = "SELECT subscription_json AS payload FROM subscription_snapshots WHERE account_id=? AND product_id='agents'";
 
 pub struct Store<'a> {
@@ -172,8 +178,8 @@ impl<'a> Store<'a> {
             return Err(Error::RustError("new session cannot be closed".into()));
         }
         self.changed(
-            "INSERT INTO sessions(id,account_id,agent_id,do_id,status,config_snapshot_json,instructions_hash,created_at,last_input_at) SELECT ?,?,?,?,'active',?,?,?,? WHERE EXISTS(SELECT 1 FROM agents WHERE id=? AND account_id=? AND deleted_at IS NULL) AND (SELECT COUNT(*) FROM sessions WHERE account_id=? AND status!='closed') < ? RETURNING id",
-            &[session.id.as_str().into(), session.owner_id.as_str().into(), session.agent_id.as_str().into(), do_id.into(), encode(session)?.into(), session.pinned.prefix_hash().into(), number(session.created_at_ms)?, number(session.last_input_at_ms)?, session.agent_id.as_str().into(), session.owner_id.as_str().into(), session.owner_id.as_str().into(), max_sessions.into()],
+            "INSERT INTO sessions(id,account_id,agent_id,do_id,status,config_snapshot_json,instructions_hash,created_at,last_input_at,runtime_profile) SELECT ?,?,?,?,'active',?,?,?,?,? WHERE EXISTS(SELECT 1 FROM agents WHERE id=? AND account_id=? AND deleted_at IS NULL) AND (SELECT COUNT(*) FROM sessions WHERE account_id=? AND status!='closed') < ? RETURNING id",
+            &[session.id.as_str().into(), session.owner_id.as_str().into(), session.agent_id.as_str().into(), do_id.into(), encode(session)?.into(), session.pinned.prefix_hash().into(), number(session.created_at_ms)?, number(session.last_input_at_ms)?, session.runtime_profile.name().into(), session.agent_id.as_str().into(), session.owner_id.as_str().into(), session.owner_id.as_str().into(), max_sessions.into()],
         ).await
     }
 
@@ -290,44 +296,8 @@ impl<'a> Store<'a> {
         run: &str,
         model: &ModelConfig,
     ) -> Result<bool> {
-        self.ensure_unblocked(owner).await?;
-        crate::allowances::sync(self.env, owner).await?;
-        if self.get_session(owner, session).await?.is_none() {
-            return Err(fail("session_not_found"));
-        }
-        let generation = self.cleanup_generation(owner, session).await?;
-        crate::cleanup::ensure(self.env, owner, session, generation).await?;
-        if model.provider != Provider::Byok {
-            self.model_price(model.provider, &model.model)?;
-        }
-        let amount = self
-            .env
-            .var("RUN_RESOURCE_RESERVATION_MICROUSD")?
-            .to_string()
-            .parse::<i64>()
-            .map_err(|_| fail("invalid_resource_reservation"))?;
-        if amount <= 0 {
-            return Err(fail("resource_reservation_required"));
-        }
-        let limit = self.account_plan(owner).await?.limits().max_concurrent_runs;
-        let key = format!("run:{run}");
-        let hash = format!("{owner}:{session}:{}", encode(model)?);
-        let reservation = crate::metering::reserve_run(
-            &self.env.d1("DB")?,
-            owner,
-            Some(session),
-            run,
-            &key,
-            &hash,
-            amount,
-            now_seconds(),
-            limit,
-        )
-        .await?;
-        if reservation.state != ReservationState::Reserved {
-            return Err(fail("run_already_finalized"));
-        }
-        Ok(true)
+        self.scoped_admit_run(owner, Some(session), run, model)
+            .await
     }
 
     pub async fn cleanup_generation(&self, owner: &str, session: &str) -> Result<u64> {
@@ -355,52 +325,15 @@ impl<'a> Store<'a> {
         model: &ModelConfig,
         input_tokens_upper_bound: u64,
     ) -> Result<bool> {
-        self.ensure_unblocked(owner).await?;
-        let db = self.env.d1("DB")?;
-        let active: Option<IdRow> = self.statement("SELECT id FROM usage_reservations WHERE id=? AND account_id=? AND session_id=? AND state='reserved'", &[run.into(),owner.into(),session.into()])?.first(None).await?;
-        if active.is_none() {
-            return Err(fail("run_not_admitted"));
-        }
-        if input_tokens_upper_bound > u64::from(model.context_window) {
-            return Err(fail("context_budget_exceeded"));
-        }
-        let price = if model.provider == Provider::Byok {
-            None
-        } else {
-            Some(self.model_price(model.provider, &model.model)?)
-        };
-        let amount = if let Some(price) = &price {
-            token_cost(input_tokens_upper_bound, price.input_microusd_per_million)?
-                .checked_add(token_cost(
-                    u64::from(model.max_output_tokens),
-                    price.output_microusd_per_million,
-                )?)
-                .ok_or_else(|| fail("price_overflow"))?
-        } else {
-            0
-        };
-        let key = format!("completion:{run}:{event}");
-        let id = completion_id(owner, run, event);
-        let hash = encode(&CompletionReservation {
-            model: model.clone(),
-            input_upper_bound: input_tokens_upper_bound,
-            price,
-        })?;
-        let reservation = crate::metering::reserve(
-            &db,
+        self.scoped_reserve_completion(
             owner,
             Some(session),
-            &id,
-            &key,
-            &hash,
-            amount,
-            now_seconds(),
+            run,
+            event,
+            model,
+            input_tokens_upper_bound,
         )
-        .await?;
-        if reservation.state != ReservationState::Reserved {
-            return Err(fail("completion_already_finalized"));
-        }
-        Ok(true)
+        .await
     }
 
     pub async fn record_completion(
@@ -413,63 +346,8 @@ impl<'a> Store<'a> {
         provider: Provider,
         model: &str,
     ) -> Result<()> {
-        if !usage.reported {
-            return Err(fail("provider_usage_missing"));
-        }
-        if usage.cached_tokens > usage.prompt_tokens {
-            return Err(fail("invalid_provider_usage"));
-        }
-        let id = completion_id(owner, run, event);
-        let row: Option<JsonRow> = self.statement("SELECT request_hash AS payload FROM usage_reservations WHERE id=? AND account_id=? AND session_id=?", &[id.as_str().into(),owner.into(),session.into()])?.first(None).await?;
-        let reserved: CompletionReservation =
-            decode(&row.ok_or_else(|| fail("completion_not_reserved"))?.payload)?;
-        if reserved.model.provider != provider
-            || reserved.model.model != model
-            || usage.prompt_tokens > reserved.input_upper_bound
-            || usage.completion_tokens > u64::from(reserved.model.max_output_tokens)
-        {
-            return Err(fail("completion_reservation_mismatch"));
-        }
-        let (amount, revision) = if let Some(price) = reserved.price {
-            let amount = if provider == Provider::OpenRouter {
-                let number = usage
-                    .cost
-                    .as_ref()
-                    .and_then(serde_json::Value::as_number)
-                    .ok_or_else(|| fail("openrouter_cost_missing"))?;
-                usd_to_microusd(&number.to_string())?
-            } else {
-                model_cost(
-                    usage.prompt_tokens - usage.cached_tokens,
-                    usage.cached_tokens,
-                    usage.completion_tokens,
-                    &price,
-                )?
-            };
-            let revision = if provider == Provider::OpenRouter {
-                format!("openrouter:{}", price.revision)
-            } else {
-                price.revision
-            };
-            (amount, revision)
-        } else {
-            (0, "byok".to_owned())
-        };
-        let charge = Charge {
-            resource: Resource::Model,
-            quantity: usage
-                .prompt_tokens
-                .checked_add(usage.completion_tokens)
-                .ok_or_else(|| fail("usage_overflow"))?,
-            unit: "tokens".into(),
-            amount_microusd: MicroUsd::new(amount).map_err(|_| fail("invalid_amount"))?,
-            price_version: revision,
-            provider_request_id: usage.provider_request_id.clone(),
-        };
-        let db = self.env.d1("DB")?;
-        crate::metering::append(&db, &id, event, &charge, now_seconds()).await?;
-        crate::metering::settle(&db, &id, now_seconds()).await?;
-        Ok(())
+        self.scoped_record_completion(owner, Some(session), run, event, usage, provider, model)
+            .await
     }
 
     pub async fn finish_run(&self, owner: &str, run: &str) -> Result<()> {
@@ -512,7 +390,11 @@ impl<'a> Store<'a> {
     }
 
     fn model_price(&self, provider: Provider, model: &str) -> Result<ModelPrice> {
-        let registry: std::collections::BTreeMap<String, ModelPrice> =
+        self.model_price_at(provider, model, now_seconds())
+    }
+
+    fn model_price_at(&self, provider: Provider, model: &str, now: i64) -> Result<ModelPrice> {
+        let registry: std::collections::BTreeMap<String, model_pricing::PriceDefinition> =
             decode(&self.env.var("MODEL_PRICING_JSON")?.to_string())?;
         let key = platform_price_key(provider, model)
             .ok_or_else(|| fail("byok_has_no_platform_model_price"))?;
@@ -520,10 +402,10 @@ impl<'a> Store<'a> {
             .get(&key)
             .cloned()
             .ok_or_else(|| fail("model_price_unconfigured"))?;
-        if !price.valid() {
-            return Err(fail("invalid_model_price"));
+        if !price.supports_key(&key) {
+            return Err(fail("invalid_model_price_provider"));
         }
-        Ok(price)
+        price.select(now).map_err(fail)
     }
 }
 
@@ -539,12 +421,15 @@ fn platform_price_key(provider: Provider, model: &str) -> Option<String> {
 fn platform_models(models: &[ModelConfig], pricing: Option<&str>) -> Vec<ModelConfig> {
     let registry = pricing
         .and_then(|value| {
-            serde_json::from_str::<std::collections::BTreeMap<String, ModelPrice>>(value).ok()
+            serde_json::from_str::<
+                    std::collections::BTreeMap<String, model_pricing::PriceDefinition>,
+                >(value)
+                .ok()
         })
         .unwrap_or_default();
     let priced: std::collections::HashSet<&str> = registry
         .iter()
-        .filter(|(_, price)| price.valid())
+        .filter(|(key, price)| price.valid() && price.supports_key(key))
         .map(|(key, _)| key.as_str())
         .collect();
     models
@@ -582,7 +467,7 @@ fn money_from_text<'de, D: serde::Deserializer<'de>>(
 
 /// Convert the provider's decimal USD amount without a binary floating-point
 /// multiplication. Positive sub-micro-USD charges round upward once per event.
-fn usd_to_microusd(decimal: &str) -> Result<i64> {
+pub(crate) fn usd_to_microusd(decimal: &str) -> Result<i64> {
     let (mantissa, exponent) = decimal.split_once(['e', 'E']).unwrap_or((decimal, "0"));
     let exponent = exponent
         .parse::<i64>()
@@ -735,6 +620,33 @@ fn number(value: u64) -> Result<JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_agent_json_keeps_hosted_routes_without_a_second_config_column() {
+        let input: agents_core::CreateAgent = serde_json::from_value(serde_json::json!({
+            "name":"Hosted services",
+            "tool_services":{
+                "image_generation":{"provider":"openai_images","credential_id":"cred_image"},
+                "web_search":{"provider":"platform_deepseek"},
+            },
+        }))
+        .unwrap();
+        input.validate().unwrap();
+        let agent = input.into_config("agent".into(), "owner".into(), 123);
+        // Agent CRUD stores this full config_json through the same codec.
+        let stored = encode(&agent).unwrap();
+        let loaded: AgentConfig = decode(&stored).unwrap();
+        assert_eq!(loaded, agent);
+        assert_eq!(loaded.tool_services, agent.tool_services);
+        let legacy: AgentConfig = serde_json::from_value(serde_json::json!({
+            "id":"old","owner_id":"owner","name":"Old agent","revision":1,
+            "model":ModelConfig::default(),"instructions":"","tools":["time"],"skills":[],
+            "compaction_percent":80,"workspace":false,"created_at_ms":1,"updated_at_ms":1,
+        }))
+        .unwrap();
+        assert!(legacy.tool_services.is_empty());
+        assert!(!encode(&legacy).unwrap().contains("tool_services"));
+    }
     use proptest::prelude::*;
 
     #[test]
@@ -829,6 +741,7 @@ mod tests {
             input_revision: 1,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
             workspace_snapshot: None,
+            runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };
         encode(&record).unwrap().replace(
             "\"last_input_at_ms\":0",

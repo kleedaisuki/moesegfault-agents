@@ -140,7 +140,13 @@ describe("workspace journeys", () => {
       compaction_percent: 80,
       instructions: "Be careful",
       workspace: true,
-      tools: ["time", "bash"],
+      tools: [
+        "time",
+        "bash",
+        "workspace_commit",
+        "workspace_versions",
+        "workspace_restore",
+      ],
       model: { model: "example/model", context_window: 200000 },
     });
     expect(new Headers(call.init.headers).get("X-CSRF-Token")).toBe(
@@ -184,11 +190,27 @@ describe("workspace journeys", () => {
       "GET /v1/agents": { data: [agent] },
       "GET /v1/agents/agent_1/sessions": { data: [] },
       "POST /v1/agents/agent_1/sessions": { id: "session_1" },
-      "GET /v1/sessions/session_1": {
+      "GET /v1/sessions/session_1/view": {
         id: "session_1",
         agent_id: "agent_1",
         status: "running",
-        messages: [{ role: "assistant", content: "Working on it" }],
+        message_count: 1,
+      },
+      "GET /v1/sessions/session_1/messages?limit=50": {
+        object: "list",
+        data: [
+          {
+            sequence: 0,
+            message: { role: "assistant", content: "Working on it" },
+          },
+        ],
+        start: 0,
+        end: 1,
+        high_water: 1,
+        before_cursor: "before-0",
+        after_cursor: "after-1",
+        has_older: false,
+        has_newer: false,
       },
       "POST /v1/sessions/session_1/messages": { queued: true },
     });
@@ -242,7 +264,7 @@ describe("workspace journeys", () => {
     expect(body).toEqual({
       consent: true,
       client: "adash",
-      version: "0.1.0",
+      version: "0.3.0",
       platform: "browser",
       error_code: "request_failed",
     });
@@ -258,11 +280,22 @@ describe("session recovery and credentials", () => {
       "GET /v1/agents/agent_1/sessions": {
         data: [{ id: "old-session", status: "closed" }],
       },
-      "GET /v1/sessions/old-session": {
+      "GET /v1/sessions/old-session/view": {
         id: "old-session",
         agent_id: agent.id,
         status: "closed",
-        messages: [],
+        message_count: 0,
+      },
+      "GET /v1/sessions/old-session/messages?limit=50": {
+        object: "list",
+        data: [],
+        start: 0,
+        end: 0,
+        high_water: 0,
+        before_cursor: "before-0",
+        after_cursor: "after-0",
+        has_older: false,
+        has_newer: false,
       },
       "POST /v1/sessions/old-session/resume": {
         id: "old-session",

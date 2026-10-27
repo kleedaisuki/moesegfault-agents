@@ -107,6 +107,10 @@ impl TraceContext {
         &self.trace_id
     }
 
+    pub fn span_id(&self) -> &str {
+        &self.span_id
+    }
+
     pub fn traceparent(&self) -> String {
         format!(
             "00-{}-{}-{:02x}",
@@ -136,14 +140,47 @@ fn random_span_id() -> String {
 
 /// Drop unknown fields rather than attempting to redact arbitrary user text.
 pub fn sanitize_fields(fields: Value) -> Value {
+    sanitize_fields_at(fields, 1)
+}
+
+fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
     let Some(fields) = fields.as_object() else {
         return json!({});
     };
     let mut safe = Map::new();
     for (key, value) in fields {
+        if key == "observation" && depth > 0 && value.is_object() {
+            safe.insert(key.clone(), sanitize_fields_at(value.clone(), depth - 1));
+            continue;
+        }
         let numeric = matches!(
             key.as_str(),
-            "duration_ms"
+            "parser_line"
+                | "upstream_status"
+                | "declared_content_length"
+                | "received_bytes"
+                | "encrypted_storage_bytes"
+                | "image_bytes"
+                | "width"
+                | "height"
+                | "receipt_count"
+                | "provider_requests"
+                | "frames"
+                | "reasoning_tokens"
+                | "rendered_input_tokens"
+                | "parser_column"
+                | "request_bytes"
+                | "response_bytes"
+                | "declared_response_bytes"
+                | "upstream_error_code"
+                | "lock_wait_ms"
+                | "funding_ms"
+                | "rpc_ms"
+                | "observation_ms"
+                | "pending_deadline_ms"
+                | "duration_ms"
+                | "rows_read"
+                | "rows_written"
                 | "prompt_tokens"
                 | "completion_tokens"
                 | "cached_tokens"
@@ -162,11 +199,47 @@ pub fn sanitize_fields(fields: Value) -> Value {
         );
         let identifier = matches!(
             key.as_str(),
-            "request_id"
+            "codec"
+                | "execution_id"
+                | "owner_id"
+                | "model"
+                | "api"
+                | "cf_ray"
+                | "generation_id"
+                | "provider_request_id"
+                | "provider_generation_id"
+                | "provider_error_code"
+                | "expected_format"
+                | "actual_format"
+                | "price_revision"
+                | "error.type"
+                | "error_class"
+                | "stage"
+                | "protocol"
+                | "thinking_mode"
+                | "finish_reason"
+                | "ray_id"
+                | "content_type"
+                | "content_encoding"
+                | "input_sha256"
+                | "response_sha256"
+                | "conversation_id"
+                | "operation_id"
+                | "event_key"
+                | "response_id"
+                | "grant_event"
+                | "request_path"
+                | "error_type"
+                | "server_label"
+                | "mcp_method"
+                | "cause_code"
+                | "capacity_generation"
+                | "request_id"
                 | "session_id"
                 | "agent_id"
                 | "run_id"
                 | "trace_id"
+                | "span_id"
                 | "parent_span_id"
                 | "snapshot_id"
                 | "tool_call_id"
@@ -182,13 +255,52 @@ pub fn sanitize_fields(fields: Value) -> Value {
                 | "workspace_revision"
                 | "build_id"
         );
-        if numeric && value.as_u64().is_some() {
+        if key == "mcp_protocol_error_code" && value.as_i64().is_some() {
             safe.insert(key.clone(), value.clone());
-        } else if identifier && value.as_str().is_some_and(|v| token(v, 128)) {
+        } else if numeric && value.as_u64().is_some() {
+            safe.insert(key.clone(), value.clone());
+        } else if key == "content_type"
+            && value.as_str().is_some_and(|v| {
+                v.len() <= 256
+                    && v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b" /;=._+-\"".contains(&b))
+                    && v.split(';')
+                        .next()
+                        .is_some_and(|mime| mime.trim().contains('/'))
+            })
+        {
+            safe.insert(key.clone(), value.clone());
+        } else if identifier && value.as_str().is_some_and(|v| token(v, 256)) {
+            safe.insert(key.clone(), value.clone());
+        } else if key == "error_code"
+            && value.as_str().is_some_and(|v| {
+                v.len() <= 128
+                    && v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-.:/=".contains(&b))
+            })
+        {
+            safe.insert(key.clone(), value.clone());
+        } else if key == "reported_cost_usd"
+            && (value.as_number().is_some()
+                || value.as_str().is_some_and(|v| {
+                    v.len() <= 128 && v.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)
+                }))
+        {
             safe.insert(key.clone(), value.clone());
         } else if matches!(
             key.as_str(),
-            "byok" | "usage_reported" | "restored" | "success"
+            "body_complete"
+                | "provider_completed"
+                | "confirmed_no_charge"
+                | "receipt_stored"
+                | "stream"
+                | "activated"
+                | "pending"
+                | "byok"
+                | "usage_reported"
+                | "restored"
+                | "success"
+                | "outcome_unknown"
         ) && value.is_boolean()
         {
             safe.insert(key.clone(), value.clone());
@@ -210,11 +322,16 @@ fn event_name(event: &str) -> &str {
         "request.completed"
         | "request.failed"
         | "observer.completed"
+        | "observer.recovery"
         | "run.started"
         | "run.completed"
         | "run.failed"
         | "provider.completed"
         | "provider.failed"
+        | "provider.compaction_started"
+        | "provider.compaction_completed"
+        | "mcp.transport"
+        | "mcp.discovery_failed"
         | "tool.completed"
         | "tool.failed"
         | "session.checkpoint"
@@ -223,7 +340,16 @@ fn event_name(event: &str) -> &str {
         | "session.projection_pending"
         | "workspace.checkpoint"
         | "workspace.restored"
-        | "diagnostics.accepted" => event,
+        | "diagnostics.accepted"
+        | "resource.d1.batch" => event,
+        event
+            if (event.starts_with("conversation.") || event.starts_with("file_search."))
+                && token(event, 96) =>
+        {
+            event
+        }
+        event if event.starts_with("tool.image_generation.") && token(event, 96) => event,
+        "provider.receipt_gc_deferred" | "provider.receipt_gc_completed" => event,
         _ => "operation",
     }
 }
@@ -457,6 +583,72 @@ mod tests {
     use super::*;
     const VALID: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
     #[test]
+    fn image_diagnostics_survive_the_actual_emission_filter_without_raw_payloads() {
+        let fields = sanitize_fields(
+            json!({"execution_id":"image:original", "error.type":"RustError",
+            "error_code":"provider_receipt_delete_failed:chunk=23",
+            "observation":{"phase":"validate_image","upstream_status":200,
+            "generation_id":"gen-img-original","request_id":"request-original",
+            "received_bytes":4096,"actual_format":"jpeg","expected_format":"png",
+            "width":1024,"height":1024,"reported_cost_usd":"0.018",
+            "provider_completed":true,"confirmed_no_charge":false,
+            "prompt":"not a metric","authorization":"never a metric",
+            "observation":{"received_bytes":999}},"body":"not a metric"}),
+        );
+        assert_eq!(
+            fields["error_code"],
+            "provider_receipt_delete_failed:chunk=23"
+        );
+        assert_eq!(fields["observation"]["upstream_status"], 200);
+        assert_eq!(fields["observation"]["actual_format"], "jpeg");
+        assert_eq!(fields["observation"]["reported_cost_usd"], "0.018");
+        assert_eq!(fields["observation"]["provider_completed"], true);
+        assert_eq!(
+            event_name("tool.image_generation.failed"),
+            "tool.image_generation.failed"
+        );
+        assert_eq!(
+            event_name("provider.receipt_gc_deferred"),
+            "provider.receipt_gc_deferred"
+        );
+        assert!(!fields.to_string().contains("metric"));
+        assert!(fields["observation"].get("observation").is_none());
+    }
+
+    #[test]
+    fn mcp_diagnostics_preserve_remote_codes_and_catalog_stage_without_descriptions() {
+        let fields = sanitize_fields(
+            json!({"server_label":"owned", "mcp_method":"server/discover",
+            "phase":"parse_envelope", "status":400,"mcp_protocol_error_code":-32600,
+            "request_id":"list-owned-0","provider_request_id":"upstream-owned","ray_id":"cf-owned",
+            "response_bytes":1622,"duration_ms":5134,"outcome_unknown":false,
+            "description":"private remote description","authorization":"private"}),
+        );
+        assert_eq!(fields["mcp_protocol_error_code"], -32600);
+        assert_eq!(fields["server_label"], "owned");
+        assert_eq!(fields["mcp_method"], "server/discover");
+        assert_eq!(fields["outcome_unknown"], false);
+        assert_eq!(event_name("mcp.transport"), "mcp.transport");
+        assert_eq!(event_name("mcp.discovery_failed"), "mcp.discovery_failed");
+        assert!(!fields.to_string().contains("private"));
+    }
+    #[test]
+    fn automatic_compaction_diagnostics_keep_transport_and_terminal_evidence() {
+        let fields = sanitize_fields(json!({"phase":"compaction","protocol":"anthropic",
+            "thinking_mode":"disabled","finish_reason":"length","reasoning_tokens":512,
+            "rendered_input_tokens":135,"provider_request_id":"original-summary",
+            "output_tokens":512,"success":false,"summary":"private context"}));
+        assert_eq!(fields["thinking_mode"], "disabled");
+        assert_eq!(fields["finish_reason"], "length");
+        assert_eq!(fields["reasoning_tokens"], 512);
+        assert_eq!(fields["provider_request_id"], "original-summary");
+        assert_eq!(
+            event_name("provider.compaction_completed"),
+            "provider.compaction_completed"
+        );
+        assert!(fields.get("summary").is_none());
+    }
+    #[test]
     fn deployment_build_id_is_only_a_full_validated_git_sha() {
         let sha = "0123456789abcdef0123456789abcdef01234567";
         assert_eq!(validated_build_id(Some(sha)), sha);
@@ -495,6 +687,7 @@ mod tests {
             input_revision: 1,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![tool], vec![]),
             workspace_snapshot: None,
+            runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };
         let sha = "0123456789abcdef0123456789abcdef01234567";
         let fields = sanitize_fields(run_provenance(
@@ -587,6 +780,7 @@ mod tests {
     #[test]
     fn unknown_or_freeform_fields_never_enter_logs() {
         assert_eq!(event_name("observer.completed"), "observer.completed");
+        assert_eq!(event_name("observer.recovery"), "observer.recovery");
         assert_eq!(
             event_name("session.projection_pending"),
             "session.projection_pending"
@@ -632,5 +826,36 @@ mod tests {
             &mut Vec::new(),
             &vec![0; MAX_DIAGNOSTIC_BYTES + 1]
         ));
+    }
+}
+
+#[cfg(test)]
+mod document_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn native_document_fields_keep_http_and_parser_evidence_without_content() {
+        let safe = sanitize_fields(
+            json!({"codec":"application/pdf","request_id":"native-1","ray_id":"abc-SIN","status":422,"response_bytes":127,"input_sha256":"abcd","response_sha256":"ef01","body_complete":true,"upstream_error_code":10042,"parser_line":3,"parser_column":9,"body":"private document","authorization":"Bearer secret"}),
+        );
+        assert_eq!(safe["status"], 422);
+        assert_eq!(safe["codec"], "application/pdf");
+        assert_eq!(safe["parser_line"], 3);
+        assert_eq!(safe["body_complete"], true);
+        assert!(safe.get("body").is_none());
+        assert!(safe.get("authorization").is_none());
+    }
+}
+
+#[cfg(test)]
+mod d1_batch_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn batched_d1_phases_keep_actual_rows_and_operation_correlation() {
+        let fields = json!({"operation_id":"conversation:owned","session_id":"session-1",
+            "event_key":"vs:attach:service:profile","phase":"observed","rows_read":11,
+            "rows_written":3,"duration_ms":175});
+        assert_eq!(sanitize_fields(fields.clone()), fields);
+        assert_eq!(event_name("resource.d1.batch"), "resource.d1.batch");
     }
 }

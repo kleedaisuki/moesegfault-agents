@@ -72,7 +72,7 @@ export function Access() {
   const diagnosticPayload = {
     consent: true,
     client: "adash",
-    version: "0.1.0",
+    version: "0.3.0",
     platform: "browser",
     ...(errorCode ? { error_code: errorCode } : {}),
     ...(requestId ? { request_id: requestId } : {}),

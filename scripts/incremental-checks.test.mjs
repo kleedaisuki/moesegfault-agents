@@ -1,0 +1,331 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { baselineFor, changedRustTests, fingerprint, runChecks, selections, executedTests, containerSelection, checkInputPaths, checkFingerprint, reuseChecks, rustTestArguments, operatorUsagePlan, plan } from './incremental-checks.mjs';
+mkdirSync('.temp', { recursive: true });
+const directory = mkdtempSync('.temp/incremental-checks-test-');
+const source = 'a'.repeat(40), baseline = 'b'.repeat(40);
+const catalog = [{ source_sha: baseline, run_id: '12345', components: ['worker'] }];
+
+test('reuse requires identical complete component fingerprint, not merely a green label', () => {
+  assert.equal(baselineFor(source, 'worker', catalog, () => 'same').matches, true);
+  assert.equal(baselineFor(source, 'worker', catalog, sha => sha).matches, false);
+  assert.throws(() => baselineFor(source, 'dashboard', catalog), /No sealed baseline/);
+});
+test('fingerprints bind modes, paths and exact dependency blobs', () => {
+  const calls = [];
+  const digest = fingerprint(source, 'worker', (...args) => { calls.push(args); return '100644 blob abc\tCargo.lock'; });
+  assert.match(digest, /^[a-f0-9]{64}$/);
+  assert.ok(calls[0].includes('Cargo.lock'));
+  assert.ok(calls[0].includes('third_party'));
+  assert.notEqual(digest, fingerprint(source, 'worker', () => '100755 blob abc\tCargo.lock'));
+  assert.throws(() => fingerprint('HEAD; echo bad', 'worker'), /Invalid/);
+});
+test('a fixture literal repair selects its own test, not the old test module', () => {
+  const text = '#[test]\nfn already_passed() {\n}\n#[test]\nfn repaired_literal() {\n let value = 1;\n}\n';
+  assert.deepEqual(changedRustTests(text, [[6, 7]]), ['repaired_literal']);
+});
+test('property-test function syntax retains targeted selection', () => {
+  assert.deepEqual(changedRustTests('proptest! {\n #[test]\n fn queue_capacity(input in any::<u8>()) {\n }\n}', [[1, 6]]), ['queue_capacity']);
+});
+test('new standalone Worker contracts and assets are selected without the legacy HTTP suite', () => {
+  const selected = selections(source, baseline, ['tests/worker/native-semantics.test.mjs', 'tests/test_deepseek_tokenizer_assets.py']);
+  assert.deepEqual(selected.worker.filter(check => !check.env.MAGENTS_WORKER_CASE).map(check => check.argv), [['node', '--test', '--test-reporter=tap', 'tests/worker/native-semantics.test.mjs']]);
+  assert.equal(selected.worker.filter(check => check.env.MAGENTS_WORKER_CASE).length, 0);
+  assert.equal(selected.rust[0].argv.at(-2), 'test_deepseek_tokenizer_assets.py');
+});
+
+test('retained remediation commands preserve exactly one Node reporter', () => {
+  const revision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const selected = plan(revision, [{ source_sha: revision, run_id: '40315380519',
+    components: ['worker', 'native', 'container', 'dashboard', 'tooling'],
+    unresolved_checks: [{ id: 'node:tests/worker/hosted-image.test.mjs',
+      argv: ['node', '--test', '--test-reporter=tap', 'tests/worker/hosted-image.test.mjs'],
+      env: { MAGENTS_HOSTED_IMAGE_CASE: 'stored' }, reason: 'A failed retained producer, not a passed replay' }],
+  }]);
+  assert.equal(selected.checks.worker.length, 1);
+  assert.equal(selected.checks.worker[0].argv.filter(arg => arg.startsWith('--test-reporter=')).length, 1);
+});
+
+test('composed selection never changes the actual artifact identity or revives old unresolved work', () => {
+  const previous = process.cwd(), repository = mkdtempSync(path.join(previous, directory, 'selection-repository-'));
+  const git = (...args) => execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim();
+  git('init', '--quiet');
+  git('config', 'user.name', 'Selection fixture'); git('config', 'user.email', 'fixture@example.invalid');
+  writeFileSync(path.join(repository, 'Cargo.toml'), '[workspace]\nmembers=[]\n');
+  git('add', 'Cargo.toml'); git('commit', '--quiet', '-m', 'artifact');
+  const artifact = git('rev-parse', 'HEAD');
+  mkdirSync(path.join(repository, 'crates/agents-worker/src'), { recursive: true });
+  writeFileSync(path.join(repository, 'crates/agents-worker/src/lib.rs'), 'pub fn composed() {}\n');
+  git('add', '.'); git('commit', '--quiet', '-m', 'composed selection');
+  const revision = git('rev-parse', 'HEAD');
+  const base = { source_sha: artifact, run_id: '40309533230',
+    components: ['worker', 'native', 'container', 'dashboard', 'tooling'],
+    unresolved_checks: [{ id: 'must-not-replay-accepted-work', argv: ['node', '--test', 'missing.mjs'] }],
+    selection_base: { source_sha: revision, status: 'composed_accepted',
+      receipts: [{ source_sha: artifact, run_id: '40309533230', reference: 'docs/full-responses-native-context.md' }],
+      unresolved_checks: [] },
+  };
+  try {
+    process.chdir(repository);
+    const selected = plan(revision, [base]);
+    assert.equal(selected.components.worker.baseline.source_sha, artifact);
+    assert.equal(selected.components.worker.baseline.run_id, '40309533230');
+    assert.equal(selected.components.worker.action, 'build');
+    assert.equal(selected.components.worker.baseline.selection_base.source_sha, revision);
+    assert.deepEqual(selected.required_remediations, []);
+    assert.equal(Object.values(selected.checks).flat().length, 0);
+    assert.throws(() => plan(revision, [{ ...base, selection_base: { ...base.selection_base, receipts: [] } }]), /Invalid composed/);
+  } finally { process.chdir(previous); }
+});
+test('new auxiliary and tokenizer increments select exact public journeys', () => {
+  const selected = selections(source, baseline, ['tests/worker/auxiliary-journey.mjs', 'tests/worker/deepseek-tokenizer-journey.mjs']);
+  assert.deepEqual(selected.worker.filter(check => check.env.MAGENTS_WORKER_CASE).map(check => check.env.MAGENTS_WORKER_CASE).sort(), ['DeepSeek exact count-only tokenizer cold warm and profile replacement', 'Responses auxiliary compact and count']);
+});
+test('changed current SDK contracts stay isolated from the legacy Python SDK', () => {
+  const selected = selections(source, baseline, ['tests/e2e/test_current_responses_sdk_contract.py']);
+  assert.equal(selected.tooling.length, 0);
+  assert.equal(selected.current_sdk[0].argv[0], '.cache/e2e-current-venv/bin/python');
+});
+test('a zero-test Rust filter is a failed receipt, never a successful gate', () => {
+  const plan = { source_sha: source, checks: { worker: [{ id: 'rust:empty', argv: ['cargo', 'test', 'wrong'], env: {}, reason: 'Negative test' }] } };
+  assert.throws(() => runChecks(plan, 'worker-rust', () => ({ status: 0, stdout: 'test result: ok. 0 passed; 0 failed;\n', stderr: '' }), directory), /zero tests/);
+  const receipt = JSON.parse(readFileSync(`${directory}/worker-rust.json`, 'utf8'));
+  assert.equal(receipt.results[0].status, 'failed_current');
+});
+test('a successful targeted check records actual current result separately from its plan', () => {
+  const plan = { source_sha: source, checks: { worker: [{ id: 'rust:one', argv: ['cargo', 'test', 'one'], env: {}, reason: 'New behavior' }] } };
+  runChecks(plan, 'worker-rust', () => ({ status: 0, stdout: 'test result: ok. 1 passed; 0 failed;\n', stderr: '' }), directory);
+  const receipt = JSON.parse(readFileSync(`${directory}/worker-rust.json`, 'utf8'));
+  assert.equal(receipt.source_sha, source);
+  assert.equal(receipt.results[0].status, 'passed_current');
+});
+test('workflow does not quietly retain blanket regression commands', () => {
+  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.doesNotMatch(workflow, /cargo test --locked --workspace|npm test\n|FORCE_ALL/);
+  assert.match(workflow, /incremental-checks\.mjs run worker-journeys/);
+  assert.match(workflow, /incremental-plan/);
+  // The old diagnostic workflow remains visibly non-promoting and independent.
+  assert.match(workflow, /Fixture revisions may target a retained older binary/);
+});
+
+test('zero unittest / Node / pytest selections are never counted as execution', () => {
+  assert.equal(executedTests(['python3', '-m', 'unittest'], 'Ran 0 tests in 0.000s\nOK'), 0);
+  assert.equal(executedTests(['node', '--test'], '# tests 0\n# pass 0\n'), 0);
+  assert.equal(executedTests(['python', '-m', 'pytest'], 'no tests ran in 0.02s'), 0);
+  assert.equal(executedTests(['python3', '-m', 'unittest'], 'Ran 4 tests in 0.003s\nOK'), 4);
+  assert.equal(executedTests(['node', '--test'], '# tests 3\n# pass 2\n# skipped 1\n'), 2);
+  assert.equal(executedTests(['python', '-m', 'pytest'], '================= 15 passed in 0.03s ================='), 15);
+});
+
+test('pytest temporary files remain under the project rather than the runner system tmp', () => {
+  const selected = selections(source, baseline, ['tests/e2e/test_deepseek_usage_probe.py']);
+  const argv = selected.tooling[0].argv;
+  assert.ok(argv.some(argument => /^--basetemp=\.temp\/pytest-increment-[a-f0-9]{16}$/.test(argument)));
+  assert.ok(argv.includes('cache_dir=.cache/pytest'));
+});
+test('passed historical fork and blob journeys are not replayed by a broad implementation path mapping', () => {
+  const selected = selections(source, baseline, ['tests/worker/workspace-blob-journey.mjs', 'tests/worker/responses-journey.mjs']);
+  assert.equal(selected.worker.length, 0);
+});
+
+test('independent checks finish after one failure and preserve both actual receipts', () => {
+  const plan = {source_sha:source, checks:{tooling:[
+    {id:'node:fail',argv:['node','--test','failure.test.mjs'],env:{},reason:'New failure'},
+    {id:'python:pass',argv:['python3','-m','unittest'],env:{},reason:'Independent increment'},
+  ]}};
+  let calls=0;
+  assert.throws(()=>runChecks(plan,'tooling',()=>++calls===1
+    ? {status:1,stdout:'# pass 0\n# fail 1\n',stderr:''}
+    : {status:0,stdout:'',stderr:'Ran 1 test in 0.01s\nOK'}, directory),/Incremental checks failed/);
+  const rows=JSON.parse(readFileSync(`${directory}/tooling.json`,'utf8')).results;
+  assert.equal(calls,2);
+  assert.deepEqual(rows.map(row=>row.status),['failed_current','passed_current']);
+  assert.deepEqual(rows.map(row=>row.executed_tests),[1,1]);
+});
+test('a compiler failure stops before recompiling the same broken crate', () => {
+  const plan={source_sha:source,checks:{worker:[
+    {id:'cargo:first',argv:['cargo','test','first'],env:{},reason:'New native increment'},
+    {id:'cargo:second',argv:['cargo','test','second'],env:{},reason:'Same crate'},
+  ]}};
+  let calls=0;
+  assert.throws(()=>runChecks(plan,'worker-rust',()=>{calls++;return{status:1,stdout:'',stderr:'error: could not compile agents-worker'};},directory),/Compilation failed/);
+  assert.equal(calls,1);
+});
+
+test('startup diagnostic is one finite case and cannot silently imply full capability acceptance', () => {
+  const network={id:'network:new',argv:['python','-m','pytest','network.py']};
+  const selected=containerSelection([network],'startup-1g');
+  assert.equal(selected.checks.length,1);
+  assert.ok(selected.checks[0].argv.includes('tests/e2e/test_workspace_interpreter_memory.py::test_physical_memory_guard_precedes_kernel_and_execution_id_acceptance[1g]'));
+  assert.equal(selected.validation_scope,'diagnostic_startup_only');
+  assert.equal(selected.deferred_checks.length,3);
+  assert.ok(selected.deferred_checks[0].argv.some(arg=>arg.endsWith('[4g]')));
+  assert.ok(selected.deferred_checks[1].argv.some(arg=>arg.endsWith('[None]')));
+  assert.deepEqual(containerSelection([network],'incremental').checks,[network]);
+  assert.throws(()=>containerSelection([],'startup-1g; echo unsafe'),/Invalid finite/);
+});
+
+test('per-check reuse binds the exact recipe and explicit shared implementation inputs', () => {
+  const check={id:'node:tests/e2e/paid-route-policy.test.mjs',argv:['node','--test','tests/e2e/paid-route-policy.test.mjs'],env:{}};
+  let paths=[];
+  const hash=checkFingerprint(source,check,(...args)=>{paths=args;return '100644 blob abc\towned';});
+  assert.ok(paths.includes('tests/e2e/paid-route-policy.mjs'));
+  assert.ok(paths.includes('crates/agents-worker/src/provider_config.rs'));
+  assert.ok(paths.includes('package-lock.json'));
+  assert.ok(!paths.includes('scripts/incremental-checks.mjs'));
+  assert.notEqual(hash,checkFingerprint(source,{...check,env:{NEW_BEHAVIOR:'1'}},()=> '100644 blob abc\towned'));
+  assert.notEqual(hash,checkFingerprint(source,check,()=> '100644 blob changed\towned'));
+});
+test('pure provider checks include wire dependencies but not an unrelated Session implementation', () => {
+  const check={id:'rust:agents-worker:provider_roundtrip',source_file:'crates/agents-worker/src/provider_responses.rs',argv:['cargo','test','-p','agents-worker','provider_roundtrip'],env:{}};
+  const paths=checkInputPaths(source,check,()=>['crates/agents-worker/src/provider_responses.rs','crates/agents-worker/src/responses_wire.rs','crates/agents-worker/src/session.rs'].join('\n'));
+  assert.ok(paths.includes('crates/agents-worker/src/responses_wire.rs'));
+  assert.ok(!paths.includes('crates/agents-worker/src/session.rs'));
+  assert.ok(paths.includes('Cargo.lock'));
+});
+test('a verified unchanged check becomes reused_verified rather than passed_current', () => {
+  const check={id:'node:new',argv:['node','--test','new.test.mjs'],env:{}};
+  const seal={source_sha:baseline,run_id:'12345',components:[],receipt_artifact:'verification-tooling',receipt_artifact_id:42,verified_checks:[{id:check.id,status:'passed_current',input_fingerprint:'same',receipt_path:'tooling.json',executed_tests:2}]};
+  const result=reuseChecks(source,[check],[seal],()=> 'same');
+  assert.equal(result.checks.length,0);
+  assert.equal(result.reused_checks[0].status,'reused_verified');
+  assert.equal(result.reused_checks[0].source_sha,baseline);
+  assert.equal(result.reused_checks[0].receipt_path,'tooling.json');
+  assert.equal(result.reused_checks[0].executed_tests,2);
+  assert.equal(reuseChecks(source,[check],[seal],()=> 'changed').checks.length,1);
+});
+
+test('exact vision receipt fingerprints include image sizing headers and reference corpus', () => {
+  const check = { id: 'rust:agents-worker:official_prepared_vision_reference_corpus_counts_each_image_once',
+    argv: ['cargo', 'test', '-p', 'agents-worker'], source_file: 'crates/agents-worker/src/deepseek_tokenizer.rs' };
+  const files = ['deepseek_tokenizer', 'deepseek_image_tokens', 'input_image_metadata', 'provider_responses', 'session']
+    .map(name => `crates/agents-worker/src/${name}.rs`);
+  const paths = checkInputPaths('c'.repeat(40), check, () => files.join('\n'));
+  for (const file of files.slice(0, -1)) assert.ok(paths.includes(file), file);
+  assert.ok(paths.includes('tests/fixtures/deepseek-image-count.json'));
+  assert.ok(paths.includes('tests/fixtures/deepseek-token-count.json'));
+  assert.ok(!paths.includes('crates/agents-worker/src/session.rs'));
+});
+test('failed and zero-test historical receipts never authorize check reuse', () => {
+  const check={id:'node:new',argv:['node','--test','new.test.mjs'],env:{}};
+  for(const proof of [{status:'failed_current',executed_tests:1},{status:'passed_current',executed_tests:0}]) {
+    const seal={source_sha:baseline,run_id:'12345',components:[],verified_checks:[{id:check.id,input_fingerprint:'same',...proof}]};
+    assert.equal(reuseChecks(source,[check],[seal],()=> 'same').checks.length,1);
+  }
+});
+test('failed check receipts preserve a bounded tail even when process output cannot flush', () => {
+  const plan={source_sha:source,checks:{tooling:[{id:'node:tail',argv:['node','--test','tail.test.mjs'],env:{},reason:'Actual diagnosis'}]}};
+  assert.throws(()=>runChecks(plan,'tooling',()=>({status:1,stdout:'# fail 1\n',stderr:'Compiler diagnostic tail'}),directory),/failed/);
+  const row=JSON.parse(readFileSync(`${directory}/tooling.json`,'utf8')).results[0];
+  assert.equal(row.failure.stderr_tail,'Compiler diagnostic tail');
+  assert.equal(row.executed_tests,1);
+});
+
+test('new browser specs use focused Playwright rather than an empty Vitest match', () => {
+  const selected=selections(source,baseline,['apps/dashboard/e2e/agent-routing.spec.ts','apps/dashboard/src/agent-routing.test.tsx']);
+  assert.equal(selected.dashboard.length,2);
+  const browser=selected.dashboard.find(check=>check.argv.includes('test:browser'));
+  assert.ok(browser.argv.includes('e2e/agent-routing.spec.ts'));
+  assert.equal(executedTests(browser.argv,'  2 passed (1.5s)'),2);
+  const unit=selected.dashboard.find(check=>!check.argv.includes('test:browser'));
+  assert.ok(unit.argv.includes('src/agent-routing.test.tsx'));
+  assert.equal(executedTests(unit.argv,'Tests 15 passed'),15);
+});
+
+test('existing Agents edits select only the three changed assertions and the new routing group', () => {
+  const selected=selections(source,baseline,['apps/dashboard/src/AgentRouting.test.tsx','apps/dashboard/src/Agents.test.tsx']);
+  assert.equal(selected.dashboard.length,2);
+  for(const check of selected.dashboard) {
+    assert.ok(check.argv.includes('-t'));
+    assert.match(check.argv.at(-1),/independent agent service routing/);
+    assert.match(check.argv.at(-1),/preserves existing custom BYOK model limits/);
+  }
+});
+
+test('Rust unit selection compiles only its declared target, not unrelated old integration benchmarks', () => {
+  const lib=rustTestArguments('agents-worker','namespace_identity','crates/agents-worker/src/auxiliary_context.rs');
+  assert.ok(lib.includes('--lib'));
+  assert.ok(!lib.includes('--test'));
+  assert.deepEqual(rustTestArguments('magents','session_header','crates/magents/tests/space_responses.rs').slice(5,7),['--test','space_responses']);
+  assert.deepEqual(rustTestArguments('workspace-daemon','memory','crates/workspace-daemon/src/interpreter.rs').slice(5,7),['--bin','workspace-daemon']);
+});
+
+test('ignored benchmarks are not converted into automatic zero-test or expensive runs', () => {
+  const text='#[test]\n#[ignore]\nfn expensive_benchmark() {}\n#[ignore = "manual"]\n#[test]\nfn second_benchmark() {}\n#[test]\nfn actual_increment() {}\n';
+  assert.deepEqual(changedRustTests(text,[[1,20]]),['actual_increment']);
+});
+test('selected Worker Rust contracts gate tool installation and release builds before actual journeys', () => {
+  const workflow=readFileSync('.github/workflows/ci.yml','utf8');
+  const worker=workflow.slice(workflow.indexOf('\n  worker:'),workflow.indexOf('\n  container:'));
+  const compile=worker.indexOf('Compile changed Worker tests');
+  const selected=worker.indexOf('node scripts/incremental-checks.mjs run worker-rust');
+  const install=worker.indexOf('worker-build-cache.mjs ensure');
+  const release=worker.indexOf('run: worker-build --release');
+  assert.ok(compile>=0 && compile<selected && selected<install && install<release);
+  assert.ok(worker.indexOf('cargo check --locked -p agents-worker --target wasm32-unknown-unknown')<compile);
+  assert.match(worker,/if \[ "\$has_rust" = true \]; then\n\s+cargo test --locked -p agents-worker --lib --no-run/);
+  assert.match(worker,/plan\.checks\.worker\.some\(check => check\.argv\[0\] === 'cargo'\)/);
+  const gates=worker.slice(compile,worker.indexOf('      - uses: actions/setup-node@',compile));
+  assert.doesNotMatch(gates,/continue-on-error|always\(\)|steps\.worker_bundle|steps\.worker_reuse/);
+  assert.match(gates,/id: worker_unit_tests/);
+  assert.match(worker,/id: worker_release/);
+  assert.match(worker,/run: npm ci --ignore-scripts\n\s+if: \$\{\{ !cancelled\(\) && \(steps\.worker_release\.outcome == 'success' \|\| steps\.worker_reuse\.outcome == 'success'\)/);
+  assert.match(worker,/if: always\(\) && needs\.changes\.outputs\.worker_build == 'true' && steps\.worker_bundle\.outcome == 'success'/);
+  assert.match(worker,/worker-journeys\n\s+if: \$\{\{ !cancelled\(\) && \(steps\.worker_bundle\.outcome == 'success' \|\| steps\.worker_reuse\.outcome == 'success'\)/);
+  assert.match(worker,/name: worker\n/);
+});
+
+test('Worker case receipts identify the actual built or reused artifact rather than infer candidate HEAD', () => {
+  const workflow=readFileSync('.github/workflows/ci.yml','utf8');
+  assert.match(workflow,/MAGENTS_WORKER_SOURCE_SHA: \$\{\{ needs\.changes\.outputs\.worker_artifact_sha \}\}/);
+  assert.match(workflow,/MAGENTS_WORKER_SOURCE_RUN: \$\{\{ needs\.changes\.outputs\.worker_artifact_run \}\}/);
+  assert.match(workflow,/MAGENTS_WORKER_ARTIFACT_ID: \$\{\{ steps\.worker_artifact\.outputs\.artifact-id \|\| needs\.changes\.outputs\.worker_artifact_id \}\}/);
+});
+
+test('operator usage scope never implies platform acceptance', () => {
+  const fail = { source_sha: baseline, run_id: '12345', components: ['worker'], unresolved_checks: [{ id: 'must-not-run-app' }] };
+  const actual = operatorUsagePlan(source, [fail], () => 'a'.repeat(64), () => 'b'.repeat(64));
+  assert.equal(actual.verification_scope, 'operator-usage');
+  assert.equal(actual.app_validation, 'not_executed');
+  assert.equal(actual.non_deployable, true);
+  assert.deepEqual(actual.required_jobs, ['changes', 'tooling']);
+  assert.equal(actual.checks.tooling.length, 4);
+  assert.deepEqual(actual.checks.worker, []);
+  assert.deepEqual(actual.checks.container, []);
+  assert.deepEqual(actual.required_remediations, []);
+  assert.ok(actual.checks.tooling.some(check => check.id === 'node:operator-usage-scope'));
+  for (const component of ['worker', 'native', 'container', 'dashboard']) {
+    assert.equal(actual.components[component].action, 'not_executed');
+    assert.equal(actual.components[component].artifact, null);
+  }
+});
+
+test('direct unittest scripts count the selected case without rerunning it', () => {
+  const argv=['python3','tests/test_file_batch_funding_sql.py','BatchFundingTests.test_public_failed_admission_preserves_internal_generation_and_standard_counts','-v'];
+  assert.equal(executedTests(argv,'Ran 1 test in 0.004s\nOK'),1);
+  assert.equal(executedTests(argv,'Ran 0 tests in 0.000s\nOK'),0);
+  assert.equal(executedTests(argv,'unrelated command output'),0);
+});
+
+test('unittest reporting recognizes test script basenames outside the tests directory', () => {
+  const report = '......\n----------------------------------------------------------------------\nRan 6 tests in 0.081s\n\nOK\n';
+  for (const file of ['scripts/test_magents_release_promotion.py', 'tests/test_existing.py', 'tools/checks/test_contract.py', 'scripts\\test_windows.py']) {
+    assert.equal(executedTests(['python3', file], report), 6);
+    assert.equal(executedTests(['python3', file], 'Ran 0 tests in 0.000s\nOK'), 0);
+    assert.equal(executedTests(['python3', file], 'no execution receipt'), 0);
+  }
+  assert.throws(() => executedTests(['python3', 'scripts/ordinary_command.py'], report), /Unknown selected test runner/);
+});
+
+test('native history target compilation is selected only for its changed fixture', async () => {
+  const { historyCompileRequired } = await import('./incremental-checks.mjs');
+  assert.equal(historyCompileRequired({ changed_files: ['crates/agents-worker/tests/history_perf.rs'] }), true);
+  assert.equal(historyCompileRequired({ changed_files: ['docs/session-history.md'] }), false);
+  assert.equal(historyCompileRequired({ changed_files: [] }), false);
+  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.ok(workflow.indexOf('cargo test --locked -p agents-worker --test history_perf --no-run') < workflow.indexOf('worker-build --release'));
+  assert.ok(workflow.includes("kind:'compilation',status:'compiled_only',exit_code:0,executed_tests:0"));
+});

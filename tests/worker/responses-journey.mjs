@@ -1,0 +1,792 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import OpenAI from 'openai';
+import { createBrowserPrincipal } from './browser-principal.mjs';
+import { runResponsesSdkJourney } from './responses-sdk.mjs';
+
+const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+const frame = value => `data: ${JSON.stringify(value)}\n\n`;
+
+export function createResponsesProviderFixture() {
+  const routes = new Map();
+  return {
+    register(name, actions) {
+      const state = {
+        baseUrl: `https://responses-${name}.example.com/v1`, model: `responses-${name}`,
+        key: `synthetic-responses-${name}`, actions, calls: 0, requests: [], failure: null,
+      };
+      routes.set(state.baseUrl + '/chat/completions', state);
+      return state;
+    },
+    async handle(request) {
+      const state = routes.get(request.url);
+      if (!state) return undefined;
+      try {
+        assert.equal(request.headers.get('authorization'), `Bearer ${state.key}`);
+        const input = await request.json();
+        assert.equal(input.model, state.model);
+        const action = state.actions[state.calls++];
+        assert.ok(action, 'A completed or rejected operation must not dispatch extra inference');
+        state.requests.push(input);
+        action.check?.(input);
+        if (action.wait) await action.wait;
+        if (action.error) return Response.json({ error: { message: 'Synthetic provider failure' } }, { status: action.error });
+        const usage = { prompt_tokens: 150, completion_tokens: 10, total_tokens: 160,
+          prompt_tokens_details: { cached_tokens: 30 }, completion_tokens_details: { reasoning_tokens: 0 } };
+        if (action.reasoningUnknown) delete usage.completion_tokens_details;
+        if (action.partialWait) {
+          const initial = frame({ id: `provider-${state.calls}`, model: state.model,
+            choices: [{ index: 0, delta: { role: 'assistant', content: 'Disclosed before isolate replacement.' }, finish_reason: null }] });
+          const terminal = frame({ id: `provider-${state.calls}`, model: state.model,
+            choices: [{ index: 0, delta: { content: ' Late result.' }, finish_reason: 'stop' }], usage }) + 'data: [DONE]\n\n';
+          let cancelled = false;
+          const body = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(initial));
+              action.partialWait.then(() => {
+                if (!cancelled) {
+                  controller.enqueue(new TextEncoder().encode(terminal));
+                  controller.close();
+                }
+              });
+            },
+            cancel() { cancelled = true; },
+          });
+          return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } });
+        }
+        if (input.stream === false) {
+          assert.equal(action.kind, 'summary', 'Only compaction should use a non-streamed upstream request');
+          return Response.json({ id: `provider-${state.calls}`, model: state.model,
+            choices: [{ index: 0, message: { role: 'assistant', content: action.text }, finish_reason: 'stop' }], usage });
+        }
+        assert.equal(input.stream, true);
+        const delta = action.calls
+          ? { role: 'assistant', ...(action.text === undefined ? {} : { content: action.text }), tool_calls: action.calls.map((call, index) => ({ index, id: call.id,
+            type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) } })) }
+          : { role: 'assistant', content: action.text ?? '' };
+        return new Response(frame({ id: `provider-${state.calls}`, model: state.model,
+          choices: [{ index: 0, delta, finish_reason: action.calls ? 'tool_calls' : action.finish ?? 'stop' }], usage })
+          + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+      } catch (error) {
+        state.failure = error;
+        throw error;
+      }
+    },
+  };
+}
+
+async function bounded(promise, milliseconds = 8000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Responses journey exceeded its observation deadline')), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+async function waitUntil(predicate, milliseconds = 8000) {
+  const deadline = Date.now() + milliseconds;
+  while (true) {
+    const remaining = deadline - Date.now();
+    assert.ok(remaining > 0, 'Responses state did not reach the expected boundary');
+    if (await bounded(Promise.resolve(predicate()), remaining)) return;
+    await delay(10);
+  }
+}
+
+async function fixture({ mf, db, encryptionKey, request, providers, diagnostic }, name, actions, options = {}) {
+  const { context_window = 8192, validate_response_schema = true, ...agentOptions } = options;
+  const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: `responses-${name}-owner` });
+  const state = providers.register(name, actions);
+  const credential = await principal.browser('POST', '/v1/provider-keys', {
+    protocol: 'openai', base_url: state.baseUrl, api_key: state.key,
+  }, 201);
+  const agent = await request('POST', '/v1/agents', {
+    name: `Responses ${name}`, instructions: 'Fixed agent prefix must remain in every model context.',
+    model: { provider: 'byok', credential_id: credential.id, model: state.model,
+      context_window, max_output_tokens: 512 }, tools: ['time'], workspace: false,
+    compaction_percent: 80, ...agentOptions,
+  }, 201, principal.apiKey);
+  const observations = { responses: [], events: [] };
+  let primaryFailure;
+  const expectedUnknown = new Set();
+  function observe(value) {
+    if (value?.object === 'response') observations.responses.push(value);
+    return value;
+  }
+  function checkSchema() {
+    assert.ok(process.env.MAGENTS_SCHEMA_PYTHON, 'Set MAGENTS_SCHEMA_PYTHON to the pinned SDK verification interpreter');
+    const script = fileURLToPath(new URL('../e2e/validate_responses_wire.py', import.meta.url));
+    const checked = spawnSync(process.env.MAGENTS_SCHEMA_PYTHON, [script], {
+      input: JSON.stringify(observations), encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024,
+    });
+    assert.equal(checked.status, 0, `Actual ${name} wire objects failed strict SDK schema validation: ${checked.stdout || checked.error?.name || checked.signal}`);
+    const report = JSON.parse(checked.stdout);
+    assert.equal(report.valid, true);
+  }
+  async function invoke(body, expected = 200, headers = {}) {
+    const response = await bounded(mf.dispatchFetch('https://agents.test/v1/responses', {
+      method: 'POST', headers: { Authorization: `Bearer ${principal.apiKey}`, 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ model: agent.id, ...body }),
+    }));
+    const text = await bounded(response.text());
+    if (state.failure) throw state.failure;
+    assert.equal(response.status, expected, `POST /v1/responses: ${text}`);
+    return { value: observe(JSON.parse(text)), headers: response.headers };
+  }
+  async function read(id, suffix = '', expected = 200) {
+    return observe(await request('GET', `/v1/responses/${id}${suffix}`, undefined, expected, principal.apiKey));
+  }
+  async function cleanup() {
+    const sessions = await bounded(request('GET', `/v1/agents/${agent.id}/sessions`, undefined, 200, principal.apiKey));
+    for (const session of sessions.data) {
+      await waitUntil(async () => {
+        const status = await request('GET', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey);
+        return !status.run_id && ['idle', 'closed'].includes(status.status);
+      });
+      await bounded(request('DELETE', `/v1/sessions/${session.id}`, undefined, 200, principal.apiKey));
+    }
+    let held = { results: [] };
+    let settleFailure;
+    try {
+      await waitUntil(async () => {
+        held = await db.prepare("SELECT id,session_id,idempotency_key,CAST(reserved_microusd AS TEXT) AS amount,state FROM usage_reservations WHERE account_id=?1 AND state='reserved'")
+          .bind(principal.owner).all();
+        return held.results.every(row => expectedUnknown.has(row.idempotency_key));
+      }, 2000);
+    } catch (error) { settleFailure = error; }
+    if (settleFailure || held.results.length) {
+      const resources = await db.prepare("SELECT resource,status,COUNT(*) AS count FROM resource_observations WHERE account_id=?1 GROUP BY resource,status")
+        .bind(principal.owner).all();
+      diagnostic?.(JSON.stringify({ event: 'response.fixture_unresolved_holds', scenario: name,
+        provider_calls: state.calls, holds: held.results, resource_phases: resources.results }));
+    }
+    if (settleFailure) throw settleFailure;
+    assert.deepEqual(new Set(held.results.map(row => row.idempotency_key)), expectedUnknown,
+      'Only the explicitly identified unknown provider receipts may remain after bounded settlement');
+    assert.ok(held.results.every(row => row.amount === '0'), 'BYOK unknown receipts cannot manufacture a platform model charge');
+    await request('DELETE', `/v1/agents/${agent.id}`, undefined, 200, principal.apiKey);
+    await principal.browser('DELETE', `/v1/provider-keys/${credential.id}`);
+    if (validate_response_schema) checkSchema();
+  }
+  async function finish() {
+    const errors = [...new Set([primaryFailure, state.failure].filter(Boolean))];
+    try { await cleanup(); }
+    catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, `Responses ${name}: primary and cleanup failures retained`);
+  }
+  function recordFailure(error) { primaryFailure ??= error; }
+  function expectUncertain(responseId) { expectedUnknown.add(`completion:${responseId}:round:0`); }
+  return { state, principal, agent, invoke, read, finish, observations, checkSchema, recordFailure, expectUncertain };
+}
+
+export { fixture as createResponseJourneyFixture };
+
+export async function runResponsesNodeSdkJourney(context) {
+  const scenario = await fixture(context, 'node-sdk', [
+    { text: 'Node SDK first.' },
+    { text: 'Node SDK streamed.' },
+    { calls: [{ id: 'node-local-call', name: 'local_echo', arguments: { value: 'sdk-local-value' } }],
+      check(input) { assert.ok(input.tools.some(tool => tool.function.name === 'local_echo')); } },
+    { text: 'Node SDK local tool complete.', check(input) {
+      const result = input.messages.find(message => message.role === 'tool' && message.tool_call_id === 'node-local-call');
+      assert.equal(result?.content, 'sdk-local-result');
+    } },
+    { text: 'Node SDK historical branch.', check(input) {
+      const prompt = JSON.stringify(input.messages);
+      assert.ok(prompt.includes('Return the first Node SDK fixture answer.'));
+      assert.ok(prompt.includes('Node SDK first.'));
+      assert.ok(prompt.includes('Create an independent Node SDK historical child.'));
+      assert.ok(!prompt.includes('Return the streamed Node SDK fixture answer.'));
+      assert.ok(!prompt.includes('Node SDK streamed.'));
+      assert.ok(!prompt.includes('node-local-call'));
+      assert.ok(!prompt.includes('sdk-local-result'), 'The historical fork excludes later tool calls and outputs');
+      assert.ok(!prompt.includes('Keep this request-specific instruction distinct'), 'Top-level instructions do not carry across Responses');
+    } },
+  ]);
+  try {
+    const sdk = await runResponsesSdkJourney({ apiKey: scenario.principal.apiKey, baseURL: 'https://agents.test/v1',
+      agentId: scenario.agent.id, fetch: (input, init) => context.mf.dispatchFetch(input, init) });
+    scenario.observations.events.push(...sdk.events);
+    const snapshots = await Promise.all(sdk.responseIds.map(id => scenario.read(id)));
+    for (const sessionId of [sdk.sessionId, sdk.branchSessionId]) {
+      await bounded(context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sessionId}` }));
+    }
+    assert.deepEqual(await Promise.all(sdk.responseIds.map(id => scenario.read(id))), snapshots,
+      'Cold reconstruction must retain every immutable response, not only the session head');
+    const replay = await context.mf.dispatchFetch(`https://agents.test/v1/responses/${sdk.responseIds[1]}?stream=true`, {
+      headers: { Authorization: `Bearer ${scenario.principal.apiKey}` },
+    });
+    assert.equal(replay.status, 200);
+    const events = (await replay.text()).split('\n\n').map(block => block.split('\n').find(line => line.startsWith('data: ')))
+      .filter(Boolean).map(line => JSON.parse(line.slice(6)));
+    assert.deepEqual(events, sdk.events, 'Cold replay must preserve all previously disclosed sequence numbers and payloads');
+    scenario.observations.events.push(...events);
+    const beforeDelete = await context.request('GET', `/v1/sessions/${sdk.sessionId}`, undefined, 200, scenario.principal.apiKey);
+    const deleted = await context.request('DELETE', `/v1/responses/${sdk.responseIds[0]}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(deleted.deleted, true);
+    await scenario.read(sdk.responseIds[0], '', 404);
+    assert.deepEqual(await scenario.read(sdk.responseIds.at(-1)), snapshots.at(-1));
+    assert.deepEqual((await context.request('GET', `/v1/sessions/${sdk.sessionId}`, undefined, 200, scenario.principal.apiKey)).messages,
+      beforeDelete.messages, 'Deleting one response representation cannot erase source history');
+    assert.equal(scenario.state.calls, 5, 'The one historical child adds one inference; SDK reads, replay and deletion add none');
+    const modelRows = await context.db.prepare(`
+      SELECT r.idempotency_key,r.state,CAST(l.quantity AS TEXT) AS quantity,l.unit,
+        CAST(l.amount_microusd AS TEXT) AS amount,l.price_version
+      FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id
+      WHERE r.account_id=? AND l.resource='model' ORDER BY r.idempotency_key
+    `).bind(scenario.principal.owner).all();
+    assert.deepEqual(modelRows.results, sdk.responseIds.map(id => ({
+      idempotency_key: `completion:${id}:round:0`, state: 'settled', quantity: '160', unit: 'tokens',
+      amount: '0', price_version: 'byok',
+    })).sort((left, right) => left.idempotency_key.localeCompare(right.idempotency_key)),
+    'Exactly five known BYOK provider rounds must be durably metered, including the independent branch');
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
+}
+
+export async function runResponsesLocalToolsJourney(context) {
+  const imageUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRZkAAAAASUVORK5CYII=';
+  const fileMarker = 'LOCAL_FUNCTION_SPACE_FILE_MARKER_7d6a';
+  let uploaded;
+  const calls = [
+    { id: 'server-time', name: 'time' },
+    { id: 'local-one', name: 'read_local_a', arguments: { path: 'one.txt' } },
+    { id: 'local-two', name: 'read_local_b', arguments: { path: 'two.txt' } },
+  ];
+  const scenario = await fixture(context, 'mixed-local', [
+    { calls },
+    { text: 'Both local outputs were consumed exactly once.', check(input) {
+      assert.equal(input.messages.filter(message => message.role === 'tool' && message.tool_call_id === 'server-time').length, 1);
+      const first = input.messages.findIndex(message => message.tool_call_id === 'local-one');
+      const second = input.messages.findIndex(message => message.tool_call_id === 'local-two');
+      assert.ok(first >= 0);
+      assert.equal(second, first + 1, 'Multimodal projection must not split consecutive tool results');
+      assert.ok(input.messages[first].content.includes('first local value'));
+      assert.ok(input.messages[first].content.includes(fileMarker), 'The actual owned Space file must reach the provider');
+      assert.equal(input.messages[second].content, 'second local value');
+      const projected = input.messages.slice(second + 1).find(message => message.role === 'user'
+        && Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
+      assert.ok(projected, 'OpenAI image context belongs after all contiguous tool results');
+      assert.ok(projected.content.some(part => part.type === 'text' && part.text.includes('local-one')));
+      assert.ok(projected.content.some(part => part.type === 'image_url' && part.image_url.url === imageUrl));
+    } },
+  ], { context_window: 32768 });
+  const tools = ['read_local_a', 'read_local_b'].map(name => ({ type: 'function', name,
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false }, strict: true }));
+  try {
+    const form = new FormData();
+    form.set('purpose', 'user_data');
+    form.set('file', new Blob([fileMarker], { type: 'text/plain' }), 'local-result.txt');
+    const native = new Request('https://agents.test/v1/files', { method: 'POST', body: form });
+    const body = Buffer.from(await native.arrayBuffer());
+    const upload = await context.mf.dispatchFetch(native.url, { method: 'POST', body, headers: {
+      Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': native.headers.get('content-type'),
+      'Content-Length': String(body.length),
+    } });
+    assert.equal(upload.status, 200);
+    uploaded = await upload.json();
+    const { value: handoff, headers } = await scenario.invoke({ input: 'Use the server clock and both caller-local functions.', tools });
+    const sessionId = headers.get('x-agents-session');
+    assert.ok(sessionId);
+    assert.equal(handoff.status, 'completed');
+    const external = handoff.output.filter(item => item.type === 'function_call' && item.name.startsWith('read_local_'));
+    assert.deepEqual(external.map(item => item.call_id), ['local-one', 'local-two']);
+    const before = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(before.status, 'idle');
+    assert.equal(before.run_id, null);
+    assert.equal(before.messages.filter(message => message.role === 'tool' && message.tool_call_id === 'server-time').length, 1);
+    await bounded(context.mf.unsafeEvictDurableObject('', 'Session', { name: `${scenario.principal.owner}:${sessionId}` }));
+    assert.deepEqual(await scenario.read(handoff.id), handoff, 'Pending caller-local tool state must survive a cold DO');
+    const output = (id, value) => ({ type: 'function_call_output', call_id: id, output: value });
+    const valid = [output('local-one', [
+      { type: 'input_text', text: 'first local value' },
+      { type: 'input_image', image_url: imageUrl, detail: 'auto' },
+      { type: 'input_file', file_id: uploaded.id },
+    ]), output('local-two', 'second local value')];
+    for (const invalid of [valid.slice(0, 1), [valid[0], valid[0]], [valid[0], output('unknown-call', 'intrusion')],
+      [output('local-one', [{ type: 'output_text', text: 'Not an accepted input content part' }]), valid[1]]]) {
+      await scenario.invoke({ previous_response_id: handoff.id, input: invalid, tools }, 400);
+      const unchanged = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+      assert.deepEqual(unchanged.messages, before.messages);
+      assert.equal(unchanged.input_revision, before.input_revision);
+      assert.equal(scenario.state.calls, 1);
+    }
+    await scenario.invoke({ previous_response_id: handoff.id,
+      input: [output('local-one', [{ type: 'input_file', file_id: 'file_missing_local_result' }]), valid[1]], tools }, 404);
+    const afterMissing = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    assert.deepEqual(afterMissing.messages, before.messages, 'Unowned/missing output files reject before journal mutation');
+    assert.equal(afterMissing.input_revision, before.input_revision);
+    assert.equal(scenario.state.calls, 1);
+    await context.request('DELETE', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal((await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey)).status, 'closed');
+    const { value: resumed } = await scenario.invoke({ previous_response_id: handoff.id, input: valid, tools });
+    assert.equal(resumed.status, 'completed');
+    assert.equal(resumed.previous_response_id, handoff.id);
+    const client = new OpenAI({ apiKey: scenario.principal.apiKey, baseURL: 'https://agents.test/v1',
+      maxRetries: 0, timeout: 8000, fetch: (input, init) => context.mf.dispatchFetch(input, init) });
+    const inputItems = await client.responses.inputItems.list(resumed.id, { order: 'asc' });
+    assert.deepEqual(inputItems.data.map(({ id, status, ...item }) => item), valid,
+      'Provider-only image adaptation must not rewrite the original typed input_items');
+    assert.equal(scenario.state.calls, 2);
+    assert.deepEqual(await scenario.read(handoff.id), handoff);
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally {
+    const errors = [];
+    try {
+      if (uploaded) await context.request('DELETE', `/v1/files/${uploaded.id}`, undefined, 200, scenario.principal.apiKey);
+    } catch (error) { errors.push(error); }
+    try { await scenario.finish(); } catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Mixed local output primary and cleanup failures retained');
+  }
+}
+
+export async function runResponsesCompactionJourney(context) {
+  const custom = 'CUSTOM-RESPONSE-CONSTRAINT: Preserve this exact instruction after compact.';
+  const fixed = 'Fixed agent prefix must remain in every model context.';
+  function checkPrompt(input, customized) {
+    const instructions = input.messages.filter(message => ['system', 'developer'].includes(message.role)).map(message => message.content).join('\n');
+    assert.ok(instructions.includes(fixed), 'Compaction must not replace fixed instructions with a summary');
+    assert.equal(instructions.includes(custom), customized, 'Custom instructions have response-scoped exact lifetime across compact');
+  }
+  const scenario = await fixture(context, 'compact', [
+    { text: 'Initial answer.', check: input => checkPrompt(input, true) },
+    { kind: 'summary', text: 'Earlier source context preserved.' },
+    { text: 'After the first compact.', check: input => checkPrompt(input, true) },
+    { kind: 'summary', text: 'Earlier source context preserved again.' },
+    { text: 'After the second compact without request override.', check: input => checkPrompt(input, false) },
+  ], { compaction_percent: 1 });
+  try {
+    // Two source items make the next turn compactable under the runtime's
+    // minimum-history guard; the test must observe two real compactions.
+    const first = await scenario.invoke({ input: [
+      { role: 'user', content: 'Keep the goal.' }, { role: 'user', content: 'Preserve the original source context.' },
+    ], instructions: custom });
+    const sessionId = first.headers.get('x-agents-session');
+    const before = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    const second = await scenario.invoke({ previous_response_id: first.value.id, input: 'Continue after compact.', instructions: custom });
+    const third = await scenario.invoke({ previous_response_id: second.value.id, input: [
+      { role: 'user', content: 'Continue without request override.' }, { role: 'user', content: 'Retain the fixed instructions.' },
+    ] });
+    assert.equal(third.value.status, 'completed');
+    assert.equal(third.value.instructions, null);
+    const after = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    assert.ok(after.compact_count >= 2, 'The scenario must actually exercise repeated compaction');
+    assert.deepEqual(after.pinned, before.pinned);
+    assert.deepEqual(after.messages.slice(0, before.messages.length), before.messages);
+    assert.deepEqual(await scenario.read(first.value.id), first.value);
+    assert.equal(scenario.state.calls, 5);
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
+}
+
+export async function runResponsesBackgroundRaceJourney(context) {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const seenChildren = new Set();
+  function checkChild(input) {
+    const prompt = JSON.stringify(input.messages);
+    const children = [0, 1].filter(index => prompt.includes(`Concurrent child ${index}`));
+    assert.equal(children.length, 1, 'Concurrent child context contains its own input, never its sibling');
+    assert.ok(!seenChildren.has(children[0]), 'Each child is dispatched once');
+    seenChildren.add(children[0]);
+  }
+  const scenario = await fixture(context, 'background', [
+    { text: 'Initial immutable head.' },
+    { text: 'First independent child.', wait: pending, check: checkChild },
+    { text: 'Second independent child.', wait: pending, check: checkChild },
+  ]);
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const subscription = [{ id: 'synthetic-background-go', product_id: 'agents', plan_id: 'agents-go', status: 'active',
+      current_period_start: now - 10, current_period_end: now + 3600, entitlements: ['agents.access', 'agents.tier.go'] }];
+    // Go's two-run admission is required: Free correctly permits only one.
+    await context.db.prepare("INSERT INTO subscription_snapshots(account_id,product_id,subscription_json,fetched_at,valid_until) VALUES(?,'agents',?,?,?)")
+      .bind(scenario.principal.owner, JSON.stringify(subscription), now, now + 300).run();
+    const initial = await scenario.invoke({ input: 'Create a head.' });
+    const children = await Promise.all([0, 1].map(index => context.mf.dispatchFetch('https://agents.test/v1/responses', {
+      method: 'POST', headers: { Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': 'application/json',
+        'Idempotency-Key': `background-independent-child-${index}` },
+      body: JSON.stringify({ model: scenario.agent.id, previous_response_id: initial.value.id,
+        input: `Concurrent child ${index}`, background: true }),
+    })));
+    assert.deepEqual(children.map(response => response.status), [200, 200], 'Both children of a retained parent are independently admissible');
+    assert.notEqual(children[0].headers.get('x-agents-session'), children[1].headers.get('x-agents-session'));
+    const accepted = await Promise.all(children.map(response => response.json()));
+    assert.notEqual(accepted[0].id, accepted[1].id);
+    for (const child of accepted) {
+      assert.ok(['queued', 'in_progress'].includes(child.status));
+      assert.equal(child.previous_response_id, initial.value.id);
+    }
+    await waitUntil(() => scenario.state.calls === 3);
+    if (scenario.state.failure) throw scenario.state.failure;
+    assert.equal(seenChildren.size, 2, 'Both model requests must be in flight before releasing either fixture result');
+    for (let index = 0; index < 3; index++) {
+      for (const child of accepted) {
+        const polled = await scenario.read(child.id);
+        assert.equal(polled.id, child.id);
+        assert.ok(['queued', 'in_progress'].includes(polled.status));
+      }
+    }
+    assert.equal(scenario.state.calls, 3, 'Polling two children cannot create inference');
+    release();
+    await waitUntil(async () => (await Promise.all(accepted.map(child => scenario.read(child.id))))
+      .every(child => child.status === 'completed'));
+    assert.deepEqual(await scenario.read(initial.value.id), initial.value, 'Parallel children cannot mutate their immutable parent');
+    const replay = await scenario.invoke({ previous_response_id: initial.value.id,
+      input: 'Concurrent child 1', background: true }, 200, { 'Idempotency-Key': 'background-independent-child-1' });
+    assert.equal(replay.value.id, accepted[1].id);
+    assert.equal(replay.value.status, 'completed');
+    assert.equal(scenario.state.calls, 3, 'An idempotent child retry only observes its original execution');
+    const metered = await context.db.prepare(`
+      SELECT COUNT(*) AS count,SUM(CAST(l.quantity AS INTEGER)) AS tokens,
+        SUM(CAST(l.amount_microusd AS INTEGER)) AS amount,
+        COUNT(DISTINCT r.idempotency_key) AS distinct_rounds
+      FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id
+      WHERE r.account_id=? AND l.resource='model' AND r.state='settled'
+    `).bind(scenario.principal.owner).first();
+    assert.deepEqual(metered, { count: 3, tokens: 480, amount: 0, distinct_rounds: 3 },
+      'The parent and both children each settle one known BYOK inference, with no duplicate ledger receipt');
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { release(); await scenario.finish(); }
+}
+
+export async function runResponsesStorageAndFailureJourney(context) {
+  const scenario = await fixture(context, 'storage-failure', [
+    { text: 'Ephemeral successful answer.' },
+    { text: 'Output reached the configured budget.', finish: 'length' },
+    { error: 503 },
+  ]);
+  try {
+    const ephemeral = await scenario.invoke({ input: 'Do not retain a retrievable response.', store: false });
+    assert.equal(ephemeral.value.status, 'completed');
+    assert.equal(ephemeral.value.store, false);
+    await scenario.read(ephemeral.value.id, '', 404);
+    await scenario.invoke({ previous_response_id: ephemeral.value.id, input: 'No retained parent.' }, 404);
+    await context.request('DELETE', `/v1/sessions/${ephemeral.headers.get('x-agents-session')}`, undefined, 200, scenario.principal.apiKey);
+    const limited = await scenario.invoke({ input: 'Return a budget-limited response.' });
+    assert.equal(limited.value.status, 'incomplete');
+    assert.equal(limited.value.incomplete_details?.reason, 'max_output_tokens');
+    await context.request('DELETE', `/v1/sessions/${limited.headers.get('x-agents-session')}`, undefined, 200, scenario.principal.apiKey);
+    const failed = await scenario.invoke({ input: 'Return an explicit provider failure.', background: true });
+    await waitUntil(async () => (await scenario.read(failed.value.id)).status === 'failed');
+    const failure = await scenario.read(failed.value.id);
+    assert.equal(typeof failure.error?.code, 'string');
+    assert.equal(failure.output.length, 0, 'An upstream error cannot fabricate a successful assistant answer');
+    scenario.expectUncertain(failed.value.id);
+    const unknownLedger = await context.db.prepare("SELECT COUNT(*) AS count FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=?1 AND r.idempotency_key=?2")
+      .bind(scenario.principal.owner, `completion:${failed.value.id}:round:0`).first('count');
+    assert.equal(unknownLedger, 0, 'Unreported upstream usage cannot be settled as a fictional zero');
+    await context.request('DELETE', `/v1/sessions/${failed.headers.get('x-agents-session')}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(scenario.state.calls, 3, 'Failures, retrieval and no-store rejection cannot replay execution');
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
+}
+
+export async function runResponsesCancellationJourney(context) {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const scenario = await fixture(context, 'cancellation', [
+    { text: 'A late provider result cannot revive a cancelled response.', wait: pending },
+  ]);
+  try {
+    const { value: accepted, headers } = await scenario.invoke({ input: 'Run in the background until cancellation.', background: true });
+    const sessionId = headers.get('x-agents-session');
+    await waitUntil(() => scenario.state.calls === 1);
+    const observer = await bounded(context.mf.dispatchFetch(`https://agents.test/v1/responses/${accepted.id}?stream=true`, {
+      headers: { Authorization: `Bearer ${scenario.principal.apiKey}` },
+    }));
+    assert.equal(observer.status, 200);
+    const wirePromise = observer.text();
+    const sdkEvents = [];
+    const client = new OpenAI({ apiKey: scenario.principal.apiKey, baseURL: 'https://agents.test/v1', maxRetries: 0,
+      timeout: 8000, fetch: (input, init) => context.mf.dispatchFetch(input, init) });
+    const sdkOutcome = client.responses.retrieve(accepted.id, { stream: true }).then(async stream => {
+      try {
+        for await (const event of stream) sdkEvents.push(event);
+        return null;
+      } catch (error) { return error; }
+    }, error => error);
+    const before = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    const cancel = await context.request('POST', `/v1/responses/${accepted.id}/cancel`, {}, 200, scenario.principal.apiKey);
+    scenario.observations.responses.push(cancel);
+    assert.equal(cancel.id, accepted.id);
+    assert.ok(['queued', 'in_progress', 'cancelled'].includes(cancel.status));
+    const repeated = await context.request('POST', `/v1/responses/${accepted.id}/cancel`, {}, 200, scenario.principal.apiKey);
+    scenario.observations.responses.push(repeated);
+    assert.equal(repeated.id, accepted.id);
+    release();
+    await waitUntil(async () => (await scenario.read(accepted.id)).status === 'cancelled');
+    const final = await scenario.read(accepted.id);
+    assert.equal(final.status, 'cancelled');
+    assert.deepEqual(final.usage, { input_tokens: 150, input_tokens_details: { cached_tokens: 30 },
+      output_tokens: 10, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 160 },
+    'Cancellation after a known provider result must retain the actually reported usage');
+    const events = (await bounded(wirePromise)).split('\n\n')
+      .map(block => block.split('\n').find(line => line.startsWith('data: '))).filter(Boolean)
+      .map(line => JSON.parse(line.slice(6)));
+    assert.equal(events.at(-1).type, 'error');
+    assert.equal(events.at(-1).code, 'response_cancelled');
+    assert.ok(!events.some(event => ['response.completed', 'response.failed', 'response.cancelled'].includes(event.type)),
+      'Cancellation must not fabricate a completed/failed response or invent an SDK event type');
+    const sdkError = await bounded(sdkOutcome);
+    assert.ok(sdkError instanceof Error || sdkEvents.at(-1)?.type === 'error', 'The real SDK must surface cancellation, not a false success');
+    scenario.observations.events.push(...events);
+    assert.equal(scenario.state.calls, 1, 'Cancellation and late completion cannot dispatch a replacement inference');
+    const after = await context.request('GET', `/v1/sessions/${sessionId}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(after.input_revision, before.input_revision, 'Cancellation is not new user input');
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { release(); await scenario.finish(); }
+}
+
+export async function runResponsesIdempotencyRaceJourney(context) {
+  const scenario = await fixture(context, 'idempotency', [
+    { text: 'The only inference for this idempotency receipt.' },
+    { text: 'The later head does not change the original receipt.' },
+  ]);
+  try {
+    const body = { model: scenario.agent.id, input: 'Create exactly one response.', background: true };
+    const dispatch = () => context.mf.dispatchFetch('https://agents.test/v1/responses', {
+      method: 'POST', headers: { Authorization: `Bearer ${scenario.principal.apiKey}`,
+        'Content-Type': 'application/json', 'Idempotency-Key': 'synthetic-duplicate-create' }, body: JSON.stringify(body),
+    });
+    const responses = await Promise.all([dispatch(), dispatch()]);
+    const values = [];
+    for (const response of responses) {
+      assert.equal(response.status, 200);
+      values.push(await response.json());
+    }
+    assert.equal(values[0].id, values[1].id);
+    await waitUntil(async () => (await scenario.read(values[0].id)).status === 'completed');
+    const first = await scenario.read(values[0].id);
+    assert.equal(scenario.state.calls, 1);
+    const sessions = await context.request('GET', `/v1/agents/${scenario.agent.id}/sessions`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(sessions.data.length, 1, 'Concurrent duplicate requests cannot allocate two sessions');
+    await scenario.invoke({ previous_response_id: first.id, input: 'Advance the same chain.' });
+    const replay = await dispatch();
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), first, 'Idempotency retry returns the original response even after the chain advances');
+    await scenario.invoke({ input: 'A different canonical request.' }, 409, { 'Idempotency-Key': 'synthetic-duplicate-create' });
+    assert.equal(scenario.state.calls, 2);
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
+}
+
+export async function runSessionViewsJourney(context) {
+  const scenario = await fixture(context, 'history-pages', [
+    { text: 'Imported source context acknowledged.' }, { text: 'New append acknowledged.' },
+  ], { context_window: 262144, compaction_percent: 99 });
+  const input = Array.from({ length: 110 }, (_, index) => ({ role: 'user',
+    content: `Source entry ${index}: ` + 'synthetic immutable source data; '.repeat(30) }));
+  try {
+    const created = await scenario.invoke({ input });
+    const sessionId = created.headers.get('x-agents-session');
+    const endpoint = `https://agents.test/v1/sessions/${sessionId}`;
+    const headers = { Authorization: `Bearer ${scenario.principal.apiKey}` };
+    const legacyResponse = await context.mf.dispatchFetch(endpoint, { headers });
+    assert.equal(legacyResponse.status, 200);
+    const legacyText = await legacyResponse.text();
+    const legacy = JSON.parse(legacyText);
+    assert.equal(legacy.messages.length, 111, 'Legacy status must retain the entire imported source journal');
+    const smallResponse = await context.mf.dispatchFetch(endpoint + '/view', { headers });
+    assert.equal(smallResponse.status, 200);
+    const etag = smallResponse.headers.get('etag');
+    assert.ok(etag);
+    const smallText = await smallResponse.text();
+    const small = JSON.parse(smallText);
+    assert.ok(!('messages' in small) && !('pinned' in small), 'Polling metadata cannot retransfer the source transcript or fixed prefix');
+    assert.ok(Buffer.byteLength(smallText) < Buffer.byteLength(legacyText) / 10,
+      'The metadata projection should materially reduce wire bytes for a real large journal');
+    const same = await context.mf.dispatchFetch(endpoint + '/view', {
+      headers: { ...headers, 'If-None-Match': etag },
+    });
+    assert.equal(same.status, 304);
+    assert.equal(await same.text(), '');
+    const guest = await context.mf.dispatchFetch(endpoint + '/view', { headers: { 'If-None-Match': etag } });
+    assert.equal(guest.status, 401, 'Authentication must precede a matching private cache validator');
+    await guest.arrayBuffer();
+    const newest = await context.request('GET', `/v1/sessions/${sessionId}/messages`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(newest.data.length, 50);
+    assert.equal(newest.start, 61);
+    assert.equal(newest.end, 111);
+    const entries = [...newest.data];
+    let page = newest;
+    while (page.has_older) {
+      page = await context.request('GET', `/v1/sessions/${sessionId}/messages?before=${page.before_cursor}&limit=37`, undefined, 200, scenario.principal.apiKey);
+      entries.unshift(...page.data);
+    }
+    assert.deepEqual(entries.map(entry => entry.sequence), Array.from({ length: 111 }, (_, index) => index));
+    assert.deepEqual(entries.map(entry => entry.message), legacy.messages, 'Joining real source pages must reproduce legacy history exactly once');
+    const future = newest.after_cursor.replace(/_[0-9a-f]+$/, '_ffffffff');
+    await context.request('GET', `/v1/sessions/${sessionId}/messages?after=${future}`, undefined, 400, scenario.principal.apiKey);
+    const other = await context.request('POST', `/v1/agents/${scenario.agent.id}/sessions`, {}, 201, scenario.principal.apiKey);
+    await context.request('GET', `/v1/sessions/${other.id}/messages?after=${newest.after_cursor}`, undefined, 400, scenario.principal.apiKey);
+    await scenario.invoke({ previous_response_id: created.value.id, input: 'Append only one new user message.' });
+    const delta = await context.request('GET', `/v1/sessions/${sessionId}/messages?after=${newest.after_cursor}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(delta.data.length, 2);
+    assert.deepEqual(delta.data.map(entry => entry.sequence), [111, 112]);
+    assert.equal(delta.data[0].message.content, 'Append only one new user message.');
+    const changed = await context.mf.dispatchFetch(endpoint + '/view', { headers: { ...headers, 'If-None-Match': etag } });
+    assert.equal(changed.status, 200);
+    assert.notEqual(changed.headers.get('etag'), etag);
+    await changed.arrayBuffer();
+    assert.equal(scenario.state.calls, 2, 'History paging and conditional polling cannot trigger model execution');
+    context.diagnostic?.(JSON.stringify({ event: 'session.bandwidth_fixture', source_entries: 111,
+      legacy_bytes: Buffer.byteLength(legacyText), metadata_bytes: Buffer.byteLength(smallText),
+      unchanged_body_bytes: 0, delta_entries: delta.data.length, delta_bytes: Buffer.byteLength(JSON.stringify(delta)) }));
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
+}
+
+export async function runResponsesInputAndOptionsJourney(context) {
+  const scenario = await fixture(context, 'input-options', [{
+    text: '{"ok":true}',
+    check(input) {
+      const protectedContext = input.messages.filter(message => ['system', 'developer'].includes(message.role))
+        .map(message => message.content).join('\n');
+      assert.ok(protectedContext.includes('Fixed agent prefix must remain in every model context.'));
+      assert.ok(protectedContext.includes('Imported system instruction.'));
+      assert.ok(protectedContext.includes('Imported developer instruction.'));
+      assert.ok(input.messages.some(message => message.role === 'assistant' && message.content === 'Imported assistant context.'));
+      assert.equal(input.messages.find(message => message.tool_call_id === 'imported-call')?.content, 'Imported local result.');
+      assert.equal(input.temperature, 0.2);
+      assert.equal(input.top_p, 0.8);
+      assert.equal(input.parallel_tool_calls, false);
+      assert.equal(input.max_tokens, 200);
+      assert.deepEqual(input.response_format, { type: 'json_object' });
+    },
+  }]);
+  try {
+    for (const invalid of [
+      { temperature: 2.1 }, { top_p: -1 }, { max_output_tokens: 0 },
+      { fabricated_parameter: true },
+      { input: [{ type: 'function_call_output', call_id: 'orphan', output: 'fake output' }] },
+      { tools: [{ type: 'function', name: 'time', parameters: { type: 'object' } }] },
+      { max_output_tokens: 513 },
+      { tool_choice: { type: 'function', name: 'undeclared_local_function' } },
+    ]) {
+      await scenario.invoke({ input: 'Reject invalid control before execution.', ...invalid }, 400);
+      assert.equal(scenario.state.calls, 0);
+      const sessions = await context.request('GET', `/v1/agents/${scenario.agent.id}/sessions`, undefined, 200, scenario.principal.apiKey);
+      assert.equal(sessions.data.filter(session => session.status !== 'closed').length, 0,
+        'Rejected fresh requests cannot consume live-session quota');
+    }
+    const { value: response } = await scenario.invoke({
+      input: [
+        { role: 'system', content: 'Imported system instruction.' },
+        { role: 'developer', content: [{ type: 'input_text', text: 'Imported developer instruction.' }] },
+        { role: 'user', content: 'Earlier imported user context.' },
+        { role: 'assistant', content: [{ type: 'output_text', text: 'Imported assistant context.' }] },
+        { type: 'function_call', call_id: 'imported-call', name: 'imported_local', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'imported-call', output: 'Imported local result.' },
+        { role: 'user', content: [{ type: 'input_text', text: 'Respond with a JSON object.' }] },
+      ], temperature: 0.2, top_p: 0.8, parallel_tool_calls: false, max_output_tokens: 200,
+      text: { format: { type: 'json_object' } },
+      tools: [{ type: 'function', name: 'imported_local',
+        parameters: { type: 'object', properties: {}, additionalProperties: false }, strict: true }],
+    });
+    assert.equal(response.status, 'completed');
+    const text = response.output.filter(item => item.type === 'message')
+      .flatMap(item => item.content).filter(part => part.type === 'output_text').map(part => part.text).join('');
+    assert.deepEqual(JSON.parse(text), { ok: true });
+    assert.equal(response.temperature, 0.2);
+    assert.equal(response.top_p, 0.8);
+    assert.equal(response.max_output_tokens, 200);
+    assert.deepEqual(response.text?.format, { type: 'json_object' });
+    assert.equal(scenario.state.calls, 1);
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
+}
+
+export async function runResponsesUnknownUsageJourney(context) {
+  const scenario = await fixture(context, 'unknown-reasoning', [{ text: 'Known totals, unavailable reasoning breakdown.', reasoningUnknown: true }]);
+  try {
+    const { value: response } = await scenario.invoke({ input: 'Report the result without inventing token details.' });
+    assert.equal(response.status, 'completed');
+    assert.equal(response.usage, null, 'Incomplete breakdown cannot be serialized as an invalid standard SDK usage object');
+    assert.deepEqual(response.agents_usage, {
+      input_tokens: 150, input_tokens_details: { cached_tokens: 30 },
+      output_tokens: 10, output_tokens_details: { reasoning_tokens: null }, total_tokens: 160,
+    }, 'Unknown reasoning cannot discard known totals or fabricate a zero count');
+    assert.deepEqual(await scenario.read(response.id), response);
+    const modelRows = await context.db.prepare("SELECT CAST(l.amount_microusd AS TEXT) AS amount,l.price_version FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=?1 AND l.resource='model'")
+      .bind(scenario.principal.owner).all();
+    assert.deepEqual(modelRows.results, [{ amount: '0', price_version: 'byok' }]);
+    assert.equal(scenario.state.calls, 1);
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally { await scenario.finish(); }
+}
+
+export async function runSeededAttachmentPinJourney(context) {
+  let release;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const scenario = await fixture(context, 'seeded-file-pin', [{ text: 'Known result after a seeded-pin cancellation.', wait: waiting }]);
+  let file;
+  try {
+    const payload = Buffer.from([0, 255, 10, 13, 1, 254]);
+    const uploaded = await context.mf.dispatchFetch('https://agents.test/v1/files?filename=pin-proof.bin&purpose=user_data', {
+      method: 'POST', headers: { Authorization: `Bearer ${scenario.principal.apiKey}`, 'Content-Type': 'application/octet-stream',
+        'Content-Length': String(payload.length), 'X-Content-Sha256': createHash('sha256').update(payload).digest('hex') }, body: payload,
+    });
+    assert.equal(uploaded.status, 200);
+    file = await uploaded.json();
+    const accepted = await scenario.invoke({ input: 'Wait at a controlled provider boundary.', background: true });
+    const sessionId = accepted.headers.get('x-agents-session');
+    await waitUntil(() => scenario.state.calls === 1);
+    const stored = await context.db.prepare('SELECT object_key,sha256,bytes FROM space_files WHERE id=? AND account_id=?')
+      .bind(file.id, scenario.principal.owner).first();
+    // This deliberately seeded D1 reference tests the real deletion interlock
+    // and canonical DO release, not automatic binary import/admission. The
+    // deployed Container journey supplies that separate end-to-end proof.
+    await context.db.prepare('INSERT INTO file_attachment_pins(response_id,file_id,account_id,session_id,object_key,sha256,bytes,created_at_ms) VALUES(?,?,?,?,?,?,?,?)')
+      .bind(accepted.value.id, file.id, scenario.principal.owner, sessionId, stored.object_key, stored.sha256, stored.bytes, Date.now()).run();
+    const count = () => context.db.prepare('SELECT COUNT(*) AS count FROM file_attachment_pins WHERE response_id=? AND file_id=?')
+      .bind(accepted.value.id, file.id).first('count');
+    const namespace = await context.mf.getDurableObjectNamespace('SESSIONS');
+    const stub = namespace.get(namespace.idFromName(`${scenario.principal.owner}:${sessionId}`));
+    async function reconcile() {
+      const result = await bounded(stub.fetch('https://fixture/file-pins/reconcile', { method: 'POST' }));
+      assert.equal(result.status, 200);
+      return result.json();
+    }
+    assert.equal(await count(), 1);
+    assert.equal((await reconcile()).retained, 1, 'Canonical recovery must retain a reference owned by an active run');
+    const blocked = await context.request('DELETE', `/v1/files/${file.id}`, undefined, 409, scenario.principal.apiKey);
+    assert.equal(blocked.error.code, 'file_in_use');
+    const observer = await context.mf.dispatchFetch(`https://agents.test/v1/responses/${accepted.value.id}?stream=true`, {
+      headers: { Authorization: `Bearer ${scenario.principal.apiKey}` },
+    });
+    assert.equal(observer.status, 200);
+    await bounded(observer.body.cancel());
+    assert.equal(await count(), 1, 'Observer disconnect cannot release an active source reference');
+    const cancelled = await context.request('POST', `/v1/responses/${accepted.value.id}/cancel`, {}, 200, scenario.principal.apiKey);
+    scenario.observations.responses.push(cancelled);
+    assert.equal((await context.request('DELETE', `/v1/files/${file.id}`, undefined, 409, scenario.principal.apiKey)).error.code, 'file_in_use');
+    assert.equal(await count(), 1, 'Cancellation acknowledgement is not canonical terminal completion');
+    assert.equal((await reconcile()).retained, 1);
+    release();
+    await waitUntil(async () => (await scenario.read(accepted.value.id)).status === 'cancelled');
+    assert.equal((await reconcile()).released, 1, 'Only canonical terminal proof authorizes release of a seeded reference');
+    await waitUntil(async () => await count() === 0);
+    const deleted = await context.request('DELETE', `/v1/files/${file.id}`, undefined, 200, scenario.principal.apiKey);
+    assert.equal(deleted.deleted, true);
+    file = undefined;
+    assert.equal(scenario.state.calls, 1);
+  } catch (error) { scenario.recordFailure(error); throw error; }
+  finally {
+    release();
+    const errors = [];
+    try { await scenario.finish(); }
+    catch (error) { errors.push(error); }
+    if (file) {
+      try { await context.request('DELETE', `/v1/files/${file.id}`, undefined, 200, scenario.principal.apiKey); }
+      catch (error) { errors.push(error); }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Seeded attachment pin primary and cleanup failures retained');
+  }
+}

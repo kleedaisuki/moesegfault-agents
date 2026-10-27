@@ -1,0 +1,4684 @@
+{
+  "revision": "deepseek-2026-10-25-cn2026-v1",
+  "calendar_timezone": "Asia/Shanghai",
+  "peak_timezone": "UTC",
+  "valid_from_inclusive": 1767196800,
+  "valid_until_exclusive": 1798732800,
+  "sources": [
+    "https://api-docs.deepseek.com/quick_start/pricing/",
+    "https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html"
+  ],
+  "rates_microusd_per_million": {
+    "deepseek-flash": {
+      "off_peak": [
+        3000,
+        150000,
+        600000
+      ],
+      "peak": [
+        6000,
+        300000,
+        1200000
+      ]
+    },
+    "deepseek-v4-pro": {
+      "off_peak": [
+        22000,
+        660000,
+        1980000
+      ],
+      "peak": [
+        44000,
+        1320000,
+        3960000
+      ]
+    }
+  },
+  "rate_order": [
+    "cached_input",
+    "uncached_input",
+    "output"
+  ],
+  "cases": [
+    {
+      "unix_seconds": 1767142799,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767142800,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767142801,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767153599,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767153600,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767153601,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767160799,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767160800,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767160801,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767175199,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767175200,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767175201,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767196799,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1767196800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767196801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767229199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767229200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767229201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767239999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767240000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767240001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767246265,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767247199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767247200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767247201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767258488,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767261599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767261600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767261601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767277232,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767283199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767283200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767283201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767285207,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767401999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767402000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767402001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767407581,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767412799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767412800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767412801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767413791,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767419999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767420000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767420001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767434399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767434400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767434401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767447687,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767455999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767456000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767456001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767488399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767488400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767488401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767499199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767499200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767499201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767506399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767506400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767506401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767520799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767520800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767520801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767521599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767542399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767542400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767542401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767577333,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1767704761,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767862591,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1767897486,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1767977151,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768000604,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768038581,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768062385,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768123973,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768255392,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768438799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768438800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768438801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768449599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768449600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768449601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768456799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768456800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768456801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768463534,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768466968,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768471199,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768471200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768471201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768492799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768492800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768492801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768497712,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768500510,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768546333,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768564625,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768641721,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768669806,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768901136,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1768920648,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1768933062,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769027103,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769060964,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769093467,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769116628,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769121279,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769134216,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1769145407,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769258245,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769260146,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769309699,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769380685,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769611426,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769614867,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769723392,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769751331,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769849654,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769872207,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769875756,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1769978624,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770083054,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1770140458,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770154987,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770168678,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1770455800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770565162,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770567154,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770734605,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770765003,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770955431,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1770962798,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1771030799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771030800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771030801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771035586,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771041599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771041600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771041601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771048799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771048800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771048801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771054913,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771063199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771063200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771063201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771084799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771084800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771084801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771089235,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771117199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771117200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771117201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771127999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771128000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771128001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771135199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771135200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771135201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771149599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771149600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771149601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771171199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771171200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771171201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771185309,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771190973,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771206081,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771209290,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771238275,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771245549,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771560838,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771651936,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771685086,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771729171,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771808399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771808400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771808401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771819199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771819200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771819201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771819566,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771826399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771826400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771826401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771836434,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771837811,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771840799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771840800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771840801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771860430,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771862399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771862400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771862401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771886006,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771894799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771894800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1771894801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1771905599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1771905600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771905601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771912799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771912800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1771912801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1771927199,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1771927200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771927201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771948799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771948800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1771948801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772037570,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772049554,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772176474,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1772181268,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1772240399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772240400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772240401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772246782,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772251199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772251200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772251201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772258399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772258400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772258401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772258581,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772272799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772272800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772272801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772294399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772294400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772294401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772344463,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772351335,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772379837,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772388390,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772520322,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1772524529,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1772597642,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772643006,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772721773,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1772820459,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773048583,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773228816,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773282283,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773282800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773336828,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773384439,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773395998,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773430744,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773536399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773536400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773536401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773547199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773547200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773547201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773554399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773554400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773554401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773557910,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773568799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773568800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773568801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773590399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773590400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773590401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773626302,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773633437,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773645567,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1773768305,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773841002,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773857147,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1773858745,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774009135,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774031075,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774062735,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774091279,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774143181,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774178092,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774309099,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774508776,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1774658888,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774690603,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774696401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774741692,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774742334,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774757510,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774790122,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774845642,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1774889590,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775119159,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775177999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775178000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775178001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775188799,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775188800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775188801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775195999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775196000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775196001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775210399,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775210400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775210401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775224692,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775231999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775232000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775232001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775262701,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775264399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775264400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775264401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775275199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775275200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775275201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775282399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775282400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775282401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775296799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775296800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775296801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775303451,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775318399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775318400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775318401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775321361,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775329786,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775404237,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775404468,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775426517,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775437199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775437200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775437201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775438760,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775447999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775448000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775448001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775455199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775455200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775455201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775469599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775469600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775469601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775491199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775491200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775491201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775523599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775523600,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775523601,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775534399,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775534400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775534401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775541599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775541600,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775541601,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775555999,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775556000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775556001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775577599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775577600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775577601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775583197,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1775723577,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775806124,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1775847446,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776109295,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776202360,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776214799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776214800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776214801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776225599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776225600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776225601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776229319,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776232799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776232800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776232801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776247199,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776247200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776247201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776249540,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776268799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776268800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776268801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776274861,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776306781,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776310530,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1776333889,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776353478,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776399066,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776527737,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776602227,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776688900,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776728253,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776750262,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776878374,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1776957760,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777037847,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777076884,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777102036,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777173191,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777186080,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777332894,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777373038,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777373838,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777383634,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777393565,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777510799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777510800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1777510801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1777521599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1777521600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777521601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777524694,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777528799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777528800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1777528801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1777543199,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1777543200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777543201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777564799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777564800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777564801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777597199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777597200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777597201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777607999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777608000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777608001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777615199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777615200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777615201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777629599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777629600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777629601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777651199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777651200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777651201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777774909,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777780010,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777793003,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777819363,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777824457,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777846971,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777874465,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777942799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777942800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777942801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777953599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777953600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777953601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777960799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777960800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777960801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777975199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777975200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777975201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777990835,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777993547,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777996799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777996800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1777996801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778029199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778029200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778029201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778039999,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778040000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778040001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778047199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778047200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778047201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778061599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778061600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778061601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778065413,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778067289,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778083199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778083200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778083201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778097797,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778231614,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778248667,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778288399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778288400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778288401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778292480,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778299199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778299200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778299201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778306399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778306400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778306401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778320799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778320800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778320801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778342399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778342400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778342401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778415855,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778572389,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778684055,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778722126,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778730145,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778806799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778806800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778806801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778817599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778817600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778817601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778824799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778824800,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778824801,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778839199,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1778839200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778839201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778860799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778860800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1778860801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779035046,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779044990,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779060466,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779103777,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779184206,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1779211503,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779261627,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1779363399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779395294,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779462914,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779529912,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779546613,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779549630,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779631167,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779735442,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779769619,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779896448,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779918082,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779929003,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779965355,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1779969510,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780180026,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780229659,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780259621,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780271907,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780290125,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780326865,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780408254,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780438933,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780531531,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780605650,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780631091,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1780686044,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780732567,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780744388,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780830361,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780907636,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1780921162,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1780972816,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781029604,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781185324,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781187605,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781226774,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781276329,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781333137,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781362963,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781385346,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781416632,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781429081,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781454755,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781485199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781485200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781485201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781486892,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781495999,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781496000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781496001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781503199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781503200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781503201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781517599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781517600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781517601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781539199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781539200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781539201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781649666,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781692850,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781721958,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781744399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781744400,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781744401,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781755199,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781755200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781755201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781762399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781762400,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781762401,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781776799,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1781776800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781776801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781798399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781798400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781798401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781830799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781830800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781830801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781841599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781841600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781841601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781848799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781848800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781848801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781863199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781863200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781863201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781872015,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781884156,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781884799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781884800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781884801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781903516,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1781913944,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782003599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782003600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782003601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782003629,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782014399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782014400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782014401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782021599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782021600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782021601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782035999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782036000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782036001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782057599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782057600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782057601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782084502,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782089999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782090000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1782090001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1782100799,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1782100800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782100801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782107999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782108000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1782108001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1782122399,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1782122400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782122401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782143999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782144000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782144001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782158857,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782286175,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1782297545,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782469325,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782525727,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782556785,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782578044,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782610487,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782648802,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782733787,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782844021,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1782878837,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783005909,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783086761,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783092813,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783161809,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783182238,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783278295,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783304750,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1783320847,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1783407768,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1783446723,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783734860,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783872469,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783947883,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1783977690,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784023611,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784077199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784077200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1784077201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1784087999,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1784088000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784088001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784095199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784095200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1784095201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1784109599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1784109600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784109601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784131199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784131200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784131201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784138958,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784189952,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1784261557,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784380981,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784418982,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784451498,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784459742,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784698940,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1784831928,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785016874,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785036831,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785069509,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785069594,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785139651,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1785171293,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785235153,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785355738,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785414362,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785432478,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785688518,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785728321,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1785754253,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785789245,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785801259,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785841571,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1785900809,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1785910889,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1786048225,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786252660,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786264734,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786287504,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786329110,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1786367224,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786556055,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786614512,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1786671770,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1786747743,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786748681,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786755599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786755600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786755601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786766399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786766400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786766401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786773218,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786773599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786773600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786773601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786787999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786788000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786788001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786809599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786809600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786809601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786901555,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786922314,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786946180,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1786964658,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787082961,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787155161,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787156295,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787160668,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787207845,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1787410397,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787466880,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787532790,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787706480,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1787739828,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787781105,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787835732,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1787966371,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788072766,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788089511,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788102509,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788145687,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1788168545,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1788275332,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788448115,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788498986,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788529198,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788555061,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788574124,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788575912,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788669058,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788670854,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788718892,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788748515,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1788783050,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788825693,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788892633,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1788935298,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1788941955,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789071379,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789104929,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789159556,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789162291,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789208551,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789216258,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789218590,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789219675,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789261131,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789316430,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789330071,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789352791,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789372750,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789419222,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789433999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789434000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789434001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789444799,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789444800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789444801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789451999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789452000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789452001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789466399,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789466400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789466401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789487999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789488000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789488001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789625015,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789675858,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789682262,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789730639,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789753803,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789771720,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789799590,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789820677,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789840620,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789865999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789866000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789866001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789876799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789876800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789876801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789877990,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789883999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789884000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789884001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789889855,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789898399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789898400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789898401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789906428,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789919999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789920000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789920001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1789976012,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789978500,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789983000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1789987590,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790060456,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790077067,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790165493,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790176723,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790177653,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790181627,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790211599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790211600,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790211601,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790222399,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790222400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790222401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790229599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790229600,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790229601,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790243999,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790244000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790244001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790265599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790265600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790265601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790297999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790298000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790298001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790308799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790308800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790308801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790315999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790316000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790316001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790330399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790330400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790330401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790333056,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790335375,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790351999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790352000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790352001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790385581,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790459321,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790470799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790470800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790470801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790481599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790481600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790481601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790488799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790488800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790488801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790501936,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790503199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790503200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790503201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790524799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790524800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790524801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790557199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790557200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790557201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790567999,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790568000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790568001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790575199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790575200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790575201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790577242,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790589599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790589600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790589601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790611199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790611200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790611201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790615737,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790627581,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790672482,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790729999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790730000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790730001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790740799,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790740800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790740801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790747999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790748000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790748001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790762399,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1790762400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790762401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790783999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790784000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790784001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790816399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790816400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790816401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790827199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790827200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790827201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790828665,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790834399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790834400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790834401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790848799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790848800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790848801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790870399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790870400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790870401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1790946968,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791200255,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791258363,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791264702,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791334799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791334800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791334801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791336211,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791345599,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791345600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791345601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791352799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791352800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791352801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791356151,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791367199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791367200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791367201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791388470,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791388799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791388800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791388801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791421199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791421200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791421201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791431999,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791432000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791432001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791437659,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791439199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791439200,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791439201,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791453599,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791453600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791453601,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791454313,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791475199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791475200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791475201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791492344,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791511073,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791531333,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1791551513,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791593999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791594000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791594001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791604799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791604800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791604801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791611999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791612000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791612001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791626399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791626400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791626401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791644176,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791647999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791648000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791648001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791687810,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791696462,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791713936,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1791921103,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792025999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792026000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792026001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792036799,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792036800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792036801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792043999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792044000,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792044001,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792058399,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792058400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792058401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792079999,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792080000,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792080001,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792167332,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792189598,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792202915,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792260812,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792395559,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792553322,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1792557241,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792621084,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792818831,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792818853,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1792919060,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793019092,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793113613,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793116003,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793212457,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793231621,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793270263,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793381401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793383241,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793418994,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793503137,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793530222,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793553740,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793570302,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793582128,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1793823273,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793835882,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1793861481,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1793968208,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794055047,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794202789,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794414951,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794594737,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794704399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794704400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794704401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794715199,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794715200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794715201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794722399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794722400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794722401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794736799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794736800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794736801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794758399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794758400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794758401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794769354,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794835344,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794856035,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794943392,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794977144,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1794982546,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1794991458,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1795012333,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795162703,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1795222867,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795266638,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795382348,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795468277,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795528186,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795694393,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795733442,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795787600,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795896428,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795928445,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1795988335,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796050136,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796054430,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796186424,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796204426,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1796217965,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796334529,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796427287,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796523193,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796531024,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796693926,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1796723567,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1796842496,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796856451,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1796901895,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797117304,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797191619,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797293544,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797296399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797296400,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797296401,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797307199,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797307200,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797307201,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797314399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797314400,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797314401,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797328799,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797328800,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797328801,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797350399,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797350400,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797350401,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797357064,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797419307,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797496110,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797536488,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797586070,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1797620573,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797665277,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797676590,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797681696,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797782899,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797979008,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1797986904,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798016524,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1798049214,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798078944,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1798099356,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1798175513,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798210763,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798232775,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798238212,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798298335,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798342861,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798405987,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798446176,
+      "period": "peak"
+    },
+    {
+      "unix_seconds": 1798504137,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798655196,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798732799,
+      "period": "off_peak"
+    },
+    {
+      "unix_seconds": 1798732800,
+      "period": "unavailable"
+    },
+    {
+      "unix_seconds": 1798732801,
+      "period": "unavailable"
+    }
+  ]
+}

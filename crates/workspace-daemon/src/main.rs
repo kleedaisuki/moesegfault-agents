@@ -1,3 +1,11 @@
+mod file_import;
+mod interpreter;
+mod interpreter_capabilities;
+mod interpreter_egress;
+mod interpreter_files;
+mod interpreter_limits;
+mod interpreter_network;
+mod interpreter_process;
 mod process;
 mod snapshot;
 
@@ -17,7 +25,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use futures_util::StreamExt;
 use process::{ExecRequest, ExecResult};
@@ -47,6 +55,7 @@ struct App {
     dirty_bytes: AtomicU64,
     last_snapshot: Mutex<Option<(String, u64)>>,
     fingerprint: Mutex<String>,
+    interpreter: Arc<interpreter::Interpreter>,
 }
 
 #[tokio::main]
@@ -63,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let root =
         PathBuf::from(std::env::var("MAGENTS_STATE_DIR").unwrap_or("/var/lib/magents".into()));
+    let interpreter = Arc::new(interpreter::Interpreter::new(&root)?);
     let store = SnapshotStore::open(root, 512 * 1024 * 1024, 100_000)?;
     process::prepare_workspace(&store.current()?)?;
     let (logical_bytes, fingerprint) = store
@@ -85,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         dirty_bytes: AtomicU64::new(initial_dirty),
         last_snapshot: Mutex::new(None),
         fingerprint: Mutex::new(fingerprint),
+        interpreter,
     });
     let app = router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
@@ -104,7 +115,43 @@ fn router(state: Arc<App>) -> Router {
         .route("/v1/checkpoint-ack", post(checkpoint_ack))
         .route("/v1/exec", post(exec))
         .route("/v1/exec/{id}", get(exec_status).delete(cancel_exec))
+        .route(
+            "/v1/python",
+            post(interpreter::execute).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/v1/python/capabilities",
+            get(interpreter_capabilities::capabilities),
+        )
+        .route(
+            "/v1/python/contexts",
+            post(interpreter::prepare_context)
+                .get(interpreter::current_context)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/v1/python/contexts/{id}",
+            get(interpreter::inspect_context).delete(interpreter::delete_context),
+        )
+        .route(
+            "/v1/python/{id}",
+            get(interpreter::status).delete(interpreter::cancel),
+        )
+        .route("/v1/python/files", get(interpreter::list_files))
+        .route("/v1/python/source/{cursor}", get(interpreter::export_file))
+        .route(
+            "/v1/python/files/{id}",
+            put(interpreter::import).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/v1/python/artifacts/{id}",
+            get(interpreter::artifact).delete(interpreter::acknowledge),
+        )
         .route("/v1/snapshot", get(snapshot))
+        .route(
+            "/v1/files/{id}",
+            put(file_import::import).layer(DefaultBodyLimit::disable()),
+        )
         .route(
             "/v1/restore",
             post(restore).layer(DefaultBodyLimit::disable()),
@@ -115,7 +162,9 @@ fn router(state: Arc<App>) -> Router {
 }
 
 async fn health(State(state): State<Arc<App>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status":"ok", "boot_id":state.boot_id}))
+    Json(
+        serde_json::json!({"status":"ok", "boot_id":state.boot_id, "capacity":interpreter_limits::capacity()}),
+    )
 }
 
 async fn status(State(state): State<Arc<App>>) -> Json<serde_json::Value> {
@@ -166,7 +215,7 @@ async fn authenticate(State(state): State<Arc<App>>, request: Request, next: Nex
         .filter(|h| valid_traceparent(h))
         .unwrap_or("");
     let request_id = uuid::Uuid::new_v4().to_string();
-    let span = tracing::info_span!("workspace.http", request_id = %request_id, traceparent, method = %request.method(), path = request.uri().path());
+    let span = tracing::info_span!("workspace.http", request_id = %request_id, traceparent, method = %request.method(), path = diagnostic_path(request.uri().path()));
     let started = std::time::Instant::now();
     let mut response = next.run(request).instrument(span.clone()).await;
     span.in_scope(|| {
@@ -206,6 +255,14 @@ fn valid_traceparent(value: &str) -> bool {
         && hex(flags)
         && trace.bytes().any(|b| b != b'0')
         && span.bytes().any(|b| b != b'0')
+}
+
+fn diagnostic_path(path: &str) -> &str {
+    if path.starts_with("/v1/python/source/") {
+        "/v1/python/source/:file"
+    } else {
+        path
+    }
 }
 
 fn error(status: StatusCode, message: &str) -> Response {
@@ -495,6 +552,7 @@ mod tests {
     }
 
     fn app(root: PathBuf) -> Arc<App> {
+        let interpreter = Arc::new(interpreter::Interpreter::new(&root).unwrap());
         Arc::new(App {
             token_hash: Sha256::digest(TOKEN.as_bytes()).into(),
             store: Arc::new(SnapshotStore::open(root, 1024 * 1024, 100).unwrap()),
@@ -507,6 +565,7 @@ mod tests {
             dirty_bytes: AtomicU64::new(0),
             last_snapshot: Mutex::new(None),
             fingerprint: Mutex::new(String::new()),
+            interpreter,
         })
     }
 
@@ -524,7 +583,20 @@ mod tests {
     async fn all_routes_require_internal_auth() {
         let temp = crate::test_dir();
         let app = router(app(temp.path().to_owned()));
-        for path in ["/health", "/v1/status", "/v1/snapshot", "/v1/exec/run-1"] {
+        for path in [
+            "/health",
+            "/v1/status",
+            "/v1/snapshot",
+            "/v1/exec/run-1",
+            "/v1/files/file-1",
+            "/v1/python",
+            "/v1/python/contexts",
+            "/v1/python/cell-1",
+            "/v1/python/files",
+            "/v1/python/files/file-1",
+            "/v1/python/source/70726976617465",
+            "/v1/python/artifacts/pyart-1",
+        ] {
             let response = app
                 .clone()
                 .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
@@ -532,6 +604,15 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+    }
+
+    #[test]
+    fn diagnostic_routes_do_not_encode_user_file_paths() {
+        assert_eq!(
+            diagnostic_path("/v1/python/source/70726976617465"),
+            "/v1/python/source/:file"
+        );
+        assert_eq!(diagnostic_path("/health"), "/health");
     }
 
     #[tokio::test]
@@ -585,6 +666,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn file_import_rejects_invalid_or_incomplete_bodies_before_publication() {
+        let temp = crate::test_dir();
+        let state = app(temp.path().to_owned());
+        let app = router(state.clone());
+        let digest = hex::encode(Sha256::digest(b"expected"));
+        let cases = [
+            ("8", "invalid", "expected", StatusCode::BAD_REQUEST),
+            (
+                "67108865",
+                digest.as_str(),
+                "",
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+            (
+                "8",
+                digest.as_str(),
+                "short",
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            ("4", digest.as_str(), "longer", StatusCode::BAD_REQUEST),
+            ("8", digest.as_str(), "incorrect", StatusCode::BAD_REQUEST),
+        ];
+        for (length, hash, body, expected) in cases {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri("/v1/files/file-1")
+                        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                        .header(header::CONTENT_LENGTH, length)
+                        .header("x-content-sha256", hash)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        assert!(!state.store.current().unwrap().join("uploads").exists());
+        assert_eq!(state.revision.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

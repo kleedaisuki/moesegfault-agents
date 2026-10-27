@@ -12,9 +12,32 @@ use crate::{auth, provider::Message, store::Store, telemetry::TraceContext, tool
 
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-struct RouteContext<'a> {
+pub(crate) struct RouteContext<'a> {
     env: &'a Env,
     trace: &'a TraceContext,
+    background: Option<&'a Context>,
+}
+
+impl<'a> RouteContext<'a> {
+    pub(crate) fn new(env: &'a Env, trace: &'a TraceContext) -> Self {
+        Self {
+            env,
+            trace,
+            background: None,
+        }
+    }
+
+    pub(crate) fn trace(&self) -> &TraceContext {
+        self.trace
+    }
+
+    pub(crate) fn defer(&self, task: impl std::future::Future<Output = ()> + 'static) -> bool {
+        if let Some(context) = self.background {
+            context.wait_until(task);
+            return true;
+        }
+        false
+    }
 }
 
 impl std::ops::Deref for RouteContext<'_> {
@@ -30,6 +53,7 @@ pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let route = RouteContext {
         env: &env,
         trace: &trace,
+        background: Some(&_ctx),
     };
     let _span = crate::telemetry::NativeSpan::start("agents.http", Some(&trace));
     let started_at = util::now_ms();
@@ -82,11 +106,11 @@ pub async fn handle(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         )?;
         response.headers_mut().set(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, X-CSRF-Token, X-Agents-Session, Idempotency-Key, traceparent",
+            "Authorization, Content-Type, X-CSRF-Token, X-Agents-Session, Idempotency-Key, X-Content-Sha256, If-None-Match, If-Range, Range, traceparent",
         )?;
         response.headers_mut().set(
             "Access-Control-Expose-Headers",
-            "X-Agents-Session, X-Agents-Run, traceparent",
+            "X-Agents-Session, X-Agents-Run, X-Agents-Response, X-Content-Sha256, Content-Length, Content-Disposition, Accept-Ranges, Content-Range, ETag, traceparent",
         )?;
         response
             .headers_mut()
@@ -115,7 +139,10 @@ pub(crate) fn error_response(error: &worker::Error) -> Result<Response> {
     util::json_error(status, code, message)
 }
 
-fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
+pub(crate) fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
+    if let Some(error) = attachment_input_error(text) {
+        return error;
+    }
     // D1 wraps trigger failures in a database error. Match a complete error token,
     // not arbitrary substrings, and never return the underlying error text.
     if text
@@ -129,6 +156,11 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
         );
     }
     match text {
+        "tool_runtime_unavailable" => (
+            400,
+            "unsupported_tool",
+            "The requested hosted tool is not enabled on this deployment",
+        ),
         "invalid_provider_model" => (
             400,
             "invalid_provider_model",
@@ -184,6 +216,11 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "billing_unavailable",
             "Pricing for this resource is not configured; contact the service administrator",
         ),
+        "conversation_actor_transport_failed" => (
+            503,
+            "conversation_actor_transport_failed",
+            "Conversation metadata RPC was interrupted; inspect the original request and scope before retrying",
+        ),
         "workspace_startup_timeout" => (
             503,
             "workspace_startup_timeout",
@@ -228,7 +265,79 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "idempotency_conflict",
             "This request key was already used with different parameters",
         ),
+        "code_container_not_found" => (404, "code_container_not_found", "Code container not found"),
+        "code_context_capacity_exceeded" => (
+            429,
+            "code_context_capacity_exceeded",
+            "Release a retained code container before creating another",
+        ),
+        "code_resource_cleanup_pending" => (
+            409,
+            "code_resource_cleanup_pending",
+            "The previous code resource is still being released",
+        ),
+        "code_context_identity_conflict" => (
+            409,
+            "code_context_identity_conflict",
+            "The selected code container no longer matches its pinned identity",
+        ),
         "session_not_found" => (404, "not_found", "Session not found"),
+        "file_not_found" => (404, "file_not_found", "File not found in your Space"),
+        "file_not_ready" | "file_upload_pending" => (
+            409,
+            "file_not_ready",
+            "The file is not ready; wait for the upload to finish",
+        ),
+        "file_workspace_conflict" => (
+            409,
+            "file_workspace_conflict",
+            "The file conflicts with an existing workspace path",
+        ),
+        "file_in_use" => (
+            409,
+            "file_in_use",
+            "The file is in use by an active response; wait for it to finish or cancel it before deleting",
+        ),
+        "space_quota_exceeded" => (
+            409,
+            "space_quota_exceeded",
+            "Your Space storage limit has been reached",
+        ),
+        "space_limit_exceeded" => (
+            409,
+            "space_limit_exceeded",
+            "Your Space storage or file-count limit has been reached",
+        ),
+        "storage_debt" => (
+            402,
+            "storage_debt",
+            "Resolve your account's storage balance before uploading more files",
+        ),
+        "invalid_workspace_version" | "invalid_workspace_restore" => (
+            400,
+            "invalid_workspace_version",
+            "The workspace version request is invalid",
+        ),
+        "workspace_version_not_found" => (
+            404,
+            "workspace_version_not_found",
+            "Workspace version not found in your Space",
+        ),
+        "workspace_version_cursor_not_found" => (
+            400,
+            "workspace_version_cursor_not_found",
+            "The workspace version cursor is invalid",
+        ),
+        "workspace_version_unavailable" => (
+            409,
+            "workspace_version_unavailable",
+            "The workspace version is not available for this operation",
+        ),
+        "response_route_unavailable" => (
+            503,
+            "response_unavailable",
+            "The response route is temporarily unavailable; retry using the same request key",
+        ),
         "context_budget_exceeded" => (
             400,
             "context_budget_exceeded",
@@ -248,6 +357,124 @@ fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
         }
         _ => (500, "internal_error", "The request could not be completed"),
     }
+}
+
+fn attachment_input_error(text: &str) -> Option<(u16, &'static str, &'static str)> {
+    const ERRORS: &[(&str, u16, &str)] = &[
+        (
+            "invalid_attachment",
+            400,
+            "The attachment contains invalid or unsupported fields",
+        ),
+        (
+            "invalid_file_input",
+            400,
+            "Provide exactly one supported file source",
+        ),
+        (
+            "invalid_file_url",
+            400,
+            "Use a public HTTPS file URL without credentials or redirects",
+        ),
+        (
+            "remote_file_unavailable",
+            422,
+            "The public file could not be read within the bounded input capability",
+        ),
+        (
+            "remote_file_outcome_unknown",
+            409,
+            "File preparation is interrupted or in progress; this response intent will not download it again",
+        ),
+        (
+            "file_detail_unavailable",
+            422,
+            "This adapter supports file text extraction with auto detail, not PDF page-image rendering",
+        ),
+        (
+            "native_cache_control_unsupported",
+            422,
+            "This provider manages caching automatically and does not support explicit content cache breakpoints",
+        ),
+        ("invalid_file_id", 400, "The file ID is invalid"),
+        (
+            "invalid_file_name",
+            400,
+            "The attachment filename is invalid",
+        ),
+        ("invalid_file_data", 400, "The inline file data is invalid"),
+        (
+            "invalid_image_source",
+            400,
+            "Use an owned image file or a supported base64 image source",
+        ),
+        (
+            "invalid_image_detail",
+            400,
+            "Image detail must be auto, low, or high",
+        ),
+        (
+            "invalid_image_size",
+            400,
+            "The image is empty or exceeds the supported image size or count",
+        ),
+        (
+            "unsupported_image_type",
+            400,
+            "Use a PNG, JPEG, GIF, or WebP image",
+        ),
+        (
+            "file_requires_workspace",
+            400,
+            "Enable a workspace to use binary or large file attachments",
+        ),
+        (
+            "too_many_input_items",
+            400,
+            "The request contains too many input items",
+        ),
+        (
+            "too_many_content_parts",
+            400,
+            "The message contains too many content parts",
+        ),
+        (
+            "attachments_too_large",
+            413,
+            "The attachments exceed the supported inline content limit",
+        ),
+        (
+            "file_too_large",
+            413,
+            "The file exceeds the supported upload size limit",
+        ),
+        (
+            "invalid_file_checksum",
+            400,
+            "Provide a valid SHA-256 file checksum",
+        ),
+        (
+            "invalid_file_upload",
+            400,
+            "The file upload request is invalid",
+        ),
+        ("invalid_file_request", 400, "The file request is invalid"),
+        ("invalid_space_request", 400, "The Space request is invalid"),
+        (
+            "file_length_required",
+            411,
+            "Provide the file content length",
+        ),
+        (
+            "file_upload_conflict",
+            409,
+            "This file upload identity was used with different contents",
+        ),
+    ];
+    ERRORS
+        .iter()
+        .find(|(code, _, _)| *code == text)
+        .map(|&(code, status, message)| (status, code, message))
 }
 
 async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
@@ -295,7 +522,15 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         return auth::handle_account(req, env, &principal).await;
     }
     let owner = &principal.account_id;
+    if segments.as_slice() == ["v1", "responses"] && req.method() == Method::Get {
+        return crate::response_websocket_executor::connect(req, env, &principal).await;
+    }
     match segments.as_slice() {
+        ["v1", "space", "workspace-versions", tail @ ..] => {
+            crate::workspace_versions::route(req, env, owner, tail).await
+        }
+        ["v1", "containers", cid] => crate::code_context_routes::handle(req, env, owner, cid).await,
+        ["v1", "space" | "files", ..] => crate::space::handle(req, env, owner, &path).await,
         ["v1", "skills"] => crate::skills::handle(req, env, &principal, None).await,
         ["v1", "skills", name] => crate::skills::handle(req, env, &principal, Some(name)).await,
         ["v1", "usage"] if req.method() == Method::Get => {
@@ -308,10 +543,17 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "sessions", id, "workspace", "archive"] => {
             session_route(req, env, owner, id, Some("workspace-archive")).await
         }
+        ["v1", "sessions", id, "workspace", "commit"] => {
+            session_route(req, env, owner, id, Some("workspace-commit")).await
+        }
+        ["v1", "sessions", id, "workspace", "restore"] => {
+            session_route(req, env, owner, id, Some("workspace-restore")).await
+        }
         ["v1", "sessions", id, action] => session_route(req, env, owner, id, Some(action)).await,
         ["v1", "sessions"] if req.method() == Method::Get => Response::from_json(
             &json!({"object":"list","data":Store::new(env).list_sessions(owner).await?}),
         ),
+        ["v1", "vector_stores", ..] => crate::file_search_routes::handle(req, env, owner).await,
         ["v1", "models"] if req.method() == Method::Get => {
             let data = Store::new(env).list_agents(owner).await?.into_iter().map(|agent| {
                 json!({"id":agent.id,"object":"model","created":agent.created_at_ms / 1000,"owned_by":owner})
@@ -326,11 +568,17 @@ async fn dispatch(req: Request, env: &RouteContext<'_>) -> Result<Response> {
         ["v1", "chat", "completions"] if req.method() == Method::Post => {
             chat(req, env, owner).await
         }
+        ["v1", "conversations", ..] => crate::conversation_routes::handle(req, env, owner).await,
+        ["v1", "responses", ..] => crate::response_routes::handle(req, env, owner).await,
         _ => util::json_error(404, "not_found", "Route not found"),
     }
 }
 
-async fn rate_limited(env: &Env, binding: &str, key: String) -> Result<Option<Response>> {
+pub(crate) async fn rate_limited(
+    env: &Env,
+    binding: &str,
+    key: String,
+) -> Result<Option<Response>> {
     if env.rate_limiter(binding)?.limit(key).await?.success {
         return Ok(None);
     }
@@ -343,7 +591,9 @@ async fn rate_limited(env: &Env, binding: &str, key: String) -> Result<Option<Re
     Ok(Some(response))
 }
 
-async fn body<T: DeserializeOwned>(req: &mut Request) -> std::result::Result<T, Response> {
+pub(crate) async fn body<T: DeserializeOwned>(
+    req: &mut Request,
+) -> std::result::Result<T, Response> {
     let mut stream = req
         .stream()
         .map_err(|_| bad_request("Could not read JSON body"))?;
@@ -407,6 +657,11 @@ pub(crate) async fn normalize_model(
         if !valid_byok_model(model) {
             return Ok(false);
         }
+        if model.protocol.is_some_and(|protocol| {
+            protocol.credential_family() != metadata.protocol.credential_family()
+        }) {
+            return Ok(false);
+        }
         // Legacy vendor credentials keep their established registered budgets.
         // New generic endpoints use the explicit (or conservative default) budget.
         let legacy_provider = match metadata.provider.as_str() {
@@ -426,6 +681,11 @@ pub(crate) async fn normalize_model(
         return Ok(true);
     }
     let registry = model_registry(env)?;
+    if model.protocol.is_some_and(|protocol| {
+        protocol.credential_family() != agents_core::ProviderCredentialFamily::Openai
+    }) {
+        return Ok(false);
+    }
     let Some(entry) = registry
         .iter()
         .find(|entry| registered_model(entry, model.provider, &model.model))
@@ -454,10 +714,29 @@ fn registered_model(entry: &ModelConfig, provider: Provider, model: &str) -> boo
     entry.provider == provider && entry.model == model
 }
 
-async fn pin(
+pub(crate) async fn pin(
     env: &RouteContext<'_>,
     agent: &AgentConfig,
 ) -> Result<std::result::Result<PinnedContext, &'static str>> {
+    if let Err(error) =
+        crate::tool_service_routes::validate_owned(env, &agent.owner_id, &agent.tool_services).await
+    {
+        return match error {
+            worker::Error::RustError(code)
+                if matches!(
+                    code.as_str(),
+                    "invalid_tool_services"
+                        | "invalid_image_asset_origin"
+                        | "provider_key_required"
+                        | "provider_key_not_found"
+                        | "tool_service_protocol_unsupported"
+                ) =>
+            {
+                Ok(Err("Tool service route or owned credential is invalid"))
+            }
+            error => Err(error),
+        };
+    }
     if agent.model.provider == Provider::Byok {
         let mut model = agent.model.clone();
         if !normalize_model(env, &agent.owner_id, &mut model).await? {
@@ -525,6 +804,7 @@ async fn agents(
                         | "skills"
                         | "compaction_percent"
                         | "workspace"
+                        | "tool_services"
                 )
             }) {
                 return Ok(bad_request("Unknown agent configuration field"));
@@ -616,17 +896,143 @@ async fn create_session_inner(
     owner: &str,
     agent_id: &str,
 ) -> Result<std::result::Result<SessionRecord, Response>> {
+    create_session_inner_at(env, owner, agent_id, &uuid::Uuid::new_v4().to_string()).await
+}
+
+/// Response retry identity reserves the session ID before admission. A lost edge
+/// observation can reinitialize that exact DO without consuming a second slot.
+pub(crate) async fn response_session(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+        return initialize_response_session(env, session).await;
+    }
+    match create_session_inner_at(env, owner, agent_id, session_id).await {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+                initialize_response_session(env, session).await
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn initialize_response_session(
+    env: &RouteContext<'_>,
+    session: SessionRecord,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    let response = forward(
+        env,
+        &session,
+        Method::Post,
+        "/init",
+        Some(serde_json::to_value(&session)?),
+    )
+    .await?;
+    if response.status_code() < 300 {
+        Ok(Ok(session))
+    } else {
+        Ok(Err(response))
+    }
+}
+
+/// Admit a deterministic fork through the normal concurrency and allowance gate.
+pub(crate) async fn response_branch_session(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    pinned: Option<PinnedContext>,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    response_branch_session_profile(
+        env,
+        owner,
+        agent_id,
+        session_id,
+        pinned,
+        agents_core::RuntimeProfile::Basic1g,
+    )
+    .await
+}
+
+pub(crate) async fn response_session_profile(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    profile: agents_core::RuntimeProfile,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    response_branch_session_profile(env, owner, agent_id, session_id, None, profile).await
+}
+
+pub(crate) async fn response_branch_session_profile(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    pinned: Option<PinnedContext>,
+    profile: agents_core::RuntimeProfile,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+        return initialize_response_session(env, session).await;
+    }
+    match create_session_inner_at_pinned(env, owner, agent_id, session_id, pinned, profile).await {
+        Ok(Ok(session)) => Ok(Ok(session)),
+        result => {
+            if let Some(session) = Store::new(env).get_session(owner, session_id).await? {
+                initialize_response_session(env, session).await
+            } else {
+                result
+            }
+        }
+    }
+}
+
+async fn create_session_inner_at(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<std::result::Result<SessionRecord, Response>> {
+    create_session_inner_at_pinned(
+        env,
+        owner,
+        agent_id,
+        session_id,
+        None,
+        agents_core::RuntimeProfile::Basic1g,
+    )
+    .await
+}
+
+async fn create_session_inner_at_pinned(
+    env: &RouteContext<'_>,
+    owner: &str,
+    agent_id: &str,
+    session_id: &str,
+    retained_pin: Option<PinnedContext>,
+    runtime_profile: agents_core::RuntimeProfile,
+) -> Result<std::result::Result<SessionRecord, Response>> {
     let store = Store::new(env);
     let Some(agent) = store.get_agent(owner, agent_id).await? else {
         return Ok(Err(util::json_error(404, "not_found", "Agent not found")?));
     };
-    let pinned = match pin(env, &agent).await? {
-        Ok(pinned) => pinned,
-        Err(message) => return Ok(Err(bad_request(message))),
+    let pinned = match retained_pin {
+        Some(pinned) => pinned,
+        None => match pin(env, &agent).await? {
+            Ok(pinned) => pinned,
+            Err(message) => return Ok(Err(bad_request(message))),
+        },
     };
+    crate::runtime_profiles::validate_config(env, runtime_profile)?;
     let now = util::now_ms();
     let session = SessionRecord {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: session_id.into(),
         owner_id: owner.into(),
         agent_id: agent_id.into(),
         status: SessionStatus::Idle,
@@ -635,8 +1041,9 @@ async fn create_session_inner(
         input_revision: 0,
         pinned,
         workspace_snapshot: None,
+        runtime_profile,
     };
-    let namespace = env.durable_object("SESSIONS")?;
+    let namespace = crate::runtime_profiles::namespace(env, &session)?;
     let do_id = namespace
         .id_from_name(&format!("{}:{}", owner, session.id))?
         .to_string();
@@ -755,6 +1162,20 @@ async fn session_route(
     };
     match (req.method(), action) {
         (Method::Get, None) => forward(env, &session, Method::Get, "/status", None).await,
+        (Method::Get, Some("view")) => {
+            if req.url()?.query().is_some() {
+                return Ok(bad_request("Session views do not accept query parameters"));
+            }
+            forward_conditional(env, &session, "/view", req.headers().get("If-None-Match")?).await
+        }
+        (Method::Get, Some("messages")) => {
+            let url = req.url()?;
+            let path = match url.query() {
+                Some(query) => format!("/messages?{query}"),
+                None => "/messages".into(),
+            };
+            forward_conditional(env, &session, &path, req.headers().get("If-None-Match")?).await
+        }
         (Method::Get, Some("export")) => {
             let Some(format) = crate::exports::requested_format(&req.url()?) else {
                 return crate::exports::invalid_format();
@@ -779,42 +1200,26 @@ async fn session_route(
             forward(env, &session, Method::Get, "/workspace/archive", None).await
         }
         (Method::Delete, None) => forward(env, &session, Method::Delete, "/close", None).await,
-        (Method::Post, Some("resume")) => {
-            let store = Store::new(env);
-            let resumed = if session.status == SessionStatus::Closed {
-                let limits = store.account_plan(owner).await?.limits();
-                let admitted = store
-                    .resume_session(owner, id, limits.max_concurrent_sessions)
-                    .await?;
-                let Some(current) = store.get_session(owner, id).await? else {
-                    return util::json_error(404, "not_found", "Session not found");
-                };
-                if !admitted && current.status != SessionStatus::Idle {
-                    return util::json_error(
-                        409,
-                        "session_not_resumable",
-                        "Session is busy or your plan's session limit has been reached",
-                    );
-                }
-                current
-            } else {
-                session
-            };
-            if resumed.status != SessionStatus::Idle {
-                return util::json_error(409, "session_busy", "Session is busy");
+        (Method::Post, Some("workspace-commit" | "workspace-restore")) => {
+            if req.url()?.query().is_some() {
+                return Ok(bad_request(
+                    "Workspace actions do not accept query parameters",
+                ));
             }
-            // Admission survives an unknown forwarding outcome. A retry reconciles
-            // the same pinned revision instead of releasing a possibly active slot.
-            forward(
-                env,
-                &resumed,
-                Method::Post,
-                "/resume",
-                Some(serde_json::to_value(&resumed)?),
-            )
-            .await
+            let input: Value = match body(&mut req).await {
+                Ok(input) => input,
+                Err(response) => return Ok(response),
+            };
+            let path = if action == Some("workspace-commit") {
+                "/workspace/commit"
+            } else {
+                "/workspace/restore"
+            };
+            forward(env, &session, Method::Post, path, Some(input)).await
         }
+        (Method::Post, Some("resume")) => resume_session(env, owner, session).await,
         (Method::Post, Some("messages")) => {
+            let signal = req.inner().signal();
             let append: Append = match body(&mut req).await {
                 Ok(input) => input,
                 Err(response) => return Ok(response),
@@ -841,7 +1246,7 @@ async fn session_route(
             if let Err(message) = validate_messages(&append.messages) {
                 return Ok(bad_request(message));
             }
-            run(env, &session, append.messages, append.stream).await
+            run(env, &session, append.messages, append.stream, signal).await
         }
         (Method::Post, Some("steer")) => {
             let steer: Steer = match body(&mut req).await {
@@ -866,7 +1271,48 @@ async fn session_route(
     }
 }
 
+pub(crate) async fn resume_session(
+    env: &RouteContext<'_>,
+    owner: &str,
+    session: SessionRecord,
+) -> Result<Response> {
+    let store = Store::new(env);
+    let resumed = if session.status == SessionStatus::Closed {
+        let limits = store.account_plan(owner).await?.limits();
+        let admitted = store
+            .resume_session(owner, &session.id, limits.max_concurrent_sessions)
+            .await?;
+        let Some(current) = store.get_session(owner, &session.id).await? else {
+            return util::json_error(404, "not_found", "Session not found");
+        };
+        if !admitted && current.status != SessionStatus::Idle {
+            return util::json_error(
+                409,
+                "session_not_resumable",
+                "Session is busy or your plan's session limit has been reached",
+            );
+        }
+        current
+    } else {
+        session
+    };
+    if resumed.status != SessionStatus::Idle {
+        return util::json_error(409, "session_busy", "Session is busy");
+    }
+    // Admission survives an unknown forwarding outcome. A retry reconciles the
+    // same pinned revision instead of releasing a possibly active slot.
+    forward(
+        env,
+        &resumed,
+        Method::Post,
+        "/resume",
+        Some(serde_json::to_value(&resumed)?),
+    )
+    .await
+}
+
 async fn chat(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result<Response> {
+    let signal = req.inner().signal();
     let session_id = req.headers().get("X-Agents-Session")?;
     let input: Chat = match body(&mut req).await {
         Ok(input) => input,
@@ -901,7 +1347,7 @@ async fn chat(mut req: Request, env: &RouteContext<'_>, owner: &str) -> Result<R
             Err(response) => return Ok(response),
         }
     };
-    run(env, &session, input.messages, input.stream).await
+    run(env, &session, input.messages, input.stream, signal).await
 }
 
 async fn run(
@@ -909,6 +1355,7 @@ async fn run(
     session: &SessionRecord,
     messages: Vec<Message>,
     stream: bool,
+    signal: web_sys::AbortSignal,
 ) -> Result<Response> {
     let response = match forward(
         env,
@@ -933,6 +1380,18 @@ async fn run(
             );
             failure.response()?
         }
+    };
+    let response = if stream {
+        crate::chat_relay::wrap(
+            env.env.clone(),
+            session.clone(),
+            env.trace.clone(),
+            response,
+            signal,
+        )
+        .await?
+    } else {
+        response
     };
     let mut response = own_headers(response);
     response
@@ -991,14 +1450,67 @@ impl<'a> RunForwardFailure<'a> {
     }
 }
 
-async fn forward(
+pub(crate) async fn forward(
     env: &RouteContext<'_>,
     session: &SessionRecord,
     method: Method,
     path: &str,
     body: Option<Value>,
 ) -> Result<Response> {
-    let namespace = env.durable_object("SESSIONS")?;
+    forward_inner(env, session, method, path, body, None).await
+}
+
+pub(crate) async fn read_chat_run(
+    env: &Env,
+    session: &SessionRecord,
+    trace: &TraceContext,
+    run: &str,
+) -> Result<Response> {
+    let context = RouteContext::new(env, trace);
+    forward_raw(
+        &context,
+        session,
+        Method::Get,
+        &format!("/chat-runs/{run}?stream=true"),
+        None,
+        None,
+    )
+    .await
+}
+
+async fn forward_conditional(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    path: &str,
+    etag: Option<String>,
+) -> Result<Response> {
+    if etag.as_ref().is_some_and(|value| value.len() > 1024) {
+        return Ok(bad_request("If-None-Match exceeds its limit"));
+    }
+    forward_inner(env, session, Method::Get, path, None, etag.as_deref()).await
+}
+
+async fn forward_inner(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    etag: Option<&str>,
+) -> Result<Response> {
+    let response = forward_raw(env, session, method, path, body, etag).await?;
+    crate::observer_transport::resolve(response).await
+}
+
+async fn forward_raw(
+    env: &RouteContext<'_>,
+    session: &SessionRecord,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+    etag: Option<&str>,
+) -> Result<Response> {
+    let namespace = crate::runtime_profiles::namespace(env, session)?;
     let id = namespace.id_from_name(&format!("{}:{}", session.owner_id, session.id))?;
     let stub = id.get_stub()?;
     let mut init = RequestInit::new();
@@ -1010,6 +1522,9 @@ async fn forward(
     request
         .headers_mut()?
         .set("Content-Type", "application/json")?;
+    if let Some(etag) = etag {
+        request.headers_mut()?.set("If-None-Match", etag)?;
+    }
     env.trace.child().inject(request.headers_mut()?)?;
     stub.fetch_with_request(request).await
 }
@@ -1017,6 +1532,58 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_input_errors_are_bounded_client_errors_not_retryable_server_failures() {
+        for code in [
+            "invalid_attachment",
+            "invalid_file_input",
+            "invalid_file_id",
+            "invalid_file_name",
+            "invalid_file_data",
+            "invalid_image_source",
+            "invalid_image_detail",
+            "invalid_image_size",
+            "unsupported_image_type",
+            "file_requires_workspace",
+            "too_many_input_items",
+            "too_many_content_parts",
+            "invalid_file_checksum",
+            "invalid_file_upload",
+            "invalid_file_request",
+            "invalid_space_request",
+        ] {
+            let (status, actual, message) = classify_error(code);
+            assert_eq!(status, 400, "{code}");
+            assert_eq!(actual, code);
+            assert!(!message.contains("SQL"));
+            assert!(!message.contains("spaces/"));
+        }
+        for code in ["attachments_too_large", "file_too_large"] {
+            let (status, actual, _) = classify_error(code);
+            assert_eq!(status, 413, "{code}");
+            assert_eq!(actual, code);
+        }
+        assert_eq!(classify_error("file_not_found").0, 404);
+        assert_eq!(classify_error("file_length_required").0, 411);
+        assert_eq!(classify_error("file_upload_conflict").0, 409);
+        assert_eq!(classify_error("file_in_use").0, 409);
+        assert_eq!(classify_error("space_limit_exceeded").0, 409);
+        assert_eq!(classify_error("storage_debt").0, 402);
+        for code in [
+            "file_integrity_error",
+            "file_platform_unavailable",
+            "file_upload_failed",
+            "space_not_found",
+            "invalid_image_source: private bytes",
+            "private-file_requires_workspace",
+            "file_not_found: owner-secret",
+        ] {
+            let (status, actual, message) = classify_error(code);
+            assert_eq!((status, actual), (500, "internal_error"), "{code}");
+            assert!(!message.contains(code));
+        }
+    }
 
     #[test]
     fn safe_errors_preserve_actionable_status_without_leaking_backend_details() {
@@ -1027,6 +1594,30 @@ mod tests {
                 "insufficient_credits",
             ),
             ("run_limit_exceeded", 429, "run_limit_exceeded"),
+            ("file_not_found", 404, "file_not_found"),
+            ("file_upload_pending", 409, "file_not_ready"),
+            ("file_workspace_conflict", 409, "file_workspace_conflict"),
+            ("space_quota_exceeded", 409, "space_quota_exceeded"),
+            (
+                "invalid_workspace_restore",
+                400,
+                "invalid_workspace_version",
+            ),
+            (
+                "workspace_version_not_found",
+                404,
+                "workspace_version_not_found",
+            ),
+            (
+                "workspace_version_cursor_not_found",
+                400,
+                "workspace_version_cursor_not_found",
+            ),
+            (
+                "workspace_version_unavailable",
+                409,
+                "workspace_version_unavailable",
+            ),
             ("provider returned HTTP 429", 502, "provider_error"),
             ("provider_usage_missing", 502, "provider_error"),
             ("openrouter_cost_missing", 502, "provider_error"),
@@ -1116,6 +1707,7 @@ mod tests {
             context_window: 65_536,
             max_output_tokens: 4096,
             credential_id: Some("owned-credential".into()),
+            protocol: None,
         };
         assert!(valid_byok_model(&model));
         for name in ["", " padded", "line\nbreak"] {
@@ -1182,5 +1774,12 @@ mod tests {
             assert_eq!(safe["error_code"], code);
             assert!(safe.get("raw_error").is_none());
         }
+    }
+    #[test]
+    fn code_resource_errors_preserve_owned_not_found_and_release_actions() {
+        assert_eq!(classify_error("code_container_not_found").0, 404);
+        assert_eq!(classify_error("code_context_capacity_exceeded").0, 429);
+        assert_eq!(classify_error("code_resource_cleanup_pending").0, 409);
+        assert_eq!(classify_error("code_context_identity_conflict").0, 409);
     }
 }

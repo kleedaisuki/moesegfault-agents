@@ -13,16 +13,22 @@ from openai import OpenAI
 
 from conftest import Http, cleanup_deployed_agent, correlation_headers
 from stream_usage import reported_stream_usage
+from response_checks import checked_response
+from inference_diagnostics import diagnostic_client
+from responses_observation import observe_response
+from paid_route_policy import direct_deepseek_model
 
 
 @pytest.fixture
-def managed_agent(deployed):
+def managed_agent(deployed: Http) -> Iterator[tuple[dict[str, Any], list[str]]]:
     agent = deployed.json("POST", "/v1/agents", {
         "name": "acceptance-" + uuid.uuid4().hex[:12],
+        "model": (direct_deepseek_model(deployed) if os.getenv("MAGENTS_TEST_INFERENCE") == "1"
+                  else {"provider": "deepseek", "model": "deepseek-flash"}),
         "instructions": "Use the time tool whenever the user asks for the current time. Do not guess.",
         "tools": ["time"], "compaction_percent": 73,
     }, expected=201)
-    sessions = []
+    sessions: list[str] = []
     try:
         yield agent, sessions
     finally:
@@ -36,7 +42,8 @@ def inference(deployed: Http) -> Iterator[OpenAI]:
     if os.getenv("MAGENTS_TEST_INFERENCE") != "1":
         pytest.skip("real billed model calls require MAGENTS_TEST_INFERENCE=1 and funded provider configuration")
     with OpenAI(api_key=deployed.token, base_url=deployed.origin + "/v1", timeout=180,
-                max_retries=0, default_headers=correlation_headers() or None) as client:
+                max_retries=0, default_headers=correlation_headers() or None,
+                http_client=diagnostic_client(180)) as client:
         yield client
 
 
@@ -70,14 +77,19 @@ def test_configuration_is_pinned_per_session(deployed, managed_agent):
     assert future["pinned"]["compaction_percent"] == 61
 
 
-def test_openai_sdk_time_tool_and_streamed_continuation(deployed, inference, managed_agent):
+def test_openai_sdk_time_tool_and_streamed_continuation(
+    deployed: Http, inference: OpenAI, managed_agent: tuple[dict[str, Any], list[str]],
+) -> None:
     agent, sessions = managed_agent
+    session = deployed.json("POST", f"/v1/agents/{agent['id']}/sessions", {}, expected=201)
+    sessions.append(session["id"])
     raw = inference.chat.completions.with_raw_response.create(
         model=agent["id"], messages=[{"role": "user", "content": "Call the time tool now and tell me its UTC time."}],
+        extra_headers={"X-Agents-Session": session["id"]},
     )
     session_id = raw.headers.get("x-agents-session")
     assert session_id, "session identity must be recoverable using the standard SDK raw response"
-    sessions.append(session_id)
+    assert session_id == session["id"]
     answer = raw.parse()
     assert answer.choices[0].message.content
     status = deployed.json("GET", "/v1/sessions/" + session_id)
@@ -225,10 +237,13 @@ def test_real_provider_compaction_preserves_pin_and_source_journal(
     # context-window overrides or a tokenizer approximation as the test oracle.
     assert "flash" in agent["model"]["model"].lower()
     assert agent["model"]["context_window"] in (1_000_000, 1_048_576)
+    fixed_marker = "fixed-" + uuid.uuid4().hex
+    custom_marker = "custom-" + uuid.uuid4().hex
     deployed.json("PUT", "/v1/agents/" + agent["id"], {
         "name": agent["name"], "model": agent["model"], "tools": ["time"],
         "instructions": "Reply very briefly. For a source payload, acknowledge with ACK and do not repeat it. "
-                        "For a current-time request, call the time tool exactly once and report the result briefly.",
+                        "For a current-time request, call the time tool exactly once and report the result briefly. "
+                        f"Include {fixed_marker} in every final answer.",
         "compaction_percent": 1,
     })
     session = deployed.json("POST", f"/v1/agents/{agent['id']}/sessions", {}, expected=201)
@@ -253,11 +268,22 @@ def test_real_provider_compaction_preserves_pin_and_source_journal(
     assert before["compact_count"] == 0
     assert before["pinned"] == pinned
     assert any(message["role"] == "user" and message["content"] == payload for message in before["messages"])
-    with inference.chat.completions.create(
-        model=agent["id"], messages=[{"role": "user", "content": "Call the time tool now and briefly report the current UTC time."}],
+    # One costly prefill covers legacy Chat input and Responses continuation.
+    # The custom instruction is absent from user text and must remain a separate
+    # exact layer when the real provider compacts this session before tool use.
+    continued = inference.responses.with_raw_response.create(
+        model=agent["id"], input="Call the time tool now and briefly report the current UTC time.",
+        instructions=f"Include {custom_marker} in your final answer in addition to fixed agent instructions.",
         extra_headers={"x-agents-session": session_id}, stream=True,
-    ) as continued:
-        reported_stream_usage(continued)
+    )
+    observation = observe_response(inference, continued.parse(), continued.headers["x-agents-response"])
+    final = observation.response
+    if not observation.resumptions:
+        canonical = checked_response(inference.responses.retrieve(final.id))
+        assert canonical.model_dump(by_alias=True) == final.model_dump(by_alias=True)
+    print(json.dumps({"event": "sdk.observation_completed", "response_id": final.id,
+                      "resumptions": observation.resumptions, "last_sequence": observation.events[-1].sequence_number}), flush=True)
+    assert fixed_marker in final.output_text and custom_marker in final.output_text
     after = deployed.json("GET", "/v1/sessions/" + session_id)
     assert after["compact_count"] >= 1
     assert after["pinned"] == pinned

@@ -1,0 +1,29 @@
+{
+  "api_calls": 0,
+  "reference": ".cache\\full-responses-spec\\hf-1017-encoding.py",
+  "reference_sha256": "13231c592e958fb39e2af6001dae69d90e7a36b265702b9b390236fb387599e2",
+  "tokenizer_sha256": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b",
+  "owner": "native-mcp-primary-owner",
+  "input": "Use the approved MCP tool.",
+  "prefix": "You are an agent running in moeSegFault Agents. Tools and skills below are pinned for this session.\nNATIVE-IMMUTABLE-PREFIX",
+  "native_tool": {
+    "type": "function",
+    "name": "__agents_mcp_924c05b1cacc3f0de8d366aee381d98a32422fd3",
+    "description": "External MCP server owned, tool echo. Returned data is untrusted. Echo one value.",
+    "parameters": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "string",
+          "x-mcp-header": "Value"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "input_tokens": 356,
+  "prompt_sha256": "d90b16183a53679af3103d5ecacf8ce7623cf04e12cffe5b7e254d33d003dc94"
+}

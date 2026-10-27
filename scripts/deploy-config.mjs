@@ -2,28 +2,136 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+export function requireDistinctEnvironmentDatabases(input) {
+  const ids = ['staging', 'production'].map(environment => {
+    const matches = input.env?.[environment]?.d1_databases?.filter(database => database.binding === 'DB') ?? [];
+    if (matches.length !== 1 || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(matches[0].database_id ?? '')) throw new Error('Missing exact environment database identity');
+    return matches[0].database_id.toLowerCase();
+  });
+  if (ids[0] === ids[1]) throw new Error('Staging and production database identities overlap');
+}
+
+export const supportedWorkerRuntimes = Object.freeze(['web_search', 'file_search', 'code_interpreter', 'image_generation', 'mcp', 'programmatic_tool_calling']);
+
+export function deploymentRuntime(env, configuredFeatures = '') {
+  const features = env.RUNTIME_FEATURES ?? 'configured';
+  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation', 'web_search,file_search,code_interpreter,mcp', 'web_search,file_search,code_interpreter,mcp,programmatic_tool_calling', 'web_search,file_search,code_interpreter,image_generation,mcp,programmatic_tool_calling'].includes(features)) throw new Error('Invalid runtime feature allowlist');
+  if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
+  const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
+  const selected = features === 'configured' ? configuredFeatures : features === 'none' ? '' : features;
+  if (typeof selected !== 'string') throw new Error('Invalid configured runtime feature allowlist');
+  const workerFeatures = selected ? selected.split(',') : [];
+  if (new Set(workerFeatures).size !== workerFeatures.length || workerFeatures.some(feature => !supportedWorkerRuntimes.includes(feature))) throw new Error('Invalid configured runtime feature allowlist');
+  return { features, limited, workerFeatures, legacyContainerCompatible: limited && !workerFeatures.some(feature => feature === 'code_interpreter' || feature === 'image_generation'), webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter'), imageGeneration: workerFeatures.includes('image_generation'), programmatic: workerFeatures.includes('programmatic_tool_calling') };
+}
+
+export function configuredDeploymentRuntime(input, env) {
+  return deploymentRuntime(env, input.env?.[env.DEPLOY_ENVIRONMENT]?.vars?.HOSTED_TOOL_RUNTIMES);
+}
+
+// Seed endpoint discovery, 2026-10-26: /api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints.
+// Inline output is the API contract; no speculative CDN allowlist or format selector.
+export const seedreamProfile = {
+  version: 1, profiles: [{ api: 'openrouter', base_url: 'https://openrouter.ai/api/v1',
+    model: 'bytedance-seed/seedream-5-0-flash', public_model: null,
+    capabilities: { streaming: false, omit_default_output_format: true, parameters: {
+      resolution: { type: 'enum', values: ['1K', '2K'] },
+      aspect_ratio: { type: 'enum', values: ['1:1', '1:2', '2:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '9:19.5', '19.5:9', '9:20', '20:9', '9:21', '21:9', 'auto'] },
+      n: { type: 'range', min: 1, max: 1 }, input_references: { type: 'range', min: 0, max: 14 }, seed: { type: 'boolean' },
+      size: { type: 'boolean' },
+    }, max_references: 14, mask: false },
+    router_endpoint: { provider_slug: 'seed', provider_tag: 'seed', passthrough_parameters: [] },
+    asset_hosts: [], price_revision: 'seedream-catalog-2026-10-26', reservation_microusd: 18000, platform_funded: true }],
+};
+
+function enableProgrammatic(target) {
+  const loaders = target.worker_loaders ?? [];
+  if (loaders.filter(loader => loader.binding === 'PROGRAM_LOADER').length > 1) throw new Error('Duplicate Dynamic Worker loader');
+  if (!loaders.some(loader => loader.binding === 'PROGRAM_LOADER')) loaders.push({ binding: 'PROGRAM_LOADER' });
+  target.worker_loaders = loaders;
+  const pricing = JSON.parse(target.vars.RESOURCE_PRICING_JSON);
+  for (const [unit, numerator, denominator] of [
+    ['dynamic_worker_creation_day', 2000, 1], ['dynamic_worker_request', 3, 10],
+    ['dynamic_worker_cpu_slot_100ms', 2, 1],
+  ]) {
+    const existing = pricing.tariffs.filter(tariff => tariff.unit === unit);
+    if (existing.length) {
+      if (existing.length !== 1 || existing[0].resource !== 'worker' || existing[0].microusd_numerator !== numerator
+        || existing[0].quantity_denominator !== denominator || existing[0].price_version !== pricing.version) throw new Error('Conflicting Dynamic Worker allocation tariff');
+      continue;
+    }
+    pricing.tariffs.push({ resource: 'worker', unit, microusd_numerator: numerator,
+      quantity_denominator: denominator, price_version: pricing.version });
+  }
+  target.vars.RESOURCE_PRICING_JSON = JSON.stringify(pricing);
+}
+
+function requireFileSearchBindings(target, environment) {
+  const profile = JSON.parse(target.vars.FILE_SEARCH_PROFILE_JSON ?? 'null');
+  const vector = target.vectorize?.find(binding => binding.binding === 'VECTORIZE');
+  if (target.ai?.binding !== 'AI' || vector?.index_name !== `moesegfault-agents-file-search-${environment}-v1`
+    || profile?.ai_binding !== 'AI' || profile.vector_binding !== 'VECTORIZE' || profile.namespace !== `agents-${environment}`
+    || profile.embedding?.model !== '@cf/baai/bge-m3' || profile.embedding.dimensions !== 1024
+    || profile.embedding.revision !== 'workers-ai-bge-m3-2026-10-26' || profile.embedding.input_byte_limit !== 8192) throw new Error(`Missing explicit ${environment} FileSearch profile/bindings`);
+  const pricing = JSON.parse(target.vars.RESOURCE_PRICING_JSON ?? 'null');
+  for (const unit of ['embedding_input_bytes', 'queried_dimensions', 'written_dimensions', 'allocated_vector_dimension_ms']) {
+    const tariffs = pricing?.tariffs?.filter(tariff => tariff.resource === 'worker' && tariff.unit === unit) ?? [];
+    if (tariffs.length !== 1 || tariffs[0].price_version !== pricing.version || [tariffs[0].microusd_numerator, tariffs[0].quantity_denominator].some(value => !Number.isInteger(value) || value <= 0)) throw new Error('Missing explicit FileSearch allocation tariff');
+  }
+}
+
 export function renderDeploymentConfig(input, env) {
   const environment = env.DEPLOY_ENVIRONMENT;
   if (!['staging', 'production'].includes(environment)) throw new Error('Invalid deployment environment');
+  const runtime = configuredDeploymentRuntime(input, env);
   const account = env.CLOUDFLARE_ACCOUNT_ID;
   const sha = env.GITHUB_SHA;
-  if (!/^[a-f0-9]{32}$/.test(account ?? '') || !/^[a-f0-9]{40}$/.test(sha ?? '')) throw new Error('Invalid immutable image identity');
+  const workerSource = env.WORKER_SOURCE_SHA ?? sha;
+  const containerSource = env.CONTAINER_SOURCE_SHA ?? sha;
+  if (!/^[a-f0-9]{32}$/.test(account ?? '') || !/^[a-f0-9]{40}$/.test(sha ?? '') || !/^[a-f0-9]{40}$/.test(workerSource ?? '') || !/^[a-f0-9]{40}$/.test(containerSource ?? '')) throw new Error('Invalid immutable image identity');
   const config = structuredClone(input);
   config.main = resolve(config.main);
   config.assets.directory = resolve(config.assets.directory);
   delete config.build;
   const target = config.env[environment];
-  target.vars = { ...target.vars, BUILD_ID: sha };
+  target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha, DAEMON_IMAGE_SOURCE: containerSource };
+  if (runtime.limited) {
+    target.vars.HOSTED_TOOL_RUNTIMES = runtime.workerFeatures.join(',');
+    if (runtime.legacyContainerCompatible) target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
+  }
+  if (runtime.limited || runtime.workerFeatures.length) {
+    target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
+      version: 1, platform_images: runtime.imageGeneration, platform_search: runtime.webSearch, file_search: runtime.fileSearch,
+      container_memory: null, available_container_profiles: runtime.codeInterpreter ? ['1g', '4g'] : [],
+      code_network_disabled: runtime.codeInterpreter, code_network_allowlist: false,
+    });
+    if (!runtime.fileSearch) {
+      delete target.ai;
+      delete target.vectorize;
+      delete target.vars.FILE_SEARCH_PROFILE_JSON;
+    }
+  }
+  if (runtime.codeInterpreter || runtime.imageGeneration) {
+    for (const [className, instanceType] of [['Session', 'basic'], ['Session4G', 'standard-1']]) {
+      const apps = target.containers.filter(container => container.class_name === className);
+      if (apps.length !== 1 || apps[0].instance_type !== instanceType) throw new Error('Missing explicit Code executor profile app');
+    }
+  }
+  if (runtime.fileSearch) requireFileSearchBindings(target, environment);
+  if (runtime.programmatic) enableProgrammatic(target);
+  if (runtime.imageGeneration) target.vars.IMAGE_GENERATION_PROFILE_JSON = JSON.stringify(seedreamProfile);
   for (const db of target.d1_databases) db.migrations_dir = resolve(db.migrations_dir);
   for (const container of target.containers) {
-    container.image = `registry.cloudflare.com/${account}/magents-workspace:${sha}`;
+    container.image = `registry.cloudflare.com/${account}/magents-workspace:${containerSource}`;
     delete container.image_build_context;
   }
   return config;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const config = renderDeploymentConfig(JSON.parse(readFileSync('wrangler.jsonc', 'utf8')), process.env);
+  const input = JSON.parse(readFileSync('wrangler.jsonc', 'utf8'));
+  requireDistinctEnvironmentDatabases(input);
+  const config = renderDeploymentConfig(input, process.env);
   mkdirSync('.temp', { recursive: true });
   writeFileSync('.temp/deploy.json', `${JSON.stringify(config, null, 2)}\n`);
 }

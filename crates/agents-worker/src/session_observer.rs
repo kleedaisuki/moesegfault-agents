@@ -1,14 +1,14 @@
-use futures::channel::{mpsc, oneshot};
+use futures::channel::mpsc;
 use serde_json::{Value, json};
 
-use crate::provider::Usage;
+use crate::{observer_transport, provider::Usage};
 
 pub(super) type CompletionResult = std::result::Result<Value, String>;
 type StreamSender = mpsc::UnboundedSender<worker::Result<Vec<u8>>>;
 
 enum Transport {
     Stream(StreamSender),
-    Json(oneshot::Sender<CompletionResult>),
+    Json(observer_transport::Sender),
 }
 
 /// A live observer belongs to one run, independently of mutable session state.
@@ -27,10 +27,7 @@ impl Observer {
         }
     }
 
-    pub(super) fn json(
-        run_id: impl Into<String>,
-        sender: oneshot::Sender<CompletionResult>,
-    ) -> Self {
+    pub(super) fn json(run_id: impl Into<String>, sender: observer_transport::Sender) -> Self {
         Self {
             run_id: run_id.into(),
             transport: Transport::Json(sender),
@@ -55,9 +52,18 @@ impl Observer {
     /// does not cancel execution or justify replaying provider/tool side effects.
     pub(super) fn complete(self, outcome: CompletionResult, model: &str, usage: &Usage) -> bool {
         match self.transport {
-            Transport::Json(sender) => sender.send(outcome).is_ok(),
+            Transport::Json(sender) => {
+                let (status, body) = match outcome {
+                    Ok(value) => (200, value),
+                    Err(error) => {
+                        let (status, code, message) = crate::routes::classify_error(&error);
+                        (status, crate::util::error_body(code, message))
+                    }
+                };
+                observer_transport::publish(sender, status, body)
+            }
             Transport::Stream(sender) => {
-                let value = terminal_frame(&self.run_id, outcome, model, usage);
+                let value = terminal_frame(&self.run_id, &outcome, model, usage);
                 let terminal = sender
                     .unbounded_send(Ok(format!("data: {value}\n\n").into_bytes()))
                     .is_ok();
@@ -70,7 +76,12 @@ impl Observer {
     }
 }
 
-fn terminal_frame(run_id: &str, outcome: CompletionResult, model: &str, usage: &Usage) -> Value {
+pub(super) fn terminal_frame(
+    run_id: &str,
+    outcome: &CompletionResult,
+    model: &str,
+    usage: &Usage,
+) -> Value {
     match outcome {
         Ok(value) => {
             // Reuse the durable completion's timestamp, so terminal replay does
@@ -89,7 +100,7 @@ fn terminal_frame(run_id: &str, outcome: CompletionResult, model: &str, usage: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::{StreamExt, executor::block_on};
+    use futures::{FutureExt, StreamExt, executor::block_on};
 
     fn completion() -> CompletionResult {
         Ok(json!({"created":123,"choices":[{"message":{"role":"assistant","content":"done"}}]}))
@@ -97,21 +108,25 @@ mod tests {
 
     #[test]
     fn captured_old_observer_does_not_steal_new_attachment() {
-        let (old_sender, old_receiver) = oneshot::channel();
+        let (old_sender, old_receiver) = mpsc::unbounded();
         let mut slot = Some(Observer::json("old", old_sender));
         let old = slot.take().unwrap();
-        let (new_sender, mut new_receiver) = oneshot::channel();
+        let (new_sender, mut new_receiver) = mpsc::unbounded();
         slot = Some(Observer::json("new", new_sender));
         assert!(old.complete(completion(), "agent", &Usage::default()));
-        assert!(block_on(old_receiver).unwrap().is_ok());
-        assert_eq!(new_receiver.try_recv().unwrap(), None);
+        let old_reply = block_on(observer_transport::decode(old_receiver)).unwrap();
+        assert_eq!(old_reply.status, 200);
+        assert_eq!(old_reply.body, completion().unwrap());
+        assert!(new_receiver.next().now_or_never().is_none());
         assert!(slot.as_ref().unwrap().matches("new"));
         assert!(
             slot.take()
                 .unwrap()
                 .complete(Err("new_error".into()), "agent", &Usage::default())
         );
-        assert_eq!(block_on(new_receiver).unwrap(), Err("new_error".into()));
+        let new_reply = block_on(observer_transport::decode(new_receiver)).unwrap();
+        assert_eq!(new_reply.status, 500);
+        assert_eq!(new_reply.body["error"]["code"], "internal_error");
     }
 
     #[test]
@@ -120,7 +135,7 @@ mod tests {
         let observer = Observer::stream("run", sender);
         assert!(observer.stream_sender("other").is_none());
         assert!(observer.stream_sender("run").is_some());
-        let (sender, _receiver) = oneshot::channel();
+        let (sender, _receiver) = mpsc::unbounded();
         let json = Observer::json("run", sender);
         assert!(json.stream_sender("run").is_none());
         drop(observer);
@@ -172,7 +187,7 @@ mod tests {
 
     #[test]
     fn cancelled_observer_reports_no_channel_acceptance() {
-        let (sender, receiver) = oneshot::channel();
+        let (sender, receiver) = mpsc::unbounded();
         drop(receiver);
         assert!(!Observer::json("run", sender).complete(completion(), "agent", &Usage::default()));
         let (sender, receiver) = mpsc::unbounded();

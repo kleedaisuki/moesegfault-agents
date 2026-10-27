@@ -10,9 +10,89 @@ Initial resources were provisioned in the Cloudflare account belonging to this r
 
 `CI` computes affected areas from the actual Git diff. Documentation-only changes do not rebuild the platform; dashboard-only changes do not build containers. Native Rust checks, wasm/Worker builds, dashboard interaction tests and isolated container journeys run independently. Cargo, npm and Docker BuildKit caches are keyed by their real inputs. Actions are pinned by commit; Dependabot reviews updates.
 
+Schema-only changes run the native SQL checks and compiled-Worker integration,
+without rebuilding the container. Responses and Space SDK contract changes run
+the tooling lane; deployed journeys are also collected there to catch invalid
+imports before delivery. Python 3.13 jobs share the lock-keyed pip download cache
+through [setup-python](https://github.com/actions/setup-python#caching-packages-dependencies),
+but create a fresh virtual environment and install the locked requirements on
+every run. Acceptance state, credentials, transcripts and test output are never
+dependency-cache inputs.
+
+The compiled-Worker lane also validates actual Responses objects and streaming
+events against the locked official Python SDK, rather than relying only on the
+Node SDK's permissive runtime parsing. It reuses the same pip download cache and
+sets `MAGENTS_SCHEMA_PYTHON` for the fixture subprocess. The existing Rust library
+test writes the bounded data-flow workload receipt; CI uploads it separately as
+`performance-v3`, never under the `worker` release artifact, so artifact directory
+roots and exact-source deployment layout remain unchanged. These workload figures
+are synthetic transfer measurements, not production latency or CPU benchmarks.
+
+Staging delivery requires both dedicated tenant credentials before changing
+infrastructure. After rollout, the public health build must match the exact CI
+source before the original Chat Completions, Responses and Space journeys run.
+Both the locked Python SDK and the pinned official Node SDK exercise Responses;
+the latter runs on the same Node 24 toolchain as Worker tooling.
+All selected staging cases are mandatory (`MAGENTS_TEST_REQUIRE_ALL=1`): a missing
+opt-in or skipped prerequisite fails acceptance instead of producing a green
+deployment with untested features. Local collection and explicitly opted-in
+manual tests retain their normal skip behavior. Production promotion still uses
+the successful exact-source CI artifacts; a docs-only green run is not sufficient
+because it does not supply the required Worker/dashboard artifacts.
+
 Dashboard browser journeys use the Ubuntu 24.04 runner's installed Google Chrome through the existing Playwright executable-path option. The step logs the actual browser version and fails if it is absent; all interaction tests remain mandatory. This avoids re-downloading system fonts through the runner's slow APT mirror (over eleven minutes for 25.9 MB in run `39985741803`; the six browser journeys took 12.2 seconds). This tests the maintained Chrome channel, not an exactly pinned browser build. See the [versioned runner image manifest](https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md) and [Playwright's Chrome support](https://playwright.dev/docs/browsers#google-chrome--microsoft-edge).
 
-The initial deployment uses a manual **CI** dispatch, which forces all areas and produces `worker` and `dashboard` artifacts. Then dispatch **Deploy** on the same commit with `environment=staging` and that successful `source_run`. Deploy verifies exact source SHA, successful CI, workflow identity and non-PR origin. Missing environment-paired secrets stop delivery before infrastructure changes. Container images are published before the Worker changes because Cloudflare Worker/image rollout is not transactional. The deployment points at a commit-tagged Cloudflare registry image and reuses the verified Worker/UI artifacts.
+The initial deployment uses a manual **CI** dispatch, which forces all areas and
+produces `worker`, `dashboard` and `container-image` artifacts. Then dispatch
+**Deploy** on the same commit with `environment=staging` and that successful
+`source_run`. Deploy verifies exact source SHA, successful CI, workflow identity
+and non-PR origin. Missing environment-paired secrets stop delivery before
+infrastructure changes. Container images are published before the Worker changes
+because Cloudflare Worker/image rollout is not transactional. The deployment
+points at a commit-tagged Cloudflare registry image and reuses all three verified
+artifacts from the same CI run.
+
+After the real container journeys succeed, CI uses standard
+[`docker image save`](https://docs.docker.com/reference/cli/docker/image/save/)
+and gzip to preserve the tested image, checks a save/load roundtrip, and retains
+the compressed image artifact for seven days without redundant ZIP compression.
+Its receipt contains the source SHA, immutable local tag, platform, Docker
+image/config ID and compressed archive SHA-256, but no environment or credential
+fields. Deploy verifies the receipt and archive hash **before** Docker load, then
+checks the loaded image identity before Cloudflare publication. The image/config
+ID is not represented as a registry manifest digest; registry publication remains
+separate evidence. Staging and production use the same accepted `source_run`.
+Deploy never rebuilds the container or falls back to a different run. Missing or
+expired artifacts require a new full CI run and staging acceptance, not silently
+regenerated production binaries. This removes a redundant image build from each
+environment rollout while keeping dependency updates inside tested CI.
+
+### Artifact-only Worker diagnostics
+
+The existing registered CI workflow has an optional `diagnostic_run` dispatch
+input. It replays current non-secret fixtures against a retained Worker artifact,
+without Rust/Docker builds, deployed credentials or infrastructure changes:
+
+```sh
+gh workflow run ci.yml --ref BRANCH -f diagnostic_run=40116721317
+```
+
+Using an existing workflow avoids GitHub's
+[default-branch registration requirement](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+for newly added workflows. The source must be a completed trusted same-repository
+CI run with an unexpired `worker` artifact; failed CI is intentionally allowed
+for diagnosis. The receipt distinguishes binary source SHA from fixture source
+SHA. Diagnostics use an isolated concurrency group, skip every normal CI job,
+and publish only a distinctly named diagnostic artifact. They cannot cancel an
+ordinary build or authorize a release.
+
+Deploy rejects the diagnostic run-name prefix and, before downloading artifacts
+or changing infrastructure, requires all six normal CI jobs (`changes`, `rust`,
+`worker`, `dashboard`, `container`, `tooling`) to be completed and successful at
+the exact source/run identity. Skipped or missing jobs are not release evidence.
+The Jobs API lookup is bounded to one 100-job page and fails closed if incomplete;
+this workflow has six required non-matrix jobs. This also excludes docs-only or
+partial green CI from the full-release path.
 
 ```sh
 gh workflow run ci.yml --ref main
@@ -173,3 +253,230 @@ Subscribe/Billing production promotion 40102195561 preceded Agents. The
 records the authoritative bindings/versions and actual production return journey.
 CLI `v0.2.0` is the immutable `265e0ea` tag with four verified public Linux/Windows
 assets; production export acceptance includes the original v0.1 user snapshot.
+
+## v0.3 configured production readiness (2026-10-27)
+
+This is prepared configuration, **not a production deployment or authorization**.
+The production target now explicitly selects all six hosted runtimes. A target
+with no `HOSTED_TOOL_RUNTIMES` still selects none: enabling new services is never
+an implicit fallback for an old configuration. Staging's explicit finite feature
+overrides remain staging-only.
+
+`configuredDeploymentRuntime` is the single resolution boundary used by rendering,
+CI provenance and credential preflight. In particular, `configured` means the
+selected target's actual vars, not an empty runtime list. The common renderer
+materializes reviewed capabilities, native Loader and Seedream profile for either
+realm. Re-rendering retains an identical Loader allocation tariff rather than
+appending duplicates; conflicting values fail before deployment. No provider call
+is used to validate configuration.
+
+The production Vectorize binding names
+`moesegfault-agents-file-search-production-v1`, with namespace `agents-production`,
+1024-dimensional BGE-M3 and the reviewed byte/dimension allocation rates. It may
+not point to staging's index or namespace. Existing production D1/R2 identities,
+model registry/default route, model rates, core resource rates and price version
+are unchanged. Added resource units do not rewrite old observation prices. The
+1g/4g executor classes retain their existing SKUs and both reference the actual
+verified daemon image source, separately from the assembly SHA. FileIngest's
+existing additive migration/binding is retained.
+
+### Read-only live prerequisites
+
+At **2026-10-27 04:55:44 UTC**, existing Wrangler authentication was used only for
+`secret list --env production --format json` and `vectorize list --json`:
+
+| Check | Actual finding | Required action after root release clearance |
+| --- | --- | --- |
+| Production secret names | `DATA_ENCRYPTION_KEY`, `IDENTITY_CLIENT_PRIVATE_JWK`, `OPENROUTER_API_KEY`; no `DEEPSEEK_API_KEY` | The protected deployment preparation installs the approved GitHub key before full Worker promotion. Do not rotate or overwrite existing envelope/signing keys. |
+| Vectorize index names | Only `moesegfault-agents-file-search-staging-v1` | Create `moesegfault-agents-file-search-production-v1`, dimensions 1024, cosine metric; verify the exact binding/profile pair. Never reuse or rename the staged index. |
+
+No secrets/OAuth values, model requests, index creation, secret writes, D1 mutation,
+Worker deployment or production activation were performed by this readiness work.
+The safe receipt is `.temp/readiness/production-inventory.json` in the configuration
+worktree; these durable facts do not depend on retaining that temporary file.
+
+The ordinary deployment still requires completed normal incremental CI and the
+root's explicit production release decision. Credential preflight now checks the
+resolved selected services for both realms before infrastructure changes. The standard protected deployment now prepares the missing production
+dependencies before the full Worker changes, closing the former missing-key
+window. The later environment-paired bulk sync remains an authoritative reassertion.
+Staging success does not prove production resource or secret presence.
+
+Focused configuration verification ran only three new rendering contracts and
+one new workflow/credential/provenance contract, plus the single affected workflow
+assertion updated for the common resolver. They passed without a Rust build or
+paid/remote model call; no old deployment suite or accepted runtime journey ran.
+
+### Protected dependency preparation before full rollout
+
+`prepare-deployment-dependencies.mjs` runs only in the existing `Deploy` workflow
+`deploy` job for **production only**, after exact artifact provenance, environment credential checks and
+the paid-rerun guard, but before container publication, D1 migrations or full
+Worker deployment. The job still uses its selected protected GitHub environment;
+this script does not authorize a release. Staging keeps its already-accepted
+provisioning/secret flow and is not given a new metadata permission or write requirement.
+
+It uses the same reviewed configured/overridden feature plan as deployment. For
+selected FileSearch it checks the fixed realm-specific Vectorize V2 index through
+the [official Cloudflare API](https://developers.cloudflare.com/api/resources/vectorize/subresources/indexes/methods/create/).
+Only an authenticated JSON HTTP 404 allows creating the absent 1024/cosine index,
+then exact readback is required. A mismatched existing index, denied request,
+malformed response or ambiguous create stops the job. It never deletes, recreates
+or modifies an existing index. A retry observes the exact existing resource first.
+
+When the selected route needs DeepSeek, the script first verifies the existing
+serving Worker, then sends only `DEEPSEEK_API_KEY` via Wrangler secret-put stdin.
+It neither reads nor copies staging keys, nor sends identity/encryption/OpenRouter
+credentials to that command. Repository/environment GitHub secret resolution
+supplies the approved value; no production-specific duplicate is required when
+the repository value is intentionally approved. Missing keys fail before any
+preparation mutation. No provider inference or credential-value readback occurs.
+
+The retained `dependency-preparation.json` records stage, exact resource, method,
+HTTP status, request ID, response bytes/hash, Cloudflare error codes and bounded
+redacted diagnostics. Metadata is captured before parsing; transport ambiguity is
+not reported as successful creation. CLI key material is never in arguments or
+ordinary logs, and known secret values are redacted before diagnostic truncation.
+Five new offline Fake-CF/command/workflow contracts cover existing/create/readback,
+non-404 rejection, configuration mismatch, legacy no-op, stdin-only scope and
+pre-upload ordering. They passed without a Worker build or actual production write.
+
+### Authorized manual inspection / recovery commands
+
+The following are **manual inspection/recovery instructions, not commands executed by this change**.
+Ordinary delivery uses the automatic protected preparation above. For manual recovery,
+wait for the root's production clearance and use the production credential it
+approves. A staging key's presence does not authorize copying it or establish a
+production credential. The runtime preflight reads the GitHub environment's
+`DEEPSEEK_API_KEY` and fails before migrations, container publication or Worker
+rollout if selected search has no key.
+
+1. Inventory by exact name again before writing; create only the absent index:
+
+   ```sh
+   npx wrangler vectorize get moesegfault-agents-file-search-production-v1 --json
+   npx wrangler vectorize create moesegfault-agents-file-search-production-v1 --dimensions 1024 --metric cosine
+   npx wrangler vectorize get moesegfault-agents-file-search-production-v1 --json
+   ```
+
+   An existing index with a different dimension or metric is a stop/review condition,
+   not permission to delete/recreate it. Do not modify the staged index.
+
+2. Provision the same approved production value through a non-logged secret-manager
+   stdin/interactive integration into both the GitHub **production environment** and
+   the already-serving production Worker, before full rollout:
+
+   ```sh
+   gh secret set DEEPSEEK_API_KEY --env production
+   npx wrangler secret put DEEPSEEK_API_KEY --env production --config wrangler.jsonc
+   npx wrangler secret list --env production --config wrangler.jsonc --format json
+   ```
+
+   The first two commands accept the secret through their protected input; do not
+   use command-line arguments, shell history, diagnostic artifacts or chat for its
+   value. Read back secret **names**, never values. Keep existing production
+   identity/encryption credentials untouched. Do not use the bulk-sync helper with
+   partially populated identity/encryption inputs just to add this one secret.
+
+3. After readback, let the existing normal artifact/provenance and protected
+   production-environment workflow perform the approved full deployment. Check its
+   serving build/component identities; resource existence alone is not acceptance.
+
+### Non-billable production DeepSeek credential gate
+
+The approved repository key may differ from the already-tested staging environment
+key. Before any Cloudflare request or mutation, the production dependency step
+therefore checks that value against DeepSeek's official authenticated
+[`GET /models`](https://api-docs.deepseek.com/api/list-models/), using its documented
+[Bearer authentication](https://api-docs.deepseek.com/api/deepseek-api/).
+This is metadata inspection, not inference or account/balance inspection.
+
+The endpoint and method are fixed, redirects are manual, the deadline is 15 seconds
+and response buffering is bounded to 256 KiB. HTTP 200 with strict UTF-8 JSON and a
+nonempty model list is required. Canonical model identifiers are not compared to
+agent aliases; the check does not pretend to validate every route, paid balance
+or generation capability. A failure stops before index creation, secret writes,
+migrations or full Worker rollout. There is no automatic retry or model call.
+
+Only status, request ID, elapsed time, received bytes, a complete-body hash and a
+fixed error code are retained. Partial/oversized bodies have no fabricated complete
+hash. Key values, catalog contents, prompts and account/balance data are not logged.
+The new gate is independently injectable in the already-accepted CF dependency
+contracts; those five contracts were not replayed. Four new offline metadata and
+ordering contracts passed for authenticated 200/unknown canonical identifiers,
+401/redirect/malformed JSON and UTF-8/empty lists, body/time bounds, and the absence
+of any Cloudflare access after a rejected key. No real production credential
+request, provider inference or production mutation was made for this change.
+
+## Protected production preparation: exact authentication boundary
+
+The first authorized standard production run `40464754760`, immutable source
+`6bb7e90f9c8b048f18c1d0152c777ac542551448` / normal CI `40463892529`, stopped
+at dependency preparation before any production mutation or code rollout.
+
+| Read-only preparation boundary | Actual result |
+| --- | --- |
+| Official nonbillable DeepSeek `GET /models` with the new production-selected key | HTTP 200, valid nonempty model list, 464 ms, 802 bytes; response SHA256 `b4a502059eb2dafad6380e0a57b2debf31219ae859cba9f0e019d48ae473be2f`; no inference, balance inspection or credential value logging |
+| Cloudflare existing Worker settings with the deployment token | HTTP 200, 309 ms, 7,466 bytes; request/ray `a50fd76b68adb84e-LAX` |
+| Cloudflare isolated production Vectorize index metadata with that same token | HTTP 403, error 10000 `Authentication error`, 119 ms, 206 bytes; request/ray `a50fd76d2de8b84e-LAX`; response SHA256 `44300b92a98f1236205d3110c9cbf50911110e2996ca2a0f692766afb7fd8013` |
+
+This separates a valid DeepSeek credential and working Worker-settings access
+from missing Vectorize access; it is not a blanket provider/application failure.
+No index creation, DeepSeek secret pre-put, D1 migration, full Worker deployment,
+model invocation, container acceptance or public release occurred. Existing
+Identity, Data and OpenRouter credentials were not changed. The failure and
+all successful earlier read-only observations are preserved together in the
+uploaded `dependency-preparation.json`, not reduced to a generic error message.
+
+The remedy is to retain existing deployment-token permissions and add the
+required Vectorize Read/Edit access for the intended account, updating the
+appropriate GitHub `CLOUDFLARE_API_TOKEN` secret without sharing its value in chat.
+Do not bypass the protected workflow using a more privileged local OAuth token,
+perform a local production mutation, or blindly rerun the failed job. A subsequent
+single standard run requires explicit root authorization after the credential
+configuration change is confirmed. The old production source stays authoritative
+until a later deployment actually succeeds.
+
+## Authorized retry and production control-plane closure
+
+After the user confirmed the deployment-token permission update, root authorized
+one retry of **only the failed job in the same run `40464754760`**, attempt 2.
+The immutable source and artifacts remained `6bb7e90` / normal `40463892529`;
+there was no rebuild, paid provider smoke, user-data acceptance, tag or release
+operation in that retry. Attempt 1 remains a separately retained failure.
+
+Attempt 2 completed successfully. Its exact artifact is `12717050101` (not the
+older failed-attempt artifact `12715732692`). The receipt proves official
+nonbillable DeepSeek model metadata HTTP 200 in 561 ms, 802 bytes; existing Worker
+settings HTTP 200; isolated production Vectorize lookup HTTP 404, create HTTP 201,
+and 1024-dimensional cosine configuration readback HTTP 200. The DeepSeek secret
+was prepared before the full Worker rollout. Preparation writes only that approved
+secret; regular deployment subsequently uses the existing environment-paired
+secret synchronization. Secret-value equality is not inferred from name-only
+reads, and no secret value was read or printed by the operator.
+
+Public production `/healthz` returned HTTP 200 with exact Worker build
+`6bb7e90f9c8b048f18c1d0152c777ac542551448`. Control-plane readback distinguishes
+upload version `ebd68243-6382-4da3-ab91-88f96862a48d` from the actual post-secret-sync
+serving version **`907e57a5-6d58-4ed9-941f-c6e8f1a5d59d`**, which receives 100% of
+traffic in deployment `33ea9d17-6192-4b3e-8580-c296edd345d1`.
+
+The serving version exposes the expected full six runtime flags, native
+`PROGRAM_LOADER`, Rust `FILE_INGEST` binding, production-only namespace
+`agents-production` and isolated index
+`moesegfault-agents-file-search-production-v1` (1024 dimensions, cosine).
+Read-only D1 migration-name inventory contains all 30 additive migrations through
+`0030_document_conversion_diagnostics.sql`. Name-only secret inventory contains
+`DATA_ENCRYPTION_KEY`, `IDENTITY_CLIENT_PRIVATE_JWK`, `OPENROUTER_API_KEY` and the
+new `DEEPSEEK_API_KEY`. No Identity service logic or user-data read/write was
+performed by this control-plane operator. Legacy production data compatibility
+and public main/tag/release remain separate root-authorized gates; a successful
+rollout alone is not relabelled as those acceptances.
+
+Actual component identities remain Worker `6bb7e90`, daemon `3539c1c` and dashboard
+`1b7f2cd`. Native Linux/Windows archives retain their original `bb18283` build
+metadata, validated by native fingerprint rather than rewritten to the later
+assembly or documentation SHA. Full typed preparation/provenance, serving-version
+bindings, traffic, migration-name and secret-name-only receipts are retained in
+`.temp/features-staging/prod-40464754760-attempt2/`; the permanent facts above do
+not depend on keeping transient collector processes alive.

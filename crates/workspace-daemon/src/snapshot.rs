@@ -187,11 +187,13 @@ impl SnapshotStore {
     pub fn create(&self) -> Result<SnapshotArtifact> {
         let dir = Dir::open_ambient_dir(self.current()?, ambient_authority())?;
         let mut temp = tempfile::NamedTempFile::new_in(self.root.join("archives"))?;
+        // R2 independently verifies the later native file stream before its
+        // pointer can publish; do not reread the archive just to derive this hash.
         let encoder = zstd::stream::write::Encoder::new(
-            LimitedWriter {
+            DigestWriter::new(LimitedWriter {
                 inner: temp.as_file_mut(),
                 left: self.archive_limit(),
-            },
+            }),
             3,
         )?;
         let mut tar = tar::Builder::new(encoder);
@@ -199,6 +201,7 @@ impl SnapshotStore {
         let mut bytes = 0;
         self.pack(&dir, Path::new(""), &mut tar, &mut records, &mut bytes)?;
         validate_links(&records)?;
+        let entries = records.len() as u64;
         let manifest = serde_json::to_vec(&Manifest {
             version: 1,
             entries: records,
@@ -209,11 +212,11 @@ impl SnapshotStore {
         );
         let mut header = header(false, manifest.len() as u64, 0o600);
         tar.append_data(&mut header, MANIFEST, manifest.as_slice())?;
-        tar.into_inner()?.finish()?.flush()?;
+        let mut writer = tar.into_inner()?.finish()?;
+        writer.flush()?;
+        let sha256 = writer.finish();
         temp.as_file().sync_all()?;
         let archive_bytes = temp.as_file().metadata()?.len();
-        let sha256 = hash_file(temp.path())?;
-        let entries = count_manifest(&manifest)?;
         let metadata = SnapshotMetadata {
             format_version: 1,
             sha256,
@@ -538,9 +541,6 @@ impl SnapshotStore {
     }
 }
 
-fn count_manifest(bytes: &[u8]) -> Result<u64> {
-    Ok(serde_json::from_slice::<Manifest>(bytes)?.entries.len() as u64)
-}
 fn is_false(value: &bool) -> bool {
     !value
 }
@@ -815,6 +815,12 @@ fn restored_mtime(seconds: u64) -> Result<SystemTime> {
         .checked_add(Duration::from_secs(seconds))
         .context("snapshot mtime is not representable")
 }
+
+#[cfg(test)]
+std::thread_local! {
+    static CHECKSUM_FILE_READ_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn hash_file(path: &Path) -> Result<String> {
     let mut reader = HashReader {
         inner: File::open(path)?,
@@ -822,12 +828,44 @@ fn hash_file(path: &Path) -> Result<String> {
         bytes: 0,
     };
     io::copy(&mut reader, &mut io::sink())?;
+    #[cfg(test)]
+    CHECKSUM_FILE_READ_BYTES.with(|bytes| bytes.set(bytes.get().saturating_add(reader.bytes)));
     Ok(hex::encode(reader.hash.finalize()))
 }
 struct HashReader<R> {
     inner: R,
     hash: Sha256,
     bytes: u64,
+}
+
+struct DigestWriter<W> {
+    inner: W,
+    hash: Sha256,
+}
+
+impl<W> DigestWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            hash: Sha256::new(),
+        }
+    }
+
+    fn finish(self) -> String {
+        hex::encode(self.hash.finalize())
+    }
+}
+
+impl<W: Write> Write for DigestWriter<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(data)?;
+        self.hash.update(&data[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 // Validate framing before tar sees a header: its GNU longname parser allocates the
@@ -1066,6 +1104,221 @@ fn prepare_tree(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ShortWriter {
+        bytes: Vec<u8>,
+        limit: usize,
+        fail: bool,
+    }
+
+    impl Write for ShortWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail {
+                return Err(io::Error::other("injected write failure"));
+            }
+            let written = bytes.len().min(self.limit);
+            self.bytes.extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn compressed_digest_tracks_only_successful_writes_across_every_byte_value() {
+        let bytes = (0u8..=255).cycle().take(8193).collect::<Vec<_>>();
+        for limit in [1, 3, 17, 4096, bytes.len()] {
+            for width in [1, 7, 512, bytes.len()] {
+                let mut writer = DigestWriter::new(ShortWriter {
+                    bytes: Vec::new(),
+                    limit,
+                    fail: false,
+                });
+                for part in bytes.chunks(width) {
+                    writer.write_all(part).unwrap();
+                }
+                writer.flush().unwrap();
+                assert_eq!(writer.inner.bytes, bytes);
+                assert_eq!(writer.finish(), hex::encode(Sha256::digest(&bytes)));
+            }
+        }
+        let mut writer = DigestWriter::new(ShortWriter {
+            bytes: Vec::new(),
+            limit: 3,
+            fail: false,
+        });
+        assert_eq!(writer.write(b"accepted").unwrap(), 3);
+        writer.inner.fail = true;
+        assert!(writer.write(b"not accepted").is_err());
+        assert_eq!(writer.finish(), hex::encode(Sha256::digest(b"acc")));
+    }
+
+    #[test]
+    fn archive_digest_includes_zstd_finalization_and_matches_independent_readback() {
+        let temp = crate::test_dir();
+        let store = SnapshotStore::open(temp.path().to_owned(), 2 * 1024 * 1024, 8).unwrap();
+        for bytes in [0, 1, 8193, 1024 * 1024] {
+            let data = (0u8..=255).cycle().take(bytes).collect::<Vec<_>>();
+            let file = store.current().unwrap().join("binary");
+            fs::write(&file, &data).unwrap();
+            CHECKSUM_FILE_READ_BYTES.with(|read| read.set(0));
+            let artifact = store.create().unwrap();
+            assert_eq!(
+                CHECKSUM_FILE_READ_BYTES.with(std::cell::Cell::get),
+                0,
+                "Creating an archive must not reopen it for a checksum pass"
+            );
+            assert_eq!(artifact.metadata.sha256, hash_file(&artifact.path).unwrap());
+            assert_eq!(artifact.metadata.entries, 1);
+            assert_eq!(artifact.metadata.logical_bytes, bytes as u64);
+            store
+                .restore(&artifact.path, &artifact.metadata.sha256)
+                .unwrap();
+            assert_eq!(
+                fs::read(store.current().unwrap().join("binary")).unwrap(),
+                data
+            );
+        }
+    }
+
+    fn write_archive_copy(path: &Path, bytes: &[u8], streaming: bool) -> (String, u64, u128) {
+        let started = std::time::Instant::now();
+        let mut output = File::create(path).unwrap();
+        let digest = if streaming {
+            let mut writer = DigestWriter::new(&mut output);
+            for chunk in bytes.chunks(128 * 1024) {
+                writer.write_all(chunk).unwrap();
+            }
+            writer.flush().unwrap();
+            Some(writer.finish())
+        } else {
+            for chunk in bytes.chunks(128 * 1024) {
+                output.write_all(chunk).unwrap();
+            }
+            output.flush().unwrap();
+            None
+        };
+        output.sync_all().unwrap();
+        let (digest, read_bytes) = match digest {
+            Some(digest) => (digest, 0),
+            None => {
+                let mut reader = HashReader {
+                    inner: File::open(path).unwrap(),
+                    hash: Sha256::new(),
+                    bytes: 0,
+                };
+                io::copy(&mut reader, &mut io::sink()).unwrap();
+                (hex::encode(reader.hash.finalize()), reader.bytes)
+            }
+        };
+        (digest, read_bytes, started.elapsed().as_nanos())
+    }
+
+    #[test]
+    fn checkpoint_digest_and_manifest_cost_receipt() {
+        let temp = crate::test_dir();
+        let store =
+            SnapshotStore::open(temp.path().join("workspace"), 16 * 1024 * 1024, 8).unwrap();
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        let data = (0..8 * 1024 * 1024)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect::<Vec<_>>();
+        fs::write(store.current().unwrap().join("artifact"), &data).unwrap();
+        CHECKSUM_FILE_READ_BYTES.with(|read| read.set(0));
+        let artifact = store.create().unwrap();
+        let production_reads = CHECKSUM_FILE_READ_BYTES.with(std::cell::Cell::get);
+        assert_eq!(production_reads, 0);
+        let compressed = fs::read(&artifact.path).unwrap();
+        let samples = 5;
+        let mut baseline_ns = Vec::new();
+        let mut streaming_ns = Vec::new();
+        let mut baseline_reads = 0;
+        let mut streaming_reads = 0;
+        // Both paths use the same hot compressed bytes and syscall chunk size;
+        // alternating order avoids crediting either path for first-use setup.
+        for n in 0..samples {
+            for streaming in if n % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let path = temp.path().join(format!("copy-{n}-{streaming}"));
+                let (digest, reads, nanos) = write_archive_copy(&path, &compressed, streaming);
+                assert_eq!(digest, artifact.metadata.sha256);
+                if streaming {
+                    streaming_reads += reads;
+                    streaming_ns.push(nanos);
+                } else {
+                    baseline_reads += reads;
+                    baseline_ns.push(nanos);
+                }
+            }
+        }
+        assert_eq!(baseline_reads, compressed.len() as u64 * samples);
+        assert_eq!(streaming_reads, 0);
+
+        let records = (0..10_000)
+            .map(|n| {
+                (
+                    format!("{n:08x}"),
+                    Record {
+                        size: 1,
+                        sha256: "0".repeat(64),
+                        directory: false,
+                        fifo: false,
+                        target: None,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let count = records.len();
+        let manifest = Manifest {
+            version: 1,
+            entries: records,
+        };
+        let encoded = serde_json::to_vec(&manifest).unwrap();
+        let mut parse_ns = Vec::new();
+        let mut count_ns = Vec::new();
+        for _ in 0..samples {
+            let started = std::time::Instant::now();
+            let restored: Manifest =
+                serde_json::from_slice(std::hint::black_box(&encoded)).unwrap();
+            assert_eq!(restored.entries.len(), count);
+            parse_ns.push(started.elapsed().as_nanos());
+            let started = std::time::Instant::now();
+            assert_eq!(std::hint::black_box(&manifest).entries.len(), count);
+            count_ns.push(started.elapsed().as_nanos());
+        }
+        let output = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/perf/v3");
+        fs::create_dir_all(&output).unwrap();
+        let receipt = serde_json::json!({
+            "schema_version":1,
+            "fixture":"same compressed checkpoint, 128KiB writes, fsync, warm page cache, alternating order",
+            "source_sha":std::env::var("GITHUB_SHA").ok(),
+            "debug_assertions":cfg!(debug_assertions),
+            "samples":samples,
+            "logical_bytes":artifact.metadata.logical_bytes,
+            "archive_bytes":compressed.len(),
+            "production_create_checksum_read_bytes":production_reads,
+            "baseline":{"post_write_read_bytes":baseline_reads,"elapsed_ns":baseline_ns},
+            "streaming":{"post_write_read_bytes":streaming_reads,"elapsed_ns":streaming_ns},
+            "manifest":{"entries":count,"serialized_bytes":encoded.len(),"baseline_parse_ns":parse_ns,"direct_count_ns":count_ns},
+            "equivalent_sha256":true,
+            "scope":"archive write/fsync/digest stage; excludes packing, compression, HTTP/R2 transfer and end-to-end latency",
+        });
+        fs::write(
+            output.join("snapshot-io.json"),
+            serde_json::to_vec_pretty(&receipt).unwrap(),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn created_archives_always_fit_the_restore_transport_limit() {

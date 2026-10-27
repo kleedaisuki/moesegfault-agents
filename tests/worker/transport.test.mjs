@@ -75,3 +75,52 @@ test('workerd native service-binding Request abort covers headers and body', { t
     assert.deepEqual(await response.json(), { outcome: 'completed', text: 'partial' });
   });
 });
+
+test('workerd incoming Request.signal observes caller cancellation with bounded observer heartbeats', { timeout: 10000 }, async t => {
+  await mkdir(path.join(root, '.temp'), { recursive: true });
+  const temp = await mkdtemp(path.join(root, '.temp/incoming-cancel-contract-'));
+  process.env.TMP = process.env.TEMP = process.env.TMPDIR = temp;
+  const mf = new Miniflare(convertV4MiniflareOptions({
+    modules: true, compatibilityDate: '2026-10-23', compatibilityFlags: ['enable_request_signal'],
+    resourcePersistencePath: path.join(temp, 'storage'),
+    script: `const observed = new Set(); export default { fetch(request) {
+      const name = new URL(request.url).pathname;
+      if (name === '/state') return Response.json([...observed]);
+      let timer;
+      request.signal.addEventListener('abort', () => observed.add(name), { once: true });
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('ready\\n'));
+          timer = setInterval(() => controller.enqueue(new TextEncoder().encode(':\\n\\n')), 100);
+        },
+        cancel() { clearInterval(timer); },
+      }), { headers: { 'Content-Type': 'text/event-stream' } });
+    } };`,
+  }));
+  t.after(() => mf.dispose());
+  async function reported(name) {
+    const until = Date.now() + 3000;
+    while (Date.now() < until) {
+      const observed = await (await mf.dispatchFetch('https://cancel.test/state')).json();
+      if (observed.includes(name)) return;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.fail('Client cancellation must reach the native incoming Request.signal');
+  }
+  await t.test('real HTTP response body cancel reaches the Worker signal without a client AbortController', async () => {
+    const response = await fetch(new URL('/http-body-cancel', await mf.ready));
+    const reader = response.body.getReader();
+    assert.equal((await reader.read()).done, false);
+    await reader.cancel();
+    await reported('/http-body-cancel');
+  });
+  await t.test('direct dispatch preserves explicit caller AbortController cancellation', async () => {
+    const controller = new AbortController();
+    const response = await mf.dispatchFetch('https://cancel.test/explicit-abort', { signal: controller.signal });
+    const reader = response.body.getReader();
+    assert.equal((await reader.read()).done, false);
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    await reported('/explicit-abort');
+  });
+});

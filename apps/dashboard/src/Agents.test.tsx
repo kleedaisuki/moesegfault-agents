@@ -120,6 +120,37 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 describe("metadata-driven model selection", () => {
+  it("preserves an existing tool allowlist when editing instructions", async () => {
+    mount(registry, [{ ...existing, tools: ["time", "workspace_versions"] }]);
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Edit Notebook" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    await user.type(dialog.getByLabelText("Instructions"), " updated");
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.tools).toEqual(["time", "workspace_versions"]);
+  });
+  it("offers functional workspace tool selection and removes workspace tools when disabled", async () => {
+    mount();
+    const { user, dialog, model } = await createForm();
+    await user.type(model, "openai/example");
+    await user.click(dialog.getByText("Tools", { exact: true }));
+    expect(
+      dialog.getByRole("checkbox", { name: "Persist workspace" }),
+    ).toBeChecked();
+    await user.click(
+      dialog.getByRole("checkbox", { name: "Restore workspace" }),
+    );
+    await user.click(
+      dialog.getByRole("checkbox", { name: "Persistent workspace" }),
+    );
+    await user.click(dialog.getByRole("button", { name: "Save agent" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0].body.workspace).toBe(false);
+    expect(writes[0].body.tools).toEqual(["time"]);
+  });
   it("offers only priced platform providers and rejects a BYOK-only model typed manually", async () => {
     mount();
     const { user, dialog, provider, model } = await createForm();
@@ -263,10 +294,10 @@ describe("metadata-driven model selection", () => {
       body: {
         name: "Notebook updated",
         instructions: "Pinned directions updated",
-        model: { provider: "openrouter", model: "openai/example" },
       },
     });
-    expect(writes[0].body.model).not.toHaveProperty("platform_available");
+    expect(writes[0].body).not.toHaveProperty("model");
+    expect({ ...existing, ...writes[0].body }.model).toEqual(existing.model);
   });
   it("preserves an existing BYOK model while its saved key metadata loads", async () => {
     let resolve!: (data: ProviderKey[]) => void;
@@ -298,7 +329,7 @@ describe("metadata-driven model selection", () => {
     await user.type(dialog.getByLabelText("Name"), " updated");
     resolve(keys);
     await waitFor(() =>
-      expect(dialog.getByRole("button", { name: "Save agent" })).toBeEnabled(),
+      expect(dialog.getByRole("combobox", { name: "Model" })).toBeEnabled(),
     );
     expect(dialog.getByRole("combobox", { name: "Model" })).toHaveValue(
       "deepseek-flash",
@@ -306,13 +337,7 @@ describe("metadata-driven model selection", () => {
     expect(options()).toEqual(["deepseek-flash"]);
     await user.click(dialog.getByRole("button", { name: "Save agent" }));
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0].body.model).toEqual({
-      provider: "byok",
-      model: "deepseek-flash",
-      context_window: 1000000,
-      max_output_tokens: 16384,
-      credential_id: "cred-deepseek",
-    });
+    expect(writes[0].body).not.toHaveProperty("model");
   });
   it("publishes a generic Anthropic connection with explicit custom model limits", async () => {
     mount(
@@ -385,6 +410,7 @@ describe("metadata-driven model selection", () => {
     await user.type(dialog.getByLabelText("Instructions"), " updated");
     await user.click(dialog.getByRole("button", { name: "Save agent" }));
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0].body.model).toEqual(model);
+    expect(writes[0].body).not.toHaveProperty("model");
+    expect({ ...existing, model, ...writes[0].body }.model).toEqual(model);
   });
 });

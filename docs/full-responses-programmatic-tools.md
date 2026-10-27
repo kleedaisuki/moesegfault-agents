@@ -1,0 +1,388 @@
+# Programmatic tool execution
+
+## Contract and implementation boundary
+
+The stable Responses feature runs JavaScript, not Python. Its public causal
+items are `program`, nested tool calls with `caller.type = "program"`, and
+`program_output`. The latter retains the parent program's call ID. Function and
+custom results must return that same caller relationship. Program tools have no
+direct network, Node environment, general filesystem or subprocess authority.
+Deferred tools become eligible only after authenticated tool discovery.
+
+Source: [official programmatic tool guide](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling).
+
+The platform executor is Cloudflare Dynamic Workers. A unique opaque
+identity binds owner, Session, admitted program and code; it is not shared between
+programs or accounts. `get()` selects an opaque cached definition/instance, not a resumable JavaScript
+request. It does not guarantee that an isolate remains alive. `globalOutbound: null`, an empty
+environment, explicit Node-disable flags and resource limits are mandatory.
+The dynamic isolate receives no provider key, management token, R2, D1, namespace
+or raw Session stub. Program JavaScript can only propose tools to its Rust actor.
+
+Sources: [Worker Loader API](https://developers.cloudflare.com/dynamic-workers/api-reference/),
+[resource limits](https://developers.cloudflare.com/dynamic-workers/usage/limits/).
+
+Actual workerd probing found that plain-string modules require a `.js`
+extension, not `.mjs`. Current compatibility dates enable Node by default:
+both `no_nodejs_compat` and `no_nodejs_compat_v2` are explicitly required.
+Production preserves the default cross-request Promise protection. Returning a
+paused JSON response ended the original context; merely leaving its response
+stream open also failed with a hung-request error. Instead, the Rust actor keeps
+one full-duplex NDJSON request open. The program awaits real input I/O while
+the actor reads proposals and feeds durable results through that same request.
+An actual workerd test executes two sequential awaits on this original context.
+The experimental JSON/replay profiles remain disabled, not fallbacks.
+
+Source is inserted as a JSON string literal, not unquoted module statements.
+A trusted startup `AsyncFunction` compilation gives it no module lexical scope;
+execution begins only after the funded request. The child explicitly enables
+`allow_eval_during_startup`. This prevents a closing brace in user source from
+escaping into startup code or accessing the trusted wrapper's active channel.
+
+Source: [compatibility flags](https://developers.cloudflare.com/workers/configuration/compatibility-flags/).
+
+## One actor and actual continuation
+
+The Session remains the only harness. It admits an immutable `ProgramPolicy`,
+persists `ProgramState` before runtime invocation, and independently authorizes
+every nested request. A JavaScript-supplied nonempty `caller_id` is not authority.
+Only a validated actor journal mints `AuthorizedInvocation`, which deliberately
+cannot be deserialized from a client payload. Server time is available only when
+the current actor has pinned `time` and explicitly includes it in this program's
+grant. No corresponding grant to Bash or MCP is implied.
+
+The JavaScript wrapper retains a live async stack within one source request.
+It returns bounded proposed calls when awaiting `tools.*`. The Rust actor validates
+the complete batch, persists it, and dispatches an existing server
+tool. After a known result is durable,
+the actor resumes the original JavaScript promise. This avoids reverse HTTP
+callbacks and actor reentrancy while a program is waiting for a tool.
+
+Each nested call has an immutable sequence, target, argument digest and stable
+execution identity. The actor records dispatch before any effect. An ambiguous
+dispatch cannot mint another execution authority. Client outputs must match both
+the exact pending call and its authenticated program parent; output schemas are
+checked before a program receives structured results. Invalid strict arguments
+or results fail canonically after known model usage, without hidden paid repair.
+
+## Runtime loss is not replay permission
+
+After a `start` intent has been committed, a re-entered actor without the original
+channel produces an incomplete program,
+retaining any uncertain financial/effect records. It never silently reruns source.
+Normal execution preserves native Date and Math behavior and actual promise
+settlement order. The wrapper contains an explicitly disabled future replay
+profile with recorded entropy; it is not a production fallback or an arbitrary
+V8 snapshot. An opaque fingerprint currently identifies authenticated retained
+actor state, not a promise that Cloudflare can persist an arbitrary JavaScript
+heap across isolate eviction.
+
+Existing public Responses and store/connection retention rules still apply.
+Fingerprint round-tripping does not grant another owner access, extend a lease,
+reintroduce removed capabilities or justify indefinitely retaining intermediate
+results. Known settlement is allowed after expiry, while new effects are not.
+
+## Limits and observability
+
+The initial profile bounds code at 64 KiB, policy at 256 KiB, each argument/result
+at 1 MiB, the nested-call journal at 4 MiB and total calls at 256. A runtime turn
+proposes at most 64 calls. These are platform limits, not claims about an upstream
+provider's maximums. Rust performs authoritative byte/schema/permission checks;
+the untrusted JavaScript wrapper's limits are defense in depth.
+
+Console and `reportError` are unavailable to the program. Raw source, values,
+exceptions and images are user data, not telemetry. `tails: []` prevents a user
+isolate from being attached to the platform log pipeline. Dynamic Worker logs
+are not automatically inherited by loader Worker Logs; without an attached tail,
+the documented default discards them. Rust emits only fixed outcome codes and
+trusted correlated identifiers. Module-load failures are also normalized without
+reflecting exception text. Actual staging tests must verify all these channels,
+including unhandled rejection and malicious module-body injection.
+
+Source: [Dynamic Workers observability](https://developers.cloudflare.com/dynamic-workers/usage/observability/).
+
+## Resource accounting
+
+Root approved the staging-only public-rate allocation
+`dynamic_worker_creation_day = 2000 micro-USD`. Charge it at most once for a real
+distinct opaque owner/operation/code identity in the UTC day. The upstream bill
+has included allowances; this allocation is not a claim about an account's final
+Cloudflare invoice. `.load()` creates a new identity per invocation; stable
+`.get()` does not charge creation again merely because a program awaits a tool.
+
+Requests use the explicitly configured `dynamic_worker_request` tariff. The
+approved named capacity allocation `dynamic_worker_cpu_slot_100ms = 2 micro-USD`
+has revision `2026-10-25-dynamic-allocation-v1`. Its one slot is the enforced
+100-ms budget of the original source request, not 100 ms per await and not an
+observation of actual CPU consumption. Only the native channel can mint the
+non-deserializable budget proof after a valid execution frame. The financial
+helper pins this tariff before invocation and settles the same accepted program
+identity once; an unproven outcome retains its bounded hold and explicit gap.
+Early return does not refund a published capacity allocation. Startup allocation
+belongs to the creation charge, not an invented CPU measurement. Waiting does
+not allocate another slot. Root Worker charges remain distinct. The allocation
+profile revision is separate from the shared deployment tariff version; all
+RESOURCE_PRICING_JSON entries retain the existing common-version invariant.
+Staging binding/deployment is separately authorized; production is unchanged.
+
+Source: [Dynamic Workers pricing](https://developers.cloudflare.com/dynamic-workers/pricing/).
+
+## Integrated Session path
+
+`programmatic_tools.rs` owns authority/journaling, `programmatic_runtime.rs`
+owns the native Loader boundary, and `session_programmatic.rs` is an actual
+Session subroutine. It is registered at public request admission, shared native
+rendering/token counting, provider choice validation, dispatch and canonical
+publication. Missing Loader binding or tariffs reject declared programmatic
+execution before inference; ordinary API calls acquire no new requirement.
+
+The supported verticals are pinned server time, owner-bound MCP capabilities,
+and live caller-owned function/custom handoffs.
+MCP permission is not inferred from a name: `AuthorizedInvocation` is minted
+after the write-ahead journal, the existing loaded registry validates the
+programmatic caller, the shared allowance admits that execution identity once,
+and MCP rechecks owner/caller/schema at its own durable effect boundary.
+`tools.<server_label>.<tool>` receives MCP `structuredContent` when available,
+otherwise model-visible text content. Transport metadata, credentials and
+user-only text are not passed to the JavaScript program. Binary MCP results
+without a structured representation remain explicitly unsupported here; direct
+MCP retains its typed rich-content path.
+
+The public sequence is `program`, causal nested function calls and outputs,
+then `program_output`; nested calls and outputs carry the exact program caller
+relationship. A private provider alias never enters that sequence. Original SSE
+and raw GET are compared without filtering SDK convenience fields, and the
+current strict Python SDK validates the unmodified wire objects. `program_output`
+is terminal-only: its added event carries completed/incomplete already. It uses
+the existing canonical publisher directly, not the hosted tools' synthetic
+in_progress projection.
+
+A human-approval-required MCP call remains the next increment after the accepted
+client path; its suspension is not claimed by the server-only proof. Program
+image publication is not enabled. A lost original request is not transparently
+replayed, and no second JavaScript agent harness exists. Independent accepted
+operations get fresh opaque contexts. Cancellation interrupts the pending native
+read without allocating another request or granting a later nested effect.
+
+## Warm client continuation increment
+
+The follow-up implementation keeps the original `dispatch_programmatic` future,
+native fetch and stream writer/reader alive. It does not start a background pump,
+another JavaScript harness, a new funded execution Run or a second Loader fetch.
+A completed public Response is a client handoff, not the end of that execution.
+Its immutable canonical items and reported usage are stored before observers
+close. The private provider program call remains unanswered until JavaScript
+actually completes.
+
+`ProgramPause` is a private durable mailbox tied to the funded Run, current public
+Response and accepted operation. It is not a JavaScript snapshot or an incoming
+caller-provided capability. The ordinary Responses admission pipeline still
+performs prompt expansion, owner/media lookup, byte limits, pending-result
+validation, attachment retention and Conversation capacity reservation. Only a
+matching paused epoch may retain the existing Run at final acceptance; racing
+or same-key callbacks cannot apply a mailbox twice. The original future polls
+its own timer and consumes committed inputs after Conversation activation, so
+native I/O objects never migrate into the callback's request context.
+
+Public Responses have usage and model-round baselines. Model ledger events bind
+the child Response segment while retaining the original reserved funding Run;
+parent usage is never rewritten. The original observed Durable Object step
+continues across the wait. Router Worker wall usage sums attached observation
+segments, excluding the gap between public HTTP requests. The child JavaScript
+capacity remains its single original configured CPU allocation, never await wall
+time or one allocation per callback.
+
+Native history closes the original private program call before appending any
+deferred new user input. Caller results enter the program journal, not unmatched
+provider function-output IDs. Historical branches may not clone a live program;
+loss of the original future produces an incomplete continuation instead of
+rerunning arbitrary source. Closed/cancelled execution cannot acquire new tool
+authority.
+
+The new `client` journey passed against the unmodified compiled Worker in
+[GHA 40364842376](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40364842376),
+source `be5f44d777de5ff4be96f5bbcd763b98a05ae201`, Worker artifact `12669158434`,
+verification artifact `12669353330`. It crosses function and custom handoffs
+through three public Responses, checks a native heap nonce, original caller
+checks, immutable raw parent snapshots, usage segments of 150/0/150 tokens,
+same-key mailbox observation, one still-reserved-then-settled funding Run and
+exactly one creation/request/CPU allocation. This did not rerun the accepted
+time/MCP, isolation or Rust contracts. The function output schema remains
+validated before mailbox acceptance; the official custom result's `caller`
+field is now admitted and checked against its actual pending call.
+
+Conversation-specific execution, MCP approval suspension and additional hosted
+adapters remain the following verification/implementation increments; their
+readiness is not inferred from this non-Conversation client journey.
+
+The approval follow-up reuses the same encrypted MCP intent, sealed
+`ApprovalReference`, fresh credential/schema rebinding and one-use destination
+claim as direct MCP. Its original non-deserializable `AuthorizedInvocation`
+remains on the live Rust stack. Only that subroutine may advance programmatic
+approval actions; the normal driver handles direct actions only. After awaited
+journal writes, the HTTP effect boundary rechecks program expiry and cancellation.
+Known outcomes are read from the existing operation and fed into the program,
+not forwarded as provider outputs for model calls that never existed.
+
+Mailbox delivery has an additional non-persisted `delivery_ready` gate: a live
+future can see callback memory while storage acknowledgement is yielding, so
+only successful durable acceptance (or same-key durability repair) releases the
+batch. Deserializing a saved mailbox cannot recreate this I/O-context readiness.
+The approval-only increment passed in
+[GHA 40370107355](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40370107355),
+source `3b823b1c4a53d479b97cd1897ace7d0db09e70de`, Worker artifact `12671299545`,
+verification artifact `12671913412`. Its retained receipt records three public
+Responses, two controlled model rounds, one approved remote call and zero denied
+remote calls. Fresh credentials, one-use approval, immutable raw GET/SSE and one
+originating native program fetch were checked. Missing callback authorization
+was rejected before dispatch; replay did not repeat the approved effect. This
+did not repeat the accepted client or time/MCP journeys and made no external
+model or network calls. Conversation execution remains a separate increment.
+
+Conversation publication uses causal events rather than transport views: a
+locally supplied result may appear both in accepted Response input and in the
+program's emitted trace, but identical type/call/caller/value is stored once,
+under its accepted input identity. Different callers or values are not merged.
+The first actual Conversation journey (`40446153577`) completed its live
+continuation and exposed this duplicate-publication defect; its failing result
+is retained rather than described as acceptance. Legacy steering also binds
+additional input capacity to the current public Response and checks both that
+Response and its unchanged funding Run after the reservation await. A callback
+Response must never spend the already-converted parent output escrow.
+
+The repaired Conversation-only journey passed in
+[GHA 40447143197](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40447143197),
+source `c96b7d673061cc447bc5dd17cb70e7fb0dd4a464`, Worker artifact `12709156140`,
+verification artifact `12709535070`. The retained receipt records two public
+Responses, two controlled model rounds, an implicit Conversation predecessor,
+the unchanged native heap nonce, two converted output escrows and exactly one
+funded execution/native program fetch. Raw current-SDK SSE and GET, immutable
+parent usage, one local-result Conversation event, same-key observation and
+the single creation/request/CPU allocation all passed. Only two new Rust
+contracts ran, for causal publication and the steering epoch. No accepted
+client, approval, time/MCP or external-model journey was repeated. This proves
+the real workerd Loader path, not deployed Cloudflare staging or its invoice.
+
+For the separately authorized first Cloudflare Loader invocation,
+`tests/e2e/programmatic-sdk.mjs` accepts `--source <assembly-sha>`,
+`--current-python <current-SDK-python>`, `--output .temp/<new-receipt>.json`
+and the explicit `--allow-paid-program` gate. Set `MAGENTS_TEST_API_KEY`,
+`MAGENTS_TEST_TRACE_SEED` and `MAGENTS_TEST_DEPLOYMENT_PROVENANCE` through the
+operator environment, never command-line credentials. It verifies the deployed
+Worker source and direct DeepSeek model pin, sends exactly one SDK POST with a
+durably recorded idempotency key, and requires one program with two nested time
+calls containing the actual causal results. Existing receipts are not replayed;
+an ambiguous outcome preserves its original identities for observation. It does
+not invoke the controlled journeys or use Conversations, MCP, workspace or image
+tools. Dynamic allocation expectations (2000/1/2 micro-USD) are recorded separately
+from the still-required original-scope ledger settlement. Preparing this operator
+does not itself authorize or claim its execution.
+
+## Verification boundary
+
+The earlier workerd/Miniflare component proof passed eight isolation/duplex checks;
+it is retained, not rerun by this integration. Actual Wasm compilation and all
+21 newly registered programmatic Rust contracts passed in
+[GHA 40339977394](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40339977394).
+That run stopped only because its broad test filter also selected an obsolete
+MCP-unavailable assertion, which is now a positive scoped-permission contract.
+
+`tests/worker/programmatic.test.mjs` is the new compiled-Worker journey: actual
+SDK request → Rust Session → real Loader → two sequential pinned time calls,
+plus two dependent program-only MCP calls through that same originating request.
+It checks raw canonical SDK wire, strict nested argument denial, immutable
+same-key replay and exactly one creation/request/CPU allocation per program.
+A separate same-harness admission check removes Loader and pricing independently
+and requires zero model calls while ordinary APIs remain available.
+Those two admission cases passed against unchanged compiled artifact 12659282454
+from GHA 40340822807 (source `cac7d54`): both returned 422, model calls and dynamic
+charges remained zero, and ordinary agent-list requests returned 200. The source
+run itself failed its positive journey; this selective negative evidence does
+not promote the artifact or imply an overall-green run.
+
+The unmodified repaired Worker passed the full time and program-only MCP
+journeys in [GHA 40344962094](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40344962094),
+source `52dc7611ee80cbabdc7b87d64320c41a006c4096`, Worker artifact `12662685029`.
+The two awaited time calls, dependent MCP structured results, strict nested
+argument rejection, exact 2000/1/2 allocation charges and same-key inference/
+effect/fee deduplication all passed. Raw GET equals raw SSE, and the current
+strict SDK validates both original streams. No old isolation or Rust contract
+was rerun. This is not a staging deployment or final Cloudflare invoice proof.
+
+The run's `.temp` receipt copy was excluded by upload-artifact's hidden-file
+default; retain the successful GHA log and original Worker artifact instead of
+rerunning a proven journey just to recreate that redundant copy.
+A temporary local diagnostic shim
+normalized only the old artifact's platform profile to locate the next boundary:
+two time calls and two dependent MCP calls actually completed, and the remaining
+strict SDK failure was the old terminal item's synthetic running phase. That
+instrumented probe is mechanism evidence, not acceptance of the repaired binary.
+
+## Staging activation prerequisites
+
+The first actual MCP metadata count on Worker `02d483b` returned
+`400 unsupported_tool` before a Response, Session, provider request or remote tool
+call: the deployment's finite runtime allowlist did not include `mcp`. Its
+temporary Agent was removed normally. This is an activation/configuration defect,
+not evidence that legacy negotiation failed. Receipt:
+`.temp/features-staging/mcp-legacy-live-02d-receipt.json`.
+
+Deployment selection now has explicit staging-only MCP and MCP+programmatic
+combinations alongside the accepted Search/FileSearch/Code runtimes. The combined
+programmatic selection adds the native `PROGRAM_LOADER` binding plus the reviewed
+creation/request/100-ms-capacity tariffs (2000/1, 3/10 and 2/1 micro-USD per
+quantity). They retain the existing shared pricing version and are not inserted
+for MCP-only operation. Production, configured/default operation and original
+source configuration are unchanged. Image remains independently selected.
+
+This uses Cloudflare's documented `worker_loaders: [{binding: ...}]`, not a
+second executor or an external dispatch service:
+https://developers.cloudflare.com/dynamic-workers/getting-started/ . One new
+cheap render contract covers the runtime flags, exact binding and tariffs,
+MCP-only absence, source non-mutation and production isolation. No accepted
+runtime journey or paid model call was repeated to check this configuration.
+A new coherent deployment and actual remote MCP/Loader operation remain required.
+
+The first normal activation candidate (`e4e6777`, CI `40447538513`) built the
+new Worker and passed only the five selected activation/cache contracts. Deploy
+`40448681624` then correctly stopped **before changing infrastructure**, because
+the independent provenance validator still duplicated an older four-runtime
+vocabulary and rejected MCP/programmatic. This was not a Cloudflare Loader or
+beta-permission error. The repair shares the known-runtime vocabulary between
+rendering and provenance, retaining unknown-feature rejection and the independent
+production gate. One new render-to-proof contract covers the missed boundary.
+Normal correction CI `40448958981` selects that one contract and reuses exact
+Worker artifact `12709167366` from the successful original build; it must not
+rebuild Rust or replay the previous five contracts to repair this metadata check.
+
+## Actual Cloudflare native Loader time program
+
+Deployment `40449131900` (assembly `302adce`, exact Worker `e4e6777`) completed
+one new real programmatic SDK submission, not a replay of the controlled
+journeys. Direct DeepSeek produced one program, the native Cloudflare Loader
+executed its original source request, and two causally labelled `time` calls
+returned the actual UTC receipts included in its final program result. The outer
+answer then completed. Response `resp_1e645029bacb4ac9928cebe5657d5fba` has 30
+canonical SSE events; raw GET equals the original terminal SSE. Current Python
+SDK 3.37.0 validated the actual wire, and the owned Session pin remained direct
+DeepSeek. No MCP, Conversation, image, workspace or Code Interpreter operation
+was selected. Its Session and temporary Agent were closed/deleted normally.
+
+Original-scope ledger postflight passed with **2,453 microusd** total: exactly
+one creation allocation (2,000), one request (1), one 100-ms CPU-capacity slot (2),
+two model reservations (109 + 119), execution resources (215) and Session
+maintenance (7). Every reservation in this precise new scope is settled, with no
+pending resource observation or new hold. Historical holds and the separate
+failed PDF generation are excluded; no manual balance adjustment was made. The
+single CPU-capacity allocation is not confused with program await wall time.
+Public usage remains null where the existing direct model protocol cannot
+honestly report the complete cache-write usage view; the two model ledger
+settlements remain independently inspectable.
+
+The two returned UTC times are 10,342 ms apart. That is a real end-to-end nested
+call interval, not evidence that reading the clock itself takes ten seconds or
+that this single sample establishes a latency percentile. It exposes further
+journal/funding overhead for incremental optimization without another paid
+probe. Receipts: `.temp/features-staging/programmatic-live-receipt.json` and
+`programmatic-live-postflight-original.json`; the read-only original Response
+snapshot is separate. No accepted POST was repeated.

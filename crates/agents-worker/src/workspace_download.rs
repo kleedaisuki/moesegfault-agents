@@ -21,7 +21,9 @@ pub(super) async fn checkpoint(
     else {
         return unavailable();
     };
-    if !matches_snapshot(&manifest, expected, &workspace.prefix) {
+    if !matches_snapshot(&manifest, expected, &workspace.prefix)
+        || !workspace.valid_manifest_archive(&manifest).await?
+    {
         return unavailable();
     }
     // API-key authentication does not refresh allowance windows. Downloads can
@@ -127,6 +129,9 @@ fn matches_snapshot(manifest: &Manifest, expected: &WorkspaceSnapshot, prefix: &
     {
         return false;
     }
+    if super::archives::shared_archive_key(&manifest.object_key) {
+        return matches_shared_object(manifest);
+    }
     let object_prefix = format!("{prefix}/snapshots/{}/", manifest.sha256);
     let Some(id) = manifest
         .object_key
@@ -136,6 +141,22 @@ fn matches_snapshot(manifest: &Manifest, expected: &WorkspaceSnapshot, prefix: &
         return false;
     };
     uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id)
+}
+
+fn matches_shared_object(manifest: &Manifest) -> bool {
+    let parts = manifest.object_key.split('/').collect::<Vec<_>>();
+    let (owner, sha, id) = match parts.as_slice() {
+        ["workspace-blobs", owner, "1", sha, id] | ["space-versions", owner, sha, id] => {
+            (owner, sha, id)
+        }
+        _ => return false,
+    };
+    owner.len() == 64
+        && owner.bytes().all(|b| b.is_ascii_hexdigit())
+        && *sha == manifest.sha256.as_str()
+        && id
+            .strip_suffix(".tar.zst")
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id))
 }
 
 #[cfg(test)]
@@ -202,6 +223,29 @@ mod tests {
         ] {
             let (mut manifest, snapshot) = fixture();
             manifest.object_key = key;
+            assert!(!matches_snapshot(&manifest, &snapshot, prefix));
+        }
+    }
+
+    #[test]
+    fn shared_archive_shapes_keep_session_public_identity() {
+        let prefix = "workspaces/owner/session";
+        for namespace in [
+            format!("workspace-blobs/{}/1", "cd".repeat(32)),
+            format!("space-versions/{}", "cd".repeat(32)),
+        ] {
+            let (mut manifest, snapshot) = fixture();
+            manifest.object_key = format!(
+                "{namespace}/{}/9f231001-d773-4286-afba-80f1dd9b483b.tar.zst",
+                manifest.sha256
+            );
+            assert!(matches_snapshot(&manifest, &snapshot, prefix));
+            assert!(!matches_snapshot(
+                &manifest,
+                &snapshot,
+                "workspaces/other/session"
+            ));
+            manifest.object_key.push_str("/nested");
             assert!(!matches_snapshot(&manifest, &snapshot, prefix));
         }
     }

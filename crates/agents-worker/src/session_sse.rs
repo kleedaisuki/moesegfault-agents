@@ -6,7 +6,7 @@ use worker::{Delay, Result};
 const KEEPALIVE: &[u8] = b": keepalive\n\n";
 const DONE: &[u8] = b"data: [DONE]\n\n";
 
-pub(super) fn keep_alive<S>(source: S) -> impl Stream<Item = Result<Vec<u8>>>
+pub(crate) fn keep_alive<S>(source: S) -> impl Stream<Item = Result<Vec<u8>>>
 where
     S: Stream<Item = Result<Vec<u8>>> + Unpin,
 {

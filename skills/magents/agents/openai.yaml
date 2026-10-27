@@ -1,4 +1,4 @@
 interface:
   display_name: "magents"
-  short_description: "Manage agents, sessions, credentials and downloads"
+  short_description: "Manage agents, Responses, Space files and workspaces"
   default_prompt: "Use $magents to publish my agent configuration and manage its sessions."

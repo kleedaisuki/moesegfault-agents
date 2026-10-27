@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{AgentConfig, ModelConfig};
+use crate::{AgentConfig, ModelConfig, ToolServices};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
@@ -83,6 +83,8 @@ pub struct PinnedContext {
     pub skills: Vec<RegisteredSkill>,
     pub compaction_percent: CompactionPercent,
     pub workspace: bool,
+    #[serde(default, skip_serializing_if = "ToolServices::is_empty")]
+    pub tool_services: ToolServices,
 }
 
 impl PinnedContext {
@@ -101,6 +103,7 @@ impl PinnedContext {
             skills,
             compaction_percent: agent.compaction_percent,
             workspace: agent.workspace,
+            tool_services: agent.tool_services.clone(),
         }
     }
 
@@ -234,5 +237,24 @@ mod tests {
         assert_eq!(bytes, pinned.prefix_bytes());
         let roundtrip: PinnedContext = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(roundtrip.prefix_hash(), pinned.prefix_hash());
+    }
+
+    #[test]
+    fn omitted_tool_services_preserve_legacy_prefix_bytes() {
+        let legacy = serde_json::json!({
+            "agent_revision":1,"model":ModelConfig::default(),"instructions":"Old pin",
+            "tools":[],"skills":[],"compaction_percent":80,"workspace":false,
+        });
+        let pinned: PinnedContext = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(pinned.tool_services.is_empty());
+        assert!(
+            serde_json::to_value(&pinned)
+                .unwrap()
+                .get("tool_services")
+                .is_none()
+        );
+        let mut expected = vec![];
+        canonical_json(&legacy, &mut expected);
+        assert_eq!(pinned.prefix_bytes(), expected);
     }
 }

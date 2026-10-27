@@ -66,7 +66,7 @@ pub async fn reserve(
     amount: i64,
     now: i64,
 ) -> Result<ReservationRow> {
-    reserve_inner(db, account, session, id, key, hash, amount, now, None).await
+    reserve_inner(db, account, session, id, key, hash, amount, now, None, None).await
 }
 
 /// Run admission and budget hold share one serialized INSERT, eliminating count-then-act races.
@@ -82,6 +82,28 @@ pub async fn reserve_run(
     now: i64,
     max_runs: u32,
 ) -> Result<ReservationRow> {
+    reserve_run_with_lease(
+        db, account, session, id, key, hash, amount, now, max_runs, None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn reserve_run_with_lease(
+    db: &D1Database,
+    account: &str,
+    session: Option<&str>,
+    id: &str,
+    key: &str,
+    hash: &str,
+    amount: i64,
+    now: i64,
+    max_runs: u32,
+    generation: Option<&str>,
+) -> Result<ReservationRow> {
+    if generation.is_some() && session.is_some() {
+        return Err(fail("invalid_execution_lease_scope"));
+    }
     if !key.starts_with("run:") {
         return Err(fail("invalid_run_key"));
     }
@@ -95,6 +117,7 @@ pub async fn reserve_run(
         amount,
         now,
         Some(max_runs),
+        generation,
     )
     .await?;
     #[derive(Deserialize)]
@@ -106,6 +129,9 @@ pub async fn reserve_run(
         .ok_or_else(||fail("reservation_not_found"))?;
     if execution.execution_finished_at.is_some() {
         return Err(fail("execution_already_finished"));
+    }
+    if let Some(generation) = generation {
+        crate::execution_leases::ensure_active(db, account, id, generation).await?;
     }
     Ok(row)
 }
@@ -131,14 +157,44 @@ async fn reserve_inner(
     amount: i64,
     now: i64,
     max_runs: Option<u32>,
+    generation: Option<&str>,
 ) -> Result<ReservationRow> {
     MicroUsd::new(amount).map_err(|_| fail("invalid_amount"))?;
     if key.is_empty() || hash.is_empty() {
         return Err(fail("invalid_idempotency_key"));
     }
-    db.prepare("INSERT INTO usage_reservations (id, account_id, session_id, idempotency_key, request_hash, reserved_microusd, state, created_at, updated_at) SELECT ?,?,?,?,?,CAST(? AS INTEGER),'reserved',CAST(? AS INTEGER),CAST(? AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM usage_reservations WHERE account_id=? AND idempotency_key=?) AND (? IS NULL OR (SELECT COUNT(*) FROM usage_reservations WHERE account_id=? AND state='reserved' AND execution_finished_at IS NULL AND idempotency_key LIKE 'run:%') < CAST(? AS INTEGER))")
+    if let Some(generation) = generation {
+        if generation.is_empty() || generation.len() > 128 {
+            return Err(fail("invalid_execution_lease"));
+        }
+        db.prepare(crate::execution_leases::ADMIT_SQL)
+            .bind(&[
+                text(id),
+                text(account),
+                JsValue::NULL,
+                text(key),
+                text(hash),
+                text(&amount.to_string()),
+                text(&now.to_string()),
+                text(&now.to_string()),
+                text(generation),
+                text(account),
+                text(key),
+                max_runs
+                    .map(|n| text(&n.to_string()))
+                    .unwrap_or(JsValue::NULL),
+                text(account),
+                max_runs
+                    .map(|n| text(&n.to_string()))
+                    .unwrap_or(JsValue::NULL),
+            ])?
+            .run()
+            .await?;
+    } else {
+        db.prepare("INSERT INTO usage_reservations (id, account_id, session_id, idempotency_key, request_hash, reserved_microusd, state, created_at, updated_at) SELECT ?,?,?,?,?,CAST(? AS INTEGER),'reserved',CAST(? AS INTEGER),CAST(? AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM usage_reservations WHERE account_id=? AND idempotency_key=?) AND (? IS NULL OR (SELECT COUNT(*) FROM usage_reservations r WHERE r.account_id=? AND r.state='reserved' AND r.execution_finished_at IS NULL AND r.idempotency_key LIKE 'run:%' AND NOT EXISTS (SELECT 1 FROM execution_leases l WHERE l.reservation_id=r.id AND l.account_id=r.account_id AND l.generation=r.execution_generation AND l.state='no_local_execution')) < CAST(? AS INTEGER))")
         .bind(&[text(id),text(account),session.map(text).unwrap_or(JsValue::NULL),text(key),text(hash),text(&amount.to_string()),text(&now.to_string()),text(&now.to_string()),text(account),text(key),max_runs.map(|n|text(&n.to_string())).unwrap_or(JsValue::NULL),text(account),max_runs.map(|n|text(&n.to_string())).unwrap_or(JsValue::NULL)])?
         .run().await?;
+    }
     let row: ReservationRow = db
         .prepare(format!("{ROW} WHERE account_id=? AND idempotency_key=?"))
         .bind(&[text(account), text(key)])?

@@ -4,20 +4,41 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
 use super::{
-    Completion, FunctionCall, MAX_COMPLETION_BYTES, Message, ProviderConfig, ToolCall, Usage,
+    Completion, FunctionCall, GenerationOptions, MAX_COMPLETION_BYTES, Message, ProviderConfig,
+    ToolCall, Usage,
 };
 use crate::tools::ToolDefinition;
 
 const CONTENT_KEY: &str = "anthropic_content";
+const MAX_INPUT_IMAGES: usize = 8;
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
+#[cfg(test)]
 pub(super) fn request_body(
     config: &ProviderConfig,
     messages: &[Message],
     tools: &[ToolDefinition],
     stream: bool,
+) -> Result<Value, String> {
+    request_body_with_options(
+        config,
+        messages,
+        tools,
+        stream,
+        &GenerationOptions::default(),
+    )
+}
+
+pub(super) fn request_body_with_options(
+    config: &ProviderConfig,
+    messages: &[Message],
+    tools: &[ToolDefinition],
+    stream: bool,
+    options: &GenerationOptions,
 ) -> Result<Value, String> {
     let max_tokens = config
         .max_output_tokens
@@ -54,13 +75,60 @@ pub(super) fn request_body(
         body["tools"] = json!(
             tools
                 .iter()
-                .map(|tool| json!({
-                    "name":tool.function.name,
-                    "description":tool.function.description,
-                    "input_schema":tool.function.parameters,
-                }))
+                .map(|tool| {
+                    let mut value = json!({
+                        "name":tool.function.name,
+                        "description":tool.function.description,
+                        "input_schema":tool.function.parameters,
+                    });
+                    if let Some(strict) = tool.function.strict {
+                        value["strict"] = json!(strict);
+                    }
+                    value
+                })
                 .collect::<Vec<_>>()
         );
+    }
+    if let Some(value) = options.temperature {
+        body["temperature"] = json!(value);
+    }
+    if let Some(value) = options.top_p {
+        body["top_p"] = json!(value);
+    }
+    if !tools.is_empty() && (options.tool_choice.is_some() || options.parallel_tool_calls.is_some())
+    {
+        let mut choice = match options.tool_choice.as_ref() {
+            Some(Value::String(value)) => match value.as_str() {
+                "none" => json!({"type":"none"}),
+                "required" => json!({"type":"any"}),
+                _ => json!({"type":"auto"}),
+            },
+            Some(value) => json!({"type":"tool","name":value["name"]}),
+            None => json!({"type":"auto"}),
+        };
+        if choice["type"] != "none"
+            && let Some(parallel) = options.parallel_tool_calls
+        {
+            choice["disable_parallel_tool_use"] = json!(!parallel);
+        }
+        body["tool_choice"] = choice;
+    }
+    if let Some(format) = &options.text_format
+        && format["type"] == "json_schema"
+    {
+        body["output_config"] = json!({"format":{"type":"json_schema","schema":format["schema"]}});
+    }
+    if super::is_deepseek(config)
+        && let Some(effort) = options
+            .reasoning
+            .as_ref()
+            .and_then(|value| value["effort"].as_str())
+    {
+        let effort = super::deepseek_effort(effort);
+        body["thinking"] = json!({"type":if effort == "none" {"disabled"} else {"enabled"}});
+        if effort != "none" {
+            body["output_config"] = json!({"effort":effort});
+        }
     }
     Ok(body)
 }
@@ -73,21 +141,80 @@ fn text_content(value: &Value) -> Result<&str, String> {
 
 fn content_blocks(message: &Message) -> Result<Vec<Value>, String> {
     match message.role.as_str() {
-        "user" => Ok(vec![
-            json!({"type":"text", "text":text_content(&message.content)?}),
-        ]),
+        "user" => user_blocks(&message.content),
         "tool" => {
             let id = message
                 .tool_call_id
                 .as_deref()
                 .filter(|id| !id.is_empty())
                 .ok_or("Anthropic tool result requires a call ID")?;
+            let content = if message.content.is_string() {
+                message.content.clone()
+            } else {
+                Value::Array(user_blocks(&message.content)?)
+            };
             Ok(vec![json!({"type":"tool_result", "tool_use_id":id,
-                "content":text_content(&message.content)?})])
+                "content":content})])
         }
         "assistant" => assistant_blocks(message),
         _ => Err("unsupported Anthropic message role".into()),
     }
+}
+
+fn user_blocks(content: &Value) -> Result<Vec<Value>, String> {
+    if let Some(text) = content.as_str() {
+        return Ok(vec![json!({"type":"text", "text":text})]);
+    }
+    let parts = content
+        .as_array()
+        .filter(|parts| !parts.is_empty())
+        .ok_or("User content must be text or a nonempty content array")?;
+    if parts.len() > 128 {
+        return Err("Too many user content parts".into());
+    }
+    let mut images = 0;
+    parts.iter().map(|part| match part["type"].as_str() {
+        Some("text" | "input_text") => {
+            let text = part["text"].as_str().ok_or("User text content requires text")?;
+            Ok(json!({"type":"text","text":text}))
+        }
+        Some("image_url") => {
+            images += 1;
+            if images > MAX_INPUT_IMAGES {
+                return Err("Too many input images".into());
+            }
+            let url = part["image_url"]["url"].as_str().ok_or("Image content requires a data URL")?;
+            let (media, data) = image_data(url)?;
+            Ok(json!({"type":"image","source":{"type":"base64","media_type":media,"data":data}}))
+        }
+        _ => Err("Unsupported user content part".into()),
+    }).collect()
+}
+
+fn image_data(url: &str) -> Result<(&str, &str), String> {
+    let (header, data) = url
+        .split_once(',')
+        .ok_or("Image requires a base64 data URL")?;
+    let media = header
+        .strip_prefix("data:")
+        .and_then(|header| header.strip_suffix(";base64"))
+        .filter(|media| {
+            matches!(
+                *media,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            )
+        })
+        .ok_or("Image requires PNG, JPEG, GIF or WebP base64 data")?;
+    if data.is_empty() || data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("Input image exceeds the size limit".into());
+    }
+    let decoded = STANDARD
+        .decode(data)
+        .map_err(|_| "Image data is not valid base64")?;
+    if decoded.is_empty() || decoded.len() > MAX_IMAGE_BYTES {
+        return Err("Input image exceeds the size limit".into());
+    }
+    Ok((media, data))
 }
 
 fn assistant_blocks(message: &Message) -> Result<Vec<Value>, String> {
@@ -177,6 +304,11 @@ pub(super) fn parse_completion(value: Value) -> Result<Completion, String> {
         .ok_or("Anthropic completion is missing its model")?;
     let usage = parse_usage(&value["usage"], id)?;
     let mut message = Message::text("assistant", text);
+    if finish_reason == "content_filter"
+        && let Some(explanation) = value["stop_details"]["explanation"].as_str()
+    {
+        message.extra.insert("refusal".into(), json!(explanation));
+    }
     message.tool_calls = calls;
     message.extra.insert(CONTENT_KEY.into(), json!(content));
     Ok(Completion {
@@ -185,6 +317,7 @@ pub(super) fn parse_completion(value: Value) -> Result<Completion, String> {
         message,
         finish_reason: finish_reason.into(),
         usage,
+        native: None,
     })
 }
 
@@ -235,6 +368,8 @@ fn parse_usage(value: &Value, id: &str) -> Result<Usage, String> {
         completion_tokens: output,
         total_tokens: total,
         cached_tokens: cached,
+        reasoning_tokens: None,
+        cache_write_tokens: value["cache_creation_input_tokens"].as_u64(),
         provider_request_id: Some(id.into()),
         reported: value["input_tokens"].is_u64() && value["output_tokens"].is_u64(),
         cost: None,
@@ -470,6 +605,164 @@ fn append_field(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_image_parts_translate_without_flattening_into_prompt_text() {
+        for media in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            let data_url = format!("data:{media};base64,AQID");
+            let user = Message {
+                role: "user".into(),
+                content: json!([
+                    {"type":"text","text":"Describe this."},
+                    {"type":"image_url","image_url":{"url":data_url,"detail":"auto"}},
+                    {"type":"input_text","text":"Use one sentence."},
+                ]),
+                ..Message::default()
+            };
+            let body = request_body(&config(), &[user], &[], false).unwrap();
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([
+                    {"type":"text","text":"Describe this."},
+                    {"type":"image","source":{"type":"base64","media_type":media,"data":"AQID"}},
+                    {"type":"text","text":"Use one sentence."},
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn native_images_reject_remote_urls_malformed_base64_and_excessive_inputs() {
+        for url in [
+            "https://example.invalid/picture.png",
+            "http://127.0.0.1/picture.png",
+            "data:image/svg+xml;base64,AQID",
+            "data:image/png,AQID",
+            "data:image/png;base64,not:base64",
+            "data:image/png;base64,",
+        ] {
+            let content = json!([{"type":"image_url","image_url":{"url":url}}]);
+            assert!(user_blocks(&content).is_err(), "{url}");
+        }
+        let url = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(MAX_IMAGE_BYTES.div_ceil(3) * 4 + 4)
+        );
+        assert!(image_data(&url).is_err());
+        let images = vec![
+            json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AQID"}});
+            MAX_INPUT_IMAGES + 1
+        ];
+        assert!(user_blocks(&json!(images)).is_err());
+        assert!(user_blocks(&json!([])).is_err());
+    }
+
+    #[test]
+    fn refusal_is_public_but_native_continuation_remains_preserved() {
+        let mut value = message(
+            vec![json!({"type":"text","text":"Partial answer."})],
+            "refusal",
+        );
+        value["stop_details"] =
+            json!({"type":"refusal","category":"test","explanation":"I cannot help with that."});
+        let completion = parse_completion(value).unwrap();
+        assert_eq!(completion.finish_reason, "content_filter");
+        assert_eq!(completion.message.content, "Partial answer.");
+        assert_eq!(
+            completion.message.extra["refusal"],
+            "I cannot help with that."
+        );
+        assert_eq!(
+            assistant_blocks(&completion.message).unwrap(),
+            vec![json!({"type":"text","text":"Partial answer."})]
+        );
+    }
+
+    #[test]
+    fn response_options_map_tool_policy_and_structured_output() {
+        let mut tools = crate::tools::registered_tools(false);
+        tools[0].function.strict = Some(true);
+        let options = GenerationOptions {
+            temperature: Some(0.5),
+            top_p: Some(0.9),
+            tool_choice: Some(json!({"type":"function","name":"time"})),
+            parallel_tool_calls: Some(false),
+            text_format: Some(
+                json!({"type":"json_schema","name":"result","schema":{"type":"object"},"strict":true}),
+            ),
+            ..GenerationOptions::default()
+        };
+        options
+            .validate(agents_core::ProviderProtocol::Anthropic, &tools)
+            .unwrap();
+        let body = request_body_with_options(
+            &config(),
+            &[Message::text("user", "Hello")],
+            &tools,
+            false,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(body["temperature"], 0.5);
+        assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["tools"][0]["strict"], true);
+        assert_eq!(
+            body["tool_choice"],
+            json!({"type":"tool","name":"time","disable_parallel_tool_use":true})
+        );
+        assert_eq!(
+            body["output_config"],
+            json!({"format":{"type":"json_schema","schema":{"type":"object"}}})
+        );
+        let required = GenerationOptions {
+            tool_choice: Some(json!("required")),
+            ..GenerationOptions::default()
+        };
+        let body = request_body_with_options(
+            &config(),
+            &[Message::text("user", "Hello")],
+            &tools,
+            false,
+            &required,
+        )
+        .unwrap();
+        assert_eq!(body["tool_choice"], json!({"type":"any"}));
+    }
+
+    #[test]
+    fn deepseek_anthropic_reasoning_uses_thinking_and_output_effort() {
+        let mut config = config();
+        config.base_url = "https://api.deepseek.com/anthropic".into();
+        let options = GenerationOptions {
+            reasoning: Some(json!({"effort":"minimal"})),
+            ..GenerationOptions::default()
+        };
+        options.validate_for_config(&config, &[]).unwrap();
+        let body = request_body_with_options(
+            &config,
+            &[Message::text("user", "Hello")],
+            &[],
+            false,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(body["thinking"], json!({"type":"enabled"}));
+        assert_eq!(body["output_config"], json!({"effort":"low"}));
+        let options = GenerationOptions {
+            reasoning: Some(json!({"effort":"none"})),
+            ..GenerationOptions::default()
+        };
+        let body = request_body_with_options(
+            &config,
+            &[Message::text("user", "Hello")],
+            &[],
+            false,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(body["thinking"], json!({"type":"disabled"}));
+        assert!(body.get("output_config").is_none());
+    }
     use agents_core::ProviderProtocol;
     use proptest::prelude::*;
 
@@ -571,6 +864,53 @@ mod tests {
         assert_eq!(body["max_tokens"], 1024);
         assert!(body.get("session_id").is_none());
         assert!(body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn native_tool_result_images_remain_inside_the_correlated_result_group() {
+        let mut image = Message::tool_result("call-1", "");
+        image.content = json!([
+            {"type":"text","text":"local chart 雪"},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,AQID","detail":"low"}}
+        ]);
+        let messages = vec![
+            Message::text("user", "Read local output"),
+            parse_completion(message(
+                vec![
+                    time_block(),
+                    json!({"type":"tool_use","id":"call-2","name":"time","input":{}}),
+                ],
+                "tool_use",
+            ))
+            .unwrap()
+            .message,
+            image,
+            Message::tool_result("call-2", "text result unchanged"),
+            Message::text("user", "queued steering"),
+        ];
+        let original = serde_json::to_value(&messages).unwrap();
+        let body = request_body(
+            &config(),
+            &messages,
+            &crate::tools::registered_tools(false),
+            true,
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&messages).unwrap(), original);
+        let results = &body["messages"][2]["content"];
+        assert_eq!(results.as_array().unwrap().len(), 3);
+        assert_eq!(results[0]["tool_use_id"], "call-1");
+        assert_eq!(
+            results[0]["content"][0],
+            json!({"type":"text","text":"local chart 雪"})
+        );
+        assert_eq!(
+            results[0]["content"][1],
+            json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AQID"}})
+        );
+        assert_eq!(results[1]["tool_use_id"], "call-2");
+        assert_eq!(results[1]["content"], "text result unchanged");
+        assert_eq!(results[2]["text"], "queued steering");
     }
 
     #[test]

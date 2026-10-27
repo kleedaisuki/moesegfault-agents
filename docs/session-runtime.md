@@ -92,3 +92,155 @@ after acknowledgement. Queued input remains durable and starts through normal
 run admission without advancing the user's append clock. A transport disconnect
 still does not authorize replay, and channel acceptance is not a network-delivery
 guarantee.
+
+Non-streaming Chat and Responses use the same native-backed observation boundary:
+the DO returns a private, terminal-only SSE stream immediately after admission.
+Its alarm still owns execution and commits the canonical outcome before publishing
+one status/body envelope. The edge consumes that stream with `eventsource-stream`
+and only then constructs the public JSON response and its final HTTP status.
+Private comment keepalives and the transport marker never reach the caller.
+This removes the cross-invocation JSON oneshot and its separate liveness timer;
+it does not introduce storage polling or an execution retry. An incomplete private
+stream returns `run_detached` with 503, not an invented successful completion.
+The original response/session remains the recovery authority. Public SSE is
+unchanged, and malformed or oversized internal envelopes fail closed.
+
+## Responses execution and immutable receipts (v0.3)
+
+Responses and Chat Completions share the existing durable execution loop. A
+Responses ID is also its financial run identity, but is not a session ID. The DO
+publishes each completed response under its own chunked key before clearing the
+active run. Retrieval never substitutes a later session answer for an earlier
+response. D1 contains owner-scoped routing/idempotency metadata, not the canonical
+response body. A warm retry of an accepted active ID republishes state and its
+alarm before acknowledgement; it does not append input again.
+
+Only the current response head may continue. Starting an ordinary Chat run
+invalidates that head; arbitrary historical or workspace forks are unsupported.
+Client function calls finish the response with public `function_call` items and
+release inference concurrency. The session retains their exact outstanding call
+IDs. Continuation requires one result per call, rejects unknown/duplicate/missing
+results before mutation, and creates a new response. Server tools execute inside
+the same loop and are not advertised as work the client must execute again.
+Fresh manually supplied history must contain complete, chronologically linked
+call/result groups; provider call IDs may be reused in different completed groups.
+
+For a valid archived continuation, the DO returns a private pre-admission
+`response_session_closed` signal only after validating the current head, pending
+results and generation options. The edge then uses existing quota admission and
+retries the same response ID once. Every asynchronous preparation boundary is
+followed by a fresh check of the canonical status, archive phase, revision and
+head. Domain append/start checks happen before any instruction or pending-call
+mutation. Rejected stale requests cannot silently extend or consume a session.
+
+Pure request validation is shared by edge and DO admission. When a newly allocated
+chain is definitely rejected with a client error, the private empty-retirement
+operation proves that no response, journal, workspace, accepted revision or file
+pin exists before releasing that empty live-session slot. Transport failures and
+server errors do not authorize retirement of possibly accepted work.
+
+Instructions have three distinct lifetimes. The server/agent pin is immutable for
+the session. System/developer messages supplied as input are persistent historical
+instructions. Top-level `instructions` apply to that response only, as in the
+Responses protocol. The active prefix includes all applicable layers and survives
+every compaction; constructing the next response removes only the request-local
+layer. Canonical source messages and original input items remain separate from the
+compacted inference view. File input receipts retain references rather than
+duplicating expanded text/image content in the public input-items representation.
+
+Local `function_call_output.output` accepts the same bounded text/image/file
+parts as user inputs. Call-set validation precedes owner-scoped file resolution
+and publication. The source journal retains native typed image content, while
+input-item retrieval preserves the original file references and typed output
+parts. Anthropic places images inside their correlated native `tool_result`.
+The Chat-protocol adapter cannot send images in a tool-role message, so its pure
+provider projection leaves all contiguous tool results together and then adds
+untrusted user image context labelled by `call_id`. This context is not a new
+canonical user message or a privileged instruction. String/text-only results keep
+their established provider representation. The call-set validator stores only
+call IDs rather than duplicating output bytes.
+
+Background cancellation is a durable request observed at a safe execution
+boundary. A known pending model/compaction result is journaled and financially
+recorded first; cancellation does not turn consumed inference into fictitious zero
+usage. No further tool is dispatched, and interrupted tool groups receive explicit
+linked terminal results so a later turn cannot accidentally execute them. The
+canonical response becomes `cancelled`. Since the standard SSE event union has no
+`response.cancelled` event, a cancelled observer receives the standard `error`
+event with `code: response_cancelled`, then EOF; the client retrieves the same ID.
+
+### Event sequence fencing and bounded replay
+
+Live deltas are buffered with the provider round rather than causing a durable
+write per token. Their sequence allocation range is committed **before** upstream
+I/O. A cold load skips the old range and durably reserves a fresh range before
+exposing the restored object; this also protects a second reset during recovery.
+No event can allocate beyond its published range. Finalization renews a durable
+range before emitting its terminal event, so range exhaustion cannot strand a run.
+An unknown in-flight provider outcome becomes an explicit failure with a later
+sequence, not an automatic inference replay or a fabricated successful answer.
+
+Responses plaintext uses a transient provider-side text coalescer: the first
+fragment is immediate, later fragments flush at 1 KiB or a real 50 ms timer even
+while the upstream is quiet. Non-text/tool/refusal/finish/error boundaries flush
+pending text. Emitted batches cooperatively yield to the JS reader; a ready
+upstream stream must not fill the bounded observer queue before a fast consumer
+gets scheduled. Parallel local handoff items likewise yield in bounded groups.
+Chat Completions retains its existing immediate-fragment delivery. These are
+transport changes, not additional model requests, journal messages or token usage.
+
+Replay retains at most 65,536 events and 16 MiB, evicting an amortized prefix.
+An expired replay cursor returns 410 and directs the owner to retrieve the complete
+immutable response. Public response output is bounded to 4 MiB before new output
+items are emitted. At most eight observers attach; each live stream has a bounded
+32-frame queue. A slow observer may disconnect without cancelling execution and
+must recover from the original ID. These bounds are protocol/resource policy, not
+claims that channel acceptance proves delivery to the remote client.
+
+### Prompt planning is not billing
+
+The text-only working estimator preserves the existing conservative JSON-byte
+budget without allocating another serialized prompt. Native image transport bytes
+are masked and receive an 8,192-token working reservation per image; base64 size
+must not be misclassified as millions of textual model tokens. This reservation is
+an approximation, not a tokenizer, a model capability guarantee, or a billable
+quantity. Reported upstream usage remains authoritative. Aggregate decoded inline
+attachments/images are bounded to 4 MiB to protect the Worker while the inference
+view and source journal coexist; larger binary files stream into a funded workspace.
+
+Configured semantic compaction remains independent from `truncation`. After that
+policy runs, `auto` may drop whole older interaction groups from the active view
+if necessary; `disabled` rejects a view that still exceeds its working budget.
+Neither mode drops the pinned instruction prefix, splits a tool group, deletes
+source history, or changes financial token counts.
+
+Requested tool selection is checked against actual model output before dispatch:
+`none` applies throughout, and `required`/named selection applies to the initial
+model round before the internal harness resumes automatic selection. A genuine
+refusal or incomplete generation is not falsely converted into a missing-tool
+failure. A provider policy violation retains known usage but never executes the
+unrequested tool. For structured output, intermediate tool-round rationale stays
+in the private source journal; public text is emitted only after the completed
+round is classified and its final JSON/schema validated. Otherwise concatenating
+intermediate prose with a valid final JSON object would break SDK `output_text`.
+
+### Attachment liveness
+
+Binary source files are pinned in the owner's Space before durable acceptance.
+The persistence mutex spans the atomic D1 pin acquisition, final admission check
+and canonical DO write. The same mutex protects orphan reconciliation, so a
+pending D1 acknowledgement cannot be mistaken for proof of non-admission. File
+deletion atomically refuses a pinned source; materialization streams the exact
+owner/key/hash/length identity into a safe workspace path only after run admission.
+
+Pins are released after the canonical response becomes terminal, not on an
+observer disconnect, cancel acknowledgement or materialization acknowledgement.
+An unpin error does not withhold the answer or rerun work. A bounded, keyset-driven
+Space maintenance pass calls the owning DO even when that session is closed. The
+DO retains active references and releases only a terminal receipt or a proven
+non-admitted orphan; failed reads remain pinned and do not block other responses'
+reconciliation. There is no time-based expiry of a live reference.
+
+Pin/routing metadata is bounded control-plane overhead included in platform
+pricing, not a separate fictitious zero-usage measurement. Actual file transfer
+and retained-storage accounting continue through the existing resource ledger.

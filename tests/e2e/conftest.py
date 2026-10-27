@@ -10,7 +10,28 @@ import urllib.request
 import uuid
 from typing import Any
 
+from paid_route_policy import assert_direct_deepseek_pin
+
 import pytest
+
+
+_required_journey_skips: list[str] = []
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    if os.getenv("MAGENTS_TEST_REQUIRE_ALL") == "1" and report.skipped:
+        _required_journey_skips.append(report.nodeid)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    if not _required_journey_skips:
+        return
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", "Required deployed journeys were skipped", red=True)
+        for nodeid in _required_journey_skips:
+            reporter.write_line(nodeid, red=True)
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -50,11 +71,17 @@ class Http:
         with response:
             return response.status, response.headers, response.read()
 
-    def json(self, method, path, data=None, expected=200, **kwargs):
+    def json(self, method: str, path: str, data: Any = None, expected: int = 200,
+             **kwargs: Any) -> Any:
         status, _, body = self.request(method, path, data, **kwargs)
         # Do not expose response bodies: diagnostics can contain user content.
         assert status == expected, f"{method} {path}: expected {expected}, received {status}"
-        return json.loads(body) if body else None
+        value = json.loads(body) if body else None
+        if (os.getenv("MAGENTS_TEST_INFERENCE") == "1" and method == "POST"
+                and path.startswith("/v1/agents/") and path.endswith("/sessions")):
+            assert isinstance(value, dict)
+            assert_direct_deepseek_pin(self, value)
+        return value
 
 
 def cleanup_deployed_agent(api, agent_id, session_ids, timeout=480):

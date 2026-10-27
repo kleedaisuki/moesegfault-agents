@@ -1,7 +1,10 @@
 mod auth;
 mod client;
 mod config;
+mod conversations;
 mod downloads;
+mod responses;
+mod space;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -54,6 +57,26 @@ enum Command {
         #[command(subcommand)]
         command: Sessions,
     },
+    /// Create, inspect, and continue Responses API executions.
+    Responses {
+        #[command(subcommand)]
+        command: responses::Responses,
+    },
+    /// Manage durable Conversations and their original items, independently of sessions.
+    Conversations {
+        #[command(subcommand)]
+        command: conversations::Conversations,
+    },
+    /// Inspect or delete an owned code container without starting a model run.
+    Containers {
+        #[command(subcommand)]
+        command: Containers,
+    },
+    /// Manage uploaded files and immutable workspace versions.
+    Space {
+        #[command(subcommand)]
+        command: space::Space,
+    },
     /// List upstream models and their capabilities.
     Models,
     /// Show metered resource and model usage.
@@ -88,6 +111,17 @@ enum Auth {
     },
     Logout,
     Status,
+}
+
+#[derive(Subcommand)]
+enum Containers {
+    Show {
+        id: String,
+    },
+    /// Delete the code container, not its creator's session or financial history.
+    Delete {
+        id: String,
+    },
 }
 #[derive(Subcommand)]
 enum Agents {
@@ -179,7 +213,7 @@ enum Sessions {
         #[arg(short, long)]
         output: PathBuf,
     },
-    /// Download the committed workspace of a closed session; never starts a container.
+    /// Persist, restore, or download a workspace.
     Workspace {
         #[command(subcommand)]
         command: Workspace,
@@ -188,6 +222,23 @@ enum Sessions {
 
 #[derive(Subcommand)]
 enum Workspace {
+    /// Persist an idle workspace as an immutable version in your Space.
+    Commit {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        /// Reuse the reported operation ID only to recover this exact same commit.
+        #[arg(long)]
+        operation_id: Option<String>,
+    },
+    /// Restore an owned version into an idle workspace, preserving a safety version first.
+    Restore {
+        id: String,
+        version: String,
+        /// Reuse the reported operation ID only to recover this exact same restore.
+        #[arg(long)]
+        operation_id: Option<String>,
+    },
     /// Download a complete integrity-checked tar.zst snapshot, without unpacking it.
     Download {
         id: String,
@@ -267,6 +318,43 @@ fn segment(value: &str) -> Result<&str> {
         bail!("Identifier must contain only letters, numbers, '_' or '-'");
     }
     Ok(value)
+}
+
+fn workspace_operation_id(explicit: Option<String>) -> Result<String> {
+    let id = explicit.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    segment(&id)?;
+    if id.len() > 128 {
+        bail!("Workspace operation ID must contain 1 to 128 letters, numbers, '_' or '-'");
+    }
+    Ok(id)
+}
+
+async fn workspace_action(
+    api: &Api,
+    session: &str,
+    action: &str,
+    mut body: Value,
+    explicit_id: Option<String>,
+) -> Result<()> {
+    let path = format!("/v1/sessions/{}/workspace/{action}", segment(session)?);
+    let operation_id = workspace_operation_id(explicit_id)?;
+    body["operation_id"] = operation_id.clone().into();
+    eprintln!("Operation: {operation_id}");
+    let mut result = api.json("POST", &path, Some(body)).await?;
+    let object = result
+        .as_object_mut()
+        .context("Invalid workspace operation result")?;
+    if object
+        .get("operation_id")
+        .is_some_and(|value| value.as_str() != Some(operation_id.as_str()))
+    {
+        bail!(
+            "Workspace operation result has an inconsistent operation ID; inspect the reported operation"
+        );
+    }
+    object.insert("operation_id".into(), operation_id.into());
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
 }
 
 async fn agents(api: &Api, command: Agents) -> Result<()> {
@@ -391,6 +479,17 @@ async fn main() -> Result<()> {
             api.stream(json!({"model": agent, "messages": [{"role": "user", "content": prompt}], "stream": true}), session).await?;
         }
         Command::Agents { command } => agents(&api, command).await?,
+        Command::Space { command } => space::run(&api, command).await?,
+        Command::Responses { command } => responses::run(&api, command).await?,
+        Command::Conversations { command } => conversations::run(&api, command).await?,
+        Command::Containers { command } => {
+            let (method, id) = match command {
+                Containers::Show { id } => ("GET", id),
+                Containers::Delete { id } => ("DELETE", id),
+            };
+            api.response_object(method, &format!("/v1/containers/{}", segment(&id)?), None)
+                .await?;
+        }
         Command::Skills { command } => {
             let (method, path, body) = match command {
                 Skills::List => ("GET", "/v1/skills".into(), None),
@@ -446,6 +545,31 @@ async fn main() -> Result<()> {
                 downloads::transcript(&api, segment(&id)?, format, &output).await?;
             }
             Sessions::Workspace { command } => match command {
+                Workspace::Commit {
+                    id,
+                    name,
+                    operation_id,
+                } => {
+                    let body = match name {
+                        Some(name) => json!({"name":name}),
+                        None => json!({}),
+                    };
+                    workspace_action(&api, &id, "commit", body, operation_id).await?;
+                }
+                Workspace::Restore {
+                    id,
+                    version,
+                    operation_id,
+                } => {
+                    workspace_action(
+                        &api,
+                        &id,
+                        "restore",
+                        json!({"version_id":segment(&version)?}),
+                        operation_id,
+                    )
+                    .await?;
+                }
                 Workspace::Download { id, output } => {
                     downloads::workspace(&api, segment(&id)?, &output).await?;
                 }

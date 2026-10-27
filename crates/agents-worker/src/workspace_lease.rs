@@ -74,12 +74,15 @@ impl ComputeLease<'_> {
         read_lease(&self.state.storage(), "workspace:lease").await
     }
 
-    pub async fn prepare(&self) -> Result<Option<Renewal>> {
+    pub async fn prepare(&self, minimum_until: Option<u64>) -> Result<Option<Renewal>> {
         let previous = self.current().await?;
         let now = crate::util::now_ms();
+        if minimum_until.is_some_and(|deadline| deadline > now.saturating_add(DURATION_MS)) {
+            return Err(fail("workspace_lease_horizon_unsupported"));
+        }
         if previous
             .as_ref()
-            .is_some_and(|lease| !renew_due(lease.expires_ms, now))
+            .is_some_and(|lease| !renew_covering(lease.expires_ms, now, minimum_until))
         {
             return Ok(None);
         }
@@ -95,7 +98,7 @@ impl ComputeLease<'_> {
         }
         if let Some(stale) = candidate
             .as_ref()
-            .filter(|next| renew_due(next.expires_ms, now))
+            .filter(|next| renew_covering(next.expires_ms, now, minimum_until))
         {
             // A wallet rejection may leave admission pending for arbitrarily
             // long. An unactivated hold owns no compute and can be replaced.
@@ -118,8 +121,10 @@ impl ComputeLease<'_> {
         let next = match candidate {
             Some(lease) => lease,
             None => {
-                let pricing =
-                    ResourcePricing::parse(&self.env.var("RESOURCE_PRICING_JSON")?.to_string())?;
+                let profile =
+                    crate::runtime_profiles::profile_for(self.env, self.owner, self.session)
+                        .await?;
+                let pricing = crate::runtime_profiles::pricing(self.env, profile)?;
                 let compute = pricing
                     .tariff(&Resource::Container, "wall_ms")?
                     .charge(DURATION_MS)
@@ -202,6 +207,10 @@ fn renew_due(expires_ms: u64, now_ms: u64) -> bool {
     expires_ms.saturating_sub(now_ms) < RENEW_MARGIN_MS
 }
 
+fn renew_covering(expires_ms: u64, now_ms: u64, minimum_until: Option<u64>) -> bool {
+    renew_due(expires_ms, now_ms) || minimum_until.is_some_and(|deadline| expires_ms < deadline)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +286,19 @@ mod tests {
         assert!(renew_due(DURATION_MS, DURATION_MS - RENEW_MARGIN_MS + 1));
         assert!(renew_due(DURATION_MS, DURATION_MS + 1));
         assert!(RENEW_MARGIN_MS >= 600_000 + 300_000);
+    }
+    #[test]
+    fn code_use_covers_its_idle_window_before_the_normal_renewal_margin() {
+        let now = 12 * 60 * 1000;
+        let required = now + 22 * 60 * 1000;
+        assert!(!renew_due(DURATION_MS, now));
+        assert!(renew_covering(DURATION_MS, now, Some(required)));
+        assert!(!renew_covering(DURATION_MS, now, None));
+        assert!(!renew_covering(required, now, Some(required)));
+        assert!(!renew_covering(
+            DURATION_MS,
+            5 * 60 * 1000,
+            Some(27 * 60 * 1000)
+        ));
     }
 }

@@ -6,6 +6,14 @@ const BATCH_KEYS: usize = 128;
 // Stored Vec<u8> values expand into JS arrays; cap bytes as well as key count.
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
 
+pub(crate) fn decode_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    // Serde's buffered tagged-enum decoder otherwise exposes arbitrary-precision
+    // JSON numbers as private maps to nested f64 fields. Keep exact JSON Values
+    // until the typed decode, including large integers in arbitrary user data.
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    serde_json::from_value(value).map_err(Error::from)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Index {
     generation: String,

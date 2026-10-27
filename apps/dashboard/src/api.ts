@@ -9,17 +9,46 @@ export type Agent = {
     context_window: number;
     max_output_tokens: number;
     credential_id?: string;
+    protocol?: "openai" | "responses" | "anthropic";
   };
   instructions: string;
   compaction_percent: number;
   workspace: boolean;
+  tools?: string[];
   skills: string[];
+  tool_services?: ToolServices;
+};
+export type ImageService = {
+  provider?: "platform" | "openai_images" | "openrouter_images";
+  credential_id?: string;
+  model?: string;
+  asset_hosts?: string[];
+};
+export type SearchService = {
+  provider?: "platform_deepseek" | "deepseek_search" | "openai_responses";
+  credential_id?: string;
+  model?: string;
+  max_output_tokens?: number;
+  max_tool_calls?: number;
+};
+export type CodeService = {
+  provider?: "platform" | "workspace_daemon";
+  credential_id?: string;
+  [field: string]: unknown;
+};
+// Preserve server-managed future descriptors when another service is edited.
+export type ToolServices = {
+  code_interpreter?: CodeService;
+  [service: string]: unknown;
+  image_generation?: ImageService;
+  web_search?: SearchService;
 };
 export type Model = {
   provider: string;
   model: string;
   context_window: number;
   max_output_tokens: number;
+  protocol?: Agent["model"]["protocol"];
 };
 export type ModelRegistry = {
   data: { id: string }[];
@@ -33,7 +62,14 @@ export type ProviderKey = {
   protocol?: "openai" | "anthropic";
   base_url?: string;
 };
-export type Message = { role: string; content: string };
+export type MessageContent =
+  | string
+  | number
+  | boolean
+  | null
+  | MessageContent[]
+  | { [key: string]: MessageContent };
+export type Message = { role: string; content: MessageContent };
 export type Session = {
   id: string;
   agent_id: string;
@@ -45,6 +81,10 @@ export type Session = {
   context_window?: number;
   last_error?: string;
   pending_messages?: Message[];
+  message_count?: number;
+  run_id?: string | null;
+  latest_response_id?: string | null;
+  pending_local_calls?: { call_id: string; name: string; arguments: string }[];
 };
 export type Account = {
   account_id: string;
@@ -89,9 +129,11 @@ export function setCsrfToken(token?: string) {
 export async function responseFor(
   path: string,
   init: RequestInit = {},
+  acceptedStatuses: readonly number[] = [],
 ): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (init.body) headers.set("Content-Type", "application/json");
+  if (typeof init.body === "string" && !headers.has("Content-Type"))
+    headers.set("Content-Type", "application/json");
   if (csrfToken && init.method && !["GET", "HEAD"].includes(init.method))
     headers.set("X-CSRF-Token", csrfToken);
   const response = await fetch(path, {
@@ -99,7 +141,7 @@ export async function responseFor(
     credentials: "same-origin",
     headers,
   });
-  if (!response.ok) {
+  if (!response.ok && !acceptedStatuses.includes(response.status)) {
     if (response.status === 401 && path !== "/v1/account")
       window.dispatchEvent(new Event(AUTHENTICATION_REQUIRED_EVENT));
     const body = await response.json().catch(() => ({}));
@@ -150,7 +192,28 @@ export function apiBaseUrl(
   return `${url.origin}/v1`;
 }
 
+const apiErrorMessages = new Map([
+  ["response_cancelled", "Response cancelled"],
+  [
+    "file_in_use",
+    "This file is used by an active response. Wait or cancel it before deleting.",
+  ],
+  ["file_too_large", "This file exceeds the upload size limit."],
+  [
+    "attachments_too_large",
+    "Reduce the attachment size or attach fewer files.",
+  ],
+  [
+    "file_requires_workspace",
+    "Use a workspace-enabled agent for binary or large file attachments.",
+  ],
+]);
+
 export function localizedError(error: unknown): string {
+  if (error instanceof ApiError) {
+    const message = apiErrorMessages.get(error.code ?? "");
+    if (message) return i18n.t(message);
+  }
   const message =
     error instanceof Error
       ? error.message
@@ -246,6 +309,7 @@ export async function streamCompletion(
   )
     throw new Error("Invalid response stream");
   let completed = false;
+  let successful = false;
   const parser = createParser({
     onEvent: (event) => {
       if (event.data === "[DONE]") {
@@ -262,6 +326,9 @@ export async function streamCompletion(
         );
       const content = value.choices?.[0]?.delta?.content;
       if (typeof content === "string") onDelta(content);
+      const finish = value.choices?.[0]?.finish_reason;
+      if (finish === "stop") successful = true;
+      else if (finish) throw new Error("Response incomplete");
     },
   });
   const reader = response.body.getReader();
@@ -273,7 +340,8 @@ export async function streamCompletion(
       parser.feed(decoder.decode(value, { stream: true }));
     }
     parser.feed(decoder.decode());
-    if (!completed) throw new Error("Response stream interrupted");
+    if (!completed || !successful)
+      throw new Error("Response stream interrupted");
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();

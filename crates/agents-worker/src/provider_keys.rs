@@ -211,6 +211,11 @@ impl CredentialInput {
             .protocol
             .or_else(|| existing.map(|row| row.protocol))
             .ok_or_else(|| failure("invalid_provider"))?;
+        // Credential metadata selects an authentication family. Native Responses
+        // is an explicit model transport using the same OpenAI-family key.
+        if protocol == ProviderProtocol::Responses {
+            return Err(failure("invalid_provider"));
+        }
         let base_url = self
             .base_url
             .as_deref()
@@ -259,7 +264,7 @@ pub(crate) fn normalize_base_url(protocol: ProviderProtocol, value: &str) -> Res
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
-fn public_hostname(host: &str) -> bool {
+pub(crate) fn public_hostname(host: &str) -> bool {
     host.contains('.')
         && host.parse::<std::net::IpAddr>().is_err()
         && !host.starts_with('[')
@@ -312,6 +317,7 @@ fn valid_id(value: &str) -> bool {
 fn protocol_name(protocol: ProviderProtocol) -> &'static str {
     match protocol {
         ProviderProtocol::Openai => "openai",
+        ProviderProtocol::Responses => "responses",
         ProviderProtocol::Anthropic => "anthropic",
     }
 }
@@ -346,6 +352,21 @@ fn encrypt(env: &Env, account: &str, id: &str, provider: &str, secret: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_protocol_cannot_be_changed_into_a_model_transport() {
+        let input = CredentialInput {
+            name: None,
+            protocol: Some(ProviderProtocol::Responses),
+            base_url: Some("https://provider.example/v1".into()),
+            api_key: "test-only".into(),
+        };
+        assert!(input.validate(None).is_err());
+        assert_eq!(
+            normalize_base_url(ProviderProtocol::Responses, "https://API.example.com/v1/").unwrap(),
+            normalize_base_url(ProviderProtocol::Openai, "https://API.example.com/v1/").unwrap()
+        );
+    }
 
     #[test]
     fn only_public_https_hostname_bases_are_accepted() {

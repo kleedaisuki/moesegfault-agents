@@ -4,22 +4,44 @@ Use the checked-out `.github/workflows/ci.yml`, `deploy.yml` and
 `release-magents.yml` as the executable contract. Read their inputs before acting;
 the skill is not authorization to publish or change infrastructure.
 
-## Promote tested artifacts
+## Select new work and reuse evidence
 
-For an authorized staging delivery, dispatch CI on the intended ref, identify its
-actual run and wait for its conclusion. Manual CI selects all components and
-provides the paired `worker` and `dashboard` artifacts required by Deploy.
+Read `docs/incremental-acceptance.md` and the committed selector plan. The user
+requires reuse of already passing functionality unless there is concrete failure
+evidence. Preserve each baseline's original component/source/dependency identity;
+never relabel a reused or skipped check as newly passed at this SHA. Build changed
+components as needed and select new capabilities or actual failed regressions,
+not old Chat/file/UI/CLI or large-prefill trajectories merely to aggregate green.
 
 ```sh
-gh workflow run ci.yml --ref REF
-gh run list --workflow ci.yml --branch REF
-gh workflow run deploy.yml --ref REF -f environment=staging -f source_run=CI_RUN_ID
+gh workflow view ci.yml
+gh workflow view deploy.yml
 ```
 
-Replace the placeholders with observed values. The selected CI must be successful,
-from the exact deployment SHA, from the CI workflow and not a pull-request run.
-Never bypass that check or substitute artifacts from another revision. Preserve
-the complete Worker build directory, including the JavaScript beside `worker/`.
+These read workflow contracts, not authorization to dispatch. An authorized
+deployment uses the observed normal CI run for the exact candidate and its
+source-bound plan/results. `scripts/verification-baselines.json`, component
+fingerprints and `scripts/deploy-provenance.mjs` govern reuse; do not impose the
+old all-six-jobs-rerun rule. A historical failed aggregate remains failed even
+when a named passing phase/selector is reusable. Plans, diagnostic-only runs and
+`no_selected_tests` cannot become successful new execution evidence.
+Per-check proof can also be reused when its declared old/current input
+fingerprints and actual historical result match, even if another part of the
+component changed. Diagnostic-only component evidence cannot promote an artifact.
+
+Worker, dashboard and daemon may reuse different accepted source artifacts only
+when relevant source/dependency fingerprints and original run/artifact identities
+match. The manifest states actual provenance; `BUILD_ID` labels the candidate
+configuration, not a claim every reused binary was rebuilt. Preserve the complete
+Worker build directory. Load/publish the accepted immutable container archive,
+not a promotion rebuild. Basic and 4 GiB profiles use the same tested image;
+require actual SKU/daemon capacity proof before memory-dependent paid work.
+
+Read Deploy's current inputs. `acceptance_profile=none` verifies activation and
+records no selected paid acceptance, not a successful user journey. The bounded
+usage probe is an observation, not full compact/tool acceptance. A Responses
+increment can precede hosted-tool completion without closing the full objective.
+Never rerun an uncertain paid profile to evade its saved intent.
 
 Check the source and live state before retrying a failed workflow. Worker upload,
 container update and secret reassertion are not one transaction: a red job may
@@ -27,8 +49,18 @@ have applied a migration and activated code. A health response alone does not
 prove the container rollout or remaining delivery steps completed. Reconcile the
 same accepted declaration when appropriate; do not dispatch a competing release.
 
-Production requires its own release authority, complete relevant staging journey
-and environment-paired configuration. Keep existing databases, namespaces,
+All paid language-model acceptance uses direct DeepSeek, never OpenRouter.
+Authorized image acceptance may use the configured OpenRouter Seedream 5 route.
+Missing cache-write/reasoning detail is unknown, not zero. Preserve accepted IDs;
+never repeat model/tool work merely to repair observation or obtain a receipt.
+
+Final production/public release requires root clearance and aggregate named
+capability evidence: branches, Conversations, rich fields, WebSocket/steering,
+count/compact, hosted execution/artifacts, accounting, performance and clients.
+Old narrow baseline receipts do not close that objective. Topic owners deliver
+and integrate directly, coordinating shared-index writes briefly; the deployment
+owner activates a pinned candidate while later topics continue independently. Keep
+environment-paired configuration and existing databases, namespaces,
 buckets, Identity registration and encryption/signing keys. Do not generate keys,
 change subject sectors, issue grants or rotate secrets as routine deployment
 repair. An app's Subscribe return requires the exact corresponding producer
@@ -56,5 +88,6 @@ tokens, callback queries, prompts, Bash output or private paths as diagnostics.
 Distinguish captured evidence from gaps, and channel acceptance from client receipt.
 
 Canonical procedures: [deployment](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/deployment.md),
+[incremental acceptance](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/incremental-acceptance.md),
 [onboarding](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/deployment-onboarding.md),
 [observability](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/observability.md).

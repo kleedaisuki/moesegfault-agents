@@ -18,7 +18,7 @@ describe("complete localized UI", () => {
   it("has matching nonempty resources for every literal UI key", () => {
     expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort());
     const modules = import.meta.glob(
-      "./{App,PublicEntry,Agents,Access,Conversation,UsagePage,Preferences,Skills,ui}.tsx",
+      "./{App,PublicEntry,Agents,Access,Conversation,Attachments,SessionWorkspace,UsagePage,Preferences,Skills,Space,ui}.tsx",
       { query: "?raw", import: "default", eager: true },
     );
     for (const source of Object.values(modules))
@@ -40,6 +40,49 @@ describe("complete localized UI", () => {
     expect(localizedError(new TypeError("Failed to fetch"))).toBe(
       zh["Network request failed"],
     );
+  });
+  it.each([
+    [
+      "file_in_use",
+      409,
+      "This file is used by an active response. Wait or cancel it before deleting.",
+    ],
+    ["file_too_large", 413, "This file exceeds the upload size limit."],
+    [
+      "attachments_too_large",
+      413,
+      "Reduce the attachment size or attach fewer files.",
+    ],
+    [
+      "file_requires_workspace",
+      400,
+      "Use a workspace-enabled agent for binary or large file attachments.",
+    ],
+  ] as const)(
+    "provides actionable localized guidance for %s",
+    (code, status, message) => {
+      for (const language of ["en", "zh-CN"] as const) {
+        i18n.changeLanguage(language);
+        expect(
+          localizedError(
+            new ApiError("private backend detail", status, undefined, code),
+          ),
+        ).toBe(language === "en" ? message : zh[message]);
+      }
+    },
+  );
+  it("does not expose unknown or lookalike attachment errors in Chinese", () => {
+    i18n.changeLanguage("zh-CN");
+    for (const code of [
+      "unknown_file_error",
+      "private-file_in_use",
+      "file_too_large-extra",
+    ])
+      expect(
+        localizedError(
+          new ApiError("private dependency detail", 409, undefined, code),
+        ),
+      ).toBe(zh.Conflict);
   });
   it("formats exact microUSD above the JavaScript safe integer limit", () => {
     expect(microDollars("9007199254740993")).toBe("$9,007,199,254.740993");

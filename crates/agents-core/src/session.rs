@@ -2,6 +2,39 @@ use serde::{Deserialize, Serialize};
 
 use crate::{PinnedContext, SESSION_IDLE_TIMEOUT_MS};
 
+/// The deployed Container application is selected once, before Session admission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuntimeProfile {
+    #[default]
+    #[serde(rename = "basic1g")]
+    Basic1g,
+    #[serde(rename = "standard4g")]
+    Standard4g,
+}
+
+impl RuntimeProfile {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Basic1g => "basic1g",
+            Self::Standard4g => "standard4g",
+        }
+    }
+
+    pub const fn memory_bytes(self) -> u64 {
+        match self {
+            Self::Basic1g => 1 << 30,
+            Self::Standard4g => 4 << 30,
+        }
+    }
+
+    pub const fn disk_bytes(self) -> u64 {
+        match self {
+            Self::Basic1g => 4_000_000_000,
+            Self::Standard4g => 8_000_000_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -34,6 +67,8 @@ pub struct SessionRecord {
     pub input_revision: u64,
     pub pinned: PinnedContext,
     pub workspace_snapshot: Option<WorkspaceSnapshot>,
+    #[serde(default)]
+    pub runtime_profile: RuntimeProfile,
 }
 
 pub type SessionSnapshot = SessionRecord;
@@ -128,6 +163,7 @@ mod tests {
             input_revision: 0,
             pinned: PinnedContext::resolve(&agent, vec![], vec![]),
             workspace_snapshot: None,
+            runtime_profile: RuntimeProfile::Basic1g,
         }
     }
 

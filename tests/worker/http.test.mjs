@@ -10,20 +10,52 @@ import { createIdentityFixture, runAuthJourney, runClientAssertionJourney, runIn
 import { createBrowserPrincipal } from './browser-principal.mjs';
 import { createGenericProviderFixture, runGenericByokJourney } from './generic-byok-journey.mjs';
 import { runExportJourney } from './export-journey.mjs';
+import { runExecutionLeaseJourney } from './execution-lease-journey.mjs';
 import { createCompactionProviderFixture, runCompactionJourney } from './compaction-journey.mjs';
 import { createObserverProviderFixture, runProjectionFaultJourney } from './observer-journey.mjs';
+import { createResponsesProviderFixture, runResponsesNodeSdkJourney, runResponsesLocalToolsJourney,
+  runResponsesCompactionJourney, runResponsesBackgroundRaceJourney, runResponsesStorageAndFailureJourney,
+  runResponsesCancellationJourney, runResponsesIdempotencyRaceJourney, runSessionViewsJourney,
+  runResponsesInputAndOptionsJourney, runResponsesUnknownUsageJourney, runSeededAttachmentPinJourney } from './responses-journey.mjs';
+import { runResponsesPolicyJourney } from './responses-policy-journey.mjs';
+import { createCoalescingProviderFixture, runResponsesCoalescingJourney } from './responses-coalescing-journey.mjs';
+import { runSpaceJourney } from './space-journey.mjs';
+import { runWorkspaceBlobJourney } from './workspace-blob-journey.mjs';
+import { runJsonObserverJourney } from './json-observer-journey.mjs';
+import { createChatRecoveryControl, runChatRecoveryJourney } from './chat-recovery-journey.mjs';
+import { runDeepseekAutomaticCompactJourney } from './deepseek-auto-compact-journey.mjs';
+import { createAuxiliaryProviderFixture, runAuxiliaryJourney, runContextManagementJourney } from './auxiliary-journey.mjs';
+import { createDeepseekCompactFixture, runDeepseekCompactJourney } from './deepseek-compact-journey.mjs';
+import { runDeepseekCompactMediaJourney } from './deepseek-compact-media-journey.mjs';
+import { runDeepSeekTokenizerJourney } from './deepseek-tokenizer-journey.mjs';
+import { createVisionInputFixture, runDeepSeekVisionCountJourney } from './deepseek-vision-count-journey.mjs';
+import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
+import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
 const key = 'mag_integration_synthetic_key_not_a_real_credential';
 const hash = createHash('sha256').update(key).digest('base64url');
 
-test('compiled Rust Worker: authenticated D1 and session DO user journey', { timeout: 90000 }, async (t) => {
+function selected(context, name, ...arguments_) {
+  const filter = process.env.MAGENTS_WORKER_CASE;
+  if (filter && !name.includes(filter)) return Promise.resolve();
+  return context.test(name, ...arguments_);
+}
+
+test('compiled Rust Worker: authenticated D1 and session DO user journey', { timeout: 180000 }, async (t) => {
   const encryptionKey = randomBytes(32);
   const identity = createIdentityFixture();
   const genericProviders = createGenericProviderFixture();
   const compactionProviders = createCompactionProviderFixture();
   const observerProvider = createObserverProviderFixture();
+  const responsesProvider = createResponsesProviderFixture();
+  const coalescingProviders = createCoalescingProviderFixture();
+  const chatRecoveryControl = createChatRecoveryControl();
+  const auxiliaryProvider = createAuxiliaryProviderFixture();
+  const deepseekCompactProvider = createDeepseekCompactFixture();
+  const visionInputs = createVisionInputFixture();
+  const promptProvider = createPromptProviderFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -41,17 +73,25 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const mfOptions = convertV4MiniflareOptions({
     modulesRoot: build,
     modules: [
-      { type: 'ESModule', path: path.join(build, 'worker/shim.mjs') },
+      { type: 'ESModule', path: path.join(build, 'worker/shim.mjs'),
+        contents: await readFile(new URL('./execution-lease-shim.mjs', import.meta.url), 'utf8') },
+      { type: 'ESModule', path: path.join(build, 'worker/workspace-blob-shim.mjs'),
+        contents: await readFile(new URL('./workspace-blob-shim.mjs', import.meta.url), 'utf8') },
+      { type: 'ESModule', path: path.join(build, 'worker/chat-recovery-shim.mjs'),
+        contents: await readFile(new URL('./chat-recovery-shim.mjs', import.meta.url), 'utf8') },
       { type: 'ESModule', path: path.join(build, 'index.js') },
       { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') },
     ],
     compatibilityDate: '2026-10-23',
+    compatibilityFlags: ['enable_request_signal'],
     resourcePersistencePath: path.join(temp, 'storage'),
     d1Databases: ['DB'],
     r2Buckets: ['WORKSPACES', 'CONVERSATIONS', 'DIAGNOSTICS'],
     durableObjects: {
       SESSIONS: { className: 'Session', useSQLite: true },
       AUTH_SESSIONS: { className: 'AuthSession', useSQLite: true },
+      CONVERSATION_STATE: { className: 'ConversationState', useSQLite: true },
+      MODEL_OPERATIONS: { className: 'ModelOperation', useSQLite: true },
     },
     ratelimits: Object.fromEntries(['INGRESS', 'ACCOUNT', 'MUTATION'].map((name, i) => [
       `${name}_RATE_LIMITER`, { namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } },
@@ -68,10 +108,27 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       RESOURCE_PRICING_JSON: resourcePricing,
       OPENROUTER_API_KEY: 'synthetic-provider-key-never-sent-outside-fixture',
       RUN_RESOURCE_RESERVATION_MICROUSD: '20000',
-      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '20000000',
+      // Independent Responses/Space principals need trial grants; owner-level
+      // exhaustion remains covered separately rather than sharing a global cap.
+      FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000',
       MODEL_PRICING_JSON: JSON.stringify({ 'openrouter/test-model': { input_microusd_per_million: 300000, cached_input_microusd_per_million: 6000, output_microusd_per_million: 1200000, revision: 'integration' } }),
+      PROMPT_REGISTRY_JSON: promptRegistry,
     },
     outboundService: async request => {
+      const deepseekCompactResponse = await deepseekCompactProvider.handle(request);
+      if (deepseekCompactResponse !== undefined) return deepseekCompactResponse;
+      const visionResponse = await visionInputs.handle(request);
+      if (visionResponse !== undefined) return visionResponse;
+      const promptResponse = await promptProvider.handle(request);
+      if (promptResponse !== undefined) return promptResponse;
+      const auxiliaryResponse = await auxiliaryProvider.handle(request);
+      if (auxiliaryResponse !== undefined) return auxiliaryResponse;
+      const chatRecoveryResponse = await chatRecoveryControl.handle(request);
+      if (chatRecoveryResponse !== undefined) return chatRecoveryResponse;
+      const coalescingResponse = await coalescingProviders.handle(request);
+      if (coalescingResponse !== undefined) return coalescingResponse;
+      const responsesResponse = await responsesProvider.handle(request);
+      if (responsesResponse !== undefined) return responsesResponse;
       const observerResponse = await observerProvider.handle(request);
       if (observerResponse !== undefined) return observerResponse;
       const compactionResponse = await compactionProviders.handle(request);
@@ -161,11 +218,11 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     assert.equal(response.status, expected, `${method} ${endpoint}: ${text}`);
     return JSON.parse(text);
   }
-  await t.test('unknown credentials fail without touching the key', async () => {
+  await selected(t, 'unknown credentials fail without touching the key', async () => {
     await request('GET', '/v1/models', undefined, 401, 'mag_unknown');
     assert.equal((await db.prepare("SELECT last_used_at FROM api_keys WHERE id='key'").first()).last_used_at, null);
   });
-  await t.test('first API key use binds an integer across Wasm -> JavaScript -> D1', async () => {
+  await selected(t, 'first API key use binds an integer across Wasm -> JavaScript -> D1', async () => {
     const models = await request('GET', '/v1/models');
     assert.deepEqual(models.data, []);
     assert.deepEqual(models.available_models.map(model => [model.provider, model.model]), [['openrouter', 'test-model'], ['deepseek', 'unpriced-direct-model']]);
@@ -176,17 +233,17 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     await request('GET', '/v1/models');
     assert.equal((await db.prepare("SELECT last_used_at FROM api_keys WHERE id='key'").first()).last_used_at, row.last_used_at);
   });
-  await t.test('browser auth lifecycle uses real AuthSession DO and integer D1 values', () =>
+  await selected(t, 'browser auth lifecycle uses real AuthSession DO and integer D1 values', () =>
     runAuthJourney({ mf, db, encryptionKey, origin: 'https://agents.test' }));
-  await t.test('callback and refresh ES256 assertions verify against the registered client key', () =>
+  await selected(t, 'callback and refresh ES256 assertions verify against the registered client key', () =>
     runClientAssertionJourney({ mf, db, origin: 'https://agents.test', identity }));
-  await t.test('invalid confidential-client scalar fails before exchange without authenticating', () =>
+  await selected(t, 'invalid confidential-client scalar fails before exchange without authenticating', () =>
     runInvalidClientKeyJourney({ mf, db, origin: 'https://agents.test', identity, updatePrivateJwk: async jwk => {
       mfOptions.workers[0].config.env.IDENTITY_CLIENT_PRIVATE_JWK = { type: 'text', value: JSON.stringify(jwk) };
       await mf.setOptions(mfOptions);
       db = await mf.getD1Database('DB');
     } }));
-  await t.test('subscription return authenticates, bypasses a warm snapshot and preserves grants on refresh failure', async () => {
+  await selected(t, 'subscription return authenticates, bypasses a warm snapshot and preserves grants on refresh failure', async () => {
     const guest = await mf.dispatchFetch('https://agents.test/billing/return?plan=agents-pro&return_to=https://evil.test', { redirect: 'manual' });
     assert.equal(guest.status, 302);
     assert.equal(guest.headers.get('location'), 'https://agents.test/auth/login?return_to=%2Fbilling%2Freturn');
@@ -231,7 +288,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       db = await mf.getD1Database('DB');
     }
   });
-  await t.test('agent CRUD, immutable session prefix, DO close and revocation', async (t) => {
+  await selected(t, 'agent CRUD, immutable session prefix, DO close and revocation', async (t) => {
     const agent = await request('POST', '/v1/agents', { name: 'Integration', instructions: 'Pinned original instructions', model: { provider: 'openrouter', model: 'test-model' }, workspace: false }, 201);
     assert.equal((await request('GET', '/v1/models')).data[0].id, agent.id);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201);
@@ -240,10 +297,10 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     const stored = await db.prepare('SELECT config_snapshot_json FROM sessions WHERE id=?1').bind(session.id).first();
     assert.ok(stored.config_snapshot_json.includes('Pinned original instructions'));
     assert.ok(!stored.config_snapshot_json.includes('Changed instructions'));
-    await t.test('read a live DO session through HTTP', () => request('GET', `/v1/sessions/${session.id}`));
-    await t.test('close a DO session through HTTP', () => request('DELETE', `/v1/sessions/${session.id}`));
+    await selected(t, 'read a live DO session through HTTP', () => request('GET', `/v1/sessions/${session.id}`));
+    await selected(t, 'close a DO session through HTTP', () => request('DELETE', `/v1/sessions/${session.id}`));
     assert.equal((await db.prepare('SELECT status FROM sessions WHERE id=?1').bind(session.id).first()).status, 'closed');
-    await t.test('archived session resumes once and the same public retry is idempotent', async () => {
+    await selected(t, 'archived session resumes once and the same public retry is idempotent', async () => {
       const resumed = await request('POST', `/v1/sessions/${session.id}/resume`, {});
       assert.equal(resumed.status, 'idle');
       assert.deepEqual(resumed.pinned, session.pinned);
@@ -268,7 +325,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     await db.prepare("UPDATE api_keys SET revoked_at=1 WHERE id='key'").run();
     await request('GET', '/v1/models', undefined, 401);
   });
-  await t.test('non-streaming SDK call advances alarm, invokes time, and settles two model rounds', async () => {
+  await selected(t, 'non-streaming SDK call advances alarm, invokes time, and settles two model rounds', async () => {
     await db.prepare("UPDATE api_keys SET revoked_at=NULL WHERE id='key'").run();
     const agent = await request('POST', '/v1/agents', { name: 'Tool continuation', model: { provider: 'openrouter', model: 'test-model' }, tools: ['time'], workspace: false }, 201);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201);
@@ -348,7 +405,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       clearTimeout(timer);
     }
   });
-  await t.test('slow provider receives SSE comment heartbeat before data and closes after DONE', { timeout: 32000 }, async () => {
+  await selected(t, 'slow provider receives SSE comment heartbeat before data and closes after DONE', { timeout: 32000 }, async () => {
     const heartbeatKey = 'mag_heartbeat_synthetic_fixture_only';
     await db.batch([
       db.prepare("INSERT INTO accounts(id,issuer,subject,created_at,updated_at) VALUES('heartbeat-owner','https://identity.test','heartbeat',0,0)"),
@@ -400,7 +457,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       slowProvider = false;
     }
   });
-  await t.test('BYOK uses the owned key, isolates credentials, and charges resources but no model cost', { timeout: 12000 }, async () => {
+  await selected(t, 'BYOK uses the owned key, isolates credentials, and charges resources but no model cost', { timeout: 12000 }, async () => {
     const owner = 'byok-owner';
     const cookie = randomBytes(32).toString('base64url');
     const csrf = randomBytes(32).toString('base64url');
@@ -465,16 +522,91 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     }
   });
   for (const protocol of ['openai', 'anthropic']) {
-    await t.test(`generic ${protocol} BYOK preserves route identity and completes tools without model charges`, { timeout: 32000 }, () =>
+    await selected(t, `generic ${protocol} BYOK preserves route identity and completes tools without model charges`, { timeout: 32000 }, () =>
       runGenericByokJourney({ mf, db, encryptionKey, request, providers: genericProviders, protocol }));
   }
   for (const protocol of ['openai', 'anthropic']) {
-    await t.test(`generic ${protocol} persists JSON compaction then streams a complete continuation`, { timeout: 40000 }, () =>
+    await selected(t, `generic ${protocol} persists JSON compaction then streams a complete continuation`, { timeout: 40000 }, () =>
       runCompactionJourney({ mf, db, encryptionKey, request, providers: compactionProviders, protocol }));
   }
-  await t.test('terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
+  await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
-  await t.test('native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
+  const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
+  const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
+    .map(name => [name, mfOptions.workers[0].config.env[name]]));
+  const configureCompact = async values => {
+    const env = mfOptions.workers[0].config.env;
+    for (const name of Object.keys(compactBindings)) {
+      if (values) env[name] = { ...env.OPENROUTER_API_KEY, value: values[name] };
+      else if (compactBindings[name] === undefined) delete env[name];
+      else env[name] = compactBindings[name];
+    }
+    await mf.setOptions(mfOptions);
+    db = await mf.getD1Database('DB');
+    return db;
+  };
+  await selected(t, 'DeepSeek automatic context compaction uses the shared disabled-thinking purpose', { timeout:60000 }, () =>
+    runDeepseekAutomaticCompactJourney({ mf, encryptionKey, request, provider:deepseekCompactProvider, configure:configureCompact }));
+  await selected(t, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage', { timeout: 60000 }, () =>
+    runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact }));
+  await selected(t, 'DeepSeek compact keeps frozen images and files through a complete continuation window', { timeout: 60000 }, () =>
+    runDeepseekCompactMediaJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact }));
+  await selected(t, 'DeepSeek compact reserves the exact rendered input rather than the full model window', { timeout: 60000 }, () =>
+    runDeepseekCompactJourney({ mf, encryptionKey, request, provider: deepseekCompactProvider, configure: configureCompact, budgetOnly: true }));
+  await selected(t, 'response-wide server tool allowance survives disobedient calls and cold retrieval', { timeout: 40000 }, () =>
+    runResponsesToolBudgetJourney(responseContext()));
+  await selected(t, 'Responses request context management emits sealed item and continues', { timeout: 60000 }, () =>
+    runContextManagementJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
+  await selected(t, 'Responses auxiliary compact and count', { timeout: 60000 }, () =>
+    runAuxiliaryJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
+  await selected(t, 'ModelOperation execution lease cold loss and terminal admission rejection', { timeout: 30000 }, () =>
+    runExecutionLeaseJourney({ mf, db, encryptionKey, request, provider: auxiliaryProvider }));
+  await selected(t, 'DeepSeek exact count-only tokenizer cold warm and profile replacement', { timeout: 60000 }, () =>
+    runDeepSeekTokenizerJourney(responseContext()));
+  await selected(t, 'DeepSeek vision exact count shares frozen PNG GIF owned files and native media slots', { timeout: 90000 }, () =>
+    runDeepSeekVisionCountJourney({ ...responseContext(), visionInputs }));
+  await selected(t, 'Responses prompt templates preserve version owner variables and replay identity', { timeout: 40000 }, () =>
+    runPromptTemplatesJourney({ ...responseContext(), provider: promptProvider,
+      replaceRegistry: async value => {
+        mfOptions.workers[0].config.env.PROMPT_REGISTRY_JSON.value = value;
+        await mf.setOptions(mfOptions);
+        db = await mf.getD1Database('DB');
+      } }));
+  await selected(t, 'Chat internal observation loss recovers original durable text and terminal without replay', { timeout: 40000 }, () =>
+    runChatRecoveryJourney({ ...responseContext(), chatRecoveryControl }));
+  await selected(t, 'JSON observers keep internal heartbeats private and preserve terminal success, errors and detached runs', { timeout: 40000 }, () =>
+    runJsonObserverJourney(responseContext()));
+  await selected(t, 'Space real R2 file bytes, metadata, owner isolation and failed-upload accounting', { timeout: 16000 }, () =>
+    runSpaceJourney(responseContext()));
+  await selected(t, 'Workspace shared owner archive historical fork and immutable download retain one physical copy', { timeout: 24000 }, () =>
+    runWorkspaceBlobJourney(responseContext()));
+  await selected(t, 'Responses actual Node SDK streams, recovers and returns local function results', { timeout: 16000 }, () =>
+    runResponsesNodeSdkJourney(responseContext()));
+  await selected(t, 'Responses mixed server/local tools reject partial results and resume an archived head', { timeout: 16000 }, () =>
+    runResponsesLocalToolsJourney(responseContext()));
+  await selected(t, 'Responses repeated compaction retains exact fixed and request-scoped instructions', { timeout: 16000 }, () =>
+    runResponsesCompactionJourney(responseContext()));
+  await selected(t, 'Responses concurrent children admit independent background executions', { timeout: 16000 }, () =>
+    runResponsesBackgroundRaceJourney(responseContext()));
+  await selected(t, 'Responses no-store, upstream failure and output-budget terminals remain distinct', { timeout: 16000 }, () =>
+    runResponsesStorageAndFailureJourney(responseContext()));
+  await selected(t, 'Responses durable cancellation cannot replay or revive an accepted execution', { timeout: 16000 }, () =>
+    runResponsesCancellationJourney(responseContext()));
+  await selected(t, 'Responses concurrent idempotency receipt creates one session and one run', { timeout: 16000 }, () =>
+    runResponsesIdempotencyRaceJourney(responseContext()));
+  await selected(t, 'history metadata validators and cursor pages reduce bytes without changing legacy history', { timeout: 16000 }, () =>
+    runSessionViewsJourney(responseContext()));
+  await selected(t, 'Responses typed context and generation controls are implemented rather than silently ignored', { timeout: 16000 }, () =>
+    runResponsesInputAndOptionsJourney(responseContext()));
+  await selected(t, 'Responses unknown reasoning preserves exact known usage without inventing a breakdown', { timeout: 16000 }, () =>
+    runResponsesUnknownUsageJourney(responseContext()));
+  await selected(t, 'Responses caller function selection and final structured output remain enforced across tools', { timeout: 24000 }, () =>
+    runResponsesPolicyJourney(responseContext()));
+  await selected(t, 'seeded D1 attachment pins survive observer cancellation until canonical DO completion', { timeout: 16000 }, () =>
+    runSeededAttachmentPinJourney(responseContext()));
+  await selected(t, 'Responses text coalescing bounds quiet latency and reduces actual SSE frames without changing Chat', { timeout: 24000 }, () =>
+    runResponsesCoalescingJourney(responseContext()));
+  await selected(t, 'native DO fetch rejection preserves known session identity and sanitized recovery metadata', { timeout: 12000 }, async () => {
     const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'forward-recovery-owner' });
     const agent = await request('POST', '/v1/agents', { name: 'Forward failure', workspace: false, model: { provider: 'openrouter', model: 'test-model' } }, 201, principal.apiKey);
     const session = await request('POST', `/v1/agents/${agent.id}/sessions`, {}, 201, principal.apiKey);

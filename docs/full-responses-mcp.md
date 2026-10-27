@@ -1,0 +1,260 @@
+# Responses MCP and deferred discovery
+
+The Session owns MCP discovery, the immutable schema catalog, caller permissions,
+approval intents, dispatch fences, known receipts and canonical publication. Model
+providers receive ordinary private functions, never credential-bearing MCP objects.
+Tool search uses the same portable local-authority bridge on every Responses
+provider; public output remains typed `tool_search_call` / `tool_search_output`.
+This avoids a second vendor-owned registry or implicit remote tool harness.
+
+Remote declarations are parsed and bounded before transport. The adapter uses
+`rmcp` 3.7.0 protocol DTOs with a Workers Fetch transport: current stateless MCP
+and negotiated older Streamable HTTP initialization are separate protocol paths.
+Headers are explicit, owner/Response/endpoint-bound AES-GCM ciphertext. A new
+approval continuation requires fresh caller authorization. Platform model keys
+are not MCP authentication. Redirects are disabled; URL and header authority are
+bounded. Global public-origin Fetch, not a private service binding, is used.
+
+A call is schema- and permission-validated before any completed handoff or remote
+effect. Approval binds an owned frozen tool/argument/schema/endpoint set. The
+actual HTTP call follows a durable dispatch fence. Known results are retained
+before continuation; cold in-flight results without a receipt become explicitly
+unknown and are never network-replayed. Operation intent/outcome/result records
+are purpose-separated encrypted envelopes. Terminal cleanup removes active MCP
+credentials from canonical, operation and discovery-cache copies.
+
+Deferred MCP schemas join the Response-local registry as qualified capabilities.
+Search loads real schema and caller policy; invocation resolves back to the same
+owned MCP adapter. Private aliases and raw authorization never enter public tool
+declarations. Client search cannot mint a hosted credential-bearing binding.
+
+`HostedDispatch::Ready` preserves its legacy `From<String>` contract. Its only
+rich variant is an opaque MCP decoder result: validated text, decoded raster
+images, textual embedded resources and resource links. Audience=user content is
+excluded from model input. Audio and binary resources remain available in the
+public MCP receipt but return an explicit unsupported-modality model result;
+they are never dumped as base64 text or admitted as arbitrary message JSON.
+
+Standalone MCP token counting funds discovery and tokenization as disjoint Worker
+intervals. Both are observed and settled, with zero model/tool execution.
+Existing non-MCP count/compact billing is unchanged. No migration is required.
+
+## Incremental verification
+
+Only new MCP/discovery contracts run in the bounded MCP workflow. It compiles the
+actual Wasm Worker and runs controlled protocol and current SDK journeys with all
+unplanned outbound traffic denied. This document records design, not a completed
+acceptance receipt; compiler/runtime outcomes must be attached after execution.
+
+## Primary references
+
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+- https://github.com/modelcontextprotocol/rust-sdk
+- https://developers.openai.com/api/docs/guides/tools-connectors-mcp
+- https://developers.openai.com/api/docs/guides/tools-tool-search
+
+## Modern / legacy HTTP negotiation
+
+The anonymous DeepWiki metadata probe on 2026-10-26 rejected a modern
+`server/discover` request with HTTP 400 and JSON-RPC `-32600`, advertising
+2025-11-25, 2025-06-18 and 2025-03-26 (plus the older HTTP+SSE revision).
+This is an era-detection response, not a failed tool execution. The previous
+adapter accepted only method-not-found or non-JSON-RPC errors as fallback signals.
+
+The metadata-only probe now follows the modern HTTP compatibility rule: HTTP 400
+without a recognized modern protocol error can enter one legacy initialization.
+The typed rmcp error constants distinguish header mismatch, missing client
+capability and unsupported modern version, including pre-routing errors with a
+null request ID; none authorizes legacy downgrade. Only `server/discover` may
+take this transition. `tools/call`, unknown methods and ambiguous effects never
+retry or fall back. The fixed endpoint, caller credential envelope and redirect
+prohibition remain unchanged.
+
+Legacy initialization offers 2025-11-25 in its body without sending a premature
+`MCP-Protocol-Version` header. rmcp's `InitializeResult` validates the response;
+the supported server-selected revision and session ID remain on the owned
+binding and its frozen approval intent. Subsequent requests use that exact
+version. rmcp already accepts legacy tool results without `resultType`; no JSON
+normalization or removal of typed permission/output fields is needed. The
+deprecated two-endpoint HTTP+SSE transport is not introduced by this increment.
+
+At 2026-10-26T16:07:01Z an anonymous direct metadata follow-up to the same fixed
+`https://mcp.deepwiki.com/mcp` endpoint completed `initialize` (HTTP 200 SSE,
+without a version header), negotiated 2025-11-25 with DeepWiki 2.14.3, then
+completed `notifications/initialized` (202) and `tools/list` (200 SSE) using that
+version. No session ID was issued. The legacy list omitted `resultType` and
+returned `ask_wiki_question`, `read_wiki_contents`, and `read_wiki_structure` with
+typed input/output schemas. Authorization, model invocations and tool calls were
+all absent. This establishes live protocol/metadata compatibility, not a deployed
+Worker tool-execution receipt. The follow-up must not invoke the model-backed
+`ask_wiki_question` tool.
+
+### Compiled compatibility acceptance
+
+Run [40355372320](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40355372320)
+at `c9c73b0ee0a77228a085664fbad5fdb3631c8e56` passed the new Rust metadata-only
+fallback/method-fence contract, Wasm checking, release linking and bundling. Its
+aggregate is **failed**: the original fixture incorrectly required only one
+initialization across two Responses, after the real approval/tool path completed.
+The established contract requires fresh authorized discovery for each new Response.
+
+Using that exact retained Worker (Wasm SHA-256
+`8f5273c3eda725f7e64d1d12dd3b7ef2ddde32993f2ca906b9a87d44013f41fb`), fixture
+`05f7caefe19c12beb6d6c9c49c5ec208419305cf` passed only `mcp_legacy` locally in
+11.63 seconds. It exercised the original `-32600` / HTTP 400 probe rejection,
+header-free initialization, a 2025-06-18 counter-offer, distinct session IDs and
+refreshed credentials for the approved Response, zero calls before approval and
+one approved RPC. Legacy results omitted `resultType` without losing structured
+content. Raw SDK GET equaled the creation body, strict Python SDK 3.37.0 accepted
+both snapshots, and the read-only tail dispatched nothing. No old MCP cases were
+selected; two controlled provider replies were used, with all unplanned outbound
+traffic denied and no live model service calls.
+
+Reproduction: set `WORKER_BUILD_DIR` to the extracted run's `worker` artifact,
+`MAGENTS_MCP_CASE=mcp_legacy`, `MAGENTS_CURRENT_SCHEMA_PYTHON` to the locked
+current-SDK interpreter, and run `node --test tests/worker/mcp.test.mjs` from the
+fixture source. The original failed aggregate is not relabeled as a green CI run.
+
+References:
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#protocol-version-header
+
+The production limitations of global Fetch DNS authority remain relevant: a
+future deployment adding private origins must review SSRF protection rather than
+mistaking hostname syntax validation for resolved-address pinning.
+## First remote compiler checkpoint
+
+CI run 40333565874 at source `448faeb` passed the full Worker Wasm type check
+and 42 new Rust contracts (15 MCP, 14 registry, 11 grammar, one client-search
+completion barrier and one alias/namespace identity fence). Actual release
+linking then identified the missing `instant/wasm-bindgen` clock backend while
+building llguidance's published cdylib. The target-specific feature is now
+explicit. No compiled Worker journey ran in that failed build; those 42 accepted
+contracts are retained rather than replayed in the next gate.
+
+## Actual Worker checkpoint and remaining increment
+
+Run 40334959346 built the real Worker at `0b92c0d837962451eba9ceb41603fbb5c03b3f60`
+(Wasm SHA-256 `c774b77f87495de3e98c0776bc008da423bc2f96d0aa2578adef5c9cd11bb323`).
+Its approval journey passed: exact 356-token catalog count, no effect before
+consent, fresh credentials, one SSE RPC, model continuation, immutable raw GET,
+idempotency and private terminal credential cleanup. Both real negative journeys
+from the authority review passed: invalid client search cannot publish a completed
+handoff, and an ordinary programmatic-only function cannot be called directly or
+by forged provider caller metadata. The new deferred registry contract also passed.
+
+Using that exact retained Wasm locally with repaired fixture runtime configuration
+and ledger join, the server-search/strict-invalid/BYOK bridge journeys passed.
+The denial and malformed-HTTP-result journey then passed with current SDK 3.37.0
+strict response snapshot validation: denial made zero remote calls, one ambiguous
+HTTP call stayed unknown, and replay made no second remote call. These were
+controlled transports with all unplanned outbound access denied, not live paid
+model or third-party MCP service evidence.
+
+The first actual deferred MCP request exposed an old compile-time refusal before
+the new resolved catalog join. That refusal is removed and the registry contract
+now includes the original MCP declaration. The remaining increment also consumes
+each original approval into exactly one destination Response under the source
+operation mutex. Same-destination cold retries remain valid; a second branch is
+rejected before another effect. Cleanup cannot overwrite that consumption claim.
+Mixed direct/programmatic declarations keep their direct capability, while the
+programmatic permission never grants direct execution authority. No JavaScript
+executor is claimed by accepting that permission metadata.
+
+## Deferred and single-consumption acceptance
+
+Run 40339077048 compiled source `57c76961ef12817a9c9a76f9e82a0fe5f4153053`
+(Wasm SHA-256 `0dead210415cca2a71e5312e9638c0159a032f61937a7c2efc9472d5077be979`).
+All four new Rust contracts passed. The actual Worker completed deferred search,
+approval, one MCP RPC, typed image/resource continuation and strict SDK SSE
+validation. The single-destination approval journey passed, including a 409 for a
+second destination, no second RPC/model action, and an immutable public parent.
+
+The remaining deferred assertion incorrectly compared an SDK object containing
+its synthesized `output_text` helper with an original HTTP body. New creation
+observations now capture `.asResponse().clone().json()` before parsing the same
+promise; no payload fields are deleted or filtered. The retained local fixture
+was then reopened with the exact Wasm for a read-only tail: raw SDK
+`.asResponse().json()` GET, native stored SSE and strict current SDK validation
+agreed, with zero model/tool dispatch and no new API grants. The typed SDK helper
+was checked separately. This tail passed in 3.97 seconds. Gateway authentication
+is not re-claimed from the fixture's internal namespace read.
+
+## Multiline public metadata and precise discovery diagnosis (2026-10-27)
+
+After staging MCP activation, the first real metadata count returned 503
+`mcp_discovery_failed` before creating a Session, Response, model request or remote
+tool call. The original trace lacked transport or catalog evidence, so it cannot
+prove which HTTP exchanges that particular CF invocation completed.
+
+A single discriminating anonymous metadata-only probe to the documented DeepWiki
+`/mcp` endpoint negotiated 2025-11-25: initialize 200 SSE, initialized 202, tools/list
+200 SSE (1622 bytes, three tools). The first, unselected `ask_wiki_question` tool
+contained a newline in its 108-byte description. No tool was invoked; the AI-powered
+question operation was never permitted. The original adapter validated the whole
+catalog using the same control-character prohibition as headers, before applying
+the user's `read_wiki_structure` allowlist. It therefore deterministically rejected
+this valid public catalog. Probe receipt and public response are retained under the
+MCP diagnostic topic's `.temp/mcp-metadata/`, not as an account credential.
+
+Descriptions are now bounded human-readable data: LF, CR and tab are preserved,
+while NUL, escape and other non-whitespace control characters remain rejected.
+Header values and tool names retain their stricter validators. Empty optional
+descriptions are accepted. The rmcp DTOs, schema validator, owner permissions,
+header authority, approval protocol and no-replay execution fences are unchanged.
+This distinction follows the MCP Tool model's human-readable `description`, not an
+HTTP-header grammar:
+https://modelcontextprotocol.io/specification/2025-11-25/server/tools .
+The provider's current documentation identifies `/mcp` as the supported Streamable
+HTTP endpoint: https://docs.devin.ai/work-with-devin/deepwiki-mcp .
+
+Every transport exit now emits a bounded structural `mcp.transport` event: server
+label, request method and identity, stage, HTTP status, normalized MIME type,
+upstream request ID / CF ray when actually present, received Fetch-body bytes (including SSE framing, not an invoice measurement),
+duration, parser line/column, signed JSON-RPC error code, safe underlying timeout/type cause and outcome uncertainty. These pass through
+the real emission filter. HTTP request IDs are distinct from JSON-RPC identities;
+missing headers remain null, not fabricated. A later catalog rejection emits
+`mcp.discovery_failed` with `catalog_validation` and its specific trusted code
+(e.g. `mcp_invalid_tool_description`) rather than erasing it in `Err(_)`.
+Authorization headers, session capabilities, descriptions and raw tool output are
+not ordinary telemetry attributes. Cancellation still drops/aborts the same
+request; it does not retry `tools/call`.
+
+Two new pure contracts and one new compiled-Worker SDK count journey are added.
+The journey accepts a real-style multiline catalog, rejects a new NUL-containing
+catalog, verifies emitted status/protocol/cause evidence and performs zero model
+or remote tool calls. Targeted rustfmt, JS syntax and diff checks pass locally;
+The scoped Actions compilation/runtime result is recorded below; a repaired real CF metadata count remains a separate acceptance gate.
+Older accepted MCP approval, deferred discovery and legacy tool-call journeys must
+not be replayed for this increment.
+
+
+### Scoped compiled verification
+
+Normal composed CI [40453269200](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40453269200)
+completed successfully at source `4f8f19fb245458cf8dd4023ae88d085e6e8790d9`.
+Worker artifact `12712250286` and verification artifact `12711208175` retain
+that exact source identity. The inspected `worker-rust.json` records exactly one
+passing new multiline-prose contract and one passing new telemetry-filter
+contract. The `worker-journeys.json` records only
+`node:mcp-live-description-metadata`, explicitly selecting
+`MAGENTS_MCP_CASE=mcp_descriptions`, in **2790 ms**. Its TAP count of two is the
+parent test plus its single selected leaf, not two independent user journeys.
+
+The actual compiled Rust Worker is called through OpenAI Node SDK
+`responses.inputTokens.count`: a multiline catalog succeeds; a distinct
+NUL-containing catalog returns 503 rather than a fabricated zero-schema count.
+Real emitted transport records preserve HTTP 400 and signed JSON-RPC -32600 for
+the controlled modern rejection, HTTP 200 for tools/list, and the later
+`catalog_validation` / `mcp_invalid_tool_description` rejection. It checks that
+neither model inference nor remote tool execution occurs and no Session is
+created by the successful count. No external service was contacted by this
+controlled journey. Older MCP approval, deferred, legacy execution and credential
+replay cases were not rerun.
+
+This is compiled integration acceptance, not a repaired real-CF DeepWiki receipt.
+Staging must deploy this exact Worker (or an explicitly compatible composed
+artifact) before one fresh metadata count is used to close that remaining gate;
+the original failed count is already financially closed at 1 microUSD with no
+pending scope and must not be presented as a successful legacy tool execution.

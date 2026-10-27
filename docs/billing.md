@@ -90,10 +90,20 @@ refresh. The return lands at `/?billing_refresh=failed#usage` with an explicit
 retry link back to the fixed return endpoint. Existing grants still expire at
 their real period end. No bearer token or refresh capability enters browser URLs.
 
-The initial rollout is **staging only**. Before promoting the Agents code to
-production, the independently deployed Subscribe production allowlist must first
-accept exactly `https://adash.moesegfault.dev/billing/return`; adding only the
-staging destination is not proof that the production round trip is enabled.
+The initial rollout was staging only. The upstream owner subsequently completed
+production promotion on 2026-10-24: [Subscribe release receipt](https://github.com/kleedaisuki/moesegfault-subscriptions/blob/af4060467997cc57eb68b2910b9b19e0a807480a/docs/deployment/production.md#completed-production-release-receipt).
+It records the exact production return allowlist, successful immutable promotion
+`40102195561`, and the actual Agents v0.2 same-tab SSO return with
+`/billing/return` HTTP 302 and fresh account/usage reads. Production rejects the
+staging destination. The existing owned Free/live account, profile, wallet and
+seven catalog plans were preserved; no grant was issued or redeemed for that
+production return check.
+
+This accepted unchanged integration is a reusable v0.2 baseline, **not** evidence
+that the v0.3 Responses runtime has been published. Do not repeat subscription
+activation or the entire SSO journey merely to verify unrelated Worker changes.
+Any future continuation, issuer, client/sector or Billing contract change still
+requires its own environment-paired incremental acceptance.
 ## Local policy
 
 `agents_auth::billing::PlanPolicy` is local entitlement-to-limit policy, not an
