@@ -252,3 +252,15 @@ artifact-only run `40457558376` (source `bb18283f80cdc1a9cf87a020de174eb828fc0a8
 was also downloaded and validated read-only: both archives, sidecars and ten
 already executed native-case receipts passed. No native executable or old test
 was rerun, and no tag/release/production mutation was performed for this check.
+
+Draft visibility is a planning permission, not a publication shortcut. GitHub's
+[release API contract](https://docs.github.com/en/rest/releases/releases#list-releases)
+returns drafts only to callers with repository push access. The `prepare` job
+therefore has job-local `contents: write` plus `actions: read`; the workflow's
+build defaults remain read-only. Its planning command still only reads the
+existing draft and selects build/reuse/existing. The first real promotion run
+`40468621818` failed at this read with `release not found`, before native jobs or
+uploads; the owner separately confirmed the draft exists with zero assets.
+Dispatch the corrected workflow definition from `main` while checking out the
+unchanged immutable release tag for source/fingerprint validation. Do not move
+the tag or publish an empty draft to work around visibility.
