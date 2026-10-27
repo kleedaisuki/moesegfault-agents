@@ -1,0 +1,265 @@
+# Prompt-cache engineering
+
+Research and design checkpoint, 2026-10-27. This note connects the current
+stateless-provider harness to provider caching mechanisms; it is not a claim of
+deployed cache-hit improvement or of a universally supported KV-control API.
+
+## Decision
+
+Preserve a deterministic, versioned platform prefix and immutable Session pin.
+Represent eligible response-scoped instruction and environment changes as
+authoritative append-only context transitions at the point where they take
+effect. Reuse the existing native context journal and shared generation/count
+representation; do not introduce a parallel conversation store. Tool permission
+and effect dispatch remain authoritative even when an old declaration survives
+in historical context. A cache optimization must not resurrect a withdrawn tool
+or make a previous response's custom instructions apply indefinitely.
+
+The useful target is **unchanged rendered history followed by new input**, not
+unchanged JSON formatting alone. Provider-side rendering, model controls, tool
+schemas, reasoning state, routing and cache persistence all matter. Prefix
+equality is an eligibility observation, not proof of a cache hit.
+
+## Existing mechanisms and the identified failure surface
+
+- [`context_prefix.rs`](../crates/agents-worker/src/context_prefix.rs) builds one
+  system string from the platform sentence, pinned agent instructions and skills.
+  [`PinnedContext::resolve`](../crates/agents-core/src/context.rs) already sorts
+  tools/skills by name and version and serializes a canonical pin hash. Re-sorting
+  unrelated caller-owned items every turn is neither necessary nor safe.
+- [`session_responses.rs`](../crates/agents-worker/src/session_responses.rs)
+  in its legacy renderer appends response custom instructions to the first system string.
+  A changed/removed instruction therefore changes the input before all prior
+  user, assistant and tool context, even when the conversation itself is stable.
+- [`session_native.rs`](../crates/agents-worker/src/session_native.rs) already
+  keeps input/output in an operation-keyed append-only log, with replacement
+  generations for compaction and immutable historical references for branches.
+  This is the right state owner for transitions and their replay boundary.
+- [`auxiliary_context.rs`](../crates/agents-worker/src/auxiliary_context.rs),
+  [`session_context.rs`](../crates/agents-worker/src/session_context.rs) and the
+  compaction adapters render related context for count/compact/history. They must
+  share the same effective transition state as inference, rather than reconstruct
+  an earlier prefix from the latest live configuration.
+- [`provider_anthropic.rs`](../crates/agents-worker/src/provider_anthropic.rs)
+  currently collects all system/developer messages into top-level `system` and
+  places an ephemeral cache marker on the first block. Adding an ordinary system
+  message to its input does **not** currently create an inline cached transition.
+- [`provider_controls.rs`](../crates/agents-worker/src/provider_controls.rs)
+  already rejects unsupported explicit DeepSeek caching fields instead of
+  accepting a provider's silent ignore as successful execution. Preserve this
+  capability discipline.
+
+## What the external mechanisms actually allow
+
+| Surface | Reusable mechanism | Boundary for this project |
+| --- | --- | --- |
+| Direct DeepSeek | Automatic reuse of persisted complete prefix units | No explicit cache-key/retention switch; preserve the full input/output trajectory and inspect actual usage |
+| Native OpenAI Responses on capable models | Stable tools and instruction prefix; append-only configuration/tool-loading updates; optional explicit breakpoints | Capability-gate new items/controls; do not translate them to unsupported providers |
+| OpenRouter | Provider/model-dependent caching plus sticky routing | Keep existing stable Session routing; a provider fallback can legitimately lose a warm cache |
+| Anthropic Messages/BYOK | Explicit/automatic caching; some current models support inline system/tool changes | Existing translator hoists system messages, so preserve old behavior unless a known-capable route explicitly selects a new renderer |
+| Self-hosted research engines | Direct KV segment operations | Not exposed by the platform's current external inference providers; not implementable by editing ordinary request JSON |
+
+### DeepSeek: append-only is more important than a shared opening sentence
+
+DeepSeek's current [KV-cache guide](https://api-docs.deepseek.com/guides/kv_cache/)
+describes sliding-window-attention prefix units. Request and output boundaries
+can persist complete prefixes; common prefixes can also be detected and stored.
+Thus `A+B`, then `A+B+C` can reuse the first unit, while `A+B`, then `A+C` may
+initially miss. A later `A+D` can benefit after shared `A` is persisted. Do not
+hard-code old cache-block-size assumptions or claim the second call must hit.
+
+Its [Responses compatibility table](https://api-docs.deepseek.com/guides/responses_api/)
+says `prompt_cache_key`/retention are unsupported, `previous_response_id` is not
+an upstream state store, and `developer` is treated as `user`. Authoritative
+instruction transitions therefore need a supported system-role rendering, not
+an assumption that every OpenAI-compatible endpoint preserves developer
+authority. Native cache reads are reported in
+`usage.input_tokens_details.cached_tokens`.
+
+### OpenAI: stable prefix, dynamic suffix, provider-specific additions
+
+The [prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
+describes caching over the provider's rendered context, including tools and
+controls. It recommends stable declarations, restricted availability through
+supported tool-choice controls, and append-only tool-loading history. Current
+`additional_tools` and explicit-breakpoint mechanisms are model/API capabilities,
+not portable function schemas. A cache key influences routing/accounting; it is
+not evidence of a hit or permission to share private context between owners.
+
+The [Prompt Caching 201 production account](https://developers.openai.com/cookbook/examples/prompt_caching_201)
+describes Codex keeping instructions, tools, sandbox and environment consistently
+ordered and appending runtime changes instead of rewriting earlier messages.
+Move volatile times/IDs out of the prefix, but do not add padding merely to reach
+a provider minimum: the goal is less paid work, not a larger cached-token count.
+
+### Industry experience and research
+
+[Manus's engineering report](https://manus.im/blog/Context-Engineering-for-AI-Agents-Lessons-from-Building-Manus)
+emphasizes deterministic serialization, append-only observations and avoiding
+tool-list churn. Its tool masking technique depends on model-serving controls;
+a textual statement that a tool is disabled is not a substitute for the harness
+refusing its execution. Do not apply its separate suggestion of intentional
+action-format variation to stable prompt prefixes.
+
+[Anthropic's context-engineering account](https://www.anthropic.com/research/effective-context-engineering-for-ai-agents)
+treats context as a limited attention resource, not free storage. Preserve source
+records, but bound the active window through the existing percentage policy;
+an infinite instruction-update log would trade cache misses for growing input
+cost and confusion. Its current [inline-system/tool documentation](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages)
+is explicitly model-specific, with additional beta requirements for tool changes.
+
+The October 2026 paper [Cache Engineering for Agents](https://arxiv.org/html/2610.28577v1)
+proposes direct `drop`/reposition operations in a co-designed AKV serving system.
+Its useful lesson here is that rewriting history forces re-prefill and that
+cache identity can depend on operation history. Its reported benefits are not
+portable performance estimates for a Cloudflare harness using DeepSeek. We do
+not own those providers' KV tensors or eviction policy.
+
+[OpenRouter's cache documentation](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
+describes `session_id`/`x-session-id` sticky routing, provider fallback and actual
+cache-read/write usage. Reuse existing routing identity; do not add randomly
+changing routing keys, disable fallbacks globally, or confuse identical-response
+caching with reusable prompt KV caching.
+
+## Concrete transition model
+
+An effective context has four distinct owners:
+
+1. **Platform policy**: versioned, deterministic built-in instructions.
+2. **Session pin**: resolved agent instructions, registered tools/skills,
+   workspace/model settings. Agent edits affect new Sessions; old Sessions and
+   same-agent historical branches retain their original contract.
+3. **Response scope**: top-level custom instructions and admitted tool controls.
+   This state is selected for the current Response, not inherited accidentally.
+4. **Environment observations**: actual working directory, workspace lifecycle or
+   execution-policy changes. Append facts only when changed and observed; do not
+   inject a fresh timestamp or random container generation at the front each turn.
+
+For an append-capable renderer, persist a typed internal event with an operation
+identity, source boundary and full replacement value for each changed scope.
+Render it as supported authoritative provider input, not an unknown public item
+or ordinary untrusted user content. The fixed policy explains that later
+transitions replace only their named scope. An unchanged value creates no event.
+The transition on omitted/empty/null custom instructions is important: append a
+reset of the **response** scope, without deleting the agent's pinned instructions.
+Do not rely on the model inferring that the old instruction silently expired.
+
+Native role history and custom instructions are not interchangeable. User-supplied
+historical developer/system items keep their original public/source semantics;
+generated context transitions must be identifiable internally and must not be
+accepted as trusted policy merely because a client copied their textual marker.
+
+### Tools: preserve capability and authorization, not just cache eligibility
+
+Keep pinned registry definitions stable. For a provider with verified inline
+tool-addition/removal support, translate active registry changes into that native
+mechanism and preserve its history. For a provider without it, arbitrary changed
+schemas cannot honestly promise an unchanged rendered tool prefix. Use a safe
+explicit cache epoch/boundary where needed; do not leave obsolete tools callable
+or invent unsupported `allowed_tools`. A stable dispatcher would be a separate
+API/identity design and is not a free replacement for existing function calls.
+
+Availability policy is always rechecked at dispatch. Approval grants, BYOK
+credential deletion, permissions, ownership, account admission and file pins are
+not cached authorization. A changed schema for the same name needs a new binding
+identity or explicit epoch so a pending call cannot execute under another schema.
+
+## Compatibility, compaction and recovery
+
+- Version the layout for new Sessions. An absent version keeps the old renderer,
+  serialized pin bytes/hash and provider binding. Existing pins are not a license
+  to change their rendered prefix on a later deployment.
+- A same-provider branch imports the exact source-boundary layout, events and
+  native history. Never read later events from the live head into an old Response.
+- Compaction is an intentional cache epoch. Carry forward the effective policy
+  state and protected instructions, replace old transition history with the
+  existing compacted generation, and keep immutable source generations readable.
+- Do not insert transition items between a tool call and its required matching
+  result, or reinterpret a failed/unknown provider turn as accepted new history.
+- Append transitions idempotently under the same admitted Response/run operation;
+  a cold retry completes publication instead of duplicating the event.
+- Exact token counting and generation use the same prepared representation.
+  Standalone count is read-only and must not publish events or mutate the cache
+  epoch just to obtain a number.
+
+## Discriminating verification and accounting
+
+Use new targeted cases, not a replay of every accepted Responses journey:
+
+- Same instructions, changed instructions, explicit reset and unchanged reset:
+  compare actual rendered message/tool prefixes and event counts, not only final
+  text. Repeat inside one tool loop to catch per-round prefix mutation.
+- Withdraw/replace a tool: no stale dispatch effect; an incompatible provider
+  reports an explicit cache boundary rather than false prefix preservation.
+- Cold restart, historical branch and compaction: effective instruction state is
+  correct, source data immutable, generated events never duplicated.
+- Count and inference: exact prepared input equality; count creates no execution
+  or persistent transition. Existing legacy pin bytes remain byte-identical.
+- A small real direct-DeepSeek trajectory records every provider request ID,
+  input/output/cache-read/cache-write tokens, timing and exact known charges.
+  Preserve missing fields as unknown. Include initial establishment and any
+  deliberate cache-epoch cost, not only favorable warm turns.
+
+Report token-weighted cache reads as `sum(cache_read)/sum(input)` only over records
+with known compatible usage; separately report unknown coverage. Also report
+uncached input, output and cache-write charges, cost per completed user turn,
+TTFT and end-to-end time. Provider routing/expiry can explain a miss even with
+identical bytes. Stable-prefix hashes, lengths, layout/epoch and reset reasons
+are useful diagnostics, but private instructions and raw prompt bodies belong
+to protected user/provider records, not metric labels or public reports.
+
+## Implementation checkpoint
+
+New native Session pins select the versioned layout. The active renderer also
+checks model capability: the vendored official DeepSeek recipe preserves middle
+system messages for V4.1 Flash, but hoists them for V4 Pro. Direct Pro and unknown
+DeepSeek profiles therefore retain response instructions in the compatible legacy
+position rather than pretending an appended JSON message preserves their KV
+prefix. Anthropic Messages is not silently switched to a new authority renderer.
+
+`prompt_context.rs` constructs a complete replacement snapshot of response-only
+instructions, ordered effective tool fingerprints and semantic workspace/runtime
+profile. The existing native journal owns the event, its idempotent operation
+receipt and trusted item indices. Client text cannot manufacture those indices.
+Unchanged snapshots append nothing; `null` resets the response-only scope, while
+an empty string remains distinct. No clock, request ID or container-generation
+identifier is injected into the stable prefix.
+
+The same pure planner prepares count and generation. Explicit empty Session
+counting uses the actual owned pin, including a pre-upgrade legacy pin, rather
+than re-resolving the latest Agent. A nonempty unanchored Session is rejected
+instead of returning a guessed count; use its immutable previous Response.
+Compaction consumes trusted updates as data, retains only the current snapshot
+for continuation, and never executes an old response-specific instruction as
+summary guidance. Automatic truncation can drop superseded internal snapshots
+without dropping ordinary protected system/developer history.
+
+The new compiled acceptance selectors cover instruction changes/reset, exact
+count, cold idempotency, tool-schema changes and historical branches, compaction,
+and explicit legacy/new Session pins. They use controlled providers and **do not
+claim simulated cache hits**. Runtime compilation and these selectors remain
+pending until their actual Actions receipts are recorded.
+
+### Actual legacy staging baseline
+
+`tests/e2e/prompt-cache-sdk.mjs` submitted three new direct DeepSeek Flash Responses
+to staging build `bb18283f80cdc1a9cf87a020de174eb828fc0a8c`, with a fixed architecture
+reference and instructions set to ALPHA, changed to BRAVO, then omitted. All three
+labels were correct; actual native usage was available through `agents_usage`
+(standard `usage` was null because cache-write usage remained unknown).
+
+| Turn | Input tokens | Reported cached tokens | First text (ms) | End-to-end (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Set ALPHA | 2,674 | 0 | 6,296 | 10,164 |
+| Change to BRAVO | 2,694 | 0 | 6,394 | 9,643 |
+| Omit/reset | 2,704 | 0 | 4,988 | 8,184 |
+
+Total: 8,072 input tokens, zero reported cache reads. These are three observations,
+not a latency percentile or a guarantee of cold provider cache. The candidate
+must reuse the byte-identical saved workload. The protected `.temp/prompt-cache-probe/`
+receipt retains original response/session identities and no-retry intent; no
+production inference or existing accepted business journey was replayed.
+
+Incremental CI also reuses the downloaded normal-main `40471168005` tooling
+receipt for the unchanged draft-release permission check (`passed_current`, one
+executed test). It does not rerun that release check as part of cache work.
