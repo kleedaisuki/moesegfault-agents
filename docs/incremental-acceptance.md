@@ -327,3 +327,48 @@ phase summary is `.temp/features-staging/context-phase-summary-02d.json` and
 owned trace `.temp/features-staging/trace-context-repaired-02d/receipt.json`.
 The next optimization should remove redundant sequential accounting round trips
 without discarding observations or weakening capacity/funding fences.
+
+## Activated native PDF and remote MCP: separate real failure boundaries
+
+Corrected proof-only CI `40448958981` passed its single new runtime-vocabulary
+contract, reusing the exact `e4e6777` Worker from normal CI `40447538513`
+(artifact `12709167366`). Deployment `40449131900` succeeded with assembly
+`302adceed320af8e7093100a8a15e9c0f860c779`, actual Worker
+`e4e677702f469a676022e40039cd84f9a0c097cb`, daemon `3539c1c` and dashboard
+`1b7f2cd`. MCP/programmatic and its native Loader binding are now configured;
+Image is still off. No accepted Code/compact/search/CLI journey was repeated.
+
+A separately owned fresh PDF has a distinct source checksum and marker
+`violet-lantern-827`; the original failed PDF/File operation was not resubmitted.
+Actual native conversion succeeded: HTTP 200, 98 ms, 593 input bytes, 1,013
+request bytes, 185 response bytes and a complete body. Migration 0030 retained
+that immutable response metadata before parsing; absent native request/ray IDs
+are explicitly null. One text chunk was produced. The real BGE effect also
+succeeded for 34 input bytes and settled 1 microusd. Index completion nevertheless
+failed as `file_search_embedding_outcome_unknown`: the scheduler's 26-second
+future cancellation dropped result/observation acknowledgments. This is a new
+background execution-lifetime defect, not a PDF MIME/parser failure or evidence
+that BGE failed. The original generation remains the recovery target; no second
+conversion, embedding or upload is authorized as a substitute for its receipts.
+
+The SDK stopped on that actual terminal failure (222,177 ms), not on an extended
+or weakened timeout. Its source File/store were deleted through normal APIs,
+with no cleanup API failures. Original-scope financial postflight observes
+173 microusd of known ledger entries, four new reserved scopes and six pending
+D1 observations; the five prior unrelated holds remain untouched. One native
+cleanup job/chunk and its storage clock remain pending. No false zero refund or
+completed retrieval claim is made. Receipts are under
+`.temp/features-staging/pdf-repaired-*`, including the immutable native response,
+original scope financial snapshot and read-only phase diagnosis.
+
+The first activated MCP metadata count separately returned
+`503 mcp_discovery_failed` before any Session, Response or model call. Its temporary
+Agent was deleted normally. Read-only investigation found that the real DeepWiki
+metadata includes multiline tool descriptions, while the adapter incorrectly
+used header-style control-character rejection for descriptions before applying
+`allowed_tools`. This can reject an allowed read-only tool because an unrelated
+listed tool has a normal newline. The repair must distinguish free-form
+description text from names/headers and retain the exact discovery stage; it must
+not loosen credential validation or call `ask_wiki_question`. The original failed
+count is not evidence of a completed remote tool call. Receipt:
+`.temp/features-staging/mcp-legacy-live-activated-receipt.json`.
