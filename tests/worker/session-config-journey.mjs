@@ -78,10 +78,14 @@ function matchesPreview(preview, generation) {
   assert.equal(preview.result.input_tokens, measure(generation));
 }
 
-function toolResult(body, id) {
+export function toolResult(body, id) {
   const item = body.input.find(item => item.type === 'function_call_output' && item.call_id === id);
   assert.ok(item, `The next round must receive the genuine ${id} effect/denial result`);
-  return JSON.parse(item.output);
+  assert.ok(Array.isArray(item.output) && item.output.length > 0,
+    'The server tool renderer returns a nonempty native content-part array');
+  assert.ok(item.output.every(part => part.type === 'input_text' && typeof part.text === 'string'),
+    'Clock/denial results must preserve actual text parts, not stringify arbitrary objects');
+  return JSON.parse(item.output.map(part => part.text).join(''));
 }
 
 async function modelRows(scenario, expected) {
