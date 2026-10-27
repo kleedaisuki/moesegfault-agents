@@ -78,7 +78,7 @@ magents agents publish agent.toml --agent AGENT_ID
 magents agents show AGENT_ID
 ```
 
-Capture the returned ID. Without `--agent`, publish creates a new configuration; with it, publish replaces the selected owned configuration, not a partial merge. Existing session pins never change. Create a new session to adopt the updated instructions, model, tools, or skill content. Legacy `agents create FILE` accepts JSON; `agents update ID FILE` retains JSON PATCH semantics. Do not silently substitute a replacement for a requested partial update. JSON/TOML inputs accept `-` for stdin and are bounded to 1 MiB.
+Capture the returned ID. Without `--agent`, publish creates a new configuration; with it, publish replaces the selected owned configuration, not a partial merge. Existing session pins never change, but instruction/tool edits append a separate durable configuration revision at safe execution boundaries. Create a new session for a changed model, workspace authority or pinned skill content. See [configuration lifetimes](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/session-config-updates.md). Legacy `agents create FILE` accepts JSON; `agents update ID FILE` retains JSON PATCH semantics. Do not silently substitute a replacement for a requested partial update. JSON/TOML inputs accept `-` for stdin and are bounded to 1 MiB.
 
 ## Download or transfer
 
