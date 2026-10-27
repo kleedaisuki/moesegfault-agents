@@ -225,6 +225,36 @@ Two new pure contracts and one new compiled-Worker SDK count journey are added.
 The journey accepts a real-style multiline catalog, rejects a new NUL-containing
 catalog, verifies emitted status/protocol/cause evidence and performs zero model
 or remote tool calls. Targeted rustfmt, JS syntax and diff checks pass locally;
-Actions compilation/runtime and a repaired real CF metadata count remain pending.
+The scoped Actions compilation/runtime result is recorded below; a repaired real CF metadata count remains a separate acceptance gate.
 Older accepted MCP approval, deferred discovery and legacy tool-call journeys must
 not be replayed for this increment.
+
+
+### Scoped compiled verification
+
+Normal composed CI [40453269200](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40453269200)
+completed successfully at source `4f8f19fb245458cf8dd4023ae88d085e6e8790d9`.
+Worker artifact `12712250286` and verification artifact `12711208175` retain
+that exact source identity. The inspected `worker-rust.json` records exactly one
+passing new multiline-prose contract and one passing new telemetry-filter
+contract. The `worker-journeys.json` records only
+`node:mcp-live-description-metadata`, explicitly selecting
+`MAGENTS_MCP_CASE=mcp_descriptions`, in **2790 ms**. Its TAP count of two is the
+parent test plus its single selected leaf, not two independent user journeys.
+
+The actual compiled Rust Worker is called through OpenAI Node SDK
+`responses.inputTokens.count`: a multiline catalog succeeds; a distinct
+NUL-containing catalog returns 503 rather than a fabricated zero-schema count.
+Real emitted transport records preserve HTTP 400 and signed JSON-RPC -32600 for
+the controlled modern rejection, HTTP 200 for tools/list, and the later
+`catalog_validation` / `mcp_invalid_tool_description` rejection. It checks that
+neither model inference nor remote tool execution occurs and no Session is
+created by the successful count. No external service was contacted by this
+controlled journey. Older MCP approval, deferred, legacy execution and credential
+replay cases were not rerun.
+
+This is compiled integration acceptance, not a repaired real-CF DeepWiki receipt.
+Staging must deploy this exact Worker (or an explicitly compatible composed
+artifact) before one fresh metadata count is used to close that remaining gate;
+the original failed count is already financially closed at 1 microUSD with no
+pending scope and must not be presented as a successful legacy tool execution.
