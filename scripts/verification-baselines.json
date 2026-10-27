@@ -9768,5 +9768,217 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+    "run_id": "40447538513",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12709167366,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "3233487081d8c9e549b8cf3c5d52103aafb6c7d8",
+      "receipts": [
+        {
+          "source_sha": "1d2f57679034175b8791a08751d1fef009611f1f",
+          "run_id": "40447305436",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Twelve selected Rust contracts and default JPEG passed; aggregate journey failure is retained. Exact Wasm e008dc05d3fed046496322ecc559f59715bc76f20155a3994ea3b55054197d2e subsequently passed receipt-ACK cold recovery, MIME-paid-known, complete-error-zero, proxy-unknown and original-funding diagnostic GC tails. The reproduced candidate identity failure and new streaming JSON error remain explicit unresolved checks."
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One new native-runtime provenance vocabulary repair passed on the retained E4 Worker. Prior activation and cache contracts are not replayed."
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "rust:agents-worker:received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only the new stable-candidate cold recovery regression",
+          "source_file": "crates/agents-worker/src/session_hosted_image.rs"
+        },
+        {
+          "id": "rust:agents-worker:local_capacity_and_billing_failures_keep_their_exact_known_codes",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "local_capacity_and_billing_failures_keep_their_exact_known_codes",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only new precise internal storage and financial error evidence",
+          "source_file": "crates/agents-worker/src/image_generation_observation.rs"
+        },
+        {
+          "id": "node:image-recovery-put-and-stream-json",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/image-recovery.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_IMAGE_RECOVERY_CASE": "image_put,stream_json_error"
+          },
+          "reason": "Only the actually failed image PUT recovery and newly implemented streaming-request/JSON-error receipt boundary",
+          "expected_tests": [
+            "image_put",
+            "stream_json_error"
+          ]
+        },
+        {
+          "id": "python:receipt-gc-time-units",
+          "argv": [
+            "python3",
+            "tests/test_provider_response_receipt_sql.py",
+            "ReceiptCapacityTests.test_empty_release_keeps_reservation_seconds_and_lease_milliseconds_separate"
+          ],
+          "env": {},
+          "reason": "Only the newly fixed cleanup reservation seconds versus lease milliseconds SQL fence"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "3233487081d8c9e549b8cf3c5d52103aafb6c7d8",
+      "receipts": [
+        {
+          "source_sha": "1d2f57679034175b8791a08751d1fef009611f1f",
+          "run_id": "40447305436",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Twelve selected Rust contracts and default JPEG passed; aggregate journey failure is retained. Exact Wasm e008dc05d3fed046496322ecc559f59715bc76f20155a3994ea3b55054197d2e subsequently passed receipt-ACK cold recovery, MIME-paid-known, complete-error-zero, proxy-unknown and original-funding diagnostic GC tails. The reproduced candidate identity failure and new streaming JSON error remain explicit unresolved checks."
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One new native-runtime provenance vocabulary repair passed on the retained E4 Worker. Prior activation and cache contracts are not replayed."
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "3233487081d8c9e549b8cf3c5d52103aafb6c7d8",
+      "receipts": [
+        {
+          "source_sha": "1d2f57679034175b8791a08751d1fef009611f1f",
+          "run_id": "40447305436",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Twelve selected Rust contracts and default JPEG passed; aggregate journey failure is retained. Exact Wasm e008dc05d3fed046496322ecc559f59715bc76f20155a3994ea3b55054197d2e subsequently passed receipt-ACK cold recovery, MIME-paid-known, complete-error-zero, proxy-unknown and original-funding diagnostic GC tails. The reproduced candidate identity failure and new streaming JSON error remain explicit unresolved checks."
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One new native-runtime provenance vocabulary repair passed on the retained E4 Worker. Prior activation and cache contracts are not replayed."
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "3233487081d8c9e549b8cf3c5d52103aafb6c7d8",
+      "receipts": [
+        {
+          "source_sha": "1d2f57679034175b8791a08751d1fef009611f1f",
+          "run_id": "40447305436",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Twelve selected Rust contracts and default JPEG passed; aggregate journey failure is retained. Exact Wasm e008dc05d3fed046496322ecc559f59715bc76f20155a3994ea3b55054197d2e subsequently passed receipt-ACK cold recovery, MIME-paid-known, complete-error-zero, proxy-unknown and original-funding diagnostic GC tails. The reproduced candidate identity failure and new streaming JSON error remain explicit unresolved checks."
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One new native-runtime provenance vocabulary repair passed on the retained E4 Worker. Prior activation and cache contracts are not replayed."
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+    "run_id": "40448958981",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "3233487081d8c9e549b8cf3c5d52103aafb6c7d8",
+      "receipts": [
+        {
+          "source_sha": "1d2f57679034175b8791a08751d1fef009611f1f",
+          "run_id": "40447305436",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Twelve selected Rust contracts and default JPEG passed; aggregate journey failure is retained. Exact Wasm e008dc05d3fed046496322ecc559f59715bc76f20155a3994ea3b55054197d2e subsequently passed receipt-ACK cold recovery, MIME-paid-known, complete-error-zero, proxy-unknown and original-funding diagnostic GC tails. The reproduced candidate identity failure and new streaming JSON error remain explicit unresolved checks."
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One new native-runtime provenance vocabulary repair passed on the retained E4 Worker. Prior activation and cache contracts are not replayed."
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:seedream-provider-default-deployment",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=image staging adds the pinned inline Seedream endpoint",
+            "scripts/deploy-config.test.mjs"
+          ],
+          "env": {},
+          "reason": "Only the affected deployed default-format profile after the real JPEG/forced-PNG failure"
+        }
+      ]
+    }
   }
 ]

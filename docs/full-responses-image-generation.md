@@ -688,3 +688,40 @@ prevents any new unobserved HEAD admission by that old invocation. Already
 removed frames release capacity without creating another paid cleanup scope.
 Five additional targeted SQL cases cover empty refund fencing, pending/observed
 separation, attempt CAS, and late reservation discovery after operation release.
+
+## Incremental encrypted-response verification (2026-10-27)
+
+The user-supplied original OpenRouter log proves HTTP 200, finish reason
+`complete`, and USD 0.018. The visible generation ID is truncated. The old
+receiver did not retain its raw response, so this evidence does not restore the
+original image or justify repeating that paid request.
+
+Run `40447305436`, source `1d2f57679034175b8791a08751d1fef009611f1f`, retained
+Worker artifact `12708883523`, Wasm SHA-256
+`e008dc05d3fed046496322ecc559f59715bc76f20155a3994ea3b55054197d2e`:
+
+| Evidence | Outcome and boundary |
+| --- | --- |
+| Twelve selected Rust contracts | Passed: 2 observation, 1 JPEG codec, 1 real telemetry filter, 6 encrypted receipt/property, 1 GC diagnostic, 1 changed cleanup quote. No old image suite executed. |
+| GHA default JPEG journey | Passed: provider-default JPEG, one dispatch, USD 0.018 known cost, actual JPEG File bytes, raw R2 deletion and independent capacity zero. |
+| GHA aggregate | **Failed**, retained unchanged. The fixture incorrectly excluded execution IDs containing colons; this prevented five remaining cases from reaching their intended assertions. |
+| Exact-Wasm receipt ACK-loss tail | Passed after a fixture-only correction: persist a one-shot fault, wait for the real producer failure barrier, restart the actual runtime with native persistent D1/R2/DO storage, and observe the same response. One generation; no source-state manufacturing. |
+| Exact-Wasm MIME-mismatch tail | Passed: HTTP 200, real JPEG dimensions/format, generation/request IDs, USD 0.018 and `validate_image` survive the actual console emission filter. Paid result retained for recovery, not falsely treated as unknown or free. |
+| Exact-Wasm complete upstream error | Passed: authenticated OpenRouter HTTP 502 error, confirmed zero image charge and expiring Diagnostic retention. |
+| Exact-Wasm unknown-billing gateway tail | Passed: Miniflare converts an outbound fixture exception to an HTTP 500 gateway response. Preserve that observed status and original unknown-cost hold; it is not authenticated provider no-charge evidence. |
+| Exact-Wasm Diagnostic GC tail | Passed: the original reservation acknowledgment is lost after commit; after its lease expires, normal cron releases that genuinely empty scope, then a new measured scope performs one actual HEAD and settles 1 microusd. Raw objects/capacity/pending GC holds all zero. The later timestamp-unit and redundant-zero-observation corrections still require the composed build below. |
+
+All these endpoints and model rounds are controlled fixtures: zero external
+network calls, zero paid image or language-model calls. The local tails use the
+same current Node SDK 7.43.0 and Miniflare 5.20261019.2-beta as the locked CI setup.
+The old aggregate failure is not relabeled as success by those narrower results.
+
+The failed artifact-PUT journey exposed a separate production defect: the first
+`begin_image_reserved` consumes capacity into a pending blob, but raw-response
+reprocessing generated another candidate UUID. The new candidate no longer owns
+that consumed capacity. Preserve the original candidate and verify its identity;
+never replace it or repeat generation. This source correction, two new Rust
+regressions, one failed PUT journey, and one newly added streaming-request / JSON
+HTTP-error journey are the only image checks scheduled for the next normal
+composed CI. The five already passing image boundaries, GC tail, and twelve
+passing Rust contracts are not replayed.
