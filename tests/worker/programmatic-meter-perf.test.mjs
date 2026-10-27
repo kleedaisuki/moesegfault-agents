@@ -101,6 +101,10 @@ async function measure(t,build,label){
   assert.equal(value.output.filter(item=>item.type==='function_call_output').length,2);
   assert.deepEqual(await(await sdk.responses.retrieve(value.id).asResponse()).json(),value);
   assert.equal(state.calls,2,'Exactly two controlled model turns; no external inference or replay');
+  const session=wire.headers.get('x-agents-session');
+  assert.ok(session,'Use the original accepted Session identity for normal cleanup');
+  const closed=await mf.dispatchFetch('https://agents.test/v1/sessions/'+session,{method:'DELETE',headers:{Authorization:'Bearer '+principal.apiKey}});
+  assert.ok([200,202].includes(closed.status),await closed.text());
   const limit=Date.now()+15000;
   let pending,held;
   do{
@@ -108,7 +112,9 @@ async function measure(t,build,label){
     held=(await db.prepare("SELECT COUNT(*) AS n FROM usage_reservations WHERE account_id=? AND state='reserved'").bind(principal.owner).first()).n;
     if(pending||held)await new Promise(resolve=>setTimeout(resolve,25));
   }while((pending||held)&&Date.now()<limit);
-  assert.equal(pending,0);assert.equal(held,0);
+  const remaining=(await db.prepare("SELECT id,state,reserved_microusd,settled_microusd,session_id FROM usage_reservations WHERE account_id=? AND state='reserved'").bind(principal.owner).all()).results;
+  assert.equal(pending,0,JSON.stringify({label,pending,remaining}));
+  assert.equal(held,0,JSON.stringify({label,held,remaining}));
   const dynamic=(await db.prepare("SELECT l.unit,SUM(l.quantity) quantity,SUM(l.amount_microusd) amount FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit LIKE 'dynamic_worker_%' GROUP BY l.unit ORDER BY l.unit").bind(principal.owner).all()).results;
   assert.deepEqual(dynamic,[{unit:'dynamic_worker_cpu_slot_100ms',quantity:1,amount:2},{unit:'dynamic_worker_creation_day',quantity:1,amount:2000},{unit:'dynamic_worker_request',quantity:1,amount:1}]);
   const d1=(await db.prepare("SELECT l.unit,SUM(l.quantity) quantity,SUM(l.amount_microusd) amount FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.resource='d1' GROUP BY l.unit ORDER BY l.unit").bind(principal.owner).all()).results;
