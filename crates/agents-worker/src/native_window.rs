@@ -89,13 +89,34 @@ pub(crate) fn protected(item: &Value) -> bool {
     matches!(item["role"].as_str(), Some("system" | "developer"))
 }
 
+#[cfg(test)]
 pub(crate) fn kept_indices(input: &[Value], cut: usize) -> Result<Vec<usize>> {
+    kept_indices_with_context(input, cut, &[])
+}
+
+pub(crate) fn kept_indices_with_context(
+    input: &[Value],
+    cut: usize,
+    updates: &[usize],
+) -> Result<Vec<usize>> {
     if input.is_empty() || cut == 0 || cut > input.len() {
         return Err(fault("native_context_window_invalid"));
     }
-    Ok((0..cut)
-        .filter(|index| *index == 0 || protected(&input[*index]))
-        .chain(cut..input.len())
+    if updates
+        .iter()
+        .any(|index| *index == 0 || *index >= input.len())
+        || updates.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(fault("native_context_revision_invalid"));
+    }
+    let latest = updates.last().copied();
+    Ok((0..input.len())
+        .filter(|index| {
+            if updates.binary_search(index).is_ok() {
+                return Some(*index) == latest;
+            }
+            *index == 0 || *index >= cut || protected(&input[*index])
+        })
         .collect())
 }
 
@@ -145,6 +166,7 @@ pub(crate) fn cuts(input: &[Value]) -> Vec<usize> {
     cuts
 }
 
+#[cfg(test)]
 pub(crate) fn selected(input: &[Value], cut: usize) -> Result<Vec<Value>> {
     Ok(kept_indices(input, cut)?
         .into_iter()
@@ -154,6 +176,7 @@ pub(crate) fn selected(input: &[Value], cut: usize) -> Result<Vec<Value>> {
 
 /// Explicit auto truncation uses one shared exact counter. The final prepared
 /// request disables upstream truncation: the persisted window is the one sent.
+#[cfg(test)]
 pub(crate) async fn fit(
     config: &ProviderConfig,
     input: &[Value],
@@ -161,7 +184,30 @@ pub(crate) async fn fit(
     controls: &Value,
     context_window: u32,
     output_budget: u32,
+    effects: HarnessControlEffects,
+) -> Result<Fitted> {
+    fit_with_context(
+        config,
+        input,
+        tools,
+        controls,
+        context_window,
+        output_budget,
+        effects,
+        &[],
+    )
+    .await
+}
+
+pub(crate) async fn fit_with_context(
+    config: &ProviderConfig,
+    input: &[Value],
+    tools: &[Value],
+    controls: &Value,
+    context_window: u32,
+    output_budget: u32,
     mut effects: HarnessControlEffects,
+    updates: &[usize],
 ) -> Result<Fitted> {
     if input.is_empty() || !protected(&input[0]) {
         return Err(fault("native_context_window_invalid"));
@@ -175,6 +221,14 @@ pub(crate) async fn fit(
     let build = |input: &[Value]| {
         PreparedRequest::new_with_effects(config, input, tools, &controls, effects)
             .map_err(Error::RustError)
+    };
+    let selected = |cut| {
+        kept_indices_with_context(input, cut, updates).map(|indices| {
+            indices
+                .into_iter()
+                .map(|index| input[index].clone())
+                .collect::<Vec<_>>()
+        })
     };
     let prepared = build(input)?;
     if !auto {
@@ -199,7 +253,7 @@ pub(crate) async fn fit(
     let Some(&latest) = cuts.last() else {
         return Err(fault("context_length_exceeded"));
     };
-    let mut best = build(&selected(input, latest)?)?;
+    let mut best = build(&selected(latest)?)?;
     let mut measured = crate::responses_auxiliary::count_rendered(config, &best)
         .await?
         .input_tokens;
@@ -212,7 +266,7 @@ pub(crate) async fn fit(
     // be strictly monotone at text boundaries for the final bound to be valid.
     while lower < upper {
         let middle = lower + (upper - lower) / 2;
-        let candidate = build(&selected(input, cuts[middle])?)?;
+        let candidate = build(&selected(cuts[middle])?)?;
         let tokens = crate::responses_auxiliary::count_rendered(config, &candidate)
             .await?
             .input_tokens;
@@ -353,6 +407,35 @@ mod tests {
             session_id: None,
             traceparent: None,
         }
+    }
+
+    #[test]
+    fn context_revision_truncation_drops_only_superseded_trusted_snapshots() {
+        let input = vec![
+            json!({"role":"system","content":"pin"}),
+            json!({"role":"system","content":"old context A"}),
+            json!({"role":"user","content":"old source"}),
+            json!({"role":"developer","content":"protected ordinary policy"}),
+            json!({"role":"system","content":"old context B"}),
+            json!({"role":"user","content":"latest source"}),
+            json!({"role":"system","content":"latest context C"}),
+        ];
+        assert_eq!(
+            kept_indices_with_context(&input, 4, &[1, 4, 6]).unwrap(),
+            vec![0, 3, 5, 6]
+        );
+        let window = Window {
+            begin: 3,
+            protected: vec![2],
+        }
+        .without(6, &[0, 3])
+        .unwrap();
+        assert_eq!(window.indices(6).unwrap(), vec![2, 4, 5]);
+        assert_eq!(
+            kept_indices_with_context(&input, 4, &[]).unwrap(),
+            kept_indices(&input, 4).unwrap()
+        );
+        assert!(kept_indices_with_context(&input, 4, &[1, 1]).is_err());
     }
 
     #[test]

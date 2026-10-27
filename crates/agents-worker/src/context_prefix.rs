@@ -21,6 +21,9 @@ pub(crate) fn definitions(pinned: &PinnedContext) -> Vec<ToolDefinition> {
 
 pub(crate) fn prefix(pinned: &PinnedContext) -> String {
     let mut prefix = "You are an agent running in moeSegFault Agents. Tools and skills below are pinned for this session.\n".to_owned();
+    if pinned.prompt_layout == Some(agents_core::PromptLayout::AppendOnlyV1) {
+        prefix.push_str(crate::prompt_context::POLICY);
+    }
     prefix.push_str(&pinned.instructions);
     for skill in &pinned.skills {
         prefix.push_str(&format!(

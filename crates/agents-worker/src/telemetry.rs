@@ -196,6 +196,8 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "attempt"
                 | "count"
                 | "config_revision"
+                | "prefix_bytes"
+                | "context_updates"
         );
         let identifier = matches!(
             key.as_str(),
@@ -254,6 +256,8 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "config_hash"
                 | "workspace_revision"
                 | "build_id"
+                | "prompt_layout"
+                | "tool_set_sha256"
         );
         if key == "mcp_protocol_error_code" && value.as_i64().is_some() {
             safe.insert(key.clone(), value.clone());
