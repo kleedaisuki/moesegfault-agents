@@ -51,9 +51,20 @@ async fn execute(
             }
         }
     }
-    let mut context =
-        crate::auxiliary_context::prepare(env, owner, &mut generation, is_compact, personality)
-            .await?;
+    let session_header = if is_compact {
+        None
+    } else {
+        request.headers().get("X-Agents-Session")?
+    };
+    let mut context = crate::auxiliary_context::prepare(
+        env,
+        owner,
+        &mut generation,
+        is_compact,
+        personality,
+        session_header.as_deref(),
+    )
+    .await?;
     context.config.traceparent = request.headers().get("traceparent")?;
     if !is_compact {
         if context.config.protocol != agents_core::ProviderProtocol::Responses {

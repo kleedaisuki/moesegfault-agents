@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{AgentConfig, ModelConfig, ToolServices};
+use crate::{AgentConfig, ModelConfig, ProviderProtocol, ToolServices};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u8", into = "u8")]
@@ -73,6 +73,13 @@ pub struct RegisteredSkill {
     pub instructions: String,
 }
 
+/// Pin provider-context rendering independently of future harness upgrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptLayout {
+    AppendOnlyV1,
+}
+
 /// Store the complete resolved registry, never live references to mutable entries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinnedContext {
@@ -83,6 +90,8 @@ pub struct PinnedContext {
     pub skills: Vec<RegisteredSkill>,
     pub compaction_percent: CompactionPercent,
     pub workspace: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_layout: Option<PromptLayout>,
     #[serde(default, skip_serializing_if = "ToolServices::is_empty")]
     pub tool_services: ToolServices,
 }
@@ -103,6 +112,8 @@ impl PinnedContext {
             skills,
             compaction_percent: agent.compaction_percent,
             workspace: agent.workspace,
+            prompt_layout: (agent.model.protocol == Some(ProviderProtocol::Responses))
+                .then_some(PromptLayout::AppendOnlyV1),
             tool_services: agent.tool_services.clone(),
         }
     }
@@ -197,6 +208,28 @@ mod tests {
             prop_assert_eq!(pinned.prefix_bytes(), bytes);
             prop_assert_eq!(restored.prefix_hash(), hash);
         }
+    }
+
+    #[test]
+    fn prompt_layout_is_pinned_for_new_native_sessions_without_rewriting_old_pins() {
+        let mut agent =
+            serde_json::from_value::<crate::CreateAgent>(serde_json::json!({"name":"cache"}))
+                .unwrap()
+                .into_config("agent".into(), "owner".into(), 0);
+        let old = PinnedContext::resolve(&agent, vec![], vec![]);
+        let old_bytes = old.prefix_bytes();
+        assert!(old.prompt_layout.is_none());
+        agent.model.protocol = Some(ProviderProtocol::Responses);
+        let mut native = PinnedContext::resolve(&agent, vec![], vec![]);
+        assert_eq!(native.prompt_layout, Some(PromptLayout::AppendOnlyV1));
+        let restored: PinnedContext = serde_json::from_slice(&old_bytes).unwrap();
+        assert_eq!(restored.prefix_bytes(), old_bytes);
+        assert!(restored.prompt_layout.is_none());
+        native.prompt_layout = None;
+        let legacy_native = native.prefix_bytes();
+        let restored: PinnedContext = serde_json::from_slice(&legacy_native).unwrap();
+        assert_eq!(restored.prefix_bytes(), legacy_native);
+        assert!(restored.prompt_layout.is_none());
     }
 
     #[test]

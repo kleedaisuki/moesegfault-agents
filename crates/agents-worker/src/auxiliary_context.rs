@@ -31,8 +31,9 @@ pub(crate) async fn prepare(
     request: &mut ResponseRequest,
     compact: bool,
     personality: Option<Value>,
+    session_header: Option<&str>,
 ) -> Result<Context> {
-    let selected = crate::auxiliary_source::select(env, owner, request).await?;
+    let selected = crate::auxiliary_source::select(env, owner, request, session_header).await?;
     let source = selected.previous;
     let pinned = selected.pinned;
     let config = provider::resolve_config(env, owner, &pinned.model).await?;
@@ -44,6 +45,14 @@ pub(crate) async fn prepare(
     let mut instructions = None;
     let mut inherited_discovery = None;
     let mut pending_search = Vec::new();
+    let mut context_revision = None;
+    let mut context_updates = vec![];
+    let requested_profile =
+        crate::runtime_profiles::requested_tools_for(&request.tools, &pinned.tool_services)?;
+    let mut profile = selected
+        .runtime_profile
+        .or(requested_profile)
+        .unwrap_or_default();
     if let Some(context) = source {
         if context
             .native_provider_binding
@@ -55,6 +64,11 @@ pub(crate) async fn prepare(
         if context.record.owner_id != owner {
             return Err(fail("response_not_found"));
         }
+        if requested_profile.is_none() {
+            profile = context.record.runtime_profile;
+        }
+        context_revision = context.context_revision;
+        context_updates = context.context_updates;
         inherited_discovery = context.discovery;
         pending_search = context
             .general_pending_calls
@@ -70,6 +84,17 @@ pub(crate) async fn prepare(
                 .map_err(|_| fail("response_context_unavailable"))?,
         };
         if compact {
+            prior_native = prior_native
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    context_updates
+                        .binary_search(&index)
+                        .is_err()
+                        .then_some(item)
+                })
+                .collect();
+            context_updates.clear();
             instructions = context.response_instructions;
         }
     }
@@ -140,11 +165,22 @@ pub(crate) async fn prepare(
         instructions = request.instructions.clone();
     }
     let mut prefix = base.clone();
-    if let Some(instructions) = &instructions {
+    if let Some(instructions) = instructions
+        .as_ref()
+        .filter(|_| !crate::prompt_context::enabled(&pinned, &config))
+    {
         prefix.push_str("\n\nUser-provided instructions for this response:\n");
         prefix.push_str(instructions);
     }
-    if prefix.len() > 256 * 1024 {
+    let protected_bytes =
+        prefix
+            .len()
+            .saturating_add(if crate::prompt_context::enabled(&pinned, &config) {
+                instructions.as_ref().map_or(0, String::len)
+            } else {
+                0
+            });
+    if protected_bytes > 256 * 1024 {
         return Err(fail("invalid_auxiliary_request"));
     }
     let declarations = request.native_tool_items().map_err(fail)?;
@@ -268,11 +304,25 @@ pub(crate) async fn prepare(
     if let Some(personality) = personality {
         controls["personality"] = personality;
     }
+    let mut context_positions = context_updates
+        .into_iter()
+        .map(|index| index + 1)
+        .collect::<Vec<_>>();
+    if !compact && crate::prompt_context::enabled(&pinned, &config) {
+        let snapshot =
+            crate::prompt_context::snapshot(&pinned, profile, instructions.as_deref(), &tools);
+        if let Some((_, item)) =
+            crate::prompt_context::update(context_revision.as_deref(), &snapshot)
+        {
+            context_positions.push(native.len());
+            native.push(item);
+        }
+    }
     let (prepared, measured_input_tokens) = if controls["truncation"] == "auto" {
         let fitted = crate::responses_auxiliary::resource_count(
             env,
             owner,
-            crate::native_window::fit(
+            crate::native_window::fit_with_context(
                 &config,
                 &native,
                 &tools,
@@ -285,6 +335,7 @@ pub(crate) async fn prepare(
                     max_tool_calls: true,
                     ..Default::default()
                 },
+                &context_positions,
             ),
         )
         .await?;

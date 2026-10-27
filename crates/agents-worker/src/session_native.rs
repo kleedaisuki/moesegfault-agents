@@ -59,6 +59,27 @@ pub(super) fn provider_binding(record: &SessionRecord, config: &ProviderConfig) 
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
 }
 
+pub(super) fn context_positions(reference: &branch::NativeHistoryRef) -> Result<Vec<usize>> {
+    let Some(context) = &reference.context else {
+        return Ok(vec![]);
+    };
+    if !context.valid(reference.end) {
+        return Err(fault("native_context_revision_invalid"));
+    }
+    let indices = reference
+        .window
+        .as_ref()
+        .map(|window| window.indices(reference.end))
+        .transpose()?
+        .unwrap_or_else(|| (0..reference.end).collect());
+    Ok(context
+        .rebased(&indices)
+        .updates
+        .into_iter()
+        .map(|index| index + 1)
+        .collect())
+}
+
 fn binding(record: &SessionRecord, config: &ProviderConfig) -> Result<String> {
     provider_binding(record, config)
 }
@@ -120,6 +141,13 @@ async fn read_history(
     if reference.source_session_id != session || reference.generation.is_empty() {
         return Err(fault("native_context_unavailable"));
     }
+    if reference
+        .context
+        .as_ref()
+        .is_some_and(|context| !context.valid(reference.end))
+    {
+        return Err(fault("native_context_revision_invalid"));
+    }
     let generation_key = format!("native:{}:meta", reference.generation);
     let generation = storage
         .get::<Generation>(&generation_key)
@@ -177,6 +205,7 @@ async fn mutate_history(
             end: 0,
             provider_binding: provider_binding.into(),
             window: None,
+            context: None,
         },
     };
     if history.source_session_id != session || history.provider_binding != provider_binding {
@@ -483,7 +512,7 @@ impl SessionInner {
         if config.protocol != ProviderProtocol::Responses {
             return Ok(());
         }
-        let input = self.native_generation_input(config).await?;
+        let mut input = self.native_generation_input(config).await?;
         let (mut controls, tools) = {
             let data = self.data.borrow();
             let run = data
@@ -568,6 +597,8 @@ impl SessionInner {
                 .rewrite_choice(choice.clone(), provider::is_deepseek(config))?;
             }
         }
+        self.append_native_context_update(config, &tools, &mut input)
+            .await?;
         let (history, capacity, output) = {
             let data = self.data.borrow();
             let data = data.as_ref().unwrap();
@@ -579,7 +610,8 @@ impl SessionInner {
                     .unwrap_or(data.record.pinned.model.max_output_tokens),
             )
         };
-        let mut fitted = crate::native_window::fit(
+        let updates = context_positions(&history)?;
+        let mut fitted = crate::native_window::fit_with_context(
             config,
             &input,
             &tools,
@@ -590,6 +622,7 @@ impl SessionInner {
                 max_tool_calls: true,
                 ..Default::default()
             },
+            &updates,
         )
         .await?;
         if fitted.input_tokens.is_none() && history.window.is_some() {
@@ -618,6 +651,14 @@ impl SessionInner {
             return Ok(None);
         }
         let mut input = self.native_generation_input(config).await?;
+        if let Some(history) = self.native_branch_ref()? {
+            let updates = context_positions(&history)?;
+            input = input
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, item)| updates.binary_search(&index).is_err().then_some(item))
+                .collect();
+        }
         let prefix = provider::responses::message_items(std::slice::from_ref(instruction))
             .map_err(Error::RustError)?;
         input.splice(..1, prefix);
@@ -758,6 +799,82 @@ impl SessionInner {
         Ok(input)
     }
 
+    async fn append_native_context_update(
+        &self,
+        config: &ProviderConfig,
+        tools: &[Value],
+        input: &mut Vec<Value>,
+    ) -> Result<()> {
+        let _guard = self.persistence.lock().await;
+        let data = self.snapshot()?;
+        if !crate::prompt_context::enabled(&data.record.pinned, config) {
+            return Ok(());
+        }
+        let run = data
+            .run
+            .as_ref()
+            .ok_or_else(|| fault("native_context_run_missing"))?;
+        let response = run.response.as_ref();
+        let instructions = response.and_then(|response| {
+            response
+                .effective_instructions
+                .as_deref()
+                .or(response.request.instructions.as_deref())
+        });
+        let snapshot = crate::prompt_context::snapshot(
+            &data.record.pinned,
+            data.record.runtime_profile,
+            instructions,
+            tools,
+        );
+        let mut context = data
+            .native_context
+            .ok_or_else(|| fault("native_context_unavailable"))?;
+        if context.history.provider_binding != binding(&data.record, config)? {
+            return Err(fault("native_context_provider_mismatch"));
+        }
+        let previous = context.history.context.as_ref();
+        let Some((digest, item)) = crate::prompt_context::update(
+            previous.map(|context| context.digest.as_str()),
+            &snapshot,
+        ) else {
+            return Ok(());
+        };
+        let index = context.history.end;
+        let mut updates = previous
+            .map(|context| context.updates.clone())
+            .unwrap_or_default();
+        updates.push(index);
+        context.history = mutate_history(
+            &self.state.storage(),
+            &data.record.id,
+            Some(&context.history),
+            &context.history.provider_binding,
+            &format!(
+                "context:{}:{}:{}:{digest}",
+                run.id,
+                response.map_or(run.id.as_str(), |response| response.id.as_str()),
+                run.round
+            ),
+            Mutation::Append,
+            std::slice::from_ref(&item),
+        )
+        .await?;
+        context.history.context = Some(crate::prompt_context::Revision { digest, updates });
+        input.push(item);
+        util::emit(
+            "context.prepared",
+            json!({
+                "session_id":data.record.id,"run_id":run.id,"round":run.round,
+                "prompt_layout":"append_only_v1","prefix_bytes":system_prefix(&data.record).len(),
+                "context_updates":context.history.context.as_ref().map_or(0, |context| context.updates.len()),
+                "tool_set_sha256":snapshot["tool_set_sha256"],
+            }),
+        );
+        self.data.borrow_mut().as_mut().unwrap().native_context = Some(context);
+        Ok(())
+    }
+
     pub(super) async fn accept_native_turn(
         &self,
         run: &RunState,
@@ -806,7 +923,31 @@ impl SessionInner {
         items.extend(
             provider::responses::message_items(&data.messages[1..]).map_err(Error::RustError)?,
         );
-        let history = mutate_history(
+        let revision = match context.history.context.as_ref() {
+            Some(revision) => {
+                let index = revision
+                    .updates
+                    .last()
+                    .copied()
+                    .ok_or_else(|| fault("native_context_revision_invalid"))?;
+                let key = format!("native:{}:entry:{index}", context.history.generation);
+                let bytes = crate::session_storage::read_many(&self.state.storage(), &[key])
+                    .await?
+                    .into_iter()
+                    .next()
+                    .flatten()
+                    .ok_or_else(|| fault("native_context_entry_missing"))?;
+                let update: Value = serde_json::from_slice(&bytes)?;
+                let index = items.len();
+                items.push(update);
+                Some(crate::prompt_context::Revision {
+                    digest: revision.digest.clone(),
+                    updates: vec![index],
+                })
+            }
+            None => None,
+        };
+        let mut history = mutate_history(
             &self.state.storage(),
             &data.record.id,
             None,
@@ -816,6 +957,7 @@ impl SessionInner {
             &items,
         )
         .await?;
+        history.context = revision;
         self.data.borrow_mut().as_mut().unwrap().native_context = Some(NativeContext {
             history,
             messages_end: data.messages.len(),

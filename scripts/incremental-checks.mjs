@@ -45,22 +45,70 @@ function changedLines(source, base, file) {
     .map(match => [Number(match[1]), Number(match[1]) + Number(match[2] ?? 1)]);
 }
 
+function rustCode(content) {
+  const masked = content.split('');
+  const raw = /(?:br|cr|r)(#{0,255})"/y;
+  const character = /'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|[^\r\n])|[^'\\\r\n])'/uy;
+  for (let i = 0; i < content.length;) {
+    const start = i;
+    raw.lastIndex = character.lastIndex = i;
+    const literal = raw.exec(content);
+    if (content.startsWith('//', i)) i = content.indexOf('\n', i) < 0 ? content.length : content.indexOf('\n', i);
+    else if (content.startsWith('/*', i)) {
+      let depth = 1;
+      i += 2;
+      while (i < content.length && depth) {
+        if (content.startsWith('/*', i)) { depth++; i += 2; }
+        else if (content.startsWith('*/', i)) { depth--; i += 2; }
+        else i++;
+      }
+    } else if (literal) {
+      const close = '"' + literal[1];
+      const end = content.indexOf(close, raw.lastIndex);
+      i = end < 0 ? content.length : end + close.length;
+    } else if (content[i] === '"') {
+      i++;
+      while (i < content.length && content[i] !== '"') i += content[i] === '\\' ? 2 : 1;
+      i = Math.min(i + 1, content.length);
+    } else if (character.exec(content)) i = character.lastIndex;
+    else { i++; continue; }
+    for (let j = start; j < i; j++) if (masked[j] !== '\n' && masked[j] !== '\r') masked[j] = ' ';
+  }
+  return masked.join('');
+}
+
 export function changedRustTests(content, ranges) {
-  const lines = content.split('\n');
+  // Rustfmt's function braces bound each test; adjacent additions do not belong
+  // to the preceding accepted test. Literal/comment braces are not Rust syntax.
+  const code = rustCode(content);
+  const lines = code.split('\n');
   const tests = [];
-  let attribute = false;
+  let attribute = null;
   let ignored = false;
+  let offset = 0;
   for (let i = 0; i < lines.length; i++) {
-    if (/^\s*#\[(?:[\w:]+::)?test(?:\([^\]]*\))?\]/.test(lines[i])) attribute = true;
+    const startOffset = offset;
+    offset += lines[i].length + 1;
+    if (/^\s*#\[(?:[\w:]+::)?test(?:\([^\]]*\))?\]/.test(lines[i])) attribute = i + 1;
     if (/^\s*#\[ignore(?:[\](= ]|$)/.test(lines[i])) ignored = true;
     const match = lines[i].match(/^\s*(?:async\s+)?fn\s+([a-zA-Z0-9_]+)\s*\(/);
     if (!match) continue;
-    if (attribute && !ignored) tests.push({ name: match[1], start: i + 1 });
-    attribute = false;
+    if (attribute && !ignored) {
+      let end = code.indexOf('{', startOffset), depth = 0;
+      if (end < 0) throw Error(`Missing Rust test body: ${match[1]}`);
+      do {
+        if (code[end] === '{') depth++;
+        if (code[end] === '}') depth--;
+        end++;
+      } while (end < code.length && depth);
+      if (depth) throw Error(`Unclosed Rust test body: ${match[1]}`);
+      tests.push({ name: match[1], start: attribute, end: code.slice(0, end).split('\n').length + 1 });
+    }
+    attribute = null;
     ignored = false;
   }
-  return tests.filter((test, index) => ranges.some(([start, end]) =>
-    start < (tests[index + 1]?.start ?? lines.length + 1) && end >= test.start))
+  return tests.filter(test => ranges.some(([start, end]) =>
+    start < test.end && Math.max(end, start + 1) > test.start))
     .map(test => test.name);
 }
 
@@ -109,6 +157,10 @@ export function selections(source, base, files) {
   }
   const executionLease = files.some(file => /execution[-_]lease/.test(file));
   const journeys = [
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context appends instruction changes and reset across cold continuation and exact count'],
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context tool revisions preserve historical forks without revoked aliases'],
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context compaction retains the latest revision and resets without stale policy'],
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache explicit Session counting preserves legacy and versioned pins without admission'],
     [/execution[-_]lease/, 'ModelOperation execution lease cold loss and terminal admission rejection'],
     [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],

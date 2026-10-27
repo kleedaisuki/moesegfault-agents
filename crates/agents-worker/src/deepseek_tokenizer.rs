@@ -132,6 +132,12 @@ pub(crate) fn is_deepseek(config: &ProviderConfig) -> bool {
     })
 }
 
+pub(crate) fn supports_context_updates(config: &ProviderConfig) -> bool {
+    !is_deepseek(config)
+        || Profile::resolve(&config.model)
+            .is_ok_and(|profile| profile.version().supports_mid_conversation_system())
+}
+
 pub(crate) fn count_deepseek(
     config: &ProviderConfig,
     prepared: &PreparedRequest,

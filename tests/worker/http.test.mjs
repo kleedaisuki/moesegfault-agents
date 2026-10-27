@@ -31,6 +31,9 @@ import { runDeepSeekTokenizerJourney } from './deepseek-tokenizer-journey.mjs';
 import { createVisionInputFixture, runDeepSeekVisionCountJourney } from './deepseek-vision-count-journey.mjs';
 import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
 import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
+import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
+import { runPromptCacheInstructionsJourney, runPromptCacheToolForkJourney, runPromptCacheCompactionJourney,
+  runPromptCacheExplicitSessionCountJourney } from './prompt-cache-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -56,6 +59,7 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   const deepseekCompactProvider = createDeepseekCompactFixture();
   const visionInputs = createVisionInputFixture();
   const promptProvider = createPromptProviderFixture();
+  const promptCacheProvider = createNativeSemanticsProvider();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const resourcePricing = deployment.env.staging.vars.RESOURCE_PRICING_JSON;
   let providerCalls = 0;
@@ -115,6 +119,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
       PROMPT_REGISTRY_JSON: promptRegistry,
     },
     outboundService: async request => {
+      const promptCacheResponse = await promptCacheProvider.handle(request);
+      if (promptCacheResponse !== undefined) return promptCacheResponse;
       const deepseekCompactResponse = await deepseekCompactProvider.handle(request);
       if (deepseekCompactResponse !== undefined) return deepseekCompactResponse;
       const visionResponse = await visionInputs.handle(request);
@@ -532,6 +538,20 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
   await selected(t, 'terminal delivery survives a failed final D1 projection after canonical settlement', { timeout: 24000 }, () =>
     runProjectionFaultJourney({ mf, db, encryptionKey, request, provider: observerProvider, diagnostic: value => t.diagnostic(value) }));
   const responseContext = () => ({ mf, db, encryptionKey, request, providers: responsesProvider, coalescingProviders, diagnostic: value => t.diagnostic(value) });
+  const promptCacheContext = () => ({ ...responseContext(), providers: promptCacheProvider,
+    restart: async () => {
+      await mf.setOptions(mfOptions);
+      db = await mf.getD1Database('DB');
+    },
+  });
+  await selected(t, 'Responses cache context appends instruction changes and reset across cold continuation and exact count', { timeout: 90000 }, async () =>
+    t.diagnostic(JSON.stringify(await runPromptCacheInstructionsJourney(promptCacheContext()))));
+  await selected(t, 'Responses cache context tool revisions preserve historical forks without revoked aliases', { timeout: 60000 }, async () =>
+    t.diagnostic(JSON.stringify(await runPromptCacheToolForkJourney(promptCacheContext()))));
+  await selected(t, 'Responses cache context compaction retains the latest revision and resets without stale policy', { timeout: 60000 }, async () =>
+    t.diagnostic(JSON.stringify(await runPromptCacheCompactionJourney(promptCacheContext()))));
+  await selected(t, 'Responses cache explicit Session counting preserves legacy and versioned pins without admission', { timeout: 60000 }, async () =>
+    t.diagnostic(JSON.stringify(await runPromptCacheExplicitSessionCountJourney(promptCacheContext()))));
   const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
     .map(name => [name, mfOptions.workers[0].config.env[name]]));
   const configureCompact = async values => {

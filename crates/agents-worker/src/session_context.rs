@@ -21,6 +21,10 @@ pub(crate) struct ResponseContext {
     pub history_instructions: Vec<Message>,
     pub native_items: Option<Vec<Value>>,
     pub native_provider_binding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_updates: Vec<usize>,
     pub pending_calls: Vec<provider::ToolCall>,
     pub source_end: usize,
     pub compacted: bool,
@@ -187,6 +191,21 @@ impl SessionInner {
             Some(reference) => Some(self.native_export(reference).await?),
             None => None,
         };
+        let context_revision = view.native.as_ref().and_then(|reference| {
+            reference
+                .context
+                .as_ref()
+                .map(|context| context.digest.clone())
+        });
+        let context_updates = view
+            .native
+            .as_ref()
+            .map(super::native::context_positions)
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|index| index - 1)
+            .collect();
         let native_provider_binding = view.native.map(|reference| reference.provider_binding);
         Response::from_json(&ResponseContext {
             discovery: response.discovery.clone(),
@@ -203,6 +222,8 @@ impl SessionInner {
             history_instructions: view.history_instructions,
             native_items,
             native_provider_binding,
+            context_revision,
+            context_updates,
             pending_calls: view.pending_calls,
             source_end: view.source_end,
             compacted: view.compacted,

@@ -1202,11 +1202,17 @@ impl SessionInner {
             }
         }
 
-        if !input.instructions.is_empty() {
+        let append_context = crate::prompt_context::enabled(&data.record.pinned, &config);
+        if !append_context && !input.instructions.is_empty() {
             prefix.push_str("\n\nUser-provided instructions for this response:\n");
             prefix.push_str(&input.instructions.join("\n\n"));
         }
-        if prefix.len() > 256 * 1024 {
+        let protected_bytes = prefix.len().saturating_add(if append_context {
+            input.instructions.iter().map(String::len).sum()
+        } else {
+            0
+        });
+        if protected_bytes > 256 * 1024 {
             return util::json_error(
                 400,
                 "instructions_too_large",

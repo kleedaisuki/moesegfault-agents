@@ -12,6 +12,8 @@ pub(crate) struct NativeHistoryRef {
     pub provider_binding: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<crate::native_window::Window>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::prompt_context::Revision>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -584,6 +586,16 @@ impl SessionInner {
                 )
                 .await?;
             if let Some(history) = history.as_mut() {
+                let indices = reference
+                    .window
+                    .as_ref()
+                    .map(|window| window.indices(reference.end))
+                    .transpose()?
+                    .unwrap_or_else(|| (0..reference.end).collect());
+                history.context = reference
+                    .context
+                    .as_ref()
+                    .map(|context| context.rebased(&indices));
                 history.window = reference
                     .window
                     .as_ref()

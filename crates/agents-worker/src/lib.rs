@@ -57,6 +57,7 @@ mod observer_transport;
 mod programmatic_metering;
 mod programmatic_runtime;
 mod programmatic_tools;
+mod prompt_context;
 mod prompt_templates;
 mod provider;
 mod provider_response_receipt;
