@@ -155,7 +155,11 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         assert.equal(image.result, null);
         const privateState = await inspect();
         const operation = privateState.operations[0].value;
-        assert.equal(operation.observation?.upstream_status ?? null, name === 'transport_gap' ? null : completeError ? 502 : 200);
+        assert.equal(operation.observation?.upstream_status ?? null, name === 'transport_gap' ? 500 : completeError ? 502 : 200);
+        if (name === 'transport_gap') {
+          assert.equal(operation.observation.confirmed_no_charge, false, 'A fixture gateway HTTP500 is not authenticated provider no-charge evidence');
+          assert.equal(operation.observation.provider_completed, false);
+        }
         if (name === 'mime_mismatch') {
           assert.equal(operation.observation.actual_format, 'jpeg');
           assert.equal(operation.observation.provider_completed, true);
@@ -230,6 +234,8 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
       await writeFile(path.join(directory, 'telemetry.json'), JSON.stringify(logs, null, 2));
       receipts[name] = { gc: gcReceipt ?? null, telemetry_events: logs.map(value => value.event), response_id: response.id, generation_posts: imagePosts, model_calls: model.calls, cold_recovery: !!faultReceipt, encrypted_before_codec: faultReceipt?.fault.encrypted ?? null,
         image_status: image.status, reservation_state: imageHolds[0].state, image_microusd: imageHolds[0].settled, external_network_calls: 0 };
+      await writeFile(path.join(directory, 'case-receipt.json'), JSON.stringify({ source: process.env.MAGENTS_WORKER_SOURCE_SHA ?? process.env.GITHUB_SHA ?? null,
+        wasm_sha256: digest(await readFile(path.join(build, 'index_bg.wasm'))), fixture: 'actual-compiled-rust-worker', case: name, ...receipts[name] }, null, 2));
     } finally { await mf.dispose(); }
   });
   assert.deepEqual(Object.keys(receipts), selected);
