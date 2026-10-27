@@ -175,3 +175,66 @@ the error path, which clears the known pending summary without publishing a
 compaction item. This reuses the already exercised terminal-policy helper; no
 accepted summary/answer generation is replayed to prove the same predicate.
 The changed Session call site still belongs to the next coherent artifact build.
+
+## Automatic DeepSeek transport correction (2026-10-27)
+
+The actual `02d483b` Context request `resp_032ceda34a484ac2ba5ee5642e14abc3`
+finished its paid summary with 135 input tokens, 512 output tokens and 512
+reasoning tokens, then failed `compaction_incomplete`. The original outcome is
+retained; it is not replayed. Its model reservation settled 655 microusd and its
+entire observed new scope settled 1,031 microusd without outstanding new holds.
+
+The automatic Session manager had prepared a native Responses summary with
+empty controls, while standalone compaction already selected the shared
+purpose-specific DeepSeek Anthropic transport with thinking explicitly disabled.
+The outer Response's `reasoning.effort=none` was therefore not a summary policy.
+
+Automatic DeepSeek compaction now passes its actual native working input to the
+same `provider::compaction::prepare_deepseek` implementation. The summary uses a
+cloned provider configuration, preserves the original generation configuration,
+and retains the established automatic-summary reservation quote. Native
+source items, protected instructions and media use the existing source renderer;
+there is no second Chat-only projection or alternate summary harness. Exact
+rendered summary input is observable, but changing the existing automatic escrow
+bound would break a pre-dispatch reservation replay after an upgrade. Standalone
+compaction retains its separately accepted exact-input quote. The known
+summary and usage still persist before normal settlement and projection.
+Incomplete or tool-bearing summaries still fail the strict existing validator.
+Non-DeepSeek legacy and native compaction transports keep their prior paths.
+
+Structured `provider.compaction_started` / `provider.compaction_completed`
+evidence records the selected protocol, thinking policy, rendered input,
+provider ID, terminal reason and actual output/reasoning counts. These fields
+survive the telemetry emission filter; source text and summary contents do not
+enter operational logs. See the primary [DeepSeek thinking contract](https://api-docs.deepseek.com/guides/thinking_mode/)
+and [Responses compaction contract](https://developers.openai.com/api/docs/guides/compaction).
+
+Verification is intentionally one new controlled compiled-Worker SDK journey
+plus one new emission-filter contract; old standalone compact, auto-window,
+Conversations and SQL cases are not selected. Actual staging acceptance requires
+one fresh request after deploying the repaired source, not a retry of the old ID.
+
+### Incremental controlled execution receipt
+
+Actions [40447505945](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40447505945)
+succeeded at proof source `ffe851f86fb9f98365208752924993a6d7004412`:
+Worker artifact `12709172145`, verification artifact `12709616231`.
+The only new SDK journey took 5,102 ms: one Anthropic summary with explicit
+thinking disabled, one native Responses continuation using the unchanged
+reasoning policy, preserved server/developer/current instructions, one sealed
+compaction item, immutable GET replay and two settled model reservations.
+Both model transports were controlled fixtures; external model calls: zero.
+The one new telemetry-filter Rust contract passed (289 ms runner duration).
+No old standalone compact, native-window, Convo, SQL or hosted-tool journey ran.
+
+The subsequent source-only compatibility correction `95b4eca` restores the
+previous automatic escrow bound (rather than weakening financial hash replay).
+It and the final assembled source require the next composed build. The above
+artifact proves the summary transport/continuation path, not that later source
+or a fresh actual Cloudflare request has already executed.
+
+The observed Actions latency was build work, not test repetition: installing
+`worker-build` took 155 s, release Wasm compilation 276 s, compiling the selected
+Rust test binary 117 s, versus 5 s executing the new SDK journey. Reusing a
+version/OS/architecture-bound verified `worker-build` binary can remove the
+repeated tool-install portion without dropping user-journey verification.

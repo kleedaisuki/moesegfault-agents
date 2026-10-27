@@ -9458,5 +9458,315 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "02d483b024386874c3a9c64d476cce0cec0c1130",
+    "run_id": "40369812194",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12671344613,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "562ec9aa872896ecc6600138ab282a253e7d9a75",
+      "receipts": [
+        {
+          "source_sha": "02d483b024386874c3a9c64d476cce0cec0c1130",
+          "run_id": "40369812194",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Positive normal composition build and four new CLI packaging selector checks; original real Conversation guard cleanup is separately documented, no claim that failed summary passed"
+        },
+        {
+          "source_sha": "0a2a53fbee523462948e6d38678e19c314dd0a1a",
+          "run_id": "40446113827",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new two native conversion Rust contracts and one native HTTP422 diagnostic immutable receipt; no earlier FileSearch or embedding replay"
+        },
+        {
+          "source_sha": "3b823b1c4a53d479b97cd1897ace7d0db09e70de",
+          "run_id": "40370107355",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Only actual native program heap through new MCP approval pause, freshauth oneRPC, denial zeroRPC; not real remote or new Conversation acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "562ec9aa872896ecc6600138ab282a253e7d9a75",
+      "receipts": [
+        {
+          "source_sha": "02d483b024386874c3a9c64d476cce0cec0c1130",
+          "run_id": "40369812194",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Positive normal composition build and four new CLI packaging selector checks; original real Conversation guard cleanup is separately documented, no claim that failed summary passed"
+        },
+        {
+          "source_sha": "0a2a53fbee523462948e6d38678e19c314dd0a1a",
+          "run_id": "40446113827",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new two native conversion Rust contracts and one native HTTP422 diagnostic immutable receipt; no earlier FileSearch or embedding replay"
+        },
+        {
+          "source_sha": "3b823b1c4a53d479b97cd1897ace7d0db09e70de",
+          "run_id": "40370107355",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Only actual native program heap through new MCP approval pause, freshauth oneRPC, denial zeroRPC; not real remote or new Conversation acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "562ec9aa872896ecc6600138ab282a253e7d9a75",
+      "receipts": [
+        {
+          "source_sha": "02d483b024386874c3a9c64d476cce0cec0c1130",
+          "run_id": "40369812194",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Positive normal composition build and four new CLI packaging selector checks; original real Conversation guard cleanup is separately documented, no claim that failed summary passed"
+        },
+        {
+          "source_sha": "0a2a53fbee523462948e6d38678e19c314dd0a1a",
+          "run_id": "40446113827",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new two native conversion Rust contracts and one native HTTP422 diagnostic immutable receipt; no earlier FileSearch or embedding replay"
+        },
+        {
+          "source_sha": "3b823b1c4a53d479b97cd1897ace7d0db09e70de",
+          "run_id": "40370107355",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Only actual native program heap through new MCP approval pause, freshauth oneRPC, denial zeroRPC; not real remote or new Conversation acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "562ec9aa872896ecc6600138ab282a253e7d9a75",
+      "receipts": [
+        {
+          "source_sha": "02d483b024386874c3a9c64d476cce0cec0c1130",
+          "run_id": "40369812194",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Positive normal composition build and four new CLI packaging selector checks; original real Conversation guard cleanup is separately documented, no claim that failed summary passed"
+        },
+        {
+          "source_sha": "0a2a53fbee523462948e6d38678e19c314dd0a1a",
+          "run_id": "40446113827",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new two native conversion Rust contracts and one native HTTP422 diagnostic immutable receipt; no earlier FileSearch or embedding replay"
+        },
+        {
+          "source_sha": "3b823b1c4a53d479b97cd1897ace7d0db09e70de",
+          "run_id": "40370107355",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Only actual native program heap through new MCP approval pause, freshauth oneRPC, denial zeroRPC; not real remote or new Conversation acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "02d483b024386874c3a9c64d476cce0cec0c1130",
+    "run_id": "40369812194",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "562ec9aa872896ecc6600138ab282a253e7d9a75",
+      "receipts": [
+        {
+          "source_sha": "02d483b024386874c3a9c64d476cce0cec0c1130",
+          "run_id": "40369812194",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Positive normal composition build and four new CLI packaging selector checks; original real Conversation guard cleanup is separately documented, no claim that failed summary passed"
+        },
+        {
+          "source_sha": "0a2a53fbee523462948e6d38678e19c314dd0a1a",
+          "run_id": "40446113827",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new two native conversion Rust contracts and one native HTTP422 diagnostic immutable receipt; no earlier FileSearch or embedding replay"
+        },
+        {
+          "source_sha": "3b823b1c4a53d479b97cd1897ace7d0db09e70de",
+          "run_id": "40370107355",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Only actual native program heap through new MCP approval pause, freshauth oneRPC, denial zeroRPC; not real remote or new Conversation acceptance"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:staging-mcp-programmatic-config",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=staging MCP and programmatic opt-in",
+            "scripts/deploy-config.test.mjs"
+          ],
+          "env": {},
+          "reason": "One new cheap native loader and finite activation render contract; no old deploy-config contracts"
+        },
+        {
+          "id": "node:scripts/worker-build-cache.test.mjs",
+          "argv": [
+            "node",
+            "--test",
+            "scripts/worker-build-cache.test.mjs"
+          ],
+          "env": {},
+          "reason": "Four new pinned build-tool cache contracts; no old tooling suite or runtime journeys"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+    "run_id": "40447538513",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12709167366,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+    "run_id": "40447538513",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "54f4edb73d8199a4b0f6ba71213f0f91106269a1",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "Normal composed Worker build and only five new activation/build-tool contracts passed; failed deployment pre-infrastructure provenance rejection is not runtime acceptance"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:native-runtime-provenance-activation",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=native MCP and programmatic activation",
+            "scripts/deploy-provenance.test.mjs"
+          ],
+          "env": {},
+          "reason": "One new proof-vocabulary correction after actual pre-infrastructure failure; no old five contracts or runtime journeys"
+        }
+      ]
+    }
   }
 ]

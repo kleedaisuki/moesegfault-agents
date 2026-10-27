@@ -13,6 +13,9 @@ use worker::{D1Database, D1Result, Env, Error, Result};
 
 use crate::metering::{self, ReservationRow};
 
+#[path = "resources_d1_batch.rs"]
+mod d1_batch;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourcePricing {

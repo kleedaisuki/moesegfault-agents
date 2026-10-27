@@ -77,6 +77,24 @@ fn pending_calls(items: &[Value]) -> Vec<native_output::GeneralPendingCall> {
     pending.into_values().collect()
 }
 
+fn publication_items(input: &[Value], output: &[Value]) -> Vec<Value> {
+    let supplied_result = |item: &Value| {
+        matches!(
+            item["type"].as_str(),
+            Some("function_call_output" | "custom_tool_call_output")
+        ) && input.iter().any(|supplied| {
+            ["type", "call_id", "caller", "output"]
+                .iter()
+                .all(|field| supplied[*field] == item[*field])
+        })
+    };
+    input
+        .iter()
+        .chain(output.iter().filter(|item| !supplied_result(item)))
+        .cloned()
+        .collect()
+}
+
 fn valid_generation(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
@@ -119,18 +137,23 @@ pub(super) fn request_response_cancel(run: &mut RunState) -> bool {
     true
 }
 
-fn same_conversation_input_epoch(data: &PersistedSession, id: &str, generation: &str) -> bool {
+pub(super) fn same_conversation_input_epoch(
+    data: &PersistedSession,
+    run_id: &str,
+    response_id: &str,
+    generation: &str,
+) -> bool {
     let Some(run) = data
         .run
         .as_ref()
-        .filter(|run| run.id == id && run.ended_at_ms.is_none())
+        .filter(|run| run.id == run_id && run.ended_at_ms.is_none())
     else {
         return false;
     };
     let Some(response) = run
         .response
         .as_ref()
-        .filter(|response| !response.cancel_requested)
+        .filter(|response| response.id == response_id && !response.cancel_requested)
     else {
         return false;
     };
@@ -385,7 +408,7 @@ impl SessionInner {
                 &self.env,
                 &data.record.owner_id,
                 &binding.id,
-                &run.id,
+                &response.id,
                 &data.record.id,
                 generation,
                 &submission,
@@ -396,7 +419,8 @@ impl SessionInner {
                 return Ok(reserved);
             }
             let current = self.snapshot()?;
-            let same_run = same_conversation_input_epoch(&current, &run.id, generation);
+            let same_run =
+                same_conversation_input_epoch(&current, &run.id, &response.id, generation);
             // The same mutex orders accepted input before terminal conversion;
             // a model result may arrive during the RPC, but cannot convert it.
             if !same_run
@@ -541,8 +565,9 @@ impl SessionInner {
                 item_provenance: BTreeMap::new(),
                 output_provenance,
             };
-            let mut items = response.input_items.clone();
-            items.extend(response.output.iter().cloned());
+            // A local result can be accepted input and an emitted program trace;
+            // those are two views of one causal event, not two Conversation items.
+            let items = publication_items(&response.input_items, &response.output);
             let committed = conversation_routes::commit_response_with_meter(
                 &self.env,
                 &data.record.owner_id,
@@ -579,7 +604,7 @@ impl SessionInner {
                 util::emit(
                     "conversation.publication_rejected",
                     json!({"session_id":data.record.id,
-                    "response_id":run.id,"status":status}),
+                    "response_id":response.id,"run_id":run.id,"status":status}),
                 );
             }
             operation.finish(&self.env, &data.record.owner_id).await?;
@@ -684,6 +709,27 @@ pub(super) fn cleanup_deadline(data: &PersistedSession, now: u64) -> Option<u64>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_local_result_is_one_event_even_when_program_emits_a_trace() {
+        let supplied = json!({"id":"input_result","type":"function_call_output","call_id":"local",
+            "caller":{"type":"program","caller_id":"program"},"output":"value"});
+        let mut emitted = supplied.clone();
+        emitted["id"] = json!("program_trace");
+        let message = json!({"id":"message","type":"message","content":[]});
+        assert_eq!(
+            publication_items(&[supplied.clone()], &[emitted.clone(), message.clone()]),
+            vec![supplied.clone(), message]
+        );
+        emitted["caller"]["caller_id"] = json!("different_program");
+        assert_eq!(
+            publication_items(&[supplied.clone()], &[emitted.clone()]).len(),
+            2
+        );
+        emitted["caller"] = supplied["caller"].clone();
+        emitted["output"] = json!("different_value");
+        assert_eq!(publication_items(&[supplied], &[emitted]).len(), 2);
+    }
 
     #[test]
     fn warm_predecessor_is_private_and_fresh_lane_has_no_parent() {

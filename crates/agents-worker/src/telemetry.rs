@@ -166,6 +166,8 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "receipt_count"
                 | "provider_requests"
                 | "frames"
+                | "reasoning_tokens"
+                | "rendered_input_tokens"
                 | "parser_column"
                 | "request_bytes"
                 | "response_bytes"
@@ -211,6 +213,9 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "error.type"
                 | "error_class"
                 | "stage"
+                | "protocol"
+                | "thinking_mode"
+                | "finish_reason"
                 | "ray_id"
                 | "content_type"
                 | "content_encoding"
@@ -314,6 +319,8 @@ fn event_name(event: &str) -> &str {
         | "run.failed"
         | "provider.completed"
         | "provider.failed"
+        | "provider.compaction_started"
+        | "provider.compaction_completed"
         | "tool.completed"
         | "tool.failed"
         | "session.checkpoint"
@@ -589,6 +596,23 @@ mod tests {
         );
         assert!(!fields.to_string().contains("metric"));
         assert!(fields["observation"].get("observation").is_none());
+    }
+
+    #[test]
+    fn automatic_compaction_diagnostics_keep_transport_and_terminal_evidence() {
+        let fields = sanitize_fields(json!({"phase":"compaction","protocol":"anthropic",
+            "thinking_mode":"disabled","finish_reason":"length","reasoning_tokens":512,
+            "rendered_input_tokens":135,"provider_request_id":"original-summary",
+            "output_tokens":512,"success":false,"summary":"private context"}));
+        assert_eq!(fields["thinking_mode"], "disabled");
+        assert_eq!(fields["finish_reason"], "length");
+        assert_eq!(fields["reasoning_tokens"], 512);
+        assert_eq!(fields["provider_request_id"], "original-summary");
+        assert_eq!(
+            event_name("provider.compaction_completed"),
+            "provider.compaction_completed"
+        );
+        assert!(fields.get("summary").is_none());
     }
     #[test]
     fn deployment_build_id_is_only_a_full_validated_git_sha() {

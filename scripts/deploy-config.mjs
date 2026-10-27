@@ -11,6 +11,8 @@ export function requireDistinctEnvironmentDatabases(input) {
   if (ids[0] === ids[1]) throw new Error('Staging and production database identities overlap');
 }
 
+export const supportedWorkerRuntimes = Object.freeze(['web_search', 'file_search', 'code_interpreter', 'image_generation', 'mcp', 'programmatic_tool_calling']);
+
 export function deploymentRuntime(env) {
   const features = env.RUNTIME_FEATURES ?? 'configured';
   if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation', 'web_search,file_search,code_interpreter,mcp', 'web_search,file_search,code_interpreter,mcp,programmatic_tool_calling', 'web_search,file_search,code_interpreter,image_generation,mcp,programmatic_tool_calling'].includes(features)) throw new Error('Invalid runtime feature allowlist');
