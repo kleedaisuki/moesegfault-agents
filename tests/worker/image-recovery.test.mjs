@@ -35,7 +35,9 @@ async function migrate(db) {
 }
 
 test('compiled Rust Worker: paid image response recovery and precise failure boundaries', { timeout: 240000 }, async t => {
-  const selected = process.env.MAGENTS_IMAGE_RECOVERY_CASE ? cases.filter(name => name === process.env.MAGENTS_IMAGE_RECOVERY_CASE) : cases.filter(name => name !== 'diagnostic_gc');
+  const requested = process.env.MAGENTS_IMAGE_RECOVERY_CASE?.split(',');
+  assert.ok(!requested || requested.every(name => cases.includes(name)), 'Select only known image recovery increments');
+  const selected = requested ? cases.filter(name => requested.includes(name)) : cases.filter(name => name !== 'diagnostic_gc');
   assert.ok(selected.length, 'Select a known image recovery increment');
   const receipts = {};
   for (const name of selected) await t.test(name, { timeout: 45000 }, async () => {
