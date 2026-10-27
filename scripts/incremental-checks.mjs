@@ -384,6 +384,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    for (const job of Object.keys(receipt.checks)) receipt.checks[job] = [];
+    receipt.checks.worker = [
+      { id:'rust:agents-worker:automatic_compaction_diagnostics_keep_transport_and_terminal_evidence',
+        argv:['cargo','test','--locked','-p','agents-worker','--lib','automatic_compaction_diagnostics_keep_transport_and_terminal_evidence','--','--nocapture'],
+        env:{},reason:'One new compaction emission-filter contract',source_file:'crates/agents-worker/src/telemetry.rs' },
+      { id:'node:automatic-deepseek-purpose',argv:['node','--test','--test-reporter=tap','tests/worker/http.test.mjs'],
+        env:{MAGENTS_WORKER_CASE:'DeepSeek automatic context compaction uses the shared disabled-thinking purpose'},
+        reason:'One new automatic DeepSeek summary plus continuation with preserved roles and exact funding',
+        expected_test:'DeepSeek automatic context compaction uses the shared disabled-thinking purpose' }
+    ];
+    receipt.native_packages = [];
+    for (const [component,details] of Object.entries(receipt.components)) if(component!=='worker') details.action='reuse';
+    receipt.required_jobs = ['changes','worker'];
+
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
