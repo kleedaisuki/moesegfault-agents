@@ -1,6 +1,6 @@
 //! Read-only source selection uses published immutable Response boundaries.
 
-use agents_core::PinnedContext;
+use agents_core::{PinnedContext, RuntimeProfile, SessionRecord};
 use worker::{Error, Result};
 
 use crate::{
@@ -15,13 +15,33 @@ pub(crate) struct Selection {
     pub pinned: PinnedContext,
     pub previous: Option<ResponseContext>,
     pub conversation: Option<ConversationSnapshot>,
+    pub runtime_profile: Option<RuntimeProfile>,
 }
 
 pub(crate) async fn select(
     env: &RouteContext<'_>,
     owner: &str,
     request: &mut ResponseRequest,
+    session_header: Option<&str>,
 ) -> Result<Selection> {
+    let session = match session_header {
+        Some(id) => Some(
+            Store::new(env)
+                .get_session(owner, id)
+                .await?
+                .ok_or_else(|| fail("session_not_found"))?,
+        ),
+        None => None,
+    };
+    if let Some(session) = &session {
+        let requested = crate::runtime_profiles::requested_tools_for(
+            &request.tools,
+            &session.pinned.tool_services,
+        )?;
+        if requested.is_some_and(|profile| profile != session.runtime_profile) {
+            return Err(fail("response_context_mismatch"));
+        }
+    }
     let conversation = match request
         .conversation_id()
         .map_err(|_| fail("invalid_auxiliary_request"))?
@@ -76,13 +96,24 @@ pub(crate) async fn select(
         request.model = previous
             .as_ref()
             .map(|context| context.record.agent_id.clone())
+            .or_else(|| session.as_ref().map(|session| session.agent_id.clone()))
             .unwrap_or_default();
     }
     if request.model.is_empty() {
         return Err(fail("invalid_auxiliary_request"));
     }
-    let pinned = match &previous {
-        Some(context) if context.record.agent_id == request.model => context.record.pinned.clone(),
+    let root_session = session.as_ref().filter(|_| previous.is_none());
+    if let Some(session) = root_session {
+        if session.agent_id != request.model {
+            return Err(fail("response_context_mismatch"));
+        }
+        require_empty_session(env, session).await?;
+    }
+    let pinned = match (&previous, root_session) {
+        (Some(context), _) if context.record.agent_id == request.model => {
+            context.record.pinned.clone()
+        }
+        (None, Some(session)) => session.pinned.clone(),
         _ => {
             let agent = Store::new(env)
                 .get_agent(owner, &request.model)
@@ -98,7 +129,28 @@ pub(crate) async fn select(
         pinned,
         previous,
         conversation: if use_anchor { None } else { conversation },
+        runtime_profile: root_session.map(|session| session.runtime_profile),
     })
+}
+
+async fn require_empty_session(env: &RouteContext<'_>, session: &SessionRecord) -> Result<()> {
+    // D1 is a projection: inspect the actor before treating a selected Session
+    // as an empty root. Nonempty histories require an immutable response anchor.
+    let mut response = routes::forward(env, session, worker::Method::Get, "/view", None).await?;
+    if response.status_code() != 200 {
+        return Err(fail("response_context_unavailable"));
+    }
+    let view: serde_json::Value = response.json().await?;
+    if view["id"] != session.id
+        || view["agent_id"] != session.agent_id
+        || view["status"] != "idle"
+        || view["message_count"].as_u64() != Some(0)
+        || view["input_revision"].as_u64() != Some(0)
+        || !view["run_id"].is_null()
+    {
+        return Err(fail("response_context_unavailable"));
+    }
+    Ok(())
 }
 
 fn matches_anchor(view: &ConversationSnapshot, source: &ResponseContext) -> bool {
