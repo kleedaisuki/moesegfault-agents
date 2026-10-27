@@ -5,7 +5,8 @@
 | State | Authority | Lifetime |
 | --- | --- | --- |
 | Agent configuration, account/plan, quota admission | D1 | User/account data |
-| Pinned instructions, full resolved tool/skill versions | Session Durable Object | Immutable for one session, including explicit resume |
+| Original instructions and resolved tool/skill pin | Session Durable Object | Immutable base prefix, including explicit resume |
+| Effective Agent instruction/tool configuration | D1 revision log / Session Durable Object applied overlay | Durable user configuration; appended at safe boundaries |
 | Canonical conversation events | Append-only DO journal entries | User data; never discarded by compaction |
 | Active model prompt and compaction summaries | DO state chunks | Rebuildable intermediate state |
 | Run phase, pending provider result, tool dispatch identity | DO durable journal | Recovery state; contains user data, not telemetry |
@@ -14,6 +15,10 @@
 | Sanitized trace/log metadata | Cloudflare Observability | Separate operational retention |
 
 The management D1 session row is a projection, not the active conversation owner. A private namespace routes one session to one Rust Durable Object. A session owns at most one lazily started Container.
+
+Agent instruction/tool edits use [live configuration revisions](session-config-updates.md),
+separate from the original pin and from response-scoped instructions. They do not
+start a model, reset user inactivity or silently grant new workspace authority.
 
 ## Execution and streaming
 

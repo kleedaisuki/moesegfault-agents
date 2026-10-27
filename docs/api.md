@@ -199,8 +199,10 @@ that response, but omitting it on the next response does not inherit the overrid
 Typed `system`/`developer` input items, by contrast, are retained historical
 instructions and persist in later linear continuation and compaction. Both user
 layers apply behind the stable prefix and cannot grant permissions. The agent pin
-still persists; agent updates do not rewrite it. Resend a desired top-level
-customization deliberately, without replaying historical input items.
+still persists; Agent instruction/tool edits append a separate durable Session
+configuration revision at safe boundaries rather than rewriting that pin.
+Resend a desired response-only customization deliberately, without replaying
+historical input items. See [live configuration updates](session-config-updates.md).
 
 #### Prompt-cache layout
 
@@ -684,7 +686,11 @@ Names contain 1–100 bytes; instructions at most 64 KiB. `bash` requires a work
 Unknown tools and skills are rejected, as are unregistered platform-funded models.
 
 Returned `AgentConfig` adds `id`, `owner_id`, `revision`, `created_at_ms`, and
-`updated_at_ms`. Agent updates do not mutate existing sessions. `compaction_percent`
+`updated_at_ms`. Instruction/registered-tool edits publish live configuration
+revisions for existing Sessions on their next safe execution boundary; model,
+workspace authority and pinned skill changes still require a new Session.
+The original pin is preserved. See [configuration lifetimes](session-config-updates.md).
+`compaction_percent`
 is an integer from 1 through 99, relative to the selected model context window.
 The service can compact earlier to preserve output headroom. Model registry entries
 and skill content are deployment-managed in the initial version.
