@@ -229,12 +229,25 @@ impl PreparedHostedImage {
 
     /// Consume only after persisting the intent and resource/credit reservation.
     /// Any error after invocation is potentially uncertain, never retryable here.
-    pub(crate) async fn dispatch<F, Fut>(self, partial: F) -> Result<ImageResult>
+    pub(crate) async fn dispatch<F, Fut, C, Captured>(
+        self,
+        partial: F,
+        capture: C,
+    ) -> std::result::Result<image_generation::ImageExchange, image_generation::ImageFailure>
     where
         F: FnMut(PartialImage) -> Fut,
         Fut: Future<Output = Result<()>>,
+        C: FnMut(image_generation::ProviderReply) -> Captured,
+        Captured: Future<Output = Result<image_generation::ProviderReply>>,
     {
-        image_generation::generate(&self.config, &self.input, &self.execution_id, partial).await
+        image_generation::generate(
+            &self.config,
+            &self.input,
+            &self.execution_id,
+            partial,
+            capture,
+        )
+        .await
     }
 }
 

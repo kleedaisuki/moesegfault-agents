@@ -28,7 +28,8 @@ test('image staging adds the pinned inline Seedream endpoint without removing ac
   assert.deepEqual(profile.asset_hosts, []);
   assert.deepEqual(profile.router_endpoint, { provider_slug: 'seed', provider_tag: 'seed', passthrough_parameters: [] });
   assert.equal(profile.capabilities.streaming, false);
-  assert.deepEqual(profile.capabilities.parameters.output_format, { type: 'enum', values: ['png', 'jpeg', 'webp'] });
+  assert.equal(profile.capabilities.omit_default_output_format, true);
+  assert.equal(profile.capabilities.parameters.output_format, undefined);
   assert.deepEqual(profile.capabilities.parameters.size, { type: 'boolean' });
   assert.equal(profile.capabilities.parameters.response_format, undefined);
   assert.equal(source.env.staging.vars.IMAGE_GENERATION_PROFILE_JSON, undefined);

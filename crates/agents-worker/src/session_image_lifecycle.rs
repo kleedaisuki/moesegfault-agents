@@ -118,7 +118,8 @@ fn budget(pricing: &ResourcePricing, slots: u8) -> Result<i64> {
         (
             Resource::R2Operation,
             "class_b",
-            u64::from(slots) * crate::response_image_projection::ORIGINAL_IMAGE_READS_PER_SLOT,
+            u64::from(slots)
+                * (crate::response_image_projection::ORIGINAL_IMAGE_READS_PER_SLOT + 24),
         ),
     ] {
         let charge = pricing
@@ -691,6 +692,12 @@ impl SessionInner {
         }
         let hold = funding_id(&operation.plan);
         let meter = meter(&self.env, &operation.plan, &hold)?;
+        self.cleanup_image_provider_replies(
+            &operation.plan.owner,
+            &operation.plan.execution,
+            &meter,
+        )
+        .await?;
         if operation.receipt.is_none() {
             operation.attempt = operation
                 .attempt
@@ -831,8 +838,8 @@ mod tests {
 
     #[test]
     fn cleanup_quote_uses_existing_tariffs_and_grows_with_accepted_slots() {
-        assert_eq!(budget(&pricing(), 1).unwrap(), 450_190);
-        assert_eq!(budget(&pricing(), 4).unwrap(), 1_350_760);
+        assert_eq!(budget(&pricing(), 1).unwrap(), 450_220);
+        assert_eq!(budget(&pricing(), 4).unwrap(), 1_350_880);
         assert!(budget(&pricing(), 0).is_err());
         assert!(budget(&pricing(), 5).is_err());
     }

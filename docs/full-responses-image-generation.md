@@ -1,5 +1,41 @@
 # Image generation service boundary
 
+## Real provider-default raster boundary
+
+The first real Seedream Flash operation returned provider HTTP 200 and completed
+at USD 0.018, while the local producer classified its error as an unknown provider
+outcome. This revealed an independently reproducible codec boundary: the local
+prepared request always retained `Format::Png`, even when a minimal service profile
+deliberately omitted `output_format`. A successful JPEG response was rejected by
+`image_source` before request identity and usage were returned to the producer.
+
+The format preference now represents what was actually sent: `Some(format)` is an
+explicit format contract; `None` is the provider default. Inline results derive
+their published format from validated raster bytes. Declared MIME must still match
+those bytes even for a provider-default request. A remote default result remains
+format-unknown until its authenticated, origin-pinned materialization supplies the
+actual raster; it is never labeled PNG merely because a request omitted a field.
+
+The Seed endpoint's public capability record was read without credentials or paid
+generation on 2026-10-27. It advertises resolution, aspect ratio, count, references
+and seed, but no output-format selector. The staging profile therefore omits the
+default format and rejects explicitly requested unsupported formats before spend,
+rather than manufacturing PNG/JPEG/WebP capabilities. OpenRouter documents the
+actual response MIME and the distinction between advertised endpoint capabilities
+and provider defaults:
+
+- [Image API contract and endpoint capabilities](https://openrouter.ai/docs/guides/overview/multimodal/image-generation)
+- [Seedream Flash endpoint record](https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints)
+- [OpenRouter's measured raster-format differences](https://openrouter.ai/blog/insights/image-generation-models-compared/)
+
+The new pure regression creates a tiny genuine JPEG, parses a completed inline
+response with identity and exact USD 0.018 usage, materializes it without changing
+bytes or format, and rejects a forged PNG MIME and an explicit PNG constraint.
+It also verifies that a service-default remote result has no fabricated format.
+No new provider generation, model request or old six-case image journey is needed
+to establish this mechanism. It does not claim that the original unretained body
+has been recovered; structured transport/receipt recovery remains a separate fix.
+
 ## Session producer
 
 `session_hosted_image.rs` is the single Session harness producer. Its operation
@@ -49,6 +85,69 @@ installation of its exported operator profile/provider fixture; syntax checks
 are not evidence that the compiled journey has run.
 
 ## Execution, original delivery, and terminal cache
+
+### Private paid HTTP response receipts
+
+`provider_response_receipt.rs` preserves the original received provider body
+before JSON/raster validation. It is a private execution-recovery object in the
+existing `WORKSPACES` bucket, not a public File, Space attachment, diagnostic log,
+or a second provider request. Owner/operator recovery uses the existing Rust
+harness and an authorized actor-held descriptor; knowing a hash grants no read
+authority. No public debug endpoint or new business table is introduced.
+
+The caller prepares `StoredResponse` from the first `ResponseMeta`, durably saves
+that descriptor, then calls `store_prepared` with a borrowed body. The original
+body can move back to the parser without cloning it. Only after every write
+completes may the actor mark the receipt complete. Recovery can attempt `read`
+with an incomplete descriptor after a crash; missing chunks fail explicitly and
+must never trigger another paid POST. Metadata discovered by later parsing goes
+in separate actor observations, never mutates the original descriptor/AAD.
+
+The body limit is 24 MiB. At most 24 one-MiB plaintext chunks are encrypted using
+the existing `agents_auth::seal/unseal` AES-GCM primitive and
+`DATA_ENCRYPTION_KEY`. This bounds transient encoding/cipher buffers to a chunk,
+not another base64 copy of a 22-MiB response. The descriptor binds owner and
+operation digests, body SHA-256, total bytes, chunk count, HTTP status, bounded
+allowlisted request/generation IDs, content type and measured receive duration.
+Associated data additionally binds the exact chunk index and plaintext length.
+Reads check encoded object size before allocation, authenticate each chunk in
+order, and verify the complete body length and SHA-256 before returning bytes.
+Even an empty HTTP body has one authenticated chunk. Private keys are derived
+from the descriptor; deserialization cannot substitute an arbitrary R2 key.
+
+Stable keys and create-only conditional PUT prevent overwrites. An existing
+chunk is decrypted and compared to the original plaintext; a concurrent CAS
+winner is read back and checked, not overwritten with a new random nonce.
+This follows the platform's [conditional R2 operation contract](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/#conditional-operations)
+and the existing primitive's [authenticated associated-data model](https://csrc.nist.gov/pubs/sp/800/38/d/final).
+
+Funding and lifecycle are caller-owned invariants:
+
+- Persist a new `IoAttempt` before every resumed operation. Chunk-specific GET,
+  PUT, race-read and delete-HEAD events use the existing ResourceMeter journal;
+  reusing an attempt after ambiguous I/O would undercount actual resource use.
+- Admit at most one retained receipt per image operation and fund its physical
+  storage and bounded I/O before provider dispatch. Maximum encrypted storage is
+  `MAX_ENCRYPTED_RESPONSE_BYTES` (33,555,360 bytes), distinct from image capacity.
+  `storage_bytes()` gives the exact encrypted size of a prepared descriptor.
+  Retried/recovery I/O needs its own persisted, funded attempt, not invented
+  zero-cost observations. Actual R2 object clocks are registered after writes,
+  replay reads and recovery reads using existing account storage reconciliation.
+- Persist incomplete/error state and the descriptor on any archive, parse or
+  decode failure. A partially written receipt is discoverable, not complete.
+  Failed receipts retain the only paid result for authorized recovery; elapsed
+  diagnostic TTLs and storage debt do not authorize deleting it.
+- `delete` is explicit terminal cleanup after durable canonical/blob publication
+  or authorized abandonment. Fence publication and re-store before calling it,
+  retain the descriptor until all deletions and storage-clock closures complete,
+  and fund its bounded HEAD/D1 work. R2 DELETE itself is free. Never reuse a
+  deleted physical key as a new storage generation.
+
+The pure tests cover descriptor round trips, ownership, metadata substitution,
+chunk ordering, ciphertext tampering/truncation, length/hash integrity, empty and
+maximum chunk layouts, and property-based arbitrary-byte round trips. They do
+not by themselves establish the compiled Worker/R2 journey; integration must
+exercise synthetic paid-result recovery without another provider dispatch.
 
 ### Conversation publication and public observation
 
@@ -496,3 +595,163 @@ correcting seeded file IDs to the existing 32-hex contract. Raw per-case receipt
 and their unchanged-source binding supplement are retained under the topic's
 `.temp/media-results/`; the immutable source/artifact/checksum identities above
 preserve the acceptance context if that scratch directory is cleaned.
+
+### Independent recovery admission and diagnostic collection
+
+Migration `0029_provider_response_receipts.sql` reserves private runtime bytes
+independently of uploaded Files/Space quota. It reuses the plan's numerical byte
+limit, not the uploaded-file usage counter. Admission reserves up to four maximum
+encrypted frames before provider execution. Descriptor registration precedes PUT;
+terminal finalization reduces the maximum to the indexed encrypted lengths.
+`StoredResponse::id()` is the stable opaque descriptor digest; owner and original
+operation remain required for internal lookup. It is not an authorization grant.
+
+Recovery receipts have no expiry: malformed images, uncertain transport, and
+unpublished paid results must not disappear on a timer. Only a caller-established
+confirmed-no-charge failure may become a Diagnostic with a 24-hour expiry. The
+scheduled worker scans at most 16 due operations. A database lease fences each
+cleanup attempt, which reserves the tariff-derived cost of at most 96 R2 HEADs
+before accessing raw objects. Each real retry has its own durable attempt and
+funded observation scope; it does not reuse a previous HEAD charge key. The normal
+physical byte clock remains authoritative for retained storage. The discovery
+scan and metadata bookkeeping are maintenance overhead, not invented user D1
+measurements. Deletion errors still settle known HEAD observations; genuinely
+pending observations preserve the original financial hold. Collection closes
+capacity only after each raw object is deleted and its clock closed. There is no
+bucket listing, arbitrary raw-object download, public debug endpoint, or provider
+POST in this collector.
+
+Five focused SQL tests exercise the actual admission/transition statements,
+owner separation, maximum frame and byte capacity, immutable descriptors,
+delete-before-release, single cleanup leases, and the absence of Recovery expiry.
+These are not an actual R2 encryption, production deployment, or paid-image receipt.
+
+## Live upstream success and receive-path repair (2026-10-27)
+
+The first live Seedream call is **not** a failed/free provider operation. The
+operator-supplied OpenRouter screenshot shows HTTP 200, finish reason `complete`,
+$0.018, 57 input / 4096 output tokens, 8.2 s provider latency and 9.3 s total.
+The displayed generation ID is truncated; it cannot be used as a full recovery
+identifier. The original Response is
+`resp_62549f6166614e6db9475806aba6dbd9`. Its original raw body was not retained.
+Do not replay that image request or silently settle an unknown ledger row to zero.
+
+The old receive path discarded status/IDs and mapped transport, JSON, raster and
+storage failures together. A concrete adapter defect also forced PNG despite the
+Seedream endpoint not advertising an output-format capability. A legitimate
+service-default JPEG could therefore be rejected after an otherwise paid success.
+This defect is reproduced in a controlled contract; the missing original bytes
+mean the original response's exact raster format is **not established**.
+
+The repaired boundary reserves private runtime capacity before dispatch, records
+HTTP metadata before reading, and stores encrypted owner/operation-bound raw
+bytes before JSON or raster parsing. Generation and HTTP request IDs remain
+separate. Actual raster format, dimensions and bytes are recorded before MIME or
+requested-format validation. A completed paid result remains known for billing
+even when local validation fails. Only a complete authenticated documented
+OpenRouter error can establish no charge; timeout, malformed JSON and local codec
+errors cannot.
+
+Cold execution reads the same retained body when the receipt acknowledgement or
+image CAS write is lost. It does not repeat the generation POST. Canonical terminal
+Responses remain immutable. Successful publication deletes the redundant raw
+copy through the funded lifecycle; unpublished paid and unknown results stay in
+Recovery, independently of user-managed Files/Space.
+
+The actual telemetry filter now preserves the typed one-level observation,
+`tool.image_generation.*` event names, HTTP status, request/generation IDs, byte
+counts, timing, parser position, expected/actual format, provider cost and stage.
+A separate lifecycle failure preserves storage/publication/settlement diagnosis
+without replacing upstream evidence. Raw bodies and credentials are not ordinary
+logs. This follows the distinction between a low-cardinality error type and
+associated structured facts in [OpenTelemetry GenAI conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-spans.md),
+and uses the existing [Cloudflare custom spans and correlated logs](https://developers.cloudflare.com/workers/observability/traces/custom-spans/).
+
+Source commit `00ab372` and its composed integration merge `5a7104b` have targeted
+rustfmt/diff checks. The six new compiled-Worker/R2 fault journeys are pending
+Actions verification; this section is an implementation/incident record, not a
+successful repaired live Seedream receipt. Earlier accepted image journeys are
+not repeated by this increment.
+
+### Cleanup funding crash recovery
+
+Cleanup funding recovery closes the **original** attempt before admitting the
+next attempt: a completely empty reservation may be released only by one atomic
+`NOT EXISTS(resource_observations)` update under its expired/stale operation
+fence. An all-observed attempt settles through `ResourceMeter::settle_run` with
+its original saved pricing; a genuinely pending HEAD blocks another attempt and
+is not guessed as zero. A bounded receipt-funding sweep also finds stale
+reservations after operation capacity has already been released, covering a
+paused old invocation that creates its reservation late. New attempts recheck
+the operation fence before their first observation; finalizing the old hold
+prevents any new unobserved HEAD admission by that old invocation. Already
+removed frames release capacity without creating another paid cleanup scope.
+Five additional targeted SQL cases cover empty refund fencing, pending/observed
+separation, attempt CAS, and late reservation discovery after operation release.
+
+## Incremental encrypted-response verification (2026-10-27)
+
+The user-supplied original OpenRouter log proves HTTP 200, finish reason
+`complete`, and USD 0.018. The visible generation ID is truncated. The old
+receiver did not retain its raw response, so this evidence does not restore the
+original image or justify repeating that paid request.
+
+Run `40447305436`, source `1d2f57679034175b8791a08751d1fef009611f1f`, retained
+Worker artifact `12708883523`, Wasm SHA-256
+`e008dc05d3fed046496322ecc559f59715bc76f20155a3994ea3b55054197d2e`:
+
+| Evidence | Outcome and boundary |
+| --- | --- |
+| Twelve selected Rust contracts | Passed: 2 observation, 1 JPEG codec, 1 real telemetry filter, 6 encrypted receipt/property, 1 GC diagnostic, 1 changed cleanup quote. No old image suite executed. |
+| GHA default JPEG journey | Passed: provider-default JPEG, one dispatch, USD 0.018 known cost, actual JPEG File bytes, raw R2 deletion and independent capacity zero. |
+| GHA aggregate | **Failed**, retained unchanged. The fixture incorrectly excluded execution IDs containing colons; this prevented five remaining cases from reaching their intended assertions. |
+| Exact-Wasm receipt ACK-loss tail | Passed after a fixture-only correction: persist a one-shot fault, wait for the real producer failure barrier, restart the actual runtime with native persistent D1/R2/DO storage, and observe the same response. One generation; no source-state manufacturing. |
+| Exact-Wasm MIME-mismatch tail | Passed: HTTP 200, real JPEG dimensions/format, generation/request IDs, USD 0.018 and `validate_image` survive the actual console emission filter. Paid result retained for recovery, not falsely treated as unknown or free. |
+| Exact-Wasm complete upstream error | Passed: authenticated OpenRouter HTTP 502 error, confirmed zero image charge and expiring Diagnostic retention. |
+| Exact-Wasm unknown-billing gateway tail | Passed: Miniflare converts an outbound fixture exception to an HTTP 500 gateway response. Preserve that observed status and original unknown-cost hold; it is not authenticated provider no-charge evidence. |
+| Exact-Wasm Diagnostic GC tail | Passed: the original reservation acknowledgment is lost after commit; after its lease expires, normal cron releases that genuinely empty scope, then a new measured scope performs one actual HEAD and settles 1 microusd. Raw objects/capacity/pending GC holds all zero. The later timestamp-unit and redundant-zero-observation corrections still require the composed build below. |
+
+All these endpoints and model rounds are controlled fixtures: zero external
+network calls, zero paid image or language-model calls. The local tails use the
+same current Node SDK 7.43.0 and Miniflare 5.20261019.2-beta as the locked CI setup.
+The old aggregate failure is not relabeled as success by those narrower results.
+
+The failed artifact-PUT journey exposed a separate production defect: the first
+`begin_image_reserved` consumes capacity into a pending blob, but raw-response
+reprocessing generated another candidate UUID. The new candidate no longer owns
+that consumed capacity. Preserve the original candidate and verify its identity;
+never replace it or repeat generation. This source correction, two new Rust
+regressions, one failed PUT journey, and one newly added streaming-request / JSON
+HTTP-error journey are the only image checks scheduled for the next normal
+composed CI. The five already passing image boundaries, GC tail, and twelve
+passing Rust contracts are not replayed.
+
+The next normal run `40449714892`, source
+`949ada495c195c0deb4fc0a1d5a4de5b124d99cc`, built Worker artifact `12709901873`
+and passed both previously outstanding runtime journeys (6.694 seconds total):
+original-candidate cold artifact-PUT recovery and an owned streaming request
+receiving a JSON HTTP 502 response. The latter retains the JSON receipt, status,
+IDs and provider code before decoder selection, with `check_status` diagnostics
+and zero platform image debit. An unrelated BYOK service does not inherit
+OpenRouter's no-charge guarantee. The changed deployed Seedream default-format
+contract also passed.
+
+That aggregate remains **failed**: three new unit-test codec paths accidentally
+resolved the local `image` module instead of the external crate, blocking both
+new Rust tests at compilation; the new SQL selector named the wrong unittest
+class. Qualifying only `cfg(test)` paths changes no released Rust logic. The
+normal immutable source fingerprint nevertheless includes inline test source,
+so its next exact Worker build is retained rather than pretending the old
+artifact has a new source identity. Only the two never-executed Rust tests and
+the correctly named SQL test remain selected. Neither of the newly passing
+runtime journeys, the deployment-profile contract, nor any older cases are run
+again for these test-only corrections.
+
+
+The test-only follow-up normal run `40451070856` was deliberately canceled once
+at its Wasm `cargo check` phase, before release compilation and selected tests,
+to combine already available production DO/MCP corrections into one normal
+build. It proves no additional acceptance. The two new Rust contracts and the
+correctly named GC timestamp SQL remain pending remote execution. The Image
+runtime flag remains off until the normal composed build and actual staging
+gate; these controlled results do not claim production release.

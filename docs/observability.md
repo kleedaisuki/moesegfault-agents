@@ -95,6 +95,7 @@ Avoid identity subjects in operational logs; ownership belongs in authorized rec
 | --- | --- | --- |
 | User conversations, pinned configuration, workspace snapshots | Session DO, D1 metadata, workspace R2 | User-data policy; owner-authorized export/delete; not telemetry cleanup |
 | Recovery/checkpoint/intermediate state | Explicit recovery namespace | Remove superseded/unreferenced generations after successful commit; preserve latest durable recovery state |
+| Original paid provider HTTP bodies | Encrypted chunked `WORKSPACES` private receipt namespace; actor-owned descriptor | Execution recovery, not diagnostic TTL data. Preserve unpublished paid bytes on parse/decode/archive failures; explicit funded cleanup only after durable publication or authorized abandonment |
 | Operational logs and platform traces | Cloudflare Observability | Sampling and provider retention configured by deployment; no content payloads |
 | Consented client diagnostics | Separate `DIAGNOSTICS` R2 binding, `diagnostics/` prefix | Seven-day lifecycle deletion; support/operator access only, separate from workspace credentials |
 | Billing/audit ledger | D1 billing records | Financial retention policy; never delete as temporary telemetry |

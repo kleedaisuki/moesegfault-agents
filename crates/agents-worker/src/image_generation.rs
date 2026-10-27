@@ -15,7 +15,13 @@ use sha2::{Digest, Sha256};
 #[path = "image_generation_transport.rs"]
 mod transport;
 
-pub(crate) use transport::{fetch_public_image_bytes, generate, materialize};
+#[path = "image_generation_observation.rs"]
+pub(crate) mod observation;
+pub(crate) use observation::{
+    ImageExchange, ImageFailure, ImageObservation, ImagePhase, ProviderReply,
+};
+
+pub(crate) use transport::{fetch_public_image_bytes, generate, materialize, recover_received};
 
 #[cfg(test)]
 #[path = "image_generation_tests.rs"]
@@ -372,14 +378,9 @@ impl Capabilities {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             .min(16) as usize;
-        // These are Image API normalization fields rather than model-specific
-        // provider knobs. The returned raster is still checked against both.
-        parameters.insert(
-            "output_format".into(),
-            Parameter::Enum {
-                values: vec![json!("png"), json!("jpeg"), json!("webp")],
-            },
-        );
+        let omit_default_output_format = !parameters.contains_key("output_format");
+        // Explicit pixel size is an Image API convenience field normalized by
+        // the router; output format remains the endpoint's declared capability.
         parameters.insert("size".into(), Parameter::Boolean);
         let passthrough = endpoint["allowed_passthrough_parameters"].as_array();
         for (name, values) in [
@@ -394,7 +395,7 @@ impl Capabilities {
         }
         Ok(Self {
             streaming: endpoint["supports_streaming"].as_bool().unwrap_or(false),
-            omit_default_output_format: false,
+            omit_default_output_format,
             parameters,
             max_references,
             mask: false,
@@ -524,7 +525,7 @@ pub(crate) struct PreparedImageRequest {
     content_type: String,
     body: Vec<u8>,
     stream: bool,
-    requested_format: Format,
+    requested_format: Option<Format>,
 }
 
 pub(crate) fn prepare(
@@ -610,7 +611,7 @@ pub(crate) fn prepare(
                 content_type: "application/json".into(),
                 body: serde_json::to_vec(&body)?,
                 stream: partials > 0,
-                requested_format: input.options.output_format.unwrap_or(Format::Png),
+                requested_format: requested_format(&config.capabilities, &input.options),
             })
         }
     }
@@ -625,10 +626,18 @@ fn option_fields(
     options: &ImageOptions,
 ) -> BTreeMap<&'static str, Value> {
     let mut fields = options.fields();
-    if capabilities.omit_default_output_format && options.output_format.is_none() {
+    if requested_format(capabilities, options).is_none() {
         fields.remove("output_format");
     }
     fields
+}
+
+fn requested_format(capabilities: &Capabilities, options: &ImageOptions) -> Option<Format> {
+    if capabilities.omit_default_output_format && options.output_format.is_none() {
+        None
+    } else {
+        Some(options.output_format.unwrap_or(Format::Png))
+    }
 }
 
 /// Pure preflight shared by counting and execution before any provider spend.
@@ -714,7 +723,7 @@ fn router_request(
         content_type: "application/json".into(),
         body: serde_json::to_vec(&body)?,
         stream: partials > 0,
-        requested_format: input.options.output_format.unwrap_or(Format::Png),
+        requested_format: requested_format(&config.capabilities, &input.options),
     })
 }
 
@@ -753,7 +762,7 @@ fn edit_request(
         content_type: format!("multipart/form-data; boundary={boundary}"),
         body,
         stream: partials > 0,
-        requested_format: input.options.output_format.unwrap_or(Format::Png),
+        requested_format: requested_format(&config.capabilities, &input.options),
     })
 }
 

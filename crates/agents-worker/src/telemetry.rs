@@ -140,14 +140,32 @@ fn random_span_id() -> String {
 
 /// Drop unknown fields rather than attempting to redact arbitrary user text.
 pub fn sanitize_fields(fields: Value) -> Value {
+    sanitize_fields_at(fields, 1)
+}
+
+fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
     let Some(fields) = fields.as_object() else {
         return json!({});
     };
     let mut safe = Map::new();
     for (key, value) in fields {
+        if key == "observation" && depth > 0 && value.is_object() {
+            safe.insert(key.clone(), sanitize_fields_at(value.clone(), depth - 1));
+            continue;
+        }
         let numeric = matches!(
             key.as_str(),
             "parser_line"
+                | "upstream_status"
+                | "declared_content_length"
+                | "received_bytes"
+                | "encrypted_storage_bytes"
+                | "image_bytes"
+                | "width"
+                | "height"
+                | "receipt_count"
+                | "provider_requests"
+                | "frames"
                 | "reasoning_tokens"
                 | "rendered_input_tokens"
                 | "parser_column"
@@ -180,9 +198,22 @@ pub fn sanitize_fields(fields: Value) -> Value {
         let identifier = matches!(
             key.as_str(),
             "codec"
-                | "protocol"
+                | "execution_id"
+                | "owner_id"
                 | "model"
+                | "api"
+                | "cf_ray"
+                | "generation_id"
                 | "provider_request_id"
+                | "provider_generation_id"
+                | "provider_error_code"
+                | "expected_format"
+                | "actual_format"
+                | "price_revision"
+                | "error.type"
+                | "error_class"
+                | "stage"
+                | "protocol"
                 | "thinking_mode"
                 | "finish_reason"
                 | "ray_id"
@@ -220,11 +251,41 @@ pub fn sanitize_fields(fields: Value) -> Value {
         );
         if numeric && value.as_u64().is_some() {
             safe.insert(key.clone(), value.clone());
-        } else if identifier && value.as_str().is_some_and(|v| token(v, 128)) {
+        } else if key == "content_type"
+            && value.as_str().is_some_and(|v| {
+                v.len() <= 256
+                    && v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b" /;=._+-\"".contains(&b))
+                    && v.split(';')
+                        .next()
+                        .is_some_and(|mime| mime.trim().contains('/'))
+            })
+        {
+            safe.insert(key.clone(), value.clone());
+        } else if identifier && value.as_str().is_some_and(|v| token(v, 256)) {
+            safe.insert(key.clone(), value.clone());
+        } else if key == "error_code"
+            && value.as_str().is_some_and(|v| {
+                v.len() <= 128
+                    && v.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-.:/=".contains(&b))
+            })
+        {
+            safe.insert(key.clone(), value.clone());
+        } else if key == "reported_cost_usd"
+            && (value.as_number().is_some()
+                || value.as_str().is_some_and(|v| {
+                    v.len() <= 128 && v.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)
+                }))
+        {
             safe.insert(key.clone(), value.clone());
         } else if matches!(
             key.as_str(),
             "body_complete"
+                | "provider_completed"
+                | "confirmed_no_charge"
+                | "receipt_stored"
+                | "stream"
                 | "activated"
                 | "pending"
                 | "byok"
@@ -275,6 +336,8 @@ fn event_name(event: &str) -> &str {
         {
             event
         }
+        event if event.starts_with("tool.image_generation.") && token(event, 96) => event,
+        "provider.receipt_gc_deferred" | "provider.receipt_gc_completed" => event,
         _ => "operation",
     }
 }
@@ -507,6 +570,39 @@ impl Drop for NativeSpan {
 mod tests {
     use super::*;
     const VALID: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    #[test]
+    fn image_diagnostics_survive_the_actual_emission_filter_without_raw_payloads() {
+        let fields = sanitize_fields(
+            json!({"execution_id":"image:original", "error.type":"RustError",
+            "error_code":"provider_receipt_delete_failed:chunk=23",
+            "observation":{"phase":"validate_image","upstream_status":200,
+            "generation_id":"gen-img-original","request_id":"request-original",
+            "received_bytes":4096,"actual_format":"jpeg","expected_format":"png",
+            "width":1024,"height":1024,"reported_cost_usd":"0.018",
+            "provider_completed":true,"confirmed_no_charge":false,
+            "prompt":"not a metric","authorization":"never a metric",
+            "observation":{"received_bytes":999}},"body":"not a metric"}),
+        );
+        assert_eq!(
+            fields["error_code"],
+            "provider_receipt_delete_failed:chunk=23"
+        );
+        assert_eq!(fields["observation"]["upstream_status"], 200);
+        assert_eq!(fields["observation"]["actual_format"], "jpeg");
+        assert_eq!(fields["observation"]["reported_cost_usd"], "0.018");
+        assert_eq!(fields["observation"]["provider_completed"], true);
+        assert_eq!(
+            event_name("tool.image_generation.failed"),
+            "tool.image_generation.failed"
+        );
+        assert_eq!(
+            event_name("provider.receipt_gc_deferred"),
+            "provider.receipt_gc_deferred"
+        );
+        assert!(!fields.to_string().contains("metric"));
+        assert!(fields["observation"].get("observation").is_none());
+    }
+
     #[test]
     fn automatic_compaction_diagnostics_keep_transport_and_terminal_evidence() {
         let fields = sanitize_fields(json!({"phase":"compaction","protocol":"anthropic",
