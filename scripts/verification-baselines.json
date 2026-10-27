@@ -10406,5 +10406,153 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+    "run_id": "40457317258",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12713441826,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6b2d8f529c12cc59155a58df84afc2e0bfd7fc91",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Successful final runtime build plus actual five new production dependency-preparation fakeCF/stdin/order contracts; no additional runtime/native checks needed for metadata-only followup"
+        },
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457558376",
+          "reference": "docs/releases/v0.3.0.md",
+          "scope": "Both actual Windows/Linux v0.3 native packages and five release-profile checks per platform succeeded; immutable archives, original bb BuildInfo/checksums and native fingerprint retained, no publication or tag mutation"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6b2d8f529c12cc59155a58df84afc2e0bfd7fc91",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Successful final runtime build plus actual five new production dependency-preparation fakeCF/stdin/order contracts; no additional runtime/native checks needed for metadata-only followup"
+        },
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457558376",
+          "reference": "docs/releases/v0.3.0.md",
+          "scope": "Both actual Windows/Linux v0.3 native packages and five release-profile checks per platform succeeded; immutable archives, original bb BuildInfo/checksums and native fingerprint retained, no publication or tag mutation"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6b2d8f529c12cc59155a58df84afc2e0bfd7fc91",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Successful final runtime build plus actual five new production dependency-preparation fakeCF/stdin/order contracts; no additional runtime/native checks needed for metadata-only followup"
+        },
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457558376",
+          "reference": "docs/releases/v0.3.0.md",
+          "scope": "Both actual Windows/Linux v0.3 native packages and five release-profile checks per platform succeeded; immutable archives, original bb BuildInfo/checksums and native fingerprint retained, no publication or tag mutation"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6b2d8f529c12cc59155a58df84afc2e0bfd7fc91",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Successful final runtime build plus actual five new production dependency-preparation fakeCF/stdin/order contracts; no additional runtime/native checks needed for metadata-only followup"
+        },
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457558376",
+          "reference": "docs/releases/v0.3.0.md",
+          "scope": "Both actual Windows/Linux v0.3 native packages and five release-profile checks per platform succeeded; immutable archives, original bb BuildInfo/checksums and native fingerprint retained, no publication or tag mutation"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+    "run_id": "40457317258",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6b2d8f529c12cc59155a58df84afc2e0bfd7fc91",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Successful final runtime build plus actual five new production dependency-preparation fakeCF/stdin/order contracts; no additional runtime/native checks needed for metadata-only followup"
+        },
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457558376",
+          "reference": "docs/releases/v0.3.0.md",
+          "scope": "Both actual Windows/Linux v0.3 native packages and five release-profile checks per platform succeeded; immutable archives, original bb BuildInfo/checksums and native fingerprint retained, no publication or tag mutation"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "python:native-release-promotion",
+          "argv": [
+            "python3",
+            "scripts/test_magents_release_promotion.py"
+          ],
+          "env": {},
+          "reason": "Only six new offline archive/source/fingerprint/producer/no-clobber/published-skip contracts; prior five dependency preparation and ten actual native cases already remotely passed"
+        }
+      ]
+    }
   }
 ]
