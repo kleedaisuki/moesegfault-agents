@@ -1275,9 +1275,11 @@ mod tests {
 
     #[test]
     fn received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity() {
-        let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(1, 1));
+        let image = ::image::DynamicImage::ImageRgb8(::image::RgbImage::new(1, 1));
         let mut bytes = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        image
+            .write_to(&mut bytes, ::image::ImageFormat::Png)
+            .unwrap();
         let raster = Raster::from_bytes(bytes.get_ref()).unwrap();
         let mut slot = slots("original-execution", 0).unwrap().remove(0);
         ensure_candidate(&mut slot, "original-owner", &raster).unwrap();
