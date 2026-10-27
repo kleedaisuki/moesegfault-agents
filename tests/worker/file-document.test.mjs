@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -15,7 +15,7 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
 
 
-test('compiled Rust Worker: document conversion is bounded recoverable and not billed as model tokens', { timeout: 45000 }, async t => {
+test('compiled Rust Worker: document conversion is bounded recoverable and not billed as model tokens', { timeout: 90000 }, async t => {
   const encryptionKey = randomBytes(32), identity = createIdentityFixture();
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   const pricing = JSON.parse(deployment.env.staging.vars.RESOURCE_PRICING_JSON);
@@ -38,13 +38,13 @@ test('compiled Rust Worker: document conversion is bounded recoverable and not b
     compatibilityDate: '2026-10-23', compatibilityFlags: ['enable_request_signal'], resourcePersistencePath: path.join(directory, 'storage'),
     d1Databases: ['DB'], r2Buckets: ['WORKSPACES', 'CONVERSATIONS', 'DIAGNOSTICS'],
     durableObjects: { SESSIONS: { className: 'Session', useSQLite: true }, AUTH_SESSIONS: { className: 'AuthSession', useSQLite: true },
-      CONVERSATION_STATE: { className: 'ConversationState', useSQLite: true }, MODEL_OPERATIONS: { className: 'ModelOperation', useSQLite: true } },
+      CONVERSATION_STATE: { className: 'ConversationState', useSQLite: true }, MODEL_OPERATIONS: { className: 'ModelOperation', useSQLite: true }, FILE_INGEST: { className: 'FileIngest', useSQLite: true } },
     ratelimits: Object.fromEntries(['INGRESS', 'ACCOUNT', 'MUTATION'].map((name, i) => [`${name}_RATE_LIMITER`, { namespace_id: String(i + 1), simple: { limit: 1000, period: 60 } }])),
     bindings: { ENVIRONMENT: 'test', APP_ORIGIN: 'https://agents.test', ALLOWED_ORIGIN: 'https://agents.test', DATA_ENCRYPTION_KEY: encryptionKey.toString('base64url'),
       IDENTITY_ISSUER: 'https://identity.test', IDENTITY_WEB_CLIENT_ID: 'test-dashboard', IDENTITY_NATIVE_CLIENT_ID: 'test-native', IDENTITY_REDIRECT_URI: 'https://agents.test/auth/callback',
       IDENTITY_NATIVE_REDIRECT_URI: 'http://127.0.0.1/callback', IDENTITY_CLIENT_PRIVATE_JWK: JSON.stringify(identity.privateJwk), BILLING_PRODUCT_ID: 'agents', BILLING_MODE: 'test',
       MODEL_REGISTRY_JSON: '[]', MODEL_PRICING_JSON: '{}', RESOURCE_PRICING_JSON: JSON.stringify(pricing), FILE_SEARCH_PROFILE_JSON: JSON.stringify(profile),
-      RUN_RESOURCE_RESERVATION_MICROUSD: '20000', FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000' },
+      INGEST_ACK_DELAY_MS: process.env.MAGENTS_DOCUMENT_CASE === 'alarm-receipt' ? '33000' : '0', RUN_RESOURCE_RESERVATION_MICROUSD: '20000', FREE_GRANT_BUDGET_MICROUSD_PER_DAY: '100000000' },
     async outboundService(request) {
       const url = new URL(request.url);
       assert.equal(url.origin, 'https://retrieval.fixture.test', 'No model or external service is permitted');
@@ -90,6 +90,34 @@ test('compiled Rust Worker: document conversion is bounded recoverable and not b
   }
   const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: 'capacity-owner' });
   const sdk = new OpenAI({ baseURL: 'https://agents.test/v1', apiKey: principal.apiKey, maxRetries: 0, fetch: (input, init) => dispatchSDKFetch(mf, input, init) });
+  if (process.env.MAGENTS_DOCUMENT_CASE === 'alarm-receipt') {
+    const bytes=await readFile(path.join(root,'tests/fixtures/retrieval/text-layer.pdf'));
+    const file=await sdk.files.create({purpose:'assistants',file:await toFile(bytes,'alarm-receipt.pdf',{type:'application/pdf'})});
+    const store=await sdk.vectorStores.create({});
+    const started=Date.now();
+    await sdk.vectorStores.files.create(store.id,{file_id:file.id});
+    let member;const deadline=Date.now()+70000;
+    do { await new Promise(resolve=>setTimeout(resolve,100));member=await sdk.vectorStores.files.retrieve(file.id,{vector_store_id:store.id}); }
+    while(member.status==='in_progress' && Date.now()<deadline);
+    assert.equal(member.status,'completed',JSON.stringify(member.last_error));
+    assert.ok(Date.now()-started>=33000,'Actual alarm waits through the >30s durable vector acknowledgment');
+    const row=await db.prepare('SELECT generation FROM vector_store_files WHERE account_id=? AND vector_store_id=? AND file_id=?').bind(principal.owner,store.id,file.id).first();
+    const name='file-ingest:'+createHash('sha256').update(JSON.stringify({owner:principal.owner,store:store.id,file:file.id,generation:row.generation})).digest('hex');
+    const namespace=await mf.getDurableObjectNamespace('FILE_INGEST'),actor=namespace.get(namespace.idFromName(name));
+    const state=await(await actor.fetch('https://fixture/__fixture/status')).json();
+    assert.deepEqual(state,{delays:1,knownVectorsCommitted:true});
+    assert.equal(conversions,1);assert.equal(embeddings,1);
+    await sdk.vectorStores.files.retrieve(file.id,{vector_store_id:store.id});
+    assert.equal(embeddings,1,'No re-embedding after the long known receipt');
+    const pending=await db.prepare("SELECT COUNT(*) AS n FROM resource_observations o JOIN file_search_funding f ON f.id=o.run_id AND f.account_id=o.account_id WHERE f.account_id=? AND f.generation=? AND o.status='pending'").bind(principal.owner,row.generation).first();
+    assert.equal(pending.n,0);
+    const wall=(await db.prepare("SELECT resource,quantity FROM resource_observations o JOIN file_search_funding f ON f.id=o.run_id AND f.account_id=o.account_id WHERE f.account_id=? AND f.generation=? AND o.unit='wall_ms'").bind(principal.owner,row.generation).all()).results;
+    assert.ok(wall.some(item=>item.resource==='durable_object'&&BigInt(item.quantity)>=33000n));
+    assert.ok(wall.every(item=>item.resource!=='worker'),'Do not double-charge the old Worker wrapper');
+    await sdk.files.delete(file.id);await sdk.vectorStores.delete(store.id);
+    await writeFile(path.join(directory,'alarm-receipt.json'),JSON.stringify({source:process.env.GITHUB_SHA??null,conversions,embeddings,model_calls:0,known_vectors_ack_delay_ms:33000,delays:state.delays,pending_observations:pending.n},null,2));
+    return;
+  }
   if (process.env.MAGENTS_DOCUMENT_CASE === 'native-contract') {
     const bytes=await readFile(path.join(root,'tests/fixtures/retrieval/text-layer.pdf'));
     const file=await sdk.files.create({purpose:'assistants',file:await toFile(bytes,'new-native-contract.pdf',{type:'application/pdf'})});

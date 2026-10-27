@@ -1,4 +1,4 @@
-import RustWorker, { Session as RustSession } from '../index.js';
+import RustWorker, { Session as RustSession, FileIngest as RustFileIngest } from '../index.js';
 export * from '../index.js';
 
 async function invoke(method, args) {
@@ -40,4 +40,8 @@ export default class extends RustWorker {
   async scheduled(event) {
     return RustWorker.prototype.scheduled.call({ env: bindings(this.env), ctx: this.ctx }, event);
   }
+}
+
+export class FileIngest extends RustFileIngest {
+  constructor(ctx,env){super(ctx,bindings(env));}
 }

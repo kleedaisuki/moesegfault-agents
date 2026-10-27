@@ -1,4 +1,4 @@
-import RustWorker, { Session as RustSession } from '../index.js';
+import RustWorker, { Session as RustSession, FileIngest as RustFileIngest } from '../index.js';
 export * from '../index.js';
 
 async function invoke(method, args) {
@@ -47,5 +47,38 @@ export default class extends RustWorker {
   }
   async scheduled(event) {
     return RustWorker.prototype.scheduled.call({ env: bindings(this.env), ctx: this.ctx }, event);
+  }
+}
+
+function delayedDatabase(target, state, delay) {
+  const originals=new WeakMap(), sources=new WeakMap();
+  const statement=(value, sql)=> {
+    const wrapped=new Proxy(value,{get(object,key){
+      if(key==='bind') return (...args)=>statement(object.bind(...args),sql);
+      const result=Reflect.get(object,key,object);return typeof result==='function'?result.bind(object):result;
+    }}); originals.set(wrapped,value);sources.set(wrapped,sql);return wrapped;
+  };
+  return new Proxy(target,{get(object,key){
+    if(key==='prepare')return sql=>statement(object.prepare(sql),sql);
+    if(key==='batch')return async statements=>{
+      const results=await object.batch(statements.map(item=>originals.get(item)??item));
+      if(delay && !state.delays && statements.some(item=>(sources.get(item)??'').startsWith("UPDATE file_search_chunks SET vector_status='embedded'"))){
+        state.delays++;state.knownVectorsCommitted=true;
+        await new Promise(resolve=>setTimeout(resolve,delay));
+      }
+      return results;
+    };
+    const result=Reflect.get(object,key,object);return typeof result==='function'?result.bind(object):result;
+  }});
+}
+export class FileIngest extends RustFileIngest {
+  constructor(ctx,env){
+    const state={delays:0,knownVectorsCommitted:false};
+    super(ctx,{...bindings(env),DB:delayedDatabase(env.DB,state,Number(env.INGEST_ACK_DELAY_MS??0))});
+    this.receiptState=state;
+  }
+  async fetch(request){
+    if(new URL(request.url).pathname==='/__fixture/status')return Response.json(this.receiptState);
+    return super.fetch(request);
   }
 }
