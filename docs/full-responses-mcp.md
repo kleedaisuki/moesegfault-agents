@@ -211,8 +211,8 @@ HTTP endpoint: https://docs.devin.ai/work-with-devin/deepwiki-mcp .
 
 Every transport exit now emits a bounded structural `mcp.transport` event: server
 label, request method and identity, stage, HTTP status, normalized MIME type,
-upstream request ID / CF ray when actually present, received wire-body bytes,
-duration, signed JSON-RPC error code and outcome uncertainty. These pass through
+upstream request ID / CF ray when actually present, received Fetch-body bytes (including SSE framing, not an invoice measurement),
+duration, parser line/column, signed JSON-RPC error code, safe underlying timeout/type cause and outcome uncertainty. These pass through
 the real emission filter. HTTP request IDs are distinct from JSON-RPC identities;
 missing headers remain null, not fabricated. A later catalog rejection emits
 `mcp.discovery_failed` with `catalog_validation` and its specific trusted code

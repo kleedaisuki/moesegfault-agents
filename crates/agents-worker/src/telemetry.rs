@@ -229,6 +229,7 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "error_type"
                 | "server_label"
                 | "mcp_method"
+                | "cause_code"
                 | "capacity_generation"
                 | "request_id"
                 | "session_id"

@@ -12,13 +12,17 @@ pub(super) struct RpcTrace {
     method: String,
     request: String,
     started: u64,
+    request_bytes: usize,
     pub phase: &'static str,
     pub status: Option<u16>,
     pub content_type: Option<String>,
     pub request_id: Option<String>,
     pub ray_id: Option<String>,
     pub bytes: Rc<Cell<u64>>,
+    pub parser_line: Option<usize>,
+    pub parser_column: Option<usize>,
     error: Option<String>,
+    cause: Option<String>,
     protocol_error: Option<i32>,
     error_type: Option<&'static str>,
     unknown: bool,
@@ -31,17 +35,26 @@ impl RpcTrace {
             method: request.rpc_method.clone(),
             request: request.id.clone(),
             started: timestamp(),
+            request_bytes: request.body.as_ref().map_or(0, String::len),
             phase: "prepare_request",
             status: None,
             content_type: None,
             request_id: None,
             ray_id: None,
             bytes: Rc::new(Cell::new(0)),
+            parser_line: None,
+            parser_column: None,
             error: Some("mcp_transport_incomplete".into()),
+            cause: None,
             protocol_error: None,
             error_type: None,
             unknown: request.side_effect,
         }
+    }
+
+    pub(super) fn source_error(&mut self, error: &Error) {
+        self.cause = Some(error_code(error).into());
+        self.error_type = Some(error_type(error));
     }
 
     pub(super) fn finish(&mut self, outcome: &Result<RpcOutcome>) {
@@ -70,8 +83,9 @@ impl Drop for RpcTrace {
                 "server_label":self.server,"mcp_method":self.method,"request_id":self.request,
                 "phase":self.phase,"status":self.status,"content_type":self.content_type,
                 "provider_request_id":self.request_id,"ray_id":self.ray_id,
-                "response_bytes":self.bytes.get(),"duration_ms":timestamp().saturating_sub(self.started),
+                "request_bytes":self.request_bytes,"response_bytes":self.bytes.get(),"duration_ms":timestamp().saturating_sub(self.started),
                 "error_code":self.error,"mcp_protocol_error_code":self.protocol_error,
+                "cause_code":self.cause,"parser_line":self.parser_line,"parser_column":self.parser_column,
                 "error_type":self.error_type,"outcome_unknown":self.unknown,
             }),
         );

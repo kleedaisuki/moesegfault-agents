@@ -238,7 +238,8 @@ impl PreparedRpc {
         trace.phase = "send";
         let mut response = match timed(send, HEADER_TIMEOUT_MS).await {
             Ok(response) => response,
-            Err(_) => {
+            Err(error) => {
+                trace.source_error(&error);
                 return Ok(failed(
                     "mcp_transport_unknown",
                     None,
@@ -346,7 +347,9 @@ impl PreparedRpc {
                 trace.phase = "parse_json";
                 let value: Value = match serde_json::from_str(&event.data) {
                     Ok(value) => value,
-                    Err(_) => {
+                    Err(error) => {
+                        trace.parser_line = Some(error.line());
+                        trace.parser_column = Some(error.column());
                         return Ok(failed(
                             "mcp_invalid_json",
                             Some(status),
@@ -392,7 +395,9 @@ impl PreparedRpc {
             trace.phase = "parse_json";
             let value = match serde_json::from_slice(&bytes) {
                 Ok(value) => value,
-                Err(_) => {
+                Err(error) => {
+                    trace.parser_line = Some(error.line());
+                    trace.parser_column = Some(error.column());
                     return Ok(failed(
                         "mcp_invalid_json",
                         Some(status),
