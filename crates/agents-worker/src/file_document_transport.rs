@@ -273,9 +273,14 @@ pub(super) async fn observe(prepared: Prepared) -> Observation {
     }
 }
 
+#[cfg(test)]
 fn decode_body(kind: Kind, bytes: &[u8]) -> Result<String> {
     let value: Value =
         serde_json::from_slice(bytes).map_err(|_| fail("file_search_document_json_invalid"))?;
+    decode_value(kind, &value)
+}
+
+fn decode_value(kind: Kind, value: &Value) -> Result<String> {
     let results = value["result"]
         .as_array()
         .filter(|results| results.len() == 1)
@@ -320,22 +325,23 @@ impl Observation {
             return Err(fail("file_search_document_upstream_rejected"));
         }
         self.diagnostics.phase = "decode_json".into();
-        if let Some(bytes) = self.body.as_deref() {
-            if let Err(error) = serde_json::from_slice::<Value>(bytes) {
+        let bytes = self
+            .body
+            .as_deref()
+            .ok_or_else(|| fail("file_search_document_outcome_unknown"))?;
+        let value: Value = match serde_json::from_slice(bytes) {
+            Ok(value) => value,
+            Err(error) => {
                 self.diagnostics.parser_line = Some(error.line());
                 self.diagnostics.parser_column = Some(error.column());
                 self.diagnostics.error_type = Some("JsonDecodeError".into());
                 return Err(fail("file_search_document_json_invalid"));
             }
-        }
+        };
         self.diagnostics.phase = "validate_document".into();
-        decode_body(
-            self.kind,
-            self.body
-                .as_deref()
-                .ok_or_else(|| fail("file_search_document_outcome_unknown"))?,
-        )
+        decode_value(self.kind, &value)
     }
+
     pub(super) fn emit(&self, operation: Option<&str>, error: Option<&str>) {
         let d = &self.diagnostics;
         crate::util::emit(
