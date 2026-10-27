@@ -183,9 +183,6 @@ impl ProgramPolicy {
                 )?)?;
             }
         }
-        if !policy.server_only() {
-            return Err("programmatic_client_continuation_unavailable");
-        }
         Ok(policy)
     }
 
@@ -617,6 +614,35 @@ impl ProgramState {
     pub(crate) fn ready(&self) -> bool {
         matches!(self.phase, ProgramPhase::Ready)
     }
+    pub(crate) fn expires_at_ms(&self) -> u64 {
+        self.expires_at_ms
+    }
+    pub(crate) fn response_id(&self) -> &str {
+        &self.scope.response
+    }
+    pub(crate) fn client_call(&self, sequence: u32) -> Result<bool> {
+        let call = self
+            .calls
+            .get(sequence as usize)
+            .ok_or("program_call_not_found")?;
+        Ok(matches!(
+            self.policy.lookup(&call.path)?.target,
+            ExecutionTarget::ClientFunction | ExecutionTarget::ClientCustom
+        ))
+    }
+
+    pub(crate) fn client_result_item(&self, input: &Value) -> Result<Value> {
+        let call = self
+            .calls
+            .iter()
+            .find(|call| input["call_id"] == call.call_id)
+            .ok_or("program_call_not_found")?;
+        let mut item = json!({"id":format!("presult_{}",digest(&call.call_id)?),"type":input["type"],"call_id":call.call_id,"output":input["output"],"status":"completed","caller":{"type":"program","caller_id":self.call_id}});
+        if let Some(namespace) = call.path.namespace() {
+            item["namespace"] = json!(namespace);
+        }
+        Ok(item)
+    }
     pub(crate) fn known_result(&self, sequence: u32) -> Option<&Value> {
         match &self.calls.get(sequence as usize)?.state {
             CallState::Completed { result, .. } => Some(result),
@@ -943,10 +969,13 @@ impl ProgramState {
         ) {
             return Err("program_call_not_client_pending");
         }
-        let output = item["output"]
-            .as_str()
-            .ok_or("invalid_programmatic_output")?;
-        let result = serde_json::from_str(output).unwrap_or_else(|_| Value::String(output.into()));
+        let result = match &item["output"] {
+            Value::String(output) => {
+                serde_json::from_str(output).unwrap_or_else(|_| Value::String(output.clone()))
+            }
+            Value::Array(content) => Value::Array(content.clone()),
+            _ => return Err("invalid_programmatic_output"),
+        };
         self.complete_call(sequence, result)
     }
 
@@ -1183,7 +1212,12 @@ mod tests {
             policy.runtime_tools(),
             json!([{"path":["time"],"kind":"function"}])
         );
-        assert!(ProgramPolicy::resolve_bound(&[json!({"type":"function","name":"client","parameters":{"type":"object"},"allowed_callers":["programmatic"]})], false, &Default::default(), None).is_err());
+        let client = ProgramPolicy::resolve_bound(&[json!({"type":"function","name":"client","parameters":{"type":"object"},"allowed_callers":["programmatic"]})], false, &Default::default(), None).unwrap();
+        assert!(!client.server_only());
+        assert_eq!(
+            client.runtime_tools(),
+            json!([{"path":["client"],"kind":"function"}])
+        );
     }
 
     #[test]

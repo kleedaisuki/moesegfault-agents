@@ -147,3 +147,119 @@ export async function runProgrammaticAdmissionFailures(context) {
 async function charges(db, owner) {
   return (await db.prepare("SELECT l.unit, CAST(l.quantity AS TEXT) quantity, CAST(l.amount_microusd AS TEXT) amount_microusd FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id WHERE r.account_id=? AND l.unit LIKE 'dynamic_worker_%' ORDER BY l.unit").bind(owner).all()).results;
 }
+
+export async function runProgrammaticClient(context) {
+  const source = 'const nonce = Math.random(); const x = await tools.client({value:7,nonce}); const y = await tools.decorate("value="+x.value); text(JSON.stringify({nonce,x,y}));';
+  const scenario = await createNativeSemanticsScenario(context, 'programmatic-client', [
+    { output: [program(source)] },
+    { output: [answer], check(body) {
+      const outputs = body.input.filter(item => item.type === 'function_call_output');
+      assert.equal(outputs.length, 1, 'Nested caller outputs enter JavaScript, not unmatched provider call IDs');
+      assert.equal(outputs[0].call_id, 'private-program-call');
+    } },
+  ]);
+  await scenario.principal.browser('GET', '/v1/account');
+  const tools = [{ type: 'programmatic_tool_calling' },
+    { type: 'function', name: 'client', allowed_callers: ['programmatic'], strict: true,
+      parameters: { type: 'object', properties: { value: { type: 'integer' }, nonce: { type: 'number' } }, required: ['value', 'nonce'], additionalProperties: false },
+      output_schema: { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'], additionalProperties: false } },
+    { type: 'custom', name: 'decorate', allowed_callers: ['programmatic'], format: { type: 'text' } }];
+  const body = { model: scenario.agent.id, tools, input: 'Run one program through function and custom handoffs.', max_tool_calls: 4 };
+  async function invoke(request, key) {
+    const wire = await scenario.client.responses.create({ ...request, stream: true }, { headers: { 'Idempotency-Key': key } }).asResponse();
+    const events = await collectNativeEvents(wire);
+    if (scenario.state.failure) throw scenario.state.failure;
+    const value = events.findLast(event => event.type === 'response.completed')?.response;
+    assert.ok(value, JSON.stringify(events.findLast(event => event.type === 'response.failed')?.response?.error));
+    assert.deepEqual(await (await scenario.client.responses.retrieve(value.id).asResponse()).json(), value);
+    context.validateWire(value, events);
+    return value;
+  }
+  const first = await invoke(body, 'program-client-first');
+  const parent = first.output.find(item => item.type === 'program');
+  const call = first.output.find(item => item.type === 'function_call');
+  assert.ok(parent && call);
+  assert.deepEqual(call.caller, { type: 'program', caller_id: parent.call_id });
+  const nonce = JSON.parse(call.arguments).nonce;
+  assert.equal(scenario.state.calls, 1);
+  assert.equal(first.usage.total_tokens, 150);
+  const runRows = () => context.db.prepare("SELECT id,state FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'run:%'").bind(scenario.principal.owner).all();
+  assert.deepEqual((await runRows()).results.map(row => [row.id,row.state]), [[first.id,'reserved']], 'The funded execution remains alive across a completed public handoff');
+  const returned = { type: 'function_call_output', call_id: call.call_id, caller: call.caller, output: '{"value":7}' };
+  await assert.rejects(scenario.client.responses.create({ ...body, previous_response_id: first.id, input: [{ ...returned, caller: { type: 'program', caller_id: 'forged' } }] }).asResponse(), error => error.status === 400);
+  const secondBody = { ...body, previous_response_id: first.id, input: [returned] };
+  const second = await invoke(secondBody, 'program-client-function');
+  const custom = second.output.find(item => item.type === 'custom_tool_call');
+  assert.equal(custom?.input, 'value=7');
+  assert.deepEqual(custom.caller, call.caller);
+  assert.equal(second.usage?.total_tokens ?? 0, 0);
+  assert.equal(scenario.state.calls, 1, 'A local result resumes the live program without another model decision');
+  assert.equal((await runRows()).results.length, 1);
+  await assert.rejects(scenario.client.responses.create({ ...secondBody, input: [{ ...returned, output: '{"value":8}' }] }).asResponse(), error => error.status === 409);
+  assert.deepEqual(await invoke(secondBody, 'program-client-function'), second, 'Same-key mailbox input is observed, not applied twice');
+  const last = await invoke({ ...body, previous_response_id: second.id,
+    input: [{ type: 'custom_tool_call_output', call_id: custom.call_id, caller: custom.caller, output: 'decorated' }] }, 'program-client-custom');
+  const output = last.output.find(item => item.type === 'program_output');
+  assert.equal(output?.status, 'completed', output?.result);
+  assert.equal(output.call_id, parent.call_id);
+  assert.deepEqual(JSON.parse(output.result), { nonce, x: { value: 7 }, y: 'decorated' });
+  assert.equal(last.usage.total_tokens, 150, 'The child reports only its own model usage');
+  assert.equal(scenario.state.calls, 2);
+  assert.deepEqual(await (await scenario.client.responses.retrieve(first.id).asResponse()).json(), first, 'Later usage and output cannot rewrite the parent');
+  assert.deepEqual((await runRows()).results.map(row => [row.id,row.state]), [[first.id,'settled']]);
+  assert.deepEqual((await charges(context.db, scenario.principal.owner)).map(row => [row.unit,Number(row.quantity),Number(row.amount_microusd)]).sort(), [
+    ['dynamic_worker_cpu_slot_100ms',1,2], ['dynamic_worker_creation_day',1,2000], ['dynamic_worker_request',1,1],
+  ].sort(), 'Three public Responses retain exactly one originating program fetch and CPU allocation');
+  return { public_responses: 3, model_calls: 2, client_function_calls: 1, client_custom_calls: 1, native_program_fetches: 1,
+    native_heap_nonce_preserved: true, one_funded_execution: true, immutable_parent_usage: true, replayed_mailbox_not_reapplied: true };
+}
+
+export async function runProgrammaticApproval(context) {
+  const remote=context.providers.state;
+  const before=remote.calls;
+  const scenario=await createNativeSemanticsScenario(context,'programmatic-approval',[
+    {output:[program('const a=await tools.owned.echo({value:"雪"}); const b=await tools.owned.echo({value:a.echo}); text(JSON.stringify({a,b}));')]},
+    {output:[answer]},
+  ]);
+  await scenario.principal.browser('GET','/v1/account');
+  const declaration=authorization=>({type:'mcp',server_label:'owned',server_url:'https://mcp.example.com/mcp',authorization,require_approval:'always',allowed_callers:['programmatic']});
+  const body={model:scenario.agent.id,input:'Approve the first remote call and decline the second within the same live program.',tools:[{type:'programmatic_tool_calling'},declaration(remote.expectedAuth)],max_tool_calls:4};
+  async function invoke(input,key) {
+    const events=await collectNativeEvents(await scenario.client.responses.create({...input,stream:true},{headers:{'Idempotency-Key':key}}).asResponse());
+    if(scenario.state.failure)throw scenario.state.failure;
+    const value=events.findLast(event=>event.type==='response.completed')?.response;
+    assert.ok(value,JSON.stringify(events.findLast(event=>event.type==='response.failed')?.response?.error));
+    context.validateWire(value,events);
+    assert.deepEqual(await(await scenario.client.responses.retrieve(value.id).asResponse()).json(),value);
+    return value;
+  }
+  const first=await invoke(body,'program-approval-first');
+  const approval=first.output.find(item=>item.type==='mcp_approval_request');
+  assert.ok(approval);
+  assert.equal(remote.calls,before,'A program RPC proposal is not human approval');
+  assert.equal(scenario.state.calls,1);
+  await assert.rejects(scenario.client.responses.create({...body,previous_response_id:first.id,tools:[{type:'programmatic_tool_calling'}],input:[{type:'mcp_approval_response',approval_request_id:approval.id,approve:true}]}).asResponse(),error=>error.status===400&&error.code==='mcp_authorization_required');
+  remote.expectedAuth='PROGRAM-APPROVAL-REFRESHED-SECRET';
+  const approvedBody={...body,previous_response_id:first.id,tools:[{type:'programmatic_tool_calling'},declaration(remote.expectedAuth)],input:[{type:'mcp_approval_response',approval_request_id:approval.id,approve:true}]};
+  const second=await invoke(approvedBody,'program-approval-accepted');
+  assert.equal(remote.calls,before+1);
+  const next=second.output.find(item=>item.type==='mcp_approval_request');
+  assert.ok(next);
+  assert.notEqual(next.id,approval.id);
+  assert.equal(scenario.state.calls,1,'An approval resumes original JavaScript without another model decision');
+  assert.deepEqual(await invoke(approvedBody,'program-approval-accepted'),second);
+  assert.equal(remote.calls,before+1);
+  const denied=await invoke({...body,previous_response_id:second.id,tools:[{type:'programmatic_tool_calling'},declaration(remote.expectedAuth)],input:[{type:'mcp_approval_response',approval_request_id:next.id,approve:false}]},'program-approval-denied');
+  const output=denied.output.find(item=>item.type==='program_output');
+  assert.equal(output?.status,'completed',output?.result);
+  const result=JSON.parse(output.result);
+  assert.deepEqual(result.a,{echo:'雪'});
+  assert.equal(result.b.error.code,'mcp_approval_denied');
+  assert.equal(remote.calls,before+1,'Declined program RPC cannot send HTTP');
+  assert.equal(scenario.state.calls,2);
+  assert.deepEqual(await(await scenario.client.responses.retrieve(first.id).asResponse()).json(),first);
+  assert.deepEqual((await charges(context.db,scenario.principal.owner)).map(row=>[row.unit,Number(row.quantity),Number(row.amount_microusd)]).sort(),[
+    ['dynamic_worker_cpu_slot_100ms',1,2],['dynamic_worker_creation_day',1,2000],['dynamic_worker_request',1,1],
+  ].sort());
+  return {public_responses:3,model_calls:2,approved_remote_calls:1,denied_remote_calls:0,fresh_credentials:true,one_use_approval:true,originating_program_fetches:1};
+}

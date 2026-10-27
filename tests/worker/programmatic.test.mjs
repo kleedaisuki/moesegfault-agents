@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { runProgrammaticTime, runProgrammaticMcp, runProgrammaticAdmissionFailures } from './programmatic-journey.mjs';
+import { runProgrammaticTime, runProgrammaticMcp, runProgrammaticAdmissionFailures, runProgrammaticClient, runProgrammaticApproval } from './programmatic-journey.mjs';
 import { createMcpTransport } from './mcp-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -92,7 +92,7 @@ test('compiled Rust Worker: selected programmatic Session capability journeys', 
     context.db = await mf.getD1Database('DB');
   }
   const context = { mf, db, encryptionKey, providers, request, validateWire, configureProgramCapability };
-  const cases = { time: runProgrammaticTime, mcp: runProgrammaticMcp, admission: runProgrammaticAdmissionFailures };
+  const cases = { time: runProgrammaticTime, mcp: runProgrammaticMcp, admission: runProgrammaticAdmissionFailures, client: runProgrammaticClient, approval: runProgrammaticApproval };
   const selected = process.env.MAGENTS_PROGRAMMATIC_CASE?.split(",") ?? Object.keys(cases);
   const receipt = {};
   for (const name of selected) {

@@ -136,7 +136,8 @@ rendering/token counting, provider choice validation, dispatch and canonical
 publication. Missing Loader binding or tariffs reject declared programmatic
 execution before inference; ordinary API calls acquire no new requirement.
 
-The supported verticals are pinned server time and owner-bound MCP capabilities.
+The supported verticals are pinned server time, owner-bound MCP capabilities,
+and live caller-owned function/custom handoffs.
 MCP permission is not inferred from a name: `AuthorizedInvocation` is minted
 after the write-ahead journal, the existing loaded registry validates the
 programmatic caller, the shared allowance admits that execution identity once,
@@ -156,12 +157,87 @@ is terminal-only: its added event carries completed/incomplete already. It uses
 the existing canonical publisher directly, not the hosted tools' synthetic
 in_progress projection.
 
-A human-approval-required MCP call produces an incomplete program without
-remote execution. Client-owned function/custom handoff and program image
-publication are not enabled: a lost original request is not transparently
+A human-approval-required MCP call remains the next increment after the accepted
+client path; its suspension is not claimed by the server-only proof. Program
+image publication is not enabled. A lost original request is not transparently
 replayed, and no second JavaScript agent harness exists. Independent accepted
 operations get fresh opaque contexts. Cancellation interrupts the pending native
 read without allocating another request or granting a later nested effect.
+
+## Warm client continuation increment
+
+The follow-up implementation keeps the original `dispatch_programmatic` future,
+native fetch and stream writer/reader alive. It does not start a background pump,
+another JavaScript harness, a new funded execution Run or a second Loader fetch.
+A completed public Response is a client handoff, not the end of that execution.
+Its immutable canonical items and reported usage are stored before observers
+close. The private provider program call remains unanswered until JavaScript
+actually completes.
+
+`ProgramPause` is a private durable mailbox tied to the funded Run, current public
+Response and accepted operation. It is not a JavaScript snapshot or an incoming
+caller-provided capability. The ordinary Responses admission pipeline still
+performs prompt expansion, owner/media lookup, byte limits, pending-result
+validation, attachment retention and Conversation capacity reservation. Only a
+matching paused epoch may retain the existing Run at final acceptance; racing
+or same-key callbacks cannot apply a mailbox twice. The original future polls
+its own timer and consumes committed inputs after Conversation activation, so
+native I/O objects never migrate into the callback's request context.
+
+Public Responses have usage and model-round baselines. Model ledger events bind
+the child Response segment while retaining the original reserved funding Run;
+parent usage is never rewritten. The original observed Durable Object step
+continues across the wait. Router Worker wall usage sums attached observation
+segments, excluding the gap between public HTTP requests. The child JavaScript
+capacity remains its single original configured CPU allocation, never await wall
+time or one allocation per callback.
+
+Native history closes the original private program call before appending any
+deferred new user input. Caller results enter the program journal, not unmatched
+provider function-output IDs. Historical branches may not clone a live program;
+loss of the original future produces an incomplete continuation instead of
+rerunning arbitrary source. Closed/cancelled execution cannot acquire new tool
+authority.
+
+The new `client` journey passed against the unmodified compiled Worker in
+[GHA 40364842376](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40364842376),
+source `be5f44d777de5ff4be96f5bbcd763b98a05ae201`, Worker artifact `12669158434`,
+verification artifact `12669353330`. It crosses function and custom handoffs
+through three public Responses, checks a native heap nonce, original caller
+checks, immutable raw parent snapshots, usage segments of 150/0/150 tokens,
+same-key mailbox observation, one still-reserved-then-settled funding Run and
+exactly one creation/request/CPU allocation. This did not rerun the accepted
+time/MCP, isolation or Rust contracts. The function output schema remains
+validated before mailbox acceptance; the official custom result's `caller`
+field is now admitted and checked against its actual pending call.
+
+Conversation-specific execution, MCP approval suspension and additional hosted
+adapters remain the following verification/implementation increments; their
+readiness is not inferred from this non-Conversation client journey.
+
+The approval follow-up reuses the same encrypted MCP intent, sealed
+`ApprovalReference`, fresh credential/schema rebinding and one-use destination
+claim as direct MCP. Its original non-deserializable `AuthorizedInvocation`
+remains on the live Rust stack. Only that subroutine may advance programmatic
+approval actions; the normal driver handles direct actions only. After awaited
+journal writes, the HTTP effect boundary rechecks program expiry and cancellation.
+Known outcomes are read from the existing operation and fed into the program,
+not forwarded as provider outputs for model calls that never existed.
+
+Mailbox delivery has an additional non-persisted `delivery_ready` gate: a live
+future can see callback memory while storage acknowledgement is yielding, so
+only successful durable acceptance (or same-key durability repair) releases the
+batch. Deserializing a saved mailbox cannot recreate this I/O-context readiness.
+The approval-only increment passed in
+[GHA 40370107355](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40370107355),
+source `3b823b1c4a53d479b97cd1897ace7d0db09e70de`, Worker artifact `12671299545`,
+verification artifact `12671913412`. Its retained receipt records three public
+Responses, two controlled model rounds, one approved remote call and zero denied
+remote calls. Fresh credentials, one-use approval, immutable raw GET/SSE and one
+originating native program fetch were checked. Missing callback authorization
+was rejected before dispatch; replay did not repeat the approved effect. This
+did not repeat the accepted client or time/MCP journeys and made no external
+model or network calls. Conversation execution remains a separate increment.
 
 ## Verification boundary
 

@@ -14,6 +14,18 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 
+#[path = "session_programmatic_continuation.rs"]
+mod continuation;
+pub(super) use continuation::ProgramPause;
+pub(super) use continuation::{accepts_run, accepts_status};
+
+struct ProgramActivity<'a>(&'a RefCell<Option<String>>);
+impl Drop for ProgramActivity<'_> {
+    fn drop(&mut self) {
+        self.0.borrow_mut().take();
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Arguments {
@@ -169,6 +181,17 @@ impl SessionInner {
         // No live channel survived this function's prior invocation. An ended
         // origin context cannot be reconstructed from persisted JavaScript data.
         if !program.ready() {
+            if let Some(pause) = self
+                .snapshot()?
+                .run
+                .and_then(|run| run.response)
+                .and_then(|response| response.programmatic)
+                .filter(|pause| pause.operation == key)
+            {
+                program
+                    .accept_client_outputs(&pause.inputs)
+                    .map_err(fault)?;
+            }
             program.runtime_lost();
             write_chunks(&storage, &state_key, &serde_json::to_vec(&program)?).await?;
             return self
@@ -176,8 +199,17 @@ impl SessionInner {
                 .await
                 .map(Some);
         }
-        self.publish_hosted_item(&program.program_item(), true)
-            .await?;
+        *self.programmatic_active.borrow_mut() = Some(key.clone());
+        let _activity = ProgramActivity(&self.programmatic_active);
+        if self
+            .snapshot()?
+            .run
+            .and_then(|run| run.response)
+            .is_some_and(|response| response.id == program.response_id())
+        {
+            self.publish_hosted_item(&program.program_item(), true)
+                .await?;
+        }
         if self.programmatic_cancelled() {
             program.cancel();
             write_chunks(&storage, &state_key, &serde_json::to_vec(&program)?).await?;
@@ -297,6 +329,8 @@ impl SessionInner {
                 break;
             }
             write_chunks(&storage, &state_key, &serde_json::to_vec(&program)?).await?;
+            let mut client_calls = Vec::new();
+            let mut approvals = Vec::new();
             for call in &reply.calls {
                 if program.known_result(call.sequence).is_some() {
                     continue;
@@ -304,6 +338,14 @@ impl SessionInner {
                 if self.programmatic_cancelled() {
                     program.cancel();
                     break;
+                }
+                if program.client_call(call.sequence).map_err(fault)? {
+                    client_calls.push(
+                        program
+                            .expose_client_call(call.sequence, util::now_ms())
+                            .map_err(fault)?,
+                    );
+                    continue;
                 }
                 let proof = program
                     .commit_dispatch(&storage, &state_key, call.sequence, util::now_ms())
@@ -318,8 +360,9 @@ impl SessionInner {
                 let output = match self.dispatch_program_call(record, &proof).await {
                     Ok(output) => output,
                     Err(Error::RustError(code)) if code == "mcp_approval_required" => {
-                        program.fail("program_tool_approval_required");
-                        break;
+                        self.stage_programmatic_mcp_approval(record, &proof).await?;
+                        approvals.push(proof);
+                        continue;
                     }
                     Err(Error::RustError(code)) if code == "program_tool_allowance_exhausted" => {
                         program.fail("program_tool_allowance_exhausted");
@@ -342,7 +385,30 @@ impl SessionInner {
             if program.output_item().is_some() {
                 break;
             }
+            if !client_calls.is_empty() || !approvals.is_empty() {
+                write_chunks(&storage, &state_key, &serde_json::to_vec(&program)?).await?;
+                for item in &client_calls {
+                    self.publish_hosted_item(item, true).await?;
+                }
+                self.pause_programmatic_response(&key, &program, &client_calls)
+                    .await?;
+                if let Err(error) = self
+                    .await_programmatic_results(&key, &mut program, &approvals, deadline)
+                    .await
+                {
+                    if matches!(error, Error::RustError(code) if code=="program_cancelled") {
+                        program.cancel();
+                    } else {
+                        program.runtime_lost();
+                    }
+                    break;
+                }
+            }
             let frame = program.runtime_resume();
+            if self.programmatic_cancelled() {
+                program.cancel();
+                break;
+            }
             if channel.input.send(&frame, deadline).await.is_err() {
                 program.runtime_lost();
                 break;
@@ -434,6 +500,15 @@ impl SessionInner {
     }
 
     fn programmatic_cancelled(&self) -> bool {
+        if self.closing.get()
+            || self
+                .data
+                .borrow()
+                .as_ref()
+                .is_some_and(|data| data.record.status == SessionStatus::Closed)
+        {
+            return true;
+        }
         self.data
             .borrow()
             .as_ref()
@@ -473,8 +548,41 @@ impl SessionInner {
         program: &ProgramState,
     ) -> Result<super::hosted_dispatch::HostedDispatch> {
         save(&self.state.storage(), key, operation).await?;
-        self.publish_hosted_item(&program.program_item(), true)
-            .await?;
+        let paused = self
+            .snapshot()?
+            .run
+            .as_ref()
+            .and_then(|run| run.response.as_ref())
+            .filter(|response| response.programmatic.is_some() && response.status == "completed")
+            .cloned();
+        if let Some(parent) = paused {
+            let mut data = self.data.borrow_mut();
+            let run = data.as_mut().unwrap().run.as_mut().unwrap();
+            run.terminal = Some(parent.value());
+            return Ok(super::hosted_dispatch::HostedDispatch::Ready(
+                json!({"status":"incomplete","error":{"code":"program_runtime_expired"}})
+                    .to_string()
+                    .into(),
+            ));
+        }
+        if let Some(response) = self
+            .data
+            .borrow_mut()
+            .as_mut()
+            .and_then(|data| data.run.as_mut())
+            .and_then(|run| run.response.as_mut())
+        {
+            response.programmatic = None;
+        }
+        if self
+            .snapshot()?
+            .run
+            .and_then(|run| run.response)
+            .is_some_and(|response| response.id == program.response_id())
+        {
+            self.publish_hosted_item(&program.program_item(), true)
+                .await?;
+        }
         let output = program
             .output_item()
             .ok_or_else(|| fault("program_output_missing"))?;

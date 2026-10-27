@@ -82,6 +82,7 @@ pub(crate) struct ConversationOperation {
     parent_resource: Resource,
     scope: Scope,
     started_at_ms: u64,
+    trace: crate::telemetry::TraceContext,
 }
 
 enum Scope {
@@ -112,6 +113,7 @@ impl ConversationOperation {
             parent_resource: resource,
             scope: Scope::Request,
             started_at_ms: util::now_ms(),
+            trace: crate::telemetry::TraceContext::from_traceparent(None),
         };
         operation.meter(env, owner)?.preflight(false)?;
         reconcile::maintenance_account_reservation(env, owner, &operation.run_id).await?;
@@ -151,6 +153,7 @@ impl ConversationOperation {
             parent_resource,
             scope: Scope::Response { finished },
             started_at_ms: util::now_ms(),
+            trace: crate::telemetry::TraceContext::from_traceparent(None),
         };
         if finished {
             return Ok(operation);
@@ -176,6 +179,7 @@ impl ConversationOperation {
             parent_resource: Resource::DurableObject,
             scope: Scope::Session,
             started_at_ms: 0,
+            trace: crate::telemetry::TraceContext::from_traceparent(None),
         })
     }
 
@@ -186,6 +190,9 @@ impl ConversationOperation {
             .get(HEADER)?
             .ok_or_else(|| fail("conversation_meter_grant_required"))?;
         let grant = Grant::parse(&raw)?;
+        let trace = crate::telemetry::TraceContext::from_traceparent(
+            headers.get("traceparent")?.as_deref(),
+        );
         Ok(Self {
             run_id: grant.run_id,
             session_id: grant.session_id,
@@ -193,7 +200,24 @@ impl ConversationOperation {
             parent_resource: Resource::DurableObject,
             scope: Scope::Session,
             started_at_ms: 0,
+            trace,
         })
+    }
+
+    pub(crate) fn with_traceparent(mut self, traceparent: Option<&str>) -> Self {
+        if let Some(trace) = traceparent.and_then(crate::telemetry::TraceContext::parse) {
+            self.trace = trace.child();
+        }
+        self
+    }
+
+    pub(crate) fn emit(&self, phase: &str, fields: serde_json::Value) {
+        let mut value = serde_json::json!({"operation_id":self.run_id,"session_id":self.session_id,
+            "trace_id":self.trace.trace_id(),"span_id":self.trace.span_id(),"phase":phase});
+        if let (Some(target), Some(fields)) = (value.as_object_mut(), fields.as_object()) {
+            target.extend(fields.clone());
+        }
+        util::emit("conversation.phase", value);
     }
 
     fn meter<'a>(&'a self, env: &'a Env, owner: &'a str) -> Result<ResourceMeter<'a>> {
@@ -245,6 +269,34 @@ impl ConversationOperation {
         Ok(rows.first().is_some_and(|row| row.state == "settled"))
     }
 
+    pub(crate) async fn settle_reclaimed_response(
+        &self,
+        env: &Env,
+        owner: &str,
+        response: &str,
+    ) -> Result<()> {
+        let run = response_operation_id(response)?;
+        let rows = self.query(env, owner, "reclaimed-funding", env.d1("DB")?
+            .prepare("SELECT state,request_hash,idempotency_key,session_id FROM usage_reservations WHERE id=?1 AND account_id=?2")
+            .bind(&[run.as_str().into(), owner.into()])?).await?.results::<ResponseFunding>()?;
+        let Some(row) = rows.first() else {
+            return Ok(());
+        };
+        validate_response_funding(row, owner, &run)?;
+        if row.state == "settled" {
+            return Ok(());
+        }
+        if row.state != "reserved" {
+            return Err(fail("conversation_response_funding_unavailable"));
+        }
+        // Settle only the original observed ledger. No interval is re-recorded,
+        // no old price is recomputed, and settle_run keeps any pending hold.
+        ResourceMeter::account(env, owner, &run)?
+            .settle_run()
+            .await?;
+        Ok(())
+    }
+
     fn require_open(&self) -> Result<()> {
         if self.is_finished() {
             return Err(fail("conversation_response_operation_finished"));
@@ -262,10 +314,39 @@ impl ConversationOperation {
     ) -> Result<D1Result> {
         self.require_open()?;
         let event = event(label)?;
+        let started = util::now_ms();
+        self.emit(
+            "d1.started",
+            serde_json::json!({"request_id":event,"request_path":label}),
+        );
+        let report = |phase: &str, error: &Error| {
+            let mut fields = error_metadata(error, started);
+            fields["request_id"] = serde_json::json!(event);
+            fields["request_path"] = serde_json::json!(label);
+            self.emit(phase, fields);
+        };
         let meter = self.meter(env, owner)?;
-        meter.require_d1(&event).await?;
-        let result = statement.all().await?;
-        meter.record_d1(&event, &result).await?;
+        if let Err(error) = meter.require_d1(&event).await {
+            report("d1.funding_failed", &error);
+            return Err(error);
+        }
+        let funded = util::now_ms();
+        let result = match statement.all().await {
+            Ok(result) => result,
+            Err(error) => {
+                report("d1.rpc_failed", &error);
+                return Err(error);
+            }
+        };
+        let returned = util::now_ms();
+        if let Err(error) = meter.record_d1(&event, &result).await {
+            report("d1.observation_failed", &error);
+            return Err(error);
+        }
+        let finished = util::now_ms();
+        self.emit("d1.completed", serde_json::json!({"request_id":event,"request_path":label,
+            "funding_ms":funded.saturating_sub(started),"rpc_ms":returned.saturating_sub(funded),
+            "observation_ms":finished.saturating_sub(returned),"duration_ms":finished.saturating_sub(started)}));
         Ok(result)
     }
 
@@ -318,6 +399,7 @@ impl ConversationOperation {
             .meter(env, owner)?
             .require_observation(&grant.event, Resource::DurableObject, "wall_ms")
             .await?;
+        self.trace.child().inject(headers)?;
         headers.set(HEADER, &serde_json::to_string(&grant)?)
     }
 
@@ -406,13 +488,18 @@ async fn response_funding(env: &Env, owner: &str, run: &str) -> Result<Option<St
     };
     // Reuse the original amount. A deployment's changed reservation default must
     // not require fresh credit or strand an already activated writer lease.
+    validate_response_funding(&row, owner, run)?;
+    Ok(Some(row.state))
+}
+
+fn validate_response_funding(row: &ResponseFunding, owner: &str, run: &str) -> Result<()> {
     if row.session_id.is_some()
         || row.idempotency_key != format!("maintenance:{run}")
         || row.request_hash != format!("account:{}:{owner}:{run}", owner.len())
     {
         return Err(fail("conversation_response_funding_conflict"));
     }
-    Ok(Some(row.state))
+    Ok(())
 }
 
 fn response_operation_id(response: &str) -> Result<String> {
@@ -437,13 +524,24 @@ where
         .get(HEADER)?
         .ok_or_else(|| fail("conversation_meter_grant_required"))?;
     let grant = Grant::parse(&raw)?;
-    grant.require_funding(env, owner).await?;
+    let operation = ConversationOperation::actor_scope(headers)?;
+    let checking = util::now_ms();
+    operation.emit(
+        "grant.check",
+        serde_json::json!({"grant_event":grant.event}),
+    );
+    if let Err(error) = grant.require_funding(env, owner).await {
+        operation.emit("grant.failed", error_metadata(&error, checking));
+        return Err(error);
+    }
+    operation.emit("grant.validated", serde_json::json!({"grant_event":grant.event,"duration_ms":util::now_ms().saturating_sub(checking)}));
     let meter = grant.meter(env, owner)?;
     meter
         .require_observation(&grant.event, Resource::DurableObject, "wall_ms")
         .await?;
     let started = util::now_ms();
     let result = work.await;
+    operation.emit("actor.work_completed", serde_json::json!({"grant_event":grant.event,"duration_ms":util::now_ms().saturating_sub(started),"status":result.as_ref().ok().map(|response|response.status_code())}));
     let observed = meter
         .record_wall_time(
             &grant.event,
@@ -471,6 +569,40 @@ where
         };
     }
     result
+}
+
+pub(crate) fn error_metadata(error: &Error, started: u64) -> serde_json::Value {
+    let kind = match error {
+        Error::D1(_) => "d1_error",
+        Error::SerdeJsonError(_) => "json_decode",
+        Error::SerdeWasmBindgenError(_) => "binding_decode",
+        Error::BindingError(_) => "binding_error",
+        Error::RustError(_) => "runtime_error",
+        _ => "platform_error",
+    };
+    let text = error.to_string();
+    let domain = match error {
+        Error::RustError(value)
+            if value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                && ["conversation_", "resource_", "invalid_", "d1_", "budget_"]
+                    .iter()
+                    .any(|prefix| value.starts_with(prefix)) =>
+        {
+            Some(value.as_str())
+        }
+        _ => None,
+    };
+    let code = if let Some(code) = domain {
+        code
+    } else if text.contains("blockConcurrencyWhile") {
+        "platform_concurrency_guard_timeout"
+    } else {
+        crate::routes::classify_error(&text).1
+    };
+    serde_json::json!({"error_type":kind,"error_code":code,"duration_ms":util::now_ms().saturating_sub(started)})
 }
 
 fn event(label: &str) -> Result<String> {

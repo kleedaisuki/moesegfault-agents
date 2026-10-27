@@ -285,3 +285,43 @@ clean integration checkout. It records zero embedding, vector-upload and
 language-model data calls. The next acceptance is exactly the existing small
 UTF-8 native SDK journey after the integration owner supplies a deployable green
 source; diagnostic-only Wasm is not a promotion candidate.
+
+
+## Native conversion MIME and diagnosis correction (2026-10-27)
+
+The first actual staging PDF upload (593 bytes, text layer) reached native
+conversion but failed before embedding. Its original attempt is not replayed.
+The prior SDK integration created an untyped Blob. Upstream workerd serializes
+`blob.type` to `files[].mimeType`, so an empty MIME is a real transport defect;
+its successful response also uses `mimeType`, not only legacy `mimetype`.
+
+The replacement uses the **same native AI binding's `fetch` method**, endpoint
+and JSON envelope implemented by [workerd ToMarkdownService](https://github.com/cloudflare/workerd/blob/main/src/cloudflare/internal/to-markdown-api.ts).
+It does not use global Fetch, an external API token, or an OCR/model fallback.
+PDF and Office types are determined from bounded actual container bytes. Embedded
+image conversion stays disabled. Legacy response spelling remains compatible,
+but conflicting MIME spellings fail rather than overriding one another.
+
+[The upstream wrapper](https://github.com/cloudflare/workerd/blob/main/src/cloudflare/internal/ai-api.ts)
+throws `AiInternalError` after reading non-success JSON, discarding status and
+headers. The native transport now preserves phase, actual HTTP status, request
+ID, Cloudflare ray, content type/encoding, declared and received bytes, input and
+response hashes, timing, body completeness, and a numeric upstream error code.
+Partial body evidence is preserved on interrupted reads; a response is never
+called complete merely because some bytes arrived. JSON parser line/column and
+validation errors are separately observable. Extraction metadata is persisted
+before decoding or publishing text, with original owner/source/generation and
+`dispatched` status fences. Migration 0030 is additive; 0025 is unchanged.
+
+Only bounded structured evidence is logged; provider messages, source document
+text, authorization and response bodies are not copied into shared traces.
+A nullable opaque `provider_receipt_id` reserves the link to separately encrypted
+recovery bodies. A null ID does **not** mean a raw body was retained. Native free
+text conversion does not fabricate model tokens from converter estimates.
+
+Focused proof source: `8ef93ab` plus `04f81b8`. Local SQL owner/generation and
+immutable first-receipt test passed (one test). Topic-only CI source `0a2a53f`
+is intentionally non-promoting: it runs two new Rust contracts and one new
+compiled-Worker rejected HTTP conversion, not the previously accepted UTF-8,
+PDF/DOCX, chunking, embedding, search or batch-funding journeys. Actual repaired
+Cloudflare PDF acceptance remains pending until the repaired Worker is deployed.
