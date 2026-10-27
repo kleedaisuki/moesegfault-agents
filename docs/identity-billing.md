@@ -591,3 +591,36 @@ account read returned 401. The owned legacy session/data were not resumed, rewri
 or deleted. No model execution, container startup, mailbox operation, account
 registration or Billing activation was requested. Receipts and downloaded user data
 remain in the protected task workspace, not repository documentation.
+
+### Public v0.3.0 production preservation acceptance
+
+On 2026-10-27, the actual release-profile Windows binary from native package run
+`40457558376` was used against the production Worker
+`6bb7e90f9c8b048f18c1d0152c777ac542551448`, deployed by `40464754760` attempt 2.
+Its BUILD-INFO remains the real `bb18283` producer; the unchanged native
+fingerprint, original ZIP and executable digests were verified before use.
+
+The original native credential could not refresh and was safely retired. The
+existing CLI diagnostic does not establish a precise HTTP refresh cause. One
+explicitly authorized normal Authorization Code/S256 PKCE/loopback sign-in then
+restored the same owned Free/live account. An unavailable Codex browser runtime
+was not bypassed through account APIs: the user authorized an alternate ordinary
+browser, and an isolated project-owned Edge context completed the normal flow.
+There was no password reset, new account, client registration or API-key issuance.
+
+The minimal read-only journey then independently checked production health and
+used the **original** Closed v0.1 session whose parent agent was soft-deleted.
+All twelve original source messages matched semantically; the compressed archive
+remained exactly 378 bytes, SHA-256
+`b938d678c4d98dee6a47f290c6f3189392e78850c94ac1e19ee381aeba9c08ef`.
+The selected known-file bytes also matched the original actual Bash result.
+Before/after Closed state, user-input timestamp/revision, snapshot and full journal
+were unchanged. Whole-owned-account model/container ledger counts remained 6/2;
+the administrative comparison SELECTs reported zero changes/rows written.
+Ordinary download resource charges were permitted, not mislabeled zero usage.
+
+No BFF regression suite, configuration publication, Billing activation/grant,
+model inference or container startup was executed. Private credentials, browser
+state, exported data and the success receipt remain in the owner/SYSTEM-only
+project-local acceptance directory, not Git. This is production preservation
+acceptance, not evidence that a GitHub tag or public download already existed.
