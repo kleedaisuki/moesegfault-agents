@@ -79,3 +79,46 @@ cover bounded grant parsing, injected labels and Session measurement ownership.
 Only formatting, syntax and focused SQLite tests were run locally. The new Worker
 artifact and end-to-end resource journey are validated by the root-owned Actions
 checkpoint; an older artifact cannot establish this implementation's behavior.
+
+## 2026-10-27: measured accounting round-trip amplification
+
+The actual `02d483b` staging recovery had metadata DELETE 22,392 ms and explicit
+purge 49,151 ms. Those two requests did not carry a trace header, so their internal
+phase attribution is unknown. The subsequent new, traced Context journey provides
+causal evidence without replaying the old request:
+
+- Trace `5b6427be404ea4644f44206dfef55648`, source `02d483b`.
+- Nineteen completed measured D1 operations total 63,315 ms: actual application
+  D1 RPCs 3,314 ms (5.2%), measurement admission 13,392 ms (21.2%), measurement
+  publication 46,609 ms (73.6%). Individual actual D1 queries took 165–194 ms.
+- `require_d1` performs four sequential D1 binding round trips; `record_d1`
+  performs fourteen more. Consequently one measured query costs nineteen D1
+  round trips despite having only one application query.
+
+Conversation operations now opt into `resources_d1_batch.rs`. Two observation
+admissions and their identity verification share one native D1 batch before the
+application effect. Actual `rows_read` and `rows_written` from its returned D1
+metadata are then recorded, ledger-checked and marked observed in one subsequent
+batch. A measured query therefore costs three binding round trips instead of
+nineteen. Other ResourceMeter callers remain unchanged.
+
+The same owner/session binding, pinned exact tariffs, immutable ledger event keys,
+append-budget triggers and pending-observation settlement fence are preserved.
+Ledger append and observed transition are now in a single transaction. An unknown
+application result remains pending; a lost accounting acknowledgement can retry
+that original event without charging or mutating the application twice. An
+existing conflicting ledger does not authorize marking its observation complete.
+
+Cloudflare documents native [D1 batch transactions](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch):
+ordered statements share one call and roll back together on error. There is no
+new custom SQL transaction protocol or financial state machine.
+
+Focused verification is `tests/test_d1_accounting_batch_sql.py` (seven new cases
+using the exact production SQL and every migration) plus
+`tests/worker/conversation-accounting-perf.test.mjs` (actual compiled Rust Worker,
+SDK management operations, D1, fixed 20 ms actor-DB round-trip delay; optional
+retained `02d483b` baseline via `MAGENTS_BASELINE_WORKER_DIR`). The latter verifies
+same logical work, metadata-delete retention, explicit physical purge, exact
+settlement and zero model/external calls. Fixed-delay figures are a controlled
+mechanism comparison, not a staging latency SLO. Compilation and actual Worker
+execution are required before claiming this implementation is accepted.
