@@ -1,0 +1,75 @@
+name: Image receipt recovery increment
+on:
+  push:
+    branches: [codex/image-recovery-verification]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: image-recovery-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  image-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c
+        with:
+          shared-key: worker
+          cache-all-crates: true
+          cache-on-failure: true
+      - run: cargo fmt --check
+      - name: Only new receipt, codec, emission and changed cleanup contracts
+        run: |
+          set -euo pipefail
+          mkdir -p .temp/image-recovery-verification
+          for selector in \
+            image_generation::observation::tests \
+            service_default_jpeg_keeps_completed_identity_cost_and_real_format \
+            image_diagnostics_survive_the_actual_emission_filter_without_raw_payloads \
+            provider_response_receipt::tests \
+            gc_diagnostics_keep_structured_chunk_failures_without_raw_messages \
+            cleanup_quote_uses_existing_tariffs_and_grows_with_accepted_slots; do
+            logfile=".temp/image-recovery-verification/${selector//:/_}.log"
+            cargo test --locked -p agents-worker --lib "$selector" -- --nocapture 2>&1 | tee "$logfile"
+            grep -Eq 'test result: ok\. [1-9][0-9]* passed' "$logfile"
+          done
+      - run: cargo install --locked worker-build --version 0.8.7
+      - run: worker-build --release
+        working-directory: crates/agents-worker
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node scripts/bundle-worker.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: worker
+          path: crates/agents-worker/build
+          retention-days: 7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Only new controlled recovery journeys; no paid endpoints
+        run: |
+          set -o pipefail
+          node --test --test-reporter=tap tests/worker/image-recovery.test.mjs 2>&1 | tee .temp/image-recovery-verification/journeys.log
+        env:
+          PYTHON: python3
+          MAGENTS_WORKER_SOURCE_SHA: ${{ github.sha }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: image-recovery-verification
+          include-hidden-files: true
+          path: |
+            .temp/image-recovery-verification
+            .temp/image-recovery-*/telemetry.json
+            .cache/v0.3-ci/image-recovery.json
+          retention-days: 14
