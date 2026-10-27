@@ -2804,6 +2804,38 @@ mod tests {
         Obfuscation::new(Seed::generate(), "resp_test")
     }
 
+    #[test]
+    fn steering_matches_current_public_response_not_funding_root() {
+        let mut response = response();
+        response.conversation = Some(
+            serde_json::from_value(json!({
+                "id":"conv_owned", "accepted_revision":1,
+                "capacity_generation":"generation_child", "prepared":false,
+            }))
+            .unwrap(),
+        );
+        let mut value = serde_json::to_value(super::super::tests::state()).unwrap();
+        value["run"] = json!({"id":"funded_parent","round":1,"admitted":true,
+            "total":Usage::default(),"pending_completion":null,"started_at_ms":0,
+            "response":response});
+        let state: PersistedSession = serde_json::from_value(value).unwrap();
+        let matches = |run, response, generation| {
+            super::conversations::same_conversation_input_epoch(&state, run, response, generation)
+        };
+        assert!(matches("funded_parent", "resp_test", "generation_child"));
+        assert!(!matches(
+            "funded_parent",
+            "funded_parent",
+            "generation_child"
+        ));
+        assert!(!matches("funded_parent", "resp_test", "generation_parent"));
+        assert!(!matches(
+            "different_funding",
+            "resp_test",
+            "generation_child"
+        ));
+    }
+
     proptest::proptest! {
         #[test]
         fn persisted_tagged_tools_restore_response_and_cold_session(score in 0.0f64..=1.0) {
