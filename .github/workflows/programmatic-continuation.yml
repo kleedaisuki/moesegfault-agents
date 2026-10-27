@@ -25,6 +25,9 @@ jobs:
           cache-on-failure: true
       - run: cargo fmt --check
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
+      - run: |
+          cargo test --locked -p agents-worker conversation_local_result_is_one_event_even_when_program_emits_a_trace -- --nocapture
+          cargo test --locked -p agents-worker steering_matches_current_public_response_not_funding_root -- --nocapture
       - run: cargo install --locked worker-build --version 0.8.7
       - run: worker-build --release
         working-directory: crates/agents-worker
