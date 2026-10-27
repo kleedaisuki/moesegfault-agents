@@ -173,7 +173,18 @@ jobs:
           cache-on-failure: true
       - run: cargo check --locked -p agents-worker --target wasm32-unknown-unknown
         if: needs.changes.outputs.worker_build == 'true'
-      - run: cargo install --locked worker-build --version 0.8.7
+      - name: Identify the exact Worker build tool
+        id: worker_build_tool
+        run: node scripts/worker-build-cache.mjs key
+        if: needs.changes.outputs.worker_build == 'true'
+      - name: Cache the installed Worker build tool
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        if: needs.changes.outputs.worker_build == 'true'
+        with:
+          path: .cache/toolchain/worker-build
+          key: ${{ steps.worker_build_tool.outputs.key }}
+      - name: Validate or install the exact Worker build tool
+        run: node scripts/worker-build-cache.mjs ensure
         if: needs.changes.outputs.worker_build == 'true'
       - run: worker-build --release
         if: needs.changes.outputs.worker_build == 'true'

@@ -86,6 +86,32 @@ adds its focused standalone contract or registers the exact shared-harness case.
 Release operations run only the new deployed journeys and documented failure
 repairs, with direct DeepSeek preflight for all paid language-model calls.
 
+## Installed Worker build-tool cache
+
+The normal Worker job caches `worker-build` 0.8.7 separately from compiled
+application artifacts. In the PDF repair run `40446113827`, installing this same
+locked tool cost several minutes before the release build; this was tool setup,
+not a repeat of accepted user journeys.
+
+`scripts/worker-build-cache.mjs` binds the cache to its schema/tool version,
+runner OS, architecture, image family and complete actual `rustc -vV` output.
+Application `Cargo.lock` changes do not invalidate this unrelated tool's own
+`cargo install --locked` dependency graph. There are no prefix restore keys.
+After restoration, the helper checks the saved identity, binary SHA-256 and
+the executable's exact `--version`; a missing/corrupt/incompatible entry falls
+back to the same locked installation with `--force`. The checksum establishes
+cache consistency, not independent package authenticity. The pinned official
+[actions/cache](https://github.com/actions/cache/tree/caa296126883cff596d87d8935842f9db880ef25)
+provides repository/branch-scoped storage; normal dependency trust remains Cargo's.
+
+Only `.cache/toolchain/worker-build` is cached, never a user environment or the
+Worker output. Existing exact-source artifact and incremental-acceptance gates
+are unchanged. Cache validation still runs on an exact cache hit. The new four
+focused Node contracts cover identities, first installation, validated reuse,
+repair and workflow wiring without installing/building Rust locally. Actual
+hosted warm-cache installation-time savings require the next normal Worker run;
+no before/after speedup is claimed from these contracts.
+
 ## Local checks
 
 ```sh
