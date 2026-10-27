@@ -9,6 +9,12 @@ use worker::{Conditional, Env, Error, HttpMetadata, Object, Result};
 
 use crate::{image_artifacts::IoAttempt, resources::ResourceMeter};
 
+#[path = "provider_response_capacity.rs"]
+mod capacity;
+pub(crate) use capacity::{
+    Retention, finalize_capacity, lookup, register_prepared, release_capacity, reserve_capacity,
+};
+
 pub(crate) const MAX_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 const CHUNK_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_ENCRYPTED_RESPONSE_BYTES: usize =
@@ -81,6 +87,10 @@ impl StoredResponse {
             chunks: chunk_count(body.len()),
             meta: meta.clone(),
         })
+    }
+
+    pub(crate) fn id(&self) -> Result<String> {
+        Ok(hash(&serde_json::to_vec(self)?))
     }
 
     pub(crate) fn sha256(&self) -> &str {
@@ -177,6 +187,7 @@ pub(crate) async fn store_prepared(
 ) -> Result<()> {
     receipt.validate(owner, operation)?;
     check_body(receipt, body)?;
+    register_prepared(env, owner, operation, receipt).await?;
     meter.require_tariff(&Resource::R2Storage, "byte_ms")?;
     meter.require_tariff(&Resource::R2Operation, "class_a")?;
     meter.require_tariff(&Resource::R2Operation, "class_b")?;
@@ -351,6 +362,7 @@ pub(crate) async fn delete(
             .map_err(|_| chunk_error("delete_failed", index))?;
         crate::reconcile::remove_storage_object(env, &key, crate::util::now_ms()).await?;
     }
+    capacity::deleted(env, owner, operation, receipt).await?;
     Ok(())
 }
 
