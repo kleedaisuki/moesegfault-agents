@@ -28,6 +28,7 @@ mod deepseek_tokenizer;
 mod execution_leases;
 mod exports;
 mod file_index;
+mod file_index_actor;
 mod file_index_scheduler;
 mod file_ingest;
 mod file_search;
@@ -98,6 +99,7 @@ mod workspace_versions;
 
 pub use auth::AuthSession;
 pub use conversation_state::ConversationState;
+pub use file_index_actor::FileIngest;
 pub use model_operation::ModelOperation;
 pub use session::{Session, Session4G};
 use worker::*;

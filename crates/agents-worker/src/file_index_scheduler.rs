@@ -49,7 +49,16 @@ pub(crate) async fn run(env: &Env) -> Result<()> {
     let jobs=env.d1("DB")?.prepare("SELECT vf.account_id,vf.vector_store_id,vf.file_id,vf.generation,vf.service_profile_json FROM vector_store_files vf WHERE vf.status='in_progress' AND vf.funding_blocked=0 AND vf.removed_at IS NULL AND vf.retry_at<=CAST(?1 AS INTEGER) AND vf.lease_until<=CAST(?1 AS INTEGER) ORDER BY vf.retry_at,vf.created_at LIMIT 4")
         .bind(&[util::now_ms().to_string().into()])?.all().await?.results::<Job>()?;
     for job in jobs {
-        if run_job(env, &job, util::now_ms() + 25000).await.is_err() {
+        if crate::file_index_actor::enqueue(
+            env,
+            &job.account_id,
+            &job.vector_store_id,
+            &job.file_id,
+            &job.generation,
+        )
+        .await
+        .is_err()
+        {
             util::emit("file_search.ingest_deferred", serde_json::json!({}));
             // Unfunded/operator-blocked jobs must not monopolize the bounded
             // cross-account queue. This scheduling update is platform overhead;
@@ -68,21 +77,38 @@ pub(crate) async fn kickoff(
     store: String,
     file: Option<String>,
 ) -> Result<()> {
-    let deadline = util::now_ms() + 26000;
     let file = file
         .map(wasm_bindgen::JsValue::from)
         .unwrap_or(wasm_bindgen::JsValue::NULL);
-    let jobs=env.d1("DB")?.prepare("SELECT account_id,vector_store_id,file_id,generation,service_profile_json FROM vector_store_files WHERE account_id=?1 AND vector_store_id=?2 AND (?3 IS NULL OR file_id=?3) AND status='in_progress' AND funding_blocked=0 AND removed_at IS NULL AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) ORDER BY retry_at,created_at LIMIT 4")
+    let jobs=env.d1("DB")?.prepare("SELECT account_id,vector_store_id,file_id,generation,service_profile_json FROM vector_store_files WHERE account_id=?1 AND vector_store_id=?2 AND (?3 IS NULL OR file_id=?3) AND status='in_progress' AND funding_blocked=0 AND removed_at IS NULL AND retry_at<=CAST(?4 AS INTEGER) ORDER BY retry_at,created_at LIMIT 4")
         .bind(&[owner.as_str().into(),store.as_str().into(),file,util::now_ms().to_string().into()])?.all().await?.results::<Job>()?;
     for job in jobs {
-        if util::now_ms() + 2000 >= deadline {
-            break;
-        }
-        if run_job(&env, &job, deadline).await.is_err() {
-            util::emit("file_search.kickoff_deferred", serde_json::json!({}));
-        }
+        crate::file_index_actor::enqueue(
+            &env,
+            &job.account_id,
+            &job.vector_store_id,
+            &job.file_id,
+            &job.generation,
+        )
+        .await?;
     }
     settle_terminal(&env, Some(&owner)).await
+}
+
+pub(crate) async fn run_alarm(
+    env: &Env,
+    owner: &str,
+    store: &str,
+    file: &str,
+    generation: &str,
+) -> Result<()> {
+    let now = util::now_ms();
+    let job=env.d1("DB")?.prepare("SELECT account_id,vector_store_id,file_id,generation,service_profile_json FROM vector_store_files WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?5 AND status='in_progress' AND funding_blocked=0 AND removed_at IS NULL AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER)")
+        .bind(&[owner.into(),store.into(),file.into(),now.to_string().into(),generation.into()])?.first::<Job>(None).await?;
+    if let Some(job) = job {
+        run_job(env, &job, now + 480_000).await?;
+    }
+    settle_terminal(env, Some(owner)).await
 }
 
 async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
@@ -113,31 +139,31 @@ async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
     let meter = funding.meter(env, &job.account_id)?;
     file_ingest::preflight(&profile, &meter)?;
     let event = format!("ingest:{attempt}");
-    let wall = format!("{event}:worker");
+    let wall = format!("{event}:durable");
     meter
-        .require_observation(&wall, agents_auth::billing::Resource::Worker, "wall_ms")
+        .require_observation(
+            &wall,
+            agents_auth::billing::Resource::DurableObject,
+            "wall_ms",
+        )
         .await?;
     let started = util::now_ms();
     invalidate_source(env, job, &meter, &format!("{event}:invalidate")).await?;
-    let task = Box::pin(file_vector::ingest_turn(
+    // An alarm has a fifteen-minute platform lifetime. Stop admitting batches
+    // at the cooperative deadline, never drop an effect or its durable receipt.
+    let outcome = file_vector::ingest_turn(
         env,
         &profile,
         &job.account_id,
         &job.vector_store_id,
         &job.file_id,
+        &job.generation,
         1,
+        deadline,
         &meter,
         &event,
-    ));
-    let timer = Box::pin(worker::Delay::from(std::time::Duration::from_millis(
-        deadline.saturating_sub(util::now_ms()),
-    )));
-    let outcome = match futures::future::select(task, timer).await {
-        futures::future::Either::Left((outcome, _)) => outcome,
-        futures::future::Either::Right(_) => Err(worker::Error::RustError(
-            "file_search_ingest_turn_timeout".into(),
-        )),
-    };
+    )
+    .await;
     if outcome.is_err() {
         let release = format!("{event}:failed_turn");
         meter.require_d1(&release).await?;
@@ -148,7 +174,7 @@ async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
     meter
         .record_wall_time(
             &wall,
-            agents_auth::billing::Resource::Worker,
+            agents_auth::billing::Resource::DurableObject,
             started,
             util::now_ms(),
         )
@@ -156,7 +182,7 @@ async fn run_job(env: &Env, job: &Job, deadline: u64) -> Result<()> {
     if outcome.is_err() {
         util::emit(
             "file_search.ingest_deferred",
-            serde_json::json!({"operation":run}),
+            serde_json::json!({"operation_id":run,"error_code":outcome.as_ref().err().and_then(|error| match error {worker::Error::RustError(code)=>Some(code.as_str()),_=>None})}),
         );
     }
     // A completed bounded turn releases its unused I/O reserve even while the

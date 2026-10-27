@@ -269,7 +269,12 @@ fn event_name(event: &str) -> &str {
         | "workspace.checkpoint"
         | "workspace.restored"
         | "diagnostics.accepted" => event,
-        event if event.starts_with("conversation.") && token(event, 96) => event,
+        event
+            if (event.starts_with("conversation.") || event.starts_with("file_search."))
+                && token(event, 96) =>
+        {
+            event
+        }
         _ => "operation",
     }
 }
