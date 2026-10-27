@@ -140,13 +140,15 @@ try {
     const executed = await invoke('new_tool_after_compact',
       `Use bash once to write file ${report.filename} containing exactly ${report.marker}, then read it back. Include your configured policy label and the file content in the final answer.`,
       { tool_choice: { type: 'function', name: 'bash' }, max_tool_calls: 1 });
-    assert.ok(executed.text.startsWith(report.new_label));
+    assert.ok(executed.text.trimStart().startsWith(report.new_label));
     assert.ok(executed.text.includes(report.marker));
     session = await request(`/v1/sessions/${report.session_id}`);
     assertEffective(session, next.revision, report.new_label, ['bash']);
     const fresh = session.messages.slice(journalStart);
     const calls = fresh.flatMap(message => message.tool_calls ?? []);
     assert.equal(calls.length, 1); assert.equal(calls[0].function.name, 'bash');
+    const command = JSON.parse(calls[0].function.arguments).command;
+    assert.ok(command.includes(report.filename) && command.includes(report.marker));
     const output = fresh.find(message => message.role === 'tool' && message.tool_call_id === calls[0].id);
     assert.ok(output, 'Require the actual executed tool result, not only model prose');
     const result = JSON.parse(output.content);
