@@ -54,11 +54,14 @@ function delayedDatabase(target, state, delay) {
   const originals=new WeakMap(), sources=new WeakMap();
   const statement=(value, sql)=> {
     const wrapped=new Proxy(value,{get(object,key){
+      if(key==='constructor')return object.constructor;
+      if(['first','all','run','raw'].includes(key))return async(...args)=>{state.lastQuery=sql.slice(0,120);return object[key](...args)};
       if(key==='bind') return (...args)=>statement(object.bind(...args),sql);
       const result=Reflect.get(object,key,object);return typeof result==='function'?result.bind(object):result;
     }}); originals.set(wrapped,value);sources.set(wrapped,sql);return wrapped;
   };
   return new Proxy(target,{get(object,key){
+    if(key==='constructor')return object.constructor;
     if(key==='prepare')return sql=>statement(object.prepare(sql),sql);
     if(key==='batch')return async statements=>{
       const results=await object.batch(statements.map(item=>originals.get(item)??item));
@@ -73,12 +76,13 @@ function delayedDatabase(target, state, delay) {
 }
 export class FileIngest extends RustFileIngest {
   constructor(ctx,env){
-    const state={delays:0,knownVectorsCommitted:false};
+    const state={delays:0,knownVectorsCommitted:false,alarmStarts:0,alarmErrors:[]};
     super(ctx,{...bindings(env),DB:delayedDatabase(env.DB,state,Number(env.INGEST_ACK_DELAY_MS??0))});
-    this.receiptState=state;
+    this.receiptState=state;this.fixtureStorage=ctx.storage;
   }
+  async alarm(){this.receiptState.alarmStarts++;try{return await super.alarm()}catch(error){this.receiptState.alarmErrors.push(String(error));throw error}}
   async fetch(request){
-    if(new URL(request.url).pathname==='/__fixture/status')return Response.json(this.receiptState);
+    if(new URL(request.url).pathname==='/__fixture/status')return Response.json({...this.receiptState,alarmAt:await this.fixtureStorage.getAlarm()});
     return super.fetch(request);
   }
 }
