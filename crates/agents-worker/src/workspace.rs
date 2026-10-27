@@ -723,6 +723,46 @@ impl<'a> Workspace<'a> {
             .await
     }
 
+    /// A dispatch budget reservation is not an issued effect. Configuration
+    /// revocation must let these existing operation fences reconcile first.
+    pub(crate) async fn operation_issued(&self, name: &str, operation: &str) -> Result<bool> {
+        let storage = self.state.storage();
+        match name {
+            "bash" => Ok(storage
+                .get::<String>(&format!("workspace:dispatch:{}", digest_key(operation)))
+                .await?
+                .is_some()),
+            "workspace_commit" => Ok(crate::workspace_versions::find_operation(
+                self.env,
+                &self.owner,
+                &self.session,
+                operation,
+            )
+            .await?
+            .is_some()
+                || crate::workspace_versions::pending_upload(
+                    self.env,
+                    &self.owner,
+                    &self.session,
+                    operation,
+                )
+                .await?
+                .is_some()),
+            "workspace_restore" => Ok(storage
+                .get::<Value>(&format!(
+                    "workspace:restore-result:{}",
+                    digest_key(operation)
+                ))
+                .await?
+                .is_some()
+                || storage
+                    .get::<VersionRestore>(VERSION_RESTORE)
+                    .await?
+                    .is_some_and(|intent| intent.operation == operation)),
+            _ => Ok(false),
+        }
+    }
+
     pub async fn execute_bash_with_id(&self, execution_id: &str, mut args: Value) -> Result<Value> {
         self.restore_if_needed().await?;
         let object = args

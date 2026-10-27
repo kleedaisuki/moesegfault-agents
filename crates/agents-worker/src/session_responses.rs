@@ -594,7 +594,9 @@ impl SessionInner {
         if let Some(existing) = self.read_response(&create.response_id).await? {
             return self.existing_response(existing, &request).await;
         }
-        self.refresh_configuration().await?;
+        if self.snapshot()?.run.is_none() {
+            self.refresh_configuration().await?;
+        }
         self.prepare_conversation_execution(&request, &create.response_id, &mut create.execution)
             .await?;
         if self.branch_dispatched(&create.response_id).await? {

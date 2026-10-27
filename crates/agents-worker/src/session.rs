@@ -675,7 +675,9 @@ impl DurableObject for Session {
                     .await
             }
             (Method::Post, "/run") => {
-                inner.refresh_configuration().await?;
+                if inner.snapshot()?.run.is_none() {
+                    inner.refresh_configuration().await?;
+                }
                 if inner.snapshot()?.has_pending_client_tools() {
                     return util::json_error(
                         409,
@@ -2035,7 +2037,7 @@ impl SessionInner {
                 .any(|tool| tool.name == call.function.name)
         {
             return Ok(hosted_publication::HostedDispatch::Ready(json!({"error":{
-                "code":"tool_revoked","message":"This registered tool is not enabled by the current Agent configuration; no tool was executed."
+                "code":"tool_revoked","message":"This registered tool is not enabled by the current Agent configuration; no new execution was dispatched after revocation."
             }}).to_string().into()));
         }
         let trace = crate::telemetry::TraceContext::from_traceparent(

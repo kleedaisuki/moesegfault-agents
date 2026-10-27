@@ -12,10 +12,34 @@ fn boundary(run: &RunState) -> bool {
 }
 
 impl SessionInner {
+    async fn issued_configuration_effect(&self, data: &PersistedSession) -> Result<bool> {
+        let Some(run) = &data.run else {
+            return Ok(false);
+        };
+        let Some(call) = next_tool(&data.messages, run.response.as_ref()) else {
+            return Ok(false);
+        };
+        if !matches!(
+            tools::tool_kind(&call.function.name),
+            Some(tools::ToolKind::Workspace | tools::ToolKind::Persistence)
+        ) {
+            return Ok(false);
+        }
+        self.workspace(&data.record)
+            .operation_issued(
+                &call.function.name,
+                &execution_key(&run.id, run.round, &call.id),
+            )
+            .await
+    }
+
     pub(super) async fn refresh_configuration(&self) -> Result<()> {
         loop {
             let before = self.snapshot()?;
             if before.run.as_ref().is_some_and(|run| !boundary(run)) {
+                return Ok(());
+            }
+            if self.issued_configuration_effect(&before).await? {
                 return Ok(());
             }
             let cursor = before.record.configuration_revision();
@@ -48,6 +72,9 @@ impl SessionInner {
             let guard = self.persistence.lock().await;
             let mut data = self.snapshot()?;
             if data.run.as_ref().is_some_and(|run| !boundary(run)) {
+                return Ok(());
+            }
+            if self.issued_configuration_effect(&data).await? {
                 return Ok(());
             }
             if data.record.configuration_revision() != cursor {
