@@ -442,3 +442,41 @@ It must prove unchanged business SQL count, actual application D1 row quantities
 pinned exact D1 charges, zero remaining holds and zero external/model/embedding
 calls. The already accepted Conversation benchmark and seven SQL tests are not
 rerun. Controlled timing is not a real-Cloudflare latency SLO.
+
+### Exact-artifact queued management result
+
+The new comparison passed in Actions
+[40451832914](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40451832914),
+verification artifact `12710947179`, using the exact Worker artifact `12710153193`
+from build `40450871131`, source `4f11e42b781d5aa39907b538158f063a8882d958`.
+The new structural telemetry Rust contract passed in that original build and was
+not rerun. Only the new queued-file benchmark ran against its retained Wasm after
+correcting the fixture's Ai binding constructor; the initial baseline rejected a
+plain Object before the optimized Worker ran. No production inference failed.
+
+Both actual Rust Workers use native D1/R2 and the same fixed 20 ms request DB-call
+delay. The baseline is the accepted Conversation-batched `7ed1653` Worker from
+`40447050803`, artifact `12709510201`; the relevant file-management source files
+are byte-identical to this topic's `39d1175` starting point.
+
+| Operation | Baseline elapsed | Batched elapsed | DB round trips | Business SQL statements |
+| --- | ---: | ---: | ---: | ---: |
+| Create store | 2,570.79 ms | 648.27 ms | 75 -> 27 | 7 -> 7 |
+| Attach queued file | 2,646.46 ms | 803.05 ms | 114 -> 34 | 10 -> 10 |
+| Poll membership | 1,325.55 ms | 584.64 ms | 57 -> 25 | 7 -> 7 |
+| List memberships | 1,317.25 ms | 564.68 ms | 56 -> 24 | 6 -> 6 |
+| Detach | 1,321.26 ms | 587.10 ms | 57 -> 25 | 7 -> 7 |
+| Delete store | 858.11 ms | 498.05 ms | 37 -> 21 | 5 -> 5 |
+
+Application D1 quantities were identical on both sides: 42 rows read and 19 rows
+written. Immutable D1 ledger charges were exactly 17 + 19 = 36 microUSD on each
+side; this is **D1 cost only**, not the journey's total including real upload,
+retained-byte intervals and measured Worker wall time. Both sides ended with zero
+pending observations, reserved holds, file chunks and external/model calls.
+
+Upload remained 30 DB round trips on both sides (739.84 vs 736.20 ms); that small
+elapsed difference is not an upload optimization claim. Background ingestion was
+explicitly deferred, so no PDF conversion, embedding, Vectorize call or original
+paid operation was replayed. These figures are the controlled mechanism result,
+not a measured Cloudflare production/staging SLO. A subsequent composed field
+operation can consume the new preserved phase metadata without another model.
