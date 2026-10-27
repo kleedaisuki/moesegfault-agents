@@ -407,3 +407,32 @@ ordering contracts passed for authenticated 200/unknown canonical identifiers,
 401/redirect/malformed JSON and UTF-8/empty lists, body/time bounds, and the absence
 of any Cloudflare access after a rejected key. No real production credential
 request, provider inference or production mutation was made for this change.
+
+## Protected production preparation: exact authentication boundary
+
+The first authorized standard production run `40464754760`, immutable source
+`6bb7e90f9c8b048f18c1d0152c777ac542551448` / normal CI `40463892529`, stopped
+at dependency preparation before any production mutation or code rollout.
+
+| Read-only preparation boundary | Actual result |
+| --- | --- |
+| Official nonbillable DeepSeek `GET /models` with the new production-selected key | HTTP 200, valid nonempty model list, 464 ms, 802 bytes; response SHA256 `b4a502059eb2dafad6380e0a57b2debf31219ae859cba9f0e019d48ae473be2f`; no inference, balance inspection or credential value logging |
+| Cloudflare existing Worker settings with the deployment token | HTTP 200, 309 ms, 7,466 bytes; request/ray `a50fd76b68adb84e-LAX` |
+| Cloudflare isolated production Vectorize index metadata with that same token | HTTP 403, error 10000 `Authentication error`, 119 ms, 206 bytes; request/ray `a50fd76d2de8b84e-LAX`; response SHA256 `44300b92a98f1236205d3110c9cbf50911110e2996ca2a0f692766afb7fd8013` |
+
+This separates a valid DeepSeek credential and working Worker-settings access
+from missing Vectorize access; it is not a blanket provider/application failure.
+No index creation, DeepSeek secret pre-put, D1 migration, full Worker deployment,
+model invocation, container acceptance or public release occurred. Existing
+Identity, Data and OpenRouter credentials were not changed. The failure and
+all successful earlier read-only observations are preserved together in the
+uploaded `dependency-preparation.json`, not reduced to a generic error message.
+
+The remedy is to retain existing deployment-token permissions and add the
+required Vectorize Read/Edit access for the intended account, updating the
+appropriate GitHub `CLOUDFLARE_API_TOKEN` secret without sharing its value in chat.
+Do not bypass the protected workflow using a more privileged local OAuth token,
+perform a local production mutation, or blindly rerun the failed job. A subsequent
+single standard run requires explicit root authorization after the credential
+configuration change is confirmed. The old production source stays authoritative
+until a later deployment actually succeeds.
