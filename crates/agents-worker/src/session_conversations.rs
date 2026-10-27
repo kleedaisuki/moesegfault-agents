@@ -85,7 +85,7 @@ fn publication_items(input: &[Value], output: &[Value]) -> Vec<Value> {
         ) && input.iter().any(|supplied| {
             ["type", "call_id", "caller", "output"]
                 .iter()
-                    .all(|field| supplied[*field] == item[*field])
+                .all(|field| supplied[*field] == item[*field])
         })
     };
     input
