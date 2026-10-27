@@ -10227,5 +10227,184 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "4f8f19fb245458cf8dd4023ae88d085e6e8790d9",
+    "run_id": "40453269200",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12712250286,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "1c693300c9822192d65554c02e6feb089bbc37ee",
+      "receipts": [
+        {
+          "source_sha": "4f8f19fb245458cf8dd4023ae88d085e6e8790d9",
+          "run_id": "40453269200",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal joint build plus four new Image/MCP Rust, corrected timestamp SQL, metadata-only MCP SDK and five configured-production checks passed. Actual separate operators on this Worker closed nativeLoader2453/MCP737/Image18317/autoContext322microdollars; no paid replay"
+        },
+        {
+          "source_sha": "7c834df093ca0f9f90d387ba7094fcdb8be8779e",
+          "run_id": "40452835894",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Original aggregate failed only on new performance fixture tail; new central default D1 legacy compatibility four Account/Session/half-receipt scenarios passed; no prior Convo/Files tests replayed"
+        },
+        {
+          "source_sha": "1db912893dd2c336fb52ab7bfac4fce8c093dea4",
+          "run_id": "40454016130",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Only corrected new fixed-RTT native program comparison on exact retained Worker12711631722: same68SQL/read94/write47/71D1microdollars/native2000+1+2, no pending money or external/model calls"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "1c693300c9822192d65554c02e6feb089bbc37ee",
+      "receipts": [
+        {
+          "source_sha": "4f8f19fb245458cf8dd4023ae88d085e6e8790d9",
+          "run_id": "40453269200",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal joint build plus four new Image/MCP Rust, corrected timestamp SQL, metadata-only MCP SDK and five configured-production checks passed. Actual separate operators on this Worker closed nativeLoader2453/MCP737/Image18317/autoContext322microdollars; no paid replay"
+        },
+        {
+          "source_sha": "7c834df093ca0f9f90d387ba7094fcdb8be8779e",
+          "run_id": "40452835894",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Original aggregate failed only on new performance fixture tail; new central default D1 legacy compatibility four Account/Session/half-receipt scenarios passed; no prior Convo/Files tests replayed"
+        },
+        {
+          "source_sha": "1db912893dd2c336fb52ab7bfac4fce8c093dea4",
+          "run_id": "40454016130",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Only corrected new fixed-RTT native program comparison on exact retained Worker12711631722: same68SQL/read94/write47/71D1microdollars/native2000+1+2, no pending money or external/model calls"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "1c693300c9822192d65554c02e6feb089bbc37ee",
+      "receipts": [
+        {
+          "source_sha": "4f8f19fb245458cf8dd4023ae88d085e6e8790d9",
+          "run_id": "40453269200",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal joint build plus four new Image/MCP Rust, corrected timestamp SQL, metadata-only MCP SDK and five configured-production checks passed. Actual separate operators on this Worker closed nativeLoader2453/MCP737/Image18317/autoContext322microdollars; no paid replay"
+        },
+        {
+          "source_sha": "7c834df093ca0f9f90d387ba7094fcdb8be8779e",
+          "run_id": "40452835894",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Original aggregate failed only on new performance fixture tail; new central default D1 legacy compatibility four Account/Session/half-receipt scenarios passed; no prior Convo/Files tests replayed"
+        },
+        {
+          "source_sha": "1db912893dd2c336fb52ab7bfac4fce8c093dea4",
+          "run_id": "40454016130",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Only corrected new fixed-RTT native program comparison on exact retained Worker12711631722: same68SQL/read94/write47/71D1microdollars/native2000+1+2, no pending money or external/model calls"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "1c693300c9822192d65554c02e6feb089bbc37ee",
+      "receipts": [
+        {
+          "source_sha": "4f8f19fb245458cf8dd4023ae88d085e6e8790d9",
+          "run_id": "40453269200",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal joint build plus four new Image/MCP Rust, corrected timestamp SQL, metadata-only MCP SDK and five configured-production checks passed. Actual separate operators on this Worker closed nativeLoader2453/MCP737/Image18317/autoContext322microdollars; no paid replay"
+        },
+        {
+          "source_sha": "7c834df093ca0f9f90d387ba7094fcdb8be8779e",
+          "run_id": "40452835894",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Original aggregate failed only on new performance fixture tail; new central default D1 legacy compatibility four Account/Session/half-receipt scenarios passed; no prior Convo/Files tests replayed"
+        },
+        {
+          "source_sha": "1db912893dd2c336fb52ab7bfac4fce8c093dea4",
+          "run_id": "40454016130",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Only corrected new fixed-RTT native program comparison on exact retained Worker12711631722: same68SQL/read94/write47/71D1microdollars/native2000+1+2, no pending money or external/model calls"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "4f8f19fb245458cf8dd4023ae88d085e6e8790d9",
+    "run_id": "40453269200",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "1c693300c9822192d65554c02e6feb089bbc37ee",
+      "receipts": [
+        {
+          "source_sha": "4f8f19fb245458cf8dd4023ae88d085e6e8790d9",
+          "run_id": "40453269200",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal joint build plus four new Image/MCP Rust, corrected timestamp SQL, metadata-only MCP SDK and five configured-production checks passed. Actual separate operators on this Worker closed nativeLoader2453/MCP737/Image18317/autoContext322microdollars; no paid replay"
+        },
+        {
+          "source_sha": "7c834df093ca0f9f90d387ba7094fcdb8be8779e",
+          "run_id": "40452835894",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Original aggregate failed only on new performance fixture tail; new central default D1 legacy compatibility four Account/Session/half-receipt scenarios passed; no prior Convo/Files tests replayed"
+        },
+        {
+          "source_sha": "1db912893dd2c336fb52ab7bfac4fce8c093dea4",
+          "run_id": "40454016130",
+          "reference": "docs/programmatic-metering.md",
+          "scope": "Only corrected new fixed-RTT native program comparison on exact retained Worker12711631722: same68SQL/read94/write47/71D1microdollars/native2000+1+2, no pending money or external/model calls"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:production-dependency-preparation",
+          "argv": [
+            "node",
+            "--test",
+            "scripts/prepare-deployment-dependencies.test.mjs"
+          ],
+          "env": {},
+          "reason": "Only five new fake-Cloudflare/stdin/order production dependency-preparation contracts; no actual production mutation or old configured/runtime journey"
+        }
+      ]
+    }
   }
 ]
