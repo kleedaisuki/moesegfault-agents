@@ -23,7 +23,7 @@ struct Frame {
     descriptor_json: String,
 }
 
-pub(super) async fn run(env: &Env) -> Result<()> {
+pub(crate) async fn run(env: &Env) -> Result<()> {
     let now = crate::util::now_ms();
     let rows=env.d1("DB")?.prepare("SELECT account_id,operation_id FROM provider_response_operations WHERE state IN ('diagnostic','deleting') AND expires_at_ms<=CAST(? AS INTEGER) AND gc_lease_until_ms<=CAST(? AS INTEGER) ORDER BY expires_at_ms,account_id,operation_id LIMIT 16")
         .bind(&[text(&now.to_string()),text(&now.to_string())])?.all().await?.results::<Candidate>()?;
