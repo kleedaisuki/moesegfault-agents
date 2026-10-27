@@ -263,3 +263,67 @@ export async function runProgrammaticApproval(context) {
   ].sort());
   return {public_responses:3,model_calls:2,approved_remote_calls:1,denied_remote_calls:0,fresh_credentials:true,one_use_approval:true,originating_program_fetches:1};
 }
+
+export async function runProgrammaticConversation(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'programmatic-conversation', [
+    { output: [program('const nonce=Math.random(); const value=await tools.local({nonce}); text(JSON.stringify({nonce,value}));')] },
+    { output: [answer], check(body) {
+      const outputs = body.input.filter(item => item.type === 'function_call_output');
+      assert.equal(outputs.length, 1);
+      assert.equal(outputs[0].call_id, 'private-program-call');
+      assert.equal(JSON.stringify(body.input).split('CONVERSATION-PROGRAM-ORIGINAL').length - 1, 1);
+    } },
+  ]);
+  await scenario.principal.browser('GET', '/v1/account');
+  const conversation = await scenario.client.conversations.create();
+  const tools = [{ type: 'programmatic_tool_calling' }, { type: 'function', name: 'local',
+    allowed_callers: ['programmatic'], strict: true,
+    parameters: { type: 'object', properties: { nonce: { type: 'number' } }, required: ['nonce'], additionalProperties: false } }];
+  const base = { model: scenario.agent.id, conversation: conversation.id, tools, max_tool_calls: 2 };
+  async function invoke(body, key) {
+    const wire = await scenario.client.responses.create({ ...body, stream: true }, {
+      headers: { 'Idempotency-Key': key },
+    }).asResponse();
+    const events = await collectNativeEvents(wire);
+    if (scenario.state.failure) throw scenario.state.failure;
+    const value = events.findLast(event => event.type === 'response.completed')?.response;
+    assert.ok(value, JSON.stringify(events.findLast(event => event.type === 'response.failed')?.response?.error));
+    context.validateWire(value, events);
+    assert.deepEqual(await (await scenario.client.responses.retrieve(value.id).asResponse()).json(), value);
+    return value;
+  }
+  const first = await invoke({ ...base, input: 'CONVERSATION-PROGRAM-ORIGINAL' }, 'program-conversation-first');
+  const call = first.output.find(item => item.type === 'function_call');
+  assert.ok(call?.caller);
+  const nonce = JSON.parse(call.arguments).nonce;
+  const before = (await scenario.client.conversations.items.list(conversation.id, { order: 'asc' })).data;
+  assert.equal(before.filter(item => item.id === call.id).length, 1);
+  const body = { ...base, input: [{ type: 'function_call_output', call_id: call.call_id, caller: call.caller, output: 'local-value' }] };
+  const last = await invoke(body, 'program-conversation-result');
+  const output = last.output.find(item => item.type === 'program_output');
+  assert.equal(output?.status, 'completed', output?.result);
+  assert.deepEqual(JSON.parse(output.result), { nonce, value: 'local-value' });
+  assert.equal(first.usage.total_tokens, 150);
+  assert.equal(last.usage.total_tokens, 150);
+  assert.equal(scenario.state.calls, 2);
+  const items = (await scenario.client.conversations.items.list(conversation.id, { order: 'asc' })).data;
+  assert.equal(new Set(items.map(item => item.id)).size, items.length);
+  assert.equal(items.filter(item => item.id === call.id).length, 1);
+  assert.equal(items.filter(item => item.id === output.id).length, 1);
+  assert.equal(items.filter(item => item.type === 'function_call_output' && item.call_id === call.call_id).length, 1);
+  assert.deepEqual(await invoke(body, 'program-conversation-result'), last);
+  assert.equal(scenario.state.calls, 2);
+  assert.deepEqual((await scenario.client.conversations.items.list(conversation.id, { order: 'asc' })).data, items);
+  assert.deepEqual(await (await scenario.client.responses.retrieve(first.id).asResponse()).json(), first);
+  const escrows = await context.db.prepare(`SELECT response_id,state,remaining_bytes FROM conversation_response_capacity
+    WHERE account_id=? AND conversation_id=? ORDER BY response_id`).bind(scenario.principal.owner, conversation.id).all();
+  assert.deepEqual(escrows.results, [first.id, last.id].sort().map(response_id => ({ response_id, state: 'converted', remaining_bytes: 0 })));
+  const runs = await context.db.prepare(`SELECT id,state FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'resources:%'`)
+    .bind(scenario.principal.owner).all();
+  assert.deepEqual(runs.results, [{ id: first.id, state: 'settled' }]);
+  assert.deepEqual((await charges(context.db, scenario.principal.owner)).map(row => [row.unit, Number(row.quantity), Number(row.amount_microusd)]).sort(), [
+    ['dynamic_worker_cpu_slot_100ms', 1, 2], ['dynamic_worker_creation_day', 1, 2000], ['dynamic_worker_request', 1, 1],
+  ].sort());
+  return { public_responses: 2, model_calls: 2, native_heap_nonce_preserved: true, conversation_predecessor_without_explicit_parent: true,
+    converted_output_escrows: 2, immutable_published_items: true, originating_program_fetches: 1, one_funded_execution: true };
+}
