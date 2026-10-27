@@ -260,6 +260,7 @@ fn validate_reasoning(reasoning: &Value) -> Result<(), String> {
 }
 
 /// Never serialize or Debug this object: API keys must not enter session state or logs.
+#[derive(Clone)]
 pub struct ProviderConfig {
     pub protocol: ProviderProtocol,
     pub base_url: String,
