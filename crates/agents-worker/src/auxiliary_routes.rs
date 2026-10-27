@@ -1,11 +1,12 @@
 //! Authenticated edge dispatch after the shared Responses context resolver.
 
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use worker::{Env, Method, Request, RequestInit, Response, Result};
 
 use crate::{
-    model_operation::{PreparedCompact, operation_id},
+    model_operation::{CompactLookup, PreparedCompact, operation_id},
     observer_transport, util,
 };
 
@@ -43,6 +44,13 @@ async fn execute(
     let is_compact = request.path().ends_with("/compact");
     let (mut generation, guidance, personality) = parse(&value, is_compact)?;
     let request_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?));
+    if is_compact {
+        if let Some(key) = compact_key(request)? {
+            if let Some(response) = observe_compact(env, owner, &key, &request_hash).await? {
+                return Ok(response);
+            }
+        }
+    }
     let mut context =
         crate::auxiliary_context::prepare(env, owner, &mut generation, is_compact, personality)
             .await?;
@@ -188,6 +196,16 @@ fn error_response(error: &worker::Error) -> Result<Response> {
                 "Invalid MCP declaration or missing current authorization",
             )
         }
+        "invalid_compaction_key" => util::json_error(
+            400,
+            "invalid_request",
+            "Idempotency-Key must contain 1–256 visible ASCII characters",
+        ),
+        "compaction_observer_unavailable" => util::json_error(
+            503,
+            code,
+            "Observe the original compact key after the operation service is available",
+        ),
         "invalid_auxiliary_request" | "invalid_agent_configuration" | "unresolved_native_item" => {
             util::json_error(
                 400,
@@ -240,38 +258,74 @@ pub(crate) async fn compact(
     env: &Env,
     mut prepared: PreparedCompact,
 ) -> Result<Response> {
-    let key = match request.headers().get("Idempotency-Key")? {
-        Some(key) if valid_key(&key) => key,
-        Some(_) => {
-            return util::json_error(
-                400,
-                "invalid_request",
-                "Idempotency-Key must contain 1–256 visible ASCII characters",
-            );
-        }
-        None => uuid::Uuid::new_v4().to_string(),
-    };
+    let key = compact_key(request)?.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     prepared.operation = operation_id(&prepared.owner, &key);
     prepared.validate()?;
-    let namespace = env.durable_object("MODEL_OPERATIONS")?;
-    let stub = namespace.id_from_name(&prepared.operation)?.get_stub()?;
+    let response = dispatch_operation(env, &prepared.operation, "/compact", &prepared).await?;
+    observation_response(response, &key, &prepared.operation).await
+}
+
+fn compact_key(request: &Request) -> Result<Option<String>> {
+    let key = request.headers().get("Idempotency-Key")?;
+    if key.as_deref().is_some_and(|key| !valid_key(key)) {
+        return Err(worker::Error::RustError("invalid_compaction_key".into()));
+    }
+    Ok(key)
+}
+
+async fn observe_compact(
+    env: &Env,
+    owner: &str,
+    key: &str,
+    request_hash: &str,
+) -> Result<Option<Response>> {
+    let identity = CompactLookup {
+        owner: owner.into(),
+        operation: operation_id(owner, key),
+        request_hash: request_hash.into(),
+    };
+    let mut response = dispatch_operation(env, &identity.operation, "/observe", &identity).await?;
+    if response.status_code() == 404 {
+        let body: Value = response.json().await?;
+        if body.pointer("/error/code").and_then(Value::as_str) == Some("compaction_not_found") {
+            return Ok(None);
+        }
+        return Err(worker::Error::RustError(
+            "compaction_observer_unavailable".into(),
+        ));
+    }
+    observation_response(response, key, &identity.operation)
+        .await
+        .map(Some)
+}
+
+async fn dispatch_operation<T: Serialize>(
+    env: &Env,
+    operation: &str,
+    path: &str,
+    body: &T,
+) -> Result<Response> {
+    let stub = env
+        .durable_object("MODEL_OPERATIONS")?
+        .id_from_name(operation)?
+        .get_stub()?;
     let mut init = RequestInit::new();
-    init.with_method(Method::Post);
-    init.with_body(Some(serde_json::to_string(&prepared)?.into()));
+    init.with_method(Method::Post)
+        .with_body(Some(serde_json::to_string(body)?.into()));
     init.headers.set("Content-Type", "application/json")?;
-    let response = stub
-        .fetch_with_request(Request::new_with_init(
-            "https://model-operation/compact",
-            &init,
-        )?)
-        .await?;
-    let response = observer_transport::resolve(response).await?;
-    let headers = response.headers().clone();
-    let mut response = response.with_headers(headers);
-    response.headers_mut().set("Idempotency-Key", &key)?;
+    stub.fetch_with_request(Request::new_with_init(
+        &format!("https://model-operation{path}"),
+        &init,
+    )?)
+    .await
+}
+
+async fn observation_response(response: Response, key: &str, operation: &str) -> Result<Response> {
+    let mut response = observer_transport::resolve(response).await?;
+    response.headers_mut().set("Idempotency-Key", key)?;
     response
         .headers_mut()
-        .set("X-Agents-Operation", &prepared.operation)?;
+        .set("X-Agents-Operation", operation)?;
     Ok(response)
 }
 
