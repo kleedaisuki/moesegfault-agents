@@ -383,7 +383,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [mode, job] = process.argv.slice(2);
   if (mode === 'plan') {
     const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
+    // Private finite proof does not use unrelated composed deployment selections.
+    for(const baseline of baselines) delete baseline.selection_base;
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
+    // Only the new mixed-legacy compatibility and central program timing cases.
+    for(const key of Object.keys(receipt.checks)) receipt.checks[key]=[];
+    receipt.native_packages=[];
+    receipt.required_jobs=['changes','worker'];
+    for(const [name,component]of Object.entries(receipt.components))component.action=name==='worker'?'build':'reuse';
+    receipt.checks.worker=[
+      command('new-legacy-d1-compat',['python3','tests/test_d1_legacy_batch_compat.py','-v'],'One new four-scenario legacy receipt compatibility contract'),
+      command('new-central-program-perf',['node','--test','tests/worker/programmatic-meter-perf.test.mjs'],'One new native program fixed-RTT comparison, no accepted scenarios replayed',{MAGENTS_BASELINE_WORKER_DIR:'.cache/resource-baseline/build'})
+    ];
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
