@@ -4,7 +4,10 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { prepareDeploymentDependencies, putDeepseekSecret, requireProtectedDeployment } from './prepare-deployment-dependencies.mjs';
+import { prepareDeploymentDependencies as prepareWithCredential, putDeepseekSecret, requireProtectedDeployment } from './prepare-deployment-dependencies.mjs';
+
+// These previously accepted CF contracts inject the new independent credential gate.
+const prepareDeploymentDependencies=(input,env,options)=>prepareWithCredential(input,env,{verifyCredential:async()=>({http_status:200,error_code:null}),...options});
 
 const configuration = () => JSON.parse(readFileSync(new URL('../wrangler.jsonc', import.meta.url),'utf8'));
 const environment = () => ({ DEPLOY_ENVIRONMENT:'production',RUNTIME_FEATURES:'configured',CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),

@@ -381,3 +381,29 @@ rollout if selected search has no key.
 3. After readback, let the existing normal artifact/provenance and protected
    production-environment workflow perform the approved full deployment. Check its
    serving build/component identities; resource existence alone is not acceptance.
+
+### Non-billable production DeepSeek credential gate
+
+The approved repository key may differ from the already-tested staging environment
+key. Before any Cloudflare request or mutation, the production dependency step
+therefore checks that value against DeepSeek's official authenticated
+[`GET /models`](https://api-docs.deepseek.com/api/list-models/), using its documented
+[Bearer authentication](https://api-docs.deepseek.com/api/deepseek-api/).
+This is metadata inspection, not inference or account/balance inspection.
+
+The endpoint and method are fixed, redirects are manual, the deadline is 15 seconds
+and response buffering is bounded to 256 KiB. HTTP 200 with strict UTF-8 JSON and a
+nonempty model list is required. Canonical model identifiers are not compared to
+agent aliases; the check does not pretend to validate every route, paid balance
+or generation capability. A failure stops before index creation, secret writes,
+migrations or full Worker rollout. There is no automatic retry or model call.
+
+Only status, request ID, elapsed time, received bytes, a complete-body hash and a
+fixed error code are retained. Partial/oversized bodies have no fabricated complete
+hash. Key values, catalog contents, prompts and account/balance data are not logged.
+The new gate is independently injectable in the already-accepted CF dependency
+contracts; those five contracts were not replayed. Four new offline metadata and
+ordering contracts passed for authenticated 200/unknown canonical identifiers,
+401/redirect/malformed JSON and UTF-8/empty lists, body/time bounds, and the absence
+of any Cloudflare access after a rejected key. No real production credential
+request, provider inference or production mutation was made for this change.

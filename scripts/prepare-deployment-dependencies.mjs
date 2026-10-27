@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { configuredDeploymentRuntime, renderDeploymentConfig, requireDistinctEnvironmentDatabases } from './deploy-config.mjs';
+import { verifyDeepseekCredential } from './deepseek-credential-check.mjs';
 
 const apiOrigin = 'https://api.cloudflare.com/client/v4';
 const digest = text => createHash('sha256').update(text).digest('hex');
@@ -43,7 +44,7 @@ export function putDeepseekSecret(environment, secret, env, run = spawnSync) {
 }
 
 export async function prepareDeploymentDependencies(input, env, { fetch: request = globalThis.fetch,
-  putSecret = putDeepseekSecret, report = () => {} } = {}) {
+  putSecret = putDeepseekSecret, verifyCredential = verifyDeepseekCredential, report = () => {} } = {}) {
   const environment = env.DEPLOY_ENVIRONMENT;
   if (!['staging', 'production'].includes(environment)) fail('invalid_dependency_environment');
   const target = input.env?.[environment], runtime = configuredDeploymentRuntime(input, env);
@@ -61,6 +62,13 @@ export async function prepareDeploymentDependencies(input, env, { fetch: request
   } catch (error) {
     fail('invalid_reviewed_dependency_configuration', { phase:'validate_configuration',
       error_type:error?.name ?? 'Error',diagnostic:safeText(error?.message,env) });
+  }
+
+  if (needsDeepseek) {
+    receipt.deepseek_credential = await verifyCredential(env.DEEPSEEK_API_KEY, {report:metadata=>{
+      receipt.deepseek_credential=metadata; report(receipt);
+    }});
+    report(receipt);
   }
 
   const account = `/accounts/${env.CLOUDFLARE_ACCOUNT_ID}`;
