@@ -82,26 +82,7 @@ impl ImageFailure {
 
     pub(crate) fn from_error(error: &worker::Error, observation: ImageObservation) -> Self {
         let code = match &error {
-            worker::Error::RustError(code)
-                if code.len() <= 128
-                    && [
-                        "image_",
-                        "provider_receipt_",
-                        "workspace_blob_",
-                        "owner_blob_",
-                        "hosted_image_",
-                        "resource_",
-                        "service_",
-                        "invalid_generated_image",
-                    ]
-                    .iter()
-                    .any(|prefix| code.starts_with(prefix))
-                    && code.bytes().all(|c| {
-                        c.is_ascii_lowercase() || c.is_ascii_digit() || b"_:=".contains(&c)
-                    }) =>
-            {
-                code.clone()
-            }
+            worker::Error::RustError(code) if trusted_error_code(code) => code.clone(),
             _ => "image_generation_transport_error".into(),
         };
         let error_type = match error {
@@ -121,6 +102,39 @@ impl ImageFailure {
             observation,
         }
     }
+}
+
+fn trusted_error_code(code: &str) -> bool {
+    if code.len() > 128
+        || !code
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_:=".contains(&c))
+    {
+        return false;
+    }
+    [
+        "image_",
+        "provider_receipt_",
+        "workspace_blob_",
+        "owner_blob_",
+        "hosted_image_",
+        "resource_",
+        "service_",
+        "invalid_",
+    ]
+    .iter()
+    .any(|prefix| code.starts_with(prefix))
+        || matches!(
+            code,
+            "idempotency_conflict"
+                | "budget_exceeded"
+                | "reservation_finalized"
+                | "reservation_not_found"
+                | "usage_event_not_found"
+                | "execution_already_finished"
+                | "run_limit_exceeded"
+                | "space_quota_exceeded"
+        )
 }
 
 impl ImageObservation {
@@ -195,6 +209,25 @@ fn decimal(value: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn local_capacity_and_billing_failures_keep_their_exact_known_codes() {
+        for code in [
+            "space_quota_exceeded",
+            "invalid_image_capacity_hold",
+            "idempotency_conflict",
+            "resource_observation_conflict",
+            "provider_receipt_put_failed:chunk=0",
+        ] {
+            let failure = ImageFailure::new(
+                worker::Error::RustError(code.into()),
+                ImageObservation::default(),
+            );
+            assert_eq!(failure.code, code);
+        }
+        assert!(!trusted_error_code("private upstream text"));
+        assert!(!trusted_error_code("sk-secret"));
+    }
 
     #[test]
     fn received_success_cost_survives_a_later_local_codec_failure() {

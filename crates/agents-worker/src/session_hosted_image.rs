@@ -389,8 +389,7 @@ impl SessionInner {
                     ImageSource::Remote { .. } => None,
                 };
                 if let Some(image) = &live {
-                    saved.slots[0].candidate =
-                        Some(ImageCandidate::prepare(&record.owner_id, image)?);
+                    ensure_candidate(&mut saved.slots[0], &record.owner_id, image)?;
                 }
                 self.save_image_operation(key, saved).await?;
                 if let Some(image) = live {
@@ -968,11 +967,8 @@ impl SessionInner {
                     if let Some(known) = saved.known.as_mut() {
                         known["output_format"] = json!(image.format());
                     }
-                    if saved.slots[0].candidate.is_none() {
-                        saved.slots[0].candidate =
-                            Some(ImageCandidate::prepare(&record.owner_id, &image)?);
-                        self.save_image_operation(key, saved).await?;
-                    }
+                    ensure_candidate(&mut saved.slots[0], &record.owner_id, &image)?;
+                    self.save_image_operation(key, saved).await?;
                     if let Err(error) = self.store_image_slot(record, key, saved, 0, &image).await {
                         self.observe_image_lifecycle_failure(
                             key,
@@ -1177,6 +1173,15 @@ impl SessionInner {
     }
 }
 
+fn ensure_candidate(slot: &mut ImageSlot, owner: &str, image: &Raster) -> Result<()> {
+    // Its original UUID already owns capacity even if the PUT never created an
+    // object. The store boundary verifies hash, MIME, dimensions and ownership.
+    if slot.candidate.is_none() {
+        slot.candidate = Some(ImageCandidate::prepare(owner, image)?);
+    }
+    Ok(())
+}
+
 fn permanent_asset_failure(code: &str) -> bool {
     matches!(
         code,
@@ -1267,6 +1272,21 @@ async fn pending() -> Result<HostedDispatch> {
 mod tests {
     use super::*;
     use crate::image_generation::{Capabilities, Format, ImageApi};
+
+    #[test]
+    fn received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity() {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(1, 1));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let raster = Raster::from_bytes(bytes.get_ref()).unwrap();
+        let mut slot = slots("original-execution", 0).unwrap().remove(0);
+        ensure_candidate(&mut slot, "original-owner", &raster).unwrap();
+        let original = serde_json::to_value(&slot.candidate).unwrap();
+        let mut cold: ImageSlot =
+            serde_json::from_slice(&serde_json::to_vec(&slot).unwrap()).unwrap();
+        ensure_candidate(&mut cold, "original-owner", &raster).unwrap();
+        assert_eq!(serde_json::to_value(&cold.candidate).unwrap(), original);
+    }
 
     fn profile(funded: bool) -> HostedImageProfile {
         HostedImageProfile {
