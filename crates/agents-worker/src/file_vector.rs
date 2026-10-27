@@ -536,7 +536,9 @@ pub async fn ingest_turn(
     owner: &str,
     store: &str,
     file: &str,
+    generation: &str,
     max_batches: usize,
+    deadline: u64,
     meter: &ResourceMeter<'_>,
     event: &str,
 ) -> Result<IngestProgress> {
@@ -549,6 +551,7 @@ pub async fn ingest_turn(
         owner,
         store,
         file,
+        generation,
         crate::util::now_ms(),
         meter,
         &format!("{event}:claim"),
@@ -748,6 +751,17 @@ pub async fn ingest_turn(
     )
     .await?;
     for batch in 0..max_batches {
+        if crate::util::now_ms().saturating_add(5_000) >= deadline {
+            file_index::release_job(
+                env,
+                &job,
+                crate::util::now_ms(),
+                meter,
+                &format!("{attempt}:budget_yield"),
+            )
+            .await?;
+            return Ok(IngestProgress::Pending);
+        }
         if !file_index::renew_job(
             env,
             &job,

@@ -387,6 +387,7 @@ pub async fn claim_job(
     owner: &str,
     store: &str,
     file: &str,
+    generation: &str,
     now_ms: u64,
     meter: &ResourceMeter<'_>,
     event: &str,
@@ -403,9 +404,10 @@ pub async fn claim_job(
         until.to_string(),
         lease,
         event.to_string(),
+        generation.to_string(),
     ];
     meter.require_d1(event).await?;
-    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET lease_id=?6,lease_turn=?7,lease_until=CAST(?5 AS INTEGER),updated_at=CAST(?4 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND status='in_progress' AND funding_blocked=0 AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) RETURNING account_id,vector_store_id,file_id,file_sha256,generation,lease_id,chunking_json,chunking_revision,source_staged,chunk_count,staged_chunks")
+    let result=env.d1("DB")?.prepare("UPDATE vector_store_files SET lease_id=?6,lease_turn=?7,lease_until=CAST(?5 AS INTEGER),updated_at=CAST(?4 AS INTEGER) WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?8 AND status='in_progress' AND funding_blocked=0 AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) AND EXISTS(SELECT 1 FROM space_files sf WHERE sf.id=file_id AND sf.account_id=?1 AND sf.status='processed' AND sf.sha256=file_sha256) AND EXISTS(SELECT 1 FROM vector_stores vs WHERE vs.id=vector_store_id AND vs.account_id=?1 AND vs.status='completed' AND (vs.expires_after_days IS NULL OR vs.last_active_at+vs.expires_after_days*86400000>unixepoch()*1000)) RETURNING account_id,vector_store_id,file_id,file_sha256,generation,lease_id,chunking_json,chunking_revision,source_staged,chunk_count,staged_chunks")
         .bind(&values(&bindings))?.all().await?;
     meter.record_d1(event, &result).await?;
     Ok(result.results::<IngestJob>()?.into_iter().next())
