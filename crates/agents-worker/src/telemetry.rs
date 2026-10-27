@@ -147,7 +147,13 @@ pub fn sanitize_fields(fields: Value) -> Value {
     for (key, value) in fields {
         let numeric = matches!(
             key.as_str(),
-            "lock_wait_ms"
+            "parser_line"
+                | "parser_column"
+                | "request_bytes"
+                | "response_bytes"
+                | "declared_response_bytes"
+                | "upstream_error_code"
+                | "lock_wait_ms"
                 | "funding_ms"
                 | "rpc_ms"
                 | "observation_ms"
@@ -171,7 +177,13 @@ pub fn sanitize_fields(fields: Value) -> Value {
         );
         let identifier = matches!(
             key.as_str(),
-            "conversation_id"
+            "codec"
+                | "ray_id"
+                | "content_type"
+                | "content_encoding"
+                | "input_sha256"
+                | "response_sha256"
+                | "conversation_id"
                 | "operation_id"
                 | "response_id"
                 | "grant_event"
@@ -205,7 +217,13 @@ pub fn sanitize_fields(fields: Value) -> Value {
             safe.insert(key.clone(), value.clone());
         } else if matches!(
             key.as_str(),
-            "activated" | "pending" | "byok" | "usage_reported" | "restored" | "success"
+            "body_complete"
+                | "activated"
+                | "pending"
+                | "byok"
+                | "usage_reported"
+                | "restored"
+                | "success"
         ) && value.is_boolean()
         {
             safe.insert(key.clone(), value.clone());
@@ -653,5 +671,22 @@ mod tests {
             &mut Vec::new(),
             &vec![0; MAX_DIAGNOSTIC_BYTES + 1]
         ));
+    }
+}
+
+#[cfg(test)]
+mod document_diagnostic_tests {
+    use super::*;
+    #[test]
+    fn native_document_fields_keep_http_and_parser_evidence_without_content() {
+        let safe = sanitize_fields(
+            json!({"codec":"application/pdf","request_id":"native-1","ray_id":"abc-SIN","status":422,"response_bytes":127,"input_sha256":"abcd","response_sha256":"ef01","body_complete":true,"upstream_error_code":10042,"parser_line":3,"parser_column":9,"body":"private document","authorization":"Bearer secret"}),
+        );
+        assert_eq!(safe["status"], 422);
+        assert_eq!(safe["codec"], "application/pdf");
+        assert_eq!(safe["parser_line"], 3);
+        assert_eq!(safe["body_complete"], true);
+        assert!(safe.get("body").is_none());
+        assert!(safe.get("authorization").is_none());
     }
 }

@@ -10,6 +10,10 @@ async function invoke(method, args) {
 }
 
 class Ai {
+  async fetch(request) {
+    if (request.url !== 'https://workers-binding.ai/to-everything/markdown/transformer') throw Error('unexpected_native_document_endpoint');
+    return fetch('https://retrieval.fixture.test/native-convert', {method:request.method,headers:request.headers,body:await request.text()});
+  }
   run(model, input) { return invoke('embed', [model, input]); }
   async toMarkdown(documents, options) {
     return invoke('convert', [await Promise.all(documents.map(async ({ name, blob }) => ({ name,

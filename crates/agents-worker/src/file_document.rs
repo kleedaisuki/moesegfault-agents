@@ -1,12 +1,10 @@
 //! Bounded document conversion through the native platform service. Image/OCR
 //! inference is not a fallback for an empty document text layer.
 
-use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::Value;
 use std::{borrow::Cow, io::Cursor};
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen::JsValue;
 use worker::{Env, Error, Result};
 
 use crate::{
@@ -157,96 +155,46 @@ fn kind(bytes: &[u8]) -> Result<Option<Kind>> {
     Ok(None)
 }
 
-struct PreparedConversion {
-    ai: worker::Ai,
-    method: Function,
-    documents: Array,
-    options: JsValue,
-    kind: Kind,
-}
+#[path = "file_document_transport.rs"]
+mod transport;
 
 fn prepare(
     env: &Env,
     profile: &VectorServiceProfile,
     kind: Kind,
     bytes: &[u8],
-) -> Result<PreparedConversion> {
-    prepare_binding(env, &profile.ai_binding, kind, bytes)
+) -> Result<transport::Prepared> {
+    transport::prepare(env, &profile.ai_binding, kind, bytes)
 }
 
-fn prepare_binding(
+async fn convert(prepared: transport::Prepared) -> Result<String> {
+    let mut observed = transport::observe(prepared).await;
+    let outcome = observed.decode();
+    observed.emit(
+        None,
+        outcome.as_ref().err().and_then(|error| match error {
+            Error::RustError(code) => Some(code.as_str()),
+            _ => None,
+        }),
+    );
+    outcome
+}
+
+async fn record_diagnostics(
     env: &Env,
-    binding: &str,
-    kind: Kind,
-    bytes: &[u8],
-) -> Result<PreparedConversion> {
-    let ai = env.ai(binding)?;
-    let method = Reflect::get(ai.as_ref(), &JsValue::from_str("toMarkdown"))
-        .map_err(|_| fail("file_search_document_service_unavailable"))?
-        .dyn_into::<Function>()
-        .map_err(|_| fail("file_search_document_service_unavailable"))?;
-    let parts = Array::of1(&Uint8Array::from(bytes));
-    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
-        .map_err(|_| fail("file_search_document_invalid"))?;
-    let document = js_sys::Object::new();
-    Reflect::set(&document, &"name".into(), &kind.name().into())
-        .map_err(|_| fail("file_search_document_invalid"))?;
-    Reflect::set(&document, &"blob".into(), blob.as_ref())
-        .map_err(|_| fail("file_search_document_invalid"))?;
-    let options =
-        json!({"conversionOptions":{"output":{"format":"text"},"pdf":{"metadata":false}}})
-            .serialize(&serde_wasm_bindgen::Serializer::json_compatible())?;
-    Ok(PreparedConversion {
-        ai,
-        method,
-        documents: Array::of1(&document),
-        options,
-        kind,
-    })
-}
-
-async fn convert(prepared: PreparedConversion) -> Result<String> {
-    let promise = prepared
-        .method
-        .call2(prepared.ai.as_ref(), &prepared.documents, &prepared.options)
-        .map_err(|_| fail("file_search_document_service_failed"))?
-        .dyn_into::<Promise>()
-        .map_err(|_| fail("file_search_document_service_failed"))?;
-    let result = JsFuture::from(promise)
-        .await
-        .map_err(|_| fail("file_search_document_service_failed"))?;
-    if !Array::is_array(&result) {
-        return Err(fail("file_search_document_invalid"));
+    job: &IngestJob,
+    observed: &transport::Observation,
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<()> {
+    meter.require_d1(event).await?;
+    let result=env.d1("DB")?.prepare("UPDATE file_search_extractions SET diagnostics_json=?6 WHERE account_id=?1 AND vector_store_id=?2 AND file_id=?3 AND generation=?4 AND source_sha256=?5 AND status='dispatched' AND diagnostics_json IS NULL RETURNING file_id")
+        .bind(&[job.account_id.as_str().into(),job.vector_store_id.as_str().into(),job.file_id.as_str().into(),job.generation.as_str().into(),job.file_sha256.as_str().into(),serde_json::to_string(&observed.diagnostics)?.into()])?.all().await?;
+    meter.record_d1(event, &result).await?;
+    if result.results::<Value>()?.is_empty() {
+        return Err(fail("file_search_extraction_receipt_unavailable"));
     }
-    let result = Array::from(&result);
-    if result.length() != 1 {
-        return Err(fail("file_search_document_invalid"));
-    }
-    let result = result.get(0);
-    let field = |name: &str| {
-        Reflect::get(&result, &JsValue::from_str(name))
-            .map_err(|_| fail("file_search_document_invalid"))
-    };
-    if field("format")?.as_string().as_deref() != Some("text")
-        || field("mimetype")?.as_string().as_deref() != Some(prepared.kind.mime())
-    {
-        return Err(fail("file_search_document_invalid"));
-    }
-    let text = field("data")?;
-    if !text.is_string() {
-        return Err(fail("file_search_document_invalid"));
-    }
-    let js_text: js_sys::JsString = text.unchecked_into();
-    if js_text.length() as usize > TEXT_LIMIT {
-        return Err(fail("file_search_document_text_limit"));
-    }
-    let text = js_text
-        .as_string()
-        .ok_or_else(|| fail("file_search_document_invalid"))?;
-    if text.len() > TEXT_LIMIT || text.contains('\0') || text.trim().is_empty() {
-        return Err(fail("file_search_document_text_limit"));
-    }
-    Ok(text)
+    Ok(())
 }
 
 /// Responses attachments share the admitted native document-text parser. This
@@ -258,7 +206,7 @@ pub(crate) async fn attachment_text(env: &Env, bytes: &[u8]) -> Result<Option<St
         Err(Error::RustError(code)) if code == "unsupported_or_empty_document" => return Ok(None),
         Err(error) => return Err(error),
     };
-    convert(prepare_binding(env, "AI", kind, bytes)?)
+    convert(transport::prepare(env, "AI", kind, bytes)?)
         .await
         .map(Some)
 }
@@ -339,9 +287,19 @@ pub(super) async fn text<'a>(
         paid.require_observation(effect, allocation.resource.clone(), &allocation.unit)
             .await?;
     }
-    let outcome = convert(prepared).await;
-    if matches!(&outcome,Err(Error::RustError(code)) if code=="file_search_document_service_failed")
-    {
+    let mut observed = transport::observe(prepared).await;
+    // Commit the known response metadata before decoding or publishing text.
+    // A cold retry can inspect this receipt but must never repeat the dispatch.
+    record_diagnostics(env, job, &observed, meter, &format!("{event}:receipt")).await?;
+    let outcome = observed.decode();
+    observed.emit(
+        Some(&job.generation),
+        outcome.as_ref().err().and_then(|error| match error {
+            Error::RustError(code) => Some(code.as_str()),
+            _ => None,
+        }),
+    );
+    if !observed.diagnostics.body_complete {
         return outcome.map(Cow::Owned);
     }
     if let Some((allocation, paid)) = allocation.zip(paid.as_ref()) {
