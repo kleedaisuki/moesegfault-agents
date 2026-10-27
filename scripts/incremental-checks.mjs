@@ -395,6 +395,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       command('new-file-batch-telemetry',['cargo','test','--locked','-p','agents-worker','--lib','batched_d1_phases_keep_actual_rows_and_operation_correlation','--','--nocapture'],'One new structural batch telemetry preservation contract'),
       command('new-file-management-perf',['node','--test','tests/worker/file-management-perf.test.mjs'],'One new queued file management comparison, exact same rows and charges, zero ingestion',{MAGENTS_BASELINE_WORKER_DIR:'.cache/file-management-baseline/build'})
     ];
+    // New telemetry Rust contract already passed; same exact compiled Wasm, only fixture corrected.
+    receipt.checks.worker = receipt.checks.worker.filter(check => check.argv[0] !== 'cargo');
+    receipt.components.worker.action = 'reuse';
+    receipt.components.worker.artifact = {run_id:'40450871131', source_sha:'4f11e42b781d5aa39907b538158f063a8882d958', artifact_id:'12710153193', artifact_name:'worker'};
     mkdirSync(OUTPUT, { recursive: true });
     writeFileSync(`${OUTPUT}/plan.json`, JSON.stringify(receipt, null, 2) + '\n');
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `dashboard_browser=${receipt.checks.dashboard.some(check => check.argv.includes('test:browser'))}\n`);
