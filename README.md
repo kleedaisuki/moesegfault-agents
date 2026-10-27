@@ -7,12 +7,25 @@ Rust agent sessions on Cloudflare Workers, Durable Objects and on-demand contain
 | API | `https://agents.moesegfault.dev/v1` | `https://agents-staging.moesegfault.dev/v1` |
 | Dashboard | `https://adash.moesegfault.dev` | `https://adash-staging.moesegfault.dev` |
 
-Production and staging are deployed; [v0.2.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.2.0) provides Linux and Windows CLI downloads. BYOK supports OpenAI-compatible and Anthropic endpoints; TOML publication and conversation/workspace downloads use the same owner-scoped account. Signed-out adash has its own responsive entry page. Real production acceptance includes new CLI operations against preserved v0.1-era user data. Subscribe management returns refresh verified grants; access still uses activation grants, not automatic charging. See [acceptance](docs/acceptance.md) for exact releases, evidence and limits.
+## Versions and availability
 
-The expanded v0.3 Responses, Space and hosted-tool implementation is a separate
-release candidate, not yet the production release. Its [current scope and delivery graph](docs/full-responses.md)
-and [release audit](docs/v0.3-release-audit.md) distinguish implemented/verified
-capabilities from remaining activation and release gates.
+Version **0.3.0** adds Responses, Space and hosted tools while retaining Chat
+Completions and established management contracts. A v0.2 deployment supports the
+Chat API, not Responses. Publication and deployment are separate: check the
+[published releases](https://github.com/kleedaisuki/moesegfault-agents/releases)
+and the selected host's `GET /healthz` build before choosing a client workflow.
+An Actions artifact or enabled staging feature is not a production release.
+
+| In v0.3 | Start here |
+| --- | --- |
+| Responses: streaming, background runs, observation/replay and branches | [HTTP API](docs/api.md#responses) |
+| Conversations, exact input counting and compaction with protected instructions | [Context and state](docs/full-responses-auxiliary.md) |
+| Local tools, code execution, image generation, web/file search and MCP | [Tool boundaries](docs/full-responses-tools.md) |
+| One account Space, uploads and immutable workspace versions | [Space and workspace](docs/api.md#files-account-space-and-workspace-versions) |
+| Dashboard languages/themes/mobile layout, Rust CLI and portable agent skills | [CLI](docs/cli.md) · [Skills](skills/README.md) |
+
+Read [v0.3 notes](docs/releases/v0.3.0.md) for the user-facing changes and
+[release readiness](docs/v0.3-release-audit.md) for the actual promotion gates.
 
 For another agent to use the CLI, integrate the API, or contribute to the
 platform, choose the corresponding [portable skill pack](skills/README.md).
@@ -38,37 +51,43 @@ flowchart LR
 
 Create an account API key and an agent configuration first. The SDK `model` is the **agent ID**, not the upstream provider model. Management uses cookie-bound BFF authentication or a registered native client's bearer credential; do not put an OAuth bearer token in browser storage.
 
+For a v0.3 host, use the ordinary Responses SDK:
+
 ```python
 import os
 from openai import OpenAI
+from openai.types.responses import Response
 
-client = OpenAI(
+client: OpenAI = OpenAI(
     base_url="https://agents.moesegfault.dev/v1",
     api_key=os.environ["MAGENTS_API_KEY"],
     max_retries=0,
 )
-response = client.chat.completions.with_raw_response.create(
+# The application chooses and durably records this key before submitting work.
+request_key: str = os.environ["MAGENTS_REQUEST_KEY"]
+response: Response = client.responses.create(
     model=os.environ["MAGENTS_AGENT_ID"],
-    messages=[{"role": "user", "content": "What time is it?"}],
+    input="What time is it?",
+    extra_headers={"Idempotency-Key": request_key},
 )
-session_id = response.headers["x-agents-session"]
-print(response.parse().choices[0].message.content)
-
-# Append new input only: the session already owns its conversation history.
-answer = client.chat.completions.create(
-    model=os.environ["MAGENTS_AGENT_ID"],
-    messages=[{"role": "user", "content": "Continue with the next step."}],
-    extra_headers={"x-agents-session": session_id},
-)
+print(response.output_text)
 ```
 
-Automatic SDK retries are disabled: losing a response does not prove that an accepted run failed. For long tasks, create a session first and use streaming; inspect the session before resubmitting input.
+Persist the returned response ID. Continue with `previous_response_id` and only
+new input; a genuinely new request gets its own idempotency key. Observe a known
+response after disconnecting rather than recreating it. If submission itself was
+ambiguous, retain the **original** key: a new key can start and charge new work.
+See [Responses](docs/api.md#responses) for streaming, local tool handoff and recovery.
 
-This implements the documented chat-completions subset, not every OpenAI API. See [HTTP contracts](docs/api.md) and [CLI](docs/cli.md).
+Chat Completions remains available. Its continuation uses the returned session
+header and only newly appended messages; see the [Chat SDK journey](docs/api.md#openai-sdk-journey).
+The service implements its documented agent contract, not every unrelated OpenAI
+product. Model/provider capability errors are explicit; unsupported controls are
+not silently ignored.
 
 ## Download magents
 
-Download the archive and matching `.sha256` from [v0.2.0](https://github.com/kleedaisuki/moesegfault-agents/releases/tag/v0.2.0). Maintainers can also run [Package magents](https://github.com/kleedaisuki/moesegfault-agents/actions/workflows/release-magents.yml) manually for 30-day Actions artifacts; these are separate from public release assets.
+Download the archive and matching `.sha256` for your chosen [published release](https://github.com/kleedaisuki/moesegfault-agents/releases). Maintainers can also run [Package magents](https://github.com/kleedaisuki/moesegfault-agents/actions/workflows/release-magents.yml) manually for 30-day Actions artifacts; these are separate from public release assets.
 
 | Platform | Archive |
 | --- | --- |
@@ -97,7 +116,7 @@ Expand-Archive -LiteralPath $archive -DestinationPath magents
 
 Move the verified binary to a directory on your `PATH` if desired. Interactive login uses Windows Credential Manager or Linux Secret Service; Linux desktop users need a running, unlocked Secret Service implementation such as GNOME Keyring or KWallet and a session D-Bus. There is no plaintext credential fallback. Headless environments can supply `MAGENTS_API_KEY` for API-key-authorized operations; account/skill/provider-key management still requires human login. macOS binary distribution is not included yet; build from source with `cargo install --locked --path crates/magents` when Rust and the platform keychain are available.
 
-Each archive includes the license and `BUILD-INFO.json` with the actual Cargo version, source commit, target, and workflow run. Checksum sidecars use LF line endings on every platform. Checksums detect corruption, not publisher authenticity; these initial binaries are not code-signed. Manual runs default to artifacts only. To recover asset publication for an existing release, explicitly set the workflow's optional `release_tag` input (for example, `v0.1.0`): the current workflow checks out that existing tag's source, verifies its actual Cargo version and commit, and attaches assets only after both native builds and checksum verification succeed. This does not move the tag, create a release, or overwrite assets. A `published` release uses the same path and requires its tag to match the package version (`vVERSION`). A release page without assets is not a completed binary publication.
+Each archive includes the license and `BUILD-INFO.json` with the actual Cargo version, source commit, target, and workflow run. Checksum sidecars use LF line endings on every platform. Checksums detect corruption, not publisher authenticity; these initial binaries are not code-signed. Manual runs default to artifacts only. To recover asset publication for an existing release, explicitly set the workflow's optional `release_tag` input (for example, `v0.1.0`): the workflow verifies the release version, actual binary source, both native platform receipts and checksums before attaching assets. This does not move the tag, create a release, or overwrite assets. A published release must match the package version (`vVERSION`); build metadata must retain the actual binary source even when verified artifacts are promoted. A release page without assets is not a completed binary publication.
 
 ## Invariants
 
