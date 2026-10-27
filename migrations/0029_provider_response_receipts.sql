@@ -9,6 +9,8 @@ CREATE TABLE provider_response_operations (
  state TEXT NOT NULL CHECK(state IN ('reserved','recovery','diagnostic','deleting','released')),
  expires_at_ms INTEGER,
  updated_at_ms INTEGER NOT NULL,
+ gc_attempt INTEGER NOT NULL DEFAULT 0 CHECK(gc_attempt>=0),
+ gc_lease_until_ms INTEGER NOT NULL DEFAULT 0,
  PRIMARY KEY(account_id,operation_id),
  CHECK((state IN ('diagnostic','deleting'))=(expires_at_ms IS NOT NULL)),
  CHECK(state!='released' OR capacity_bytes=0)

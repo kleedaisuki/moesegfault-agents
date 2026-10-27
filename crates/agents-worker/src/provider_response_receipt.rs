@@ -11,9 +11,12 @@ use crate::{image_artifacts::IoAttempt, resources::ResourceMeter};
 
 #[path = "provider_response_capacity.rs"]
 mod capacity;
+#[path = "provider_response_gc.rs"]
+mod gc;
 pub(crate) use capacity::{
     Retention, finalize_capacity, lookup, register_prepared, release_capacity, reserve_capacity,
 };
+pub(crate) use gc::run as cleanup_diagnostics;
 
 pub(crate) const MAX_RESPONSE_BYTES: usize = 24 * 1024 * 1024;
 const CHUNK_BYTES: usize = 1024 * 1024;

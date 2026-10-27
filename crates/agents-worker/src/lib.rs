@@ -127,6 +127,12 @@ pub async fn scheduled(_event: ScheduledEvent, env: Env, ctx: ScheduleContext) {
         if workspace_versions::cleanup_uploads(&env).await.is_err() {
             util::emit("workspace.version_recovery_deferred", serde_json::json!({}));
         }
+        if provider_response_receipt::cleanup_diagnostics(&env)
+            .await
+            .is_err()
+        {
+            util::emit("provider.receipt_gc_deferred", serde_json::json!({}));
+        }
         if checkpoint_gc::run(&env).await.is_err() {
             util::emit("checkpoint.gc_deferred", serde_json::json!({}));
         }

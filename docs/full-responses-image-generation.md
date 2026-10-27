@@ -595,3 +595,33 @@ correcting seeded file IDs to the existing 32-hex contract. Raw per-case receipt
 and their unchanged-source binding supplement are retained under the topic's
 `.temp/media-results/`; the immutable source/artifact/checksum identities above
 preserve the acceptance context if that scratch directory is cleaned.
+
+### Independent recovery admission and diagnostic collection
+
+Migration `0029_provider_response_receipts.sql` reserves private runtime bytes
+independently of uploaded Files/Space quota. It reuses the plan's numerical byte
+limit, not the uploaded-file usage counter. Admission reserves up to four maximum
+encrypted frames before provider execution. Descriptor registration precedes PUT;
+terminal finalization reduces the maximum to the indexed encrypted lengths.
+`StoredResponse::id()` is the stable opaque descriptor digest; owner and original
+operation remain required for internal lookup. It is not an authorization grant.
+
+Recovery receipts have no expiry: malformed images, uncertain transport, and
+unpublished paid results must not disappear on a timer. Only a caller-established
+confirmed-no-charge failure may become a Diagnostic with a 24-hour expiry. The
+scheduled worker scans at most 16 due operations. A database lease fences each
+cleanup attempt, which reserves the tariff-derived cost of at most 96 R2 HEADs
+before accessing raw objects. Each real retry has its own durable attempt and
+funded observation scope; it does not reuse a previous HEAD charge key. The normal
+physical byte clock remains authoritative for retained storage. The discovery
+scan and metadata bookkeeping are maintenance overhead, not invented user D1
+measurements. Deletion errors still settle known HEAD observations; genuinely
+pending observations preserve the original financial hold. Collection closes
+capacity only after each raw object is deleted and its clock closed. There is no
+bucket listing, arbitrary raw-object download, public debug endpoint, or provider
+POST in this collector.
+
+Five focused SQL tests exercise the actual admission/transition statements,
+owner separation, maximum frame and byte capacity, immutable descriptors,
+delete-before-release, single cleanup leases, and the absence of Recovery expiry.
+These are not an actual R2 encryption, production deployment, or paid-image receipt.
