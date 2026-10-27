@@ -1,5 +1,5 @@
 //! Two accounting round trips per measured D1 query, independent of row counts.
-//! Only Conversation operations opt in; existing resource callers stay unchanged.
+//! Conversation and Vector Store management opt in; other resource callers stay unchanged.
 use super::*;
 
 const DECLARE_SQL: &str = "INSERT INTO resource_observations(run_id,account_id,session_id,event_key,resource,unit,quantity,price_version,observed_at,status) SELECT ?1,?2,?3,?4,'d1',?5,NULL,?6,NULL,'pending' WHERE EXISTS(SELECT 1 FROM usage_reservations WHERE id=?1 AND account_id=?2 AND session_id IS ?3 AND state='reserved') ON CONFLICT(run_id,event_key) DO NOTHING";
@@ -22,6 +22,7 @@ struct Recorded {
 
 impl ResourceMeter<'_> {
     pub(crate) async fn require_d1_batched(&self, event: &str) -> Result<()> {
+        let started = crate::util::now_ms();
         let db = self.db()?;
         let mut statements = Vec::with_capacity(4);
         for (suffix, unit) in [("read", "rows_read"), ("write", "rows_written")] {
@@ -57,6 +58,11 @@ impl ResourceMeter<'_> {
                 return Err(fail("resource_observation_conflict"));
             }
         }
+        crate::util::emit(
+            "resource.d1.batch",
+            serde_json::json!({"operation_id":self.run,"session_id":self.session,
+            "event_key":event,"phase":"funded","duration_ms":crate::util::now_ms().saturating_sub(started)}),
+        );
         Ok(())
     }
 
@@ -146,6 +152,12 @@ impl ResourceMeter<'_> {
                 return Err(fail("resource_observation_pending"));
             }
         }
+        crate::util::emit(
+            "resource.d1.batch",
+            serde_json::json!({"operation_id":self.run,"session_id":self.session,
+            "event_key":event,"phase":"observed","rows_read":read,"rows_written":written,
+            "duration_ms":crate::util::now_ms().saturating_sub(started)}),
+        );
         Ok(())
     }
 }
