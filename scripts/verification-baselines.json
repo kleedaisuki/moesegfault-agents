@@ -9768,5 +9768,464 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+    "run_id": "40447538513",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12709167366,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "7e8aa48e149817d6ed42c46915ccc504b88af761",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal Worker build and first five activation/cache contracts; actual native Loader/typed SDK/2453microdollar external operator closure documented separately, no paid replay"
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One runtime-vocabulary provenance correction passed with exact earlier Worker artifact; configured production followup remains selected separately"
+        },
+        {
+          "source_sha": "ffe851f86fb9f98365208752924993a6d7004412",
+          "run_id": "40447505945",
+          "reference": "docs/full-responses-context-management.md",
+          "scope": "Only new disabled-thinking purpose compaction plus continuation accepted; final conservative original funding quote line remains compiled in joint candidate"
+        },
+        {
+          "source_sha": "a81af4a341de0771077b292e3bf14ce824e52541",
+          "run_id": "40447077095",
+          "reference": "docs/full-responses-auxiliary.md",
+          "scope": "New receipt-first pending/known/cold/conflict/expired lifecycle, one synthetic summary and source read, no external inference"
+        },
+        {
+          "source_sha": "c96b7d673061cc447bc5dd17cb70e7fb0dd4a464",
+          "run_id": "40447143197",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "New program Conversation continuation, two controlled model rounds/one heap/one funding run; accepted prior time/client/approval not replayed"
+        },
+        {
+          "source_sha": "7ed16536f9fa2dc1b49f95e64522f21bcb86c0ea",
+          "run_id": "40447050803",
+          "reference": "docs/conversation-metering.md",
+          "scope": "Actual Rust fixed-RTT management comparison with identical SQL/observed rows/fees, zero model and no pending money"
+        },
+        {
+          "source_sha": "70bf11c2d0330cd1bff7f04a5c80aa4759dbd093",
+          "run_id": "40451832914",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new queued-file management comparison on exact retained Worker12710153193 from4f11e42 after fixture Ai constructor repair; no embedding, old contracts or original upload replay"
+        },
+        {
+          "source_sha": "2f0658b6ca1d7626f96ba8e0e4b21f04c0c84747",
+          "run_id": "40450872599",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Original aggregate failed on fixture constructor; retained Worker12710612817 corrected new long-ACK local SDK completed and original readonly tail proved35.386s DO wall/six settled scopes, no repeated effects. One active-lease source line compiled jointly"
+        },
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Aggregate failed on cfg(test) name and SQL class; actual image_put and stream_json_error new Node leaves passed on12709901873, plus changed Seedream format contract. Only two unexecuted Rust and corrected timestamp SQL remain"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "rust:agents-worker:received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "received_image_reprocessing_keeps_the_candidate_that_already_owns_capacity",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only never-executed new Image recovery or real catalog-description/diagnostic delta; old Rust contracts excluded"
+        },
+        {
+          "id": "rust:agents-worker:local_capacity_and_billing_failures_keep_their_exact_known_codes",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "local_capacity_and_billing_failures_keep_their_exact_known_codes",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only never-executed new Image recovery or real catalog-description/diagnostic delta; old Rust contracts excluded"
+        },
+        {
+          "id": "rust:agents-worker:multiline_catalog_descriptions_are_data_not_http_header_values",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "multiline_catalog_descriptions_are_data_not_http_header_values",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only never-executed new Image recovery or real catalog-description/diagnostic delta; old Rust contracts excluded"
+        },
+        {
+          "id": "rust:agents-worker:mcp_diagnostics_preserve_remote_codes_and_catalog_stage_without_descriptions",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "mcp_diagnostics_preserve_remote_codes_and_catalog_stage_without_descriptions",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "Only never-executed new Image recovery or real catalog-description/diagnostic delta; old Rust contracts excluded"
+        },
+        {
+          "id": "node:mcp-live-description-metadata",
+          "argv": [
+            "node",
+            "--test",
+            "tests/worker/mcp.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_MCP_CASE": "mcp_descriptions"
+          },
+          "reason": "One new zero-model metadata-only SDK count with multiline catalog data and exact discovery phase diagnostics; no old MCP legacy/approval RPCs"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "7e8aa48e149817d6ed42c46915ccc504b88af761",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal Worker build and first five activation/cache contracts; actual native Loader/typed SDK/2453microdollar external operator closure documented separately, no paid replay"
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One runtime-vocabulary provenance correction passed with exact earlier Worker artifact; configured production followup remains selected separately"
+        },
+        {
+          "source_sha": "ffe851f86fb9f98365208752924993a6d7004412",
+          "run_id": "40447505945",
+          "reference": "docs/full-responses-context-management.md",
+          "scope": "Only new disabled-thinking purpose compaction plus continuation accepted; final conservative original funding quote line remains compiled in joint candidate"
+        },
+        {
+          "source_sha": "a81af4a341de0771077b292e3bf14ce824e52541",
+          "run_id": "40447077095",
+          "reference": "docs/full-responses-auxiliary.md",
+          "scope": "New receipt-first pending/known/cold/conflict/expired lifecycle, one synthetic summary and source read, no external inference"
+        },
+        {
+          "source_sha": "c96b7d673061cc447bc5dd17cb70e7fb0dd4a464",
+          "run_id": "40447143197",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "New program Conversation continuation, two controlled model rounds/one heap/one funding run; accepted prior time/client/approval not replayed"
+        },
+        {
+          "source_sha": "7ed16536f9fa2dc1b49f95e64522f21bcb86c0ea",
+          "run_id": "40447050803",
+          "reference": "docs/conversation-metering.md",
+          "scope": "Actual Rust fixed-RTT management comparison with identical SQL/observed rows/fees, zero model and no pending money"
+        },
+        {
+          "source_sha": "70bf11c2d0330cd1bff7f04a5c80aa4759dbd093",
+          "run_id": "40451832914",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new queued-file management comparison on exact retained Worker12710153193 from4f11e42 after fixture Ai constructor repair; no embedding, old contracts or original upload replay"
+        },
+        {
+          "source_sha": "2f0658b6ca1d7626f96ba8e0e4b21f04c0c84747",
+          "run_id": "40450872599",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Original aggregate failed on fixture constructor; retained Worker12710612817 corrected new long-ACK local SDK completed and original readonly tail proved35.386s DO wall/six settled scopes, no repeated effects. One active-lease source line compiled jointly"
+        },
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Aggregate failed on cfg(test) name and SQL class; actual image_put and stream_json_error new Node leaves passed on12709901873, plus changed Seedream format contract. Only two unexecuted Rust and corrected timestamp SQL remain"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "python:provider-receipt-gc-timestamp",
+          "argv": [
+            "python3",
+            "tests/test_provider_response_receipt_sql.py",
+            "ReceiptGcFundingRecoveryTests.test_empty_release_keeps_reservation_seconds_and_lease_milliseconds_separate"
+          ],
+          "env": {},
+          "reason": "Correct only the previously unexecuted timestamp-affinity unittest selector; no old receipt SQL contracts"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "7e8aa48e149817d6ed42c46915ccc504b88af761",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal Worker build and first five activation/cache contracts; actual native Loader/typed SDK/2453microdollar external operator closure documented separately, no paid replay"
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One runtime-vocabulary provenance correction passed with exact earlier Worker artifact; configured production followup remains selected separately"
+        },
+        {
+          "source_sha": "ffe851f86fb9f98365208752924993a6d7004412",
+          "run_id": "40447505945",
+          "reference": "docs/full-responses-context-management.md",
+          "scope": "Only new disabled-thinking purpose compaction plus continuation accepted; final conservative original funding quote line remains compiled in joint candidate"
+        },
+        {
+          "source_sha": "a81af4a341de0771077b292e3bf14ce824e52541",
+          "run_id": "40447077095",
+          "reference": "docs/full-responses-auxiliary.md",
+          "scope": "New receipt-first pending/known/cold/conflict/expired lifecycle, one synthetic summary and source read, no external inference"
+        },
+        {
+          "source_sha": "c96b7d673061cc447bc5dd17cb70e7fb0dd4a464",
+          "run_id": "40447143197",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "New program Conversation continuation, two controlled model rounds/one heap/one funding run; accepted prior time/client/approval not replayed"
+        },
+        {
+          "source_sha": "7ed16536f9fa2dc1b49f95e64522f21bcb86c0ea",
+          "run_id": "40447050803",
+          "reference": "docs/conversation-metering.md",
+          "scope": "Actual Rust fixed-RTT management comparison with identical SQL/observed rows/fees, zero model and no pending money"
+        },
+        {
+          "source_sha": "70bf11c2d0330cd1bff7f04a5c80aa4759dbd093",
+          "run_id": "40451832914",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new queued-file management comparison on exact retained Worker12710153193 from4f11e42 after fixture Ai constructor repair; no embedding, old contracts or original upload replay"
+        },
+        {
+          "source_sha": "2f0658b6ca1d7626f96ba8e0e4b21f04c0c84747",
+          "run_id": "40450872599",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Original aggregate failed on fixture constructor; retained Worker12710612817 corrected new long-ACK local SDK completed and original readonly tail proved35.386s DO wall/six settled scopes, no repeated effects. One active-lease source line compiled jointly"
+        },
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Aggregate failed on cfg(test) name and SQL class; actual image_put and stream_json_error new Node leaves passed on12709901873, plus changed Seedream format contract. Only two unexecuted Rust and corrected timestamp SQL remain"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "7e8aa48e149817d6ed42c46915ccc504b88af761",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal Worker build and first five activation/cache contracts; actual native Loader/typed SDK/2453microdollar external operator closure documented separately, no paid replay"
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One runtime-vocabulary provenance correction passed with exact earlier Worker artifact; configured production followup remains selected separately"
+        },
+        {
+          "source_sha": "ffe851f86fb9f98365208752924993a6d7004412",
+          "run_id": "40447505945",
+          "reference": "docs/full-responses-context-management.md",
+          "scope": "Only new disabled-thinking purpose compaction plus continuation accepted; final conservative original funding quote line remains compiled in joint candidate"
+        },
+        {
+          "source_sha": "a81af4a341de0771077b292e3bf14ce824e52541",
+          "run_id": "40447077095",
+          "reference": "docs/full-responses-auxiliary.md",
+          "scope": "New receipt-first pending/known/cold/conflict/expired lifecycle, one synthetic summary and source read, no external inference"
+        },
+        {
+          "source_sha": "c96b7d673061cc447bc5dd17cb70e7fb0dd4a464",
+          "run_id": "40447143197",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "New program Conversation continuation, two controlled model rounds/one heap/one funding run; accepted prior time/client/approval not replayed"
+        },
+        {
+          "source_sha": "7ed16536f9fa2dc1b49f95e64522f21bcb86c0ea",
+          "run_id": "40447050803",
+          "reference": "docs/conversation-metering.md",
+          "scope": "Actual Rust fixed-RTT management comparison with identical SQL/observed rows/fees, zero model and no pending money"
+        },
+        {
+          "source_sha": "70bf11c2d0330cd1bff7f04a5c80aa4759dbd093",
+          "run_id": "40451832914",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new queued-file management comparison on exact retained Worker12710153193 from4f11e42 after fixture Ai constructor repair; no embedding, old contracts or original upload replay"
+        },
+        {
+          "source_sha": "2f0658b6ca1d7626f96ba8e0e4b21f04c0c84747",
+          "run_id": "40450872599",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Original aggregate failed on fixture constructor; retained Worker12710612817 corrected new long-ACK local SDK completed and original readonly tail proved35.386s DO wall/six settled scopes, no repeated effects. One active-lease source line compiled jointly"
+        },
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Aggregate failed on cfg(test) name and SQL class; actual image_put and stream_json_error new Node leaves passed on12709901873, plus changed Seedream format contract. Only two unexecuted Rust and corrected timestamp SQL remain"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+    "run_id": "40448958981",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "7e8aa48e149817d6ed42c46915ccc504b88af761",
+      "receipts": [
+        {
+          "source_sha": "e4e677702f469a676022e40039cd84f9a0c097cb",
+          "run_id": "40447538513",
+          "reference": "docs/incremental-acceptance.md",
+          "scope": "Normal Worker build and first five activation/cache contracts; actual native Loader/typed SDK/2453microdollar external operator closure documented separately, no paid replay"
+        },
+        {
+          "source_sha": "302adceed320af8e7093100a8a15e9c0f860c779",
+          "run_id": "40448958981",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "One runtime-vocabulary provenance correction passed with exact earlier Worker artifact; configured production followup remains selected separately"
+        },
+        {
+          "source_sha": "ffe851f86fb9f98365208752924993a6d7004412",
+          "run_id": "40447505945",
+          "reference": "docs/full-responses-context-management.md",
+          "scope": "Only new disabled-thinking purpose compaction plus continuation accepted; final conservative original funding quote line remains compiled in joint candidate"
+        },
+        {
+          "source_sha": "a81af4a341de0771077b292e3bf14ce824e52541",
+          "run_id": "40447077095",
+          "reference": "docs/full-responses-auxiliary.md",
+          "scope": "New receipt-first pending/known/cold/conflict/expired lifecycle, one synthetic summary and source read, no external inference"
+        },
+        {
+          "source_sha": "c96b7d673061cc447bc5dd17cb70e7fb0dd4a464",
+          "run_id": "40447143197",
+          "reference": "docs/full-responses-programmatic-tools.md",
+          "scope": "New program Conversation continuation, two controlled model rounds/one heap/one funding run; accepted prior time/client/approval not replayed"
+        },
+        {
+          "source_sha": "7ed16536f9fa2dc1b49f95e64522f21bcb86c0ea",
+          "run_id": "40447050803",
+          "reference": "docs/conversation-metering.md",
+          "scope": "Actual Rust fixed-RTT management comparison with identical SQL/observed rows/fees, zero model and no pending money"
+        },
+        {
+          "source_sha": "70bf11c2d0330cd1bff7f04a5c80aa4759dbd093",
+          "run_id": "40451832914",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Only new queued-file management comparison on exact retained Worker12710153193 from4f11e42 after fixture Ai constructor repair; no embedding, old contracts or original upload replay"
+        },
+        {
+          "source_sha": "2f0658b6ca1d7626f96ba8e0e4b21f04c0c84747",
+          "run_id": "40450872599",
+          "reference": "docs/full-responses-file-search.md",
+          "scope": "Original aggregate failed on fixture constructor; retained Worker12710612817 corrected new long-ACK local SDK completed and original readonly tail proved35.386s DO wall/six settled scopes, no repeated effects. One active-lease source line compiled jointly"
+        },
+        {
+          "source_sha": "949ada495c195c0deb4fc0a1d5a4de5b124d99cc",
+          "run_id": "40449714892",
+          "reference": "docs/full-responses-image-generation.md",
+          "scope": "Aggregate failed on cfg(test) name and SQL class; actual image_put and stream_json_error new Node leaves passed on12709901873, plus changed Seedream format contract. Only two unexecuted Rust and corrected timestamp SQL remain"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:configured-v03-realm-runtime",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=configured v0.3|configured runtime rejects|legacy configured absence",
+            "scripts/deploy-config.test.mjs"
+          ],
+          "env": {},
+          "reason": "Three new configured full-runtime/legacy absence/isolation contracts, no old render suite"
+        },
+        {
+          "id": "node:configured-v03-credential-preflight",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=configured production credentials|native FileSearch workflow",
+            "scripts/deploy-workflow.test.mjs"
+          ],
+          "env": {},
+          "reason": "One new configured credential gate and its affected native FileSearch workflow branch only; no app or paid operator replay"
+        }
+      ]
+    }
   }
 ]
