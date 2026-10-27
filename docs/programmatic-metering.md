@@ -206,3 +206,41 @@ not repeat the prior program replay/invalid-argument, Conversation or Files
 journeys, nor any real DeepSeek/OpenRouter request. Controlled timing is not a
 staging SLO; compilation and this new end-to-end proof remain required before
 claiming the central implementation accepted.
+
+### Exact-artifact central-path result
+
+The new native program comparison passed in
+[40454016130](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40454016130),
+proof artifact `12711282403`. It reused the exact compiled Worker artifact
+`12711631722` from build `40452835894`, source
+`7c834df093ca0f9f90d387ba7094fcdb8be8779e` (pure product `f775704`).
+The new four-scenario legacy compatibility contract had passed in that original
+build and was not rerun. The original comparison correctly exposed the retained
+baseline Session's still-reserved cleanup admission; the corrected fixture closes
+that same Session normally before requiring zero holds. No financial rows were
+forced or overwritten and no accepted Response was resubmitted.
+
+Both actual Rust Workers run the same two-time-call program through native
+DynamicWorker at 20 ms per D1 binding call. The baseline is the accepted
+Files-batched Worker artifact `12710153193` (`4f11e42`), not a synthetic substitute
+for its Session or program interpreter.
+
+| Measurement | Files-batched baseline | Central default |
+| --- | ---: | ---: |
+| Sequential time-result gap | 1,325 ms | 229 ms |
+| Response completion elapsed | 15,649.05 ms | 5,389.21 ms |
+| Full run/read/normal-close D1 round trips | 631 | 247 |
+| Business SQL statements | 68 | 68 |
+| Actual application D1 rows read / written | 94 / 47 | 94 / 47 |
+| D1 ledger cost | 24 + 47 = 71 microUSD | 24 + 47 = 71 microUSD |
+| Native creation / request / CPU-slot fees | 2000 / 1 / 2 microUSD | 2000 / 1 / 2 microUSD |
+| Controlled model turns / external model calls | 2 / 0 | 2 / 0 |
+| Pending observations / reserved holds after normal close | 0 / 0 | 0 / 0 |
+
+The time-result gap drops 82.72% and controlled Response completion drops 65.56%,
+without removing a durable projection, tool result or paid allocation. D1 and
+native-allocation costs above are not the total journey bill; measured Worker
+wall time and real R2 archival remain separately charged. In particular, reduced
+latency is not relabeled as reduced logical SQL row usage or vendor CPU usage.
+These are controlled causal timings, not a new staging SLO or a replay of the
+original 10,342 ms live program.
