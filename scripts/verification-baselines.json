@@ -11003,5 +11003,143 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+    "run_id": "40463892529",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12716350499,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+      "receipts": [
+        {
+          "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+          "run_id": "40463892529",
+          "reference": "docs/session-history.md",
+          "scope": "Normal final static Worker and dedicated native history target compile-only receipt exit0/executed_tests0 plus one selector guard; no old business/benchmark/native-package execution"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four nonbillable official DeepSeek credential readiness contracts passed before the final native-only compile fix; production403 dependency authentication remains a separate external gate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+      "receipts": [
+        {
+          "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+          "run_id": "40463892529",
+          "reference": "docs/session-history.md",
+          "scope": "Normal final static Worker and dedicated native history target compile-only receipt exit0/executed_tests0 plus one selector guard; no old business/benchmark/native-package execution"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four nonbillable official DeepSeek credential readiness contracts passed before the final native-only compile fix; production403 dependency authentication remains a separate external gate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+      "receipts": [
+        {
+          "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+          "run_id": "40463892529",
+          "reference": "docs/session-history.md",
+          "scope": "Normal final static Worker and dedicated native history target compile-only receipt exit0/executed_tests0 plus one selector guard; no old business/benchmark/native-package execution"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four nonbillable official DeepSeek credential readiness contracts passed before the final native-only compile fix; production403 dependency authentication remains a separate external gate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+      "receipts": [
+        {
+          "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+          "run_id": "40463892529",
+          "reference": "docs/session-history.md",
+          "scope": "Normal final static Worker and dedicated native history target compile-only receipt exit0/executed_tests0 plus one selector guard; no old business/benchmark/native-package execution"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four nonbillable official DeepSeek credential readiness contracts passed before the final native-only compile fix; production403 dependency authentication remains a separate external gate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+    "run_id": "40463892529",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+      "receipts": [
+        {
+          "source_sha": "6bb7e90f9c8b048f18c1d0152c777ac542551448",
+          "run_id": "40463892529",
+          "reference": "docs/session-history.md",
+          "scope": "Normal final static Worker and dedicated native history target compile-only receipt exit0/executed_tests0 plus one selector guard; no old business/benchmark/native-package execution"
+        },
+        {
+          "source_sha": "f4c7da7c97cad66731dc85d8f1d35c10071d93e4",
+          "run_id": "40462572818",
+          "reference": "docs/deployment.md",
+          "scope": "Only four nonbillable official DeepSeek credential readiness contracts passed before the final native-only compile fix; production403 dependency authentication remains a separate external gate"
+        }
+      ],
+      "unresolved_checks": []
+    }
   }
 ]
