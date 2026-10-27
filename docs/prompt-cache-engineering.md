@@ -307,5 +307,24 @@ retried as the same SELECT, without rerunning any model or tool work.
 Protected evidence: `.temp/prompt-cache-probe/{baseline,candidate}.json`, the
 byte-identical workload, both `*-finance.json` receipts, normal selected-check
 artifacts under `.temp/cache-first-ci-*`, and the deployment receipt/provenance
-under `.temp/cache-staging-deployment/`. Production has not been changed by this
-staging acceptance; existing Sessions retain their original pin/layout.
+under `.temp/cache-staging-deployment/`. The staging acceptance itself did not
+change production; its separate rollout is recorded below.
+
+### Production rollout
+
+After the actual staging usage/ledger closure, protected production deployment
+`40521777891` succeeded from the immutable `codex/cache-verified-release` reference
+at the same tested `3799809` source and normal CI `40517024757`. It reused Worker
+artifact `12741190507` and the already accepted daemon/dashboard artifacts; there
+was no promotion rebuild. All six configured tool capabilities remained enabled.
+The public production health returned HTTP 200 and exact build
+`3799809521a64a287aa10a037e017760228e9422`.
+
+The standard deployment performed its nonbillable credential/dependency checks
+and selected `acceptance_profile=none`: no old paid/model, workspace, login,
+browser or CLI journey was replayed. No new credential was generated or
+intentionally rotated. Existing Sessions retain their original pin/layout; a new
+eligible native Session obtains the cache layout. For the local chat example,
+choosing “新对话” is enough—no key or agent configuration change is required.
+Production deployment provenance/receipt is retained under
+`.temp/cache-production-deployment/`.
