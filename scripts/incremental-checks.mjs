@@ -382,7 +382,7 @@ export function runChecks(receipt, job, execute = spawnSync, directory = OUTPUT)
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [mode, job] = process.argv.slice(2);
   if (mode === 'plan') {
-    const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, ''));
+    const baselines = JSON.parse(readFileSync('scripts/verification-baselines.json', 'utf8').replace(/^\uFEFF/, '')).map(({selection_base, ...baseline}) => baseline);
     const receipt = plan(git('rev-parse', 'HEAD'), baselines, process.env.CONTAINER_SCOPE ?? 'incremental', process.env.VERIFICATION_SCOPE ?? 'incremental');
     // Topic-only alarm lifetime proof; fixture binding edits do not replay old journeys.
     for (const key of Object.keys(receipt.checks)) receipt.checks[key] = [];
