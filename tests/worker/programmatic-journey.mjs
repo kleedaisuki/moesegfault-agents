@@ -318,7 +318,7 @@ export async function runProgrammaticConversation(context) {
   const escrows = await context.db.prepare(`SELECT response_id,state,remaining_bytes FROM conversation_response_capacity
     WHERE account_id=? AND conversation_id=? ORDER BY response_id`).bind(scenario.principal.owner, conversation.id).all();
   assert.deepEqual(escrows.results, [first.id, last.id].sort().map(response_id => ({ response_id, state: 'converted', remaining_bytes: 0 })));
-  const runs = await context.db.prepare(`SELECT id,state FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'resources:%'`)
+  const runs = await context.db.prepare(`SELECT id,state FROM usage_reservations WHERE account_id=? AND idempotency_key LIKE 'run:%'`)
     .bind(scenario.principal.owner).all();
   assert.deepEqual(runs.results, [{ id: first.id, state: 'settled' }]);
   assert.deepEqual((await charges(context.db, scenario.principal.owner)).map(row => [row.unit, Number(row.quantity), Number(row.amount_microusd)]).sort(), [
