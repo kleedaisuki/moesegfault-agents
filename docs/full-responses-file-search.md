@@ -411,6 +411,55 @@ unrelated inherited composed selection was not an ancestor. Replacement topic
 run 40450872599 (`2f0658b`) isolates the finite two-check proof; its CI-only planner
 must not be merged into deployable source. Proof outcome is pending here.
 
+
+### Retained-artifact long-ACK closure, with failed aggregates preserved
+
+GHA 40450872599 completed with a failed aggregate. Its new identity Rust contract,
+Wasm compile, release build and bundle passed; Worker artifact **12710612817**
+(source `2f0658b6ca1d7626f96ba8e0e4b21f04c0c84747`, Wasm SHA-256
+`a23c7916643e4a59a108e3bb7057f28740f50e84f7a4984385117387f6727046`)
+is retained unchanged. The SDK case stayed `in_progress` because its newly added
+D1 Proxy did not preserve the native constructor, unlike existing Conversation
+fixtures. This was a fixture/native-binding mismatch before conversion or funding.
+The corrected fixture preserves the constructor; Rust was **not rebuilt**.
+
+The same actual Worker then completed the one new local SDK scenario with a real
+33,000 ms delay **after** the vector D1 transaction committed. The saved SDK member
+was `completed`, one source chunk became `visible`, conversion calls were one and
+controlled embedding calls were one. This is real Rust/DO/SDK execution using
+controlled services, not an actual external BGE or language-model submission.
+The alarm started once, recorded no errors and retired its alarm after completion.
+
+That local run's aggregate still failed at a fixture object-equality assertion
+because the diagnostic state gained additional fields; the required semantic
+fields already matched. Rather than repeating a successful effect to repaint a
+suite green, a readonly tail inspected **the original persisted SQLite state**:
+
+| Original generation `8a114a70-1d5c-464e-aefd-da77ca95aa56` | Observed |
+| --- | --- |
+| SDK membership / vector state | `completed` / `visible` |
+| Converter / controlled embedding submissions | 1 / 1 |
+| Actual actor wall measurement | `durable_object/wall_ms = 35386` |
+| Old ingest `worker/wall_ms` | none |
+| Turn, convert, stage, embed, upsert, visibility funding | all six `settled` |
+| Pending resource observations | 0 |
+| Alarm starts / errors / remaining scheduled alarm | 1 / 0 / none |
+| New provider effects in readonly tail | 0 |
+
+The readonly tail executed one passing test in 88 ms. The original failed GHA and
+local aggregate remain failed; the bounded product behavior and accounting facts
+above are the positive evidence. Fixture correction `63dd572` (integration
+`ee2dfe1`) qualifies the SQL quantity projection and compares the semantic state
+fields without assuming that diagnostic fields can never grow. Neither the old
+accepted retrieval journeys nor the real failed PDF/BGE request was repeated.
+
+The tiny original `lease_until <= now` kickoff predicate is restored separately
+(`8aac5e6`, integration `7c24cf0`) so status polls do not wake an already-active
+alarm. It awaits the next normal composed compile, not another replay of the ACK
+scenario. Staging operations own the unique final normal build/deploy and one new
+actual repaired index acceptance; this retained-artifact proof is not production
+or native BGE semantic-search acceptance.
+
 ## File management accounting round trips (2026-10-27 increment)
 
 A new actual Cloudflare PDF user journey on source `e4e6777` observed upload
