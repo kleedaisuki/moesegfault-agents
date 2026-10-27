@@ -466,6 +466,30 @@ pub enum IngestProgress {
 #[path = "file_document.rs"]
 pub(crate) mod document;
 
+async fn embedding_receipt_failure(
+    env: &Env,
+    profile: &VectorServiceProfile,
+    job: &file_index::IngestJob,
+    chunks: &[file_index::PendingChunk],
+    meter: &ResourceMeter<'_>,
+    event: &str,
+) -> Result<&'static str> {
+    let effect = file_index::effects::original_effect(chunks)?;
+    meter.require_d1(event).await?;
+    let result=env.d1("DB")?.prepare("SELECT status FROM resource_observations WHERE account_id=?1 AND run_id=?2 AND event_key='provider' AND resource=?3 AND unit=?4")
+        .bind(&[job.account_id.as_str().into(),effect.into(),serde_json::to_value(&profile.embedding_allocation.resource)?.as_str().ok_or_else(||fail("invalid_retrieval_resource_allocation"))?.into(),profile.embedding_allocation.unit.as_str().into()])?.all().await?;
+    meter.record_d1(event, &result).await?;
+    let known = result
+        .results::<Value>()?
+        .iter()
+        .any(|row| row["status"] == "observed");
+    Ok(if known {
+        "file_search_embedding_receipt_unavailable"
+    } else {
+        "file_search_embedding_outcome_unknown"
+    })
+}
+
 async fn vectors_for_batch(
     env: &Env,
     profile: &VectorServiceProfile,
@@ -786,10 +810,19 @@ pub async fn ingest_turn(
         }
         let phase = file_index::effects::batch_state(&chunks)?;
         if phase == "embedding" {
+            let code = embedding_receipt_failure(
+                env,
+                profile,
+                &job,
+                &chunks,
+                meter,
+                &format!("{attempt}:embedding_receipt"),
+            )
+            .await?;
             file_index::fail_job(
                 env,
                 &job,
-                "file_search_embedding_outcome_unknown",
+                code,
                 crate::util::now_ms(),
                 meter,
                 &format!("{attempt}:embedding_unknown"),
