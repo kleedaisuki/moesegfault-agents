@@ -103,7 +103,9 @@ where
                 .or_else(|| observed.request_id.clone());
             let openrouter = config.api == ImageApi::Openrouter
                 && config.base_url.trim_end_matches('/') == "https://openrouter.ai/api/v1";
-            let mut result = if stream {
+            let event_stream = stream && observed.content_type.as_deref().is_some_and(|value|
+                value.to_ascii_lowercase().starts_with("text/event-stream"));
+            let mut result = if event_stream {
                 consume_stream_observed(
                     &mut response,
                     format,
@@ -127,6 +129,7 @@ where
                 observed.phase = ImagePhase::ParseJson;
                 let value = parse_json(&retained.body, &mut observed)?;
                 observed.observe_json(&value, openrouter);
+                observed.phase = ImagePhase::CheckStatus;
                 if observed
                     .upstream_status
                     .is_some_and(|status| !(200..300).contains(&status))
@@ -237,6 +240,7 @@ pub(crate) fn recover_received(
     let result = (|| {
         let value = parse_json(&reply.body, &mut observed)?;
         observed.observe_json(&value, openrouter);
+        observed.phase = ImagePhase::CheckStatus;
         if !(200..300).contains(&reply.meta.status) || value["type"] == "error" {
             return Err(invalid("image_generation_upstream_error"));
         }
@@ -555,6 +559,13 @@ where
         observed.phase = ImagePhase::ParseJson;
         let mut value = parse_json(&retained.body, observed)?;
         observed.observe_json(&value, openrouter);
+        observed.phase = ImagePhase::CheckStatus;
+        if observed
+            .upstream_status
+            .is_some_and(|status| !(200..300).contains(&status))
+        {
+            return Err(invalid("image_generation_upstream_error"));
+        }
         observed.phase = ImagePhase::DecodeImage;
         match value["type"].as_str() {
             Some("image_generation.partial_image") => {

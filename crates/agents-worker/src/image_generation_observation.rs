@@ -17,6 +17,7 @@ pub(crate) enum ImagePhase {
     ReadBody,
     RetainBody,
     ParseJson,
+    CheckStatus,
     DecodeImage,
     ValidateImage,
     StoreImage,
