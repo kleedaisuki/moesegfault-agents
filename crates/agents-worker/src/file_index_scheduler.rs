@@ -80,7 +80,7 @@ pub(crate) async fn kickoff(
     let file = file
         .map(wasm_bindgen::JsValue::from)
         .unwrap_or(wasm_bindgen::JsValue::NULL);
-    let jobs=env.d1("DB")?.prepare("SELECT account_id,vector_store_id,file_id,generation,service_profile_json FROM vector_store_files WHERE account_id=?1 AND vector_store_id=?2 AND (?3 IS NULL OR file_id=?3) AND status='in_progress' AND funding_blocked=0 AND removed_at IS NULL AND retry_at<=CAST(?4 AS INTEGER) ORDER BY retry_at,created_at LIMIT 4")
+    let jobs=env.d1("DB")?.prepare("SELECT account_id,vector_store_id,file_id,generation,service_profile_json FROM vector_store_files WHERE account_id=?1 AND vector_store_id=?2 AND (?3 IS NULL OR file_id=?3) AND status='in_progress' AND funding_blocked=0 AND removed_at IS NULL AND retry_at<=CAST(?4 AS INTEGER) AND lease_until<=CAST(?4 AS INTEGER) ORDER BY retry_at,created_at LIMIT 4")
         .bind(&[owner.as_str().into(),store.as_str().into(),file,util::now_ms().to_string().into()])?.all().await?.results::<Job>()?;
     for job in jobs {
         crate::file_index_actor::enqueue(
