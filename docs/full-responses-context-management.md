@@ -213,3 +213,28 @@ Verification is intentionally one new controlled compiled-Worker SDK journey
 plus one new emission-filter contract; old standalone compact, auto-window,
 Conversations and SQL cases are not selected. Actual staging acceptance requires
 one fresh request after deploying the repaired source, not a retry of the old ID.
+
+### Incremental controlled execution receipt
+
+Actions [40447505945](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40447505945)
+succeeded at proof source `ffe851f86fb9f98365208752924993a6d7004412`:
+Worker artifact `12709172145`, verification artifact `12709616231`.
+The only new SDK journey took 5,102 ms: one Anthropic summary with explicit
+thinking disabled, one native Responses continuation using the unchanged
+reasoning policy, preserved server/developer/current instructions, one sealed
+compaction item, immutable GET replay and two settled model reservations.
+Both model transports were controlled fixtures; external model calls: zero.
+The one new telemetry-filter Rust contract passed (289 ms runner duration).
+No old standalone compact, native-window, Convo, SQL or hosted-tool journey ran.
+
+The subsequent source-only compatibility correction `95b4eca` restores the
+previous automatic escrow bound (rather than weakening financial hash replay).
+It and the final assembled source require the next composed build. The above
+artifact proves the summary transport/continuation path, not that later source
+or a fresh actual Cloudflare request has already executed.
+
+The observed Actions latency was build work, not test repetition: installing
+`worker-build` took 155 s, release Wasm compilation 276 s, compiling the selected
+Rust test binary 117 s, versus 5 s executing the new SDK journey. Reusing a
+version/OS/architecture-bound verified `worker-build` binary can remove the
+repeated tool-install portion without dropping user-journey verification.
