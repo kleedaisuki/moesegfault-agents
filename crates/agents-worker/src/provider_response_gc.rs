@@ -31,7 +31,7 @@ pub(super) async fn run(env: &Env) -> Result<()> {
         if let Err(error) = collect(env, &row).await {
             crate::util::emit(
                 "provider.receipt_gc_deferred",
-                serde_json::json!({"owner_id":row.account_id,"operation_id":row.operation_id,"stage":"diagnostic_cleanup","error_class":match error {worker::Error::RustError(_) => "rust",_ => "platform"}}),
+                serde_json::json!({"owner_id":row.account_id,"operation_id":row.operation_id,"stage":"diagnostic_cleanup","error_code":diagnostic_code(&error),"error_class":match &error {worker::Error::RustError(_) => "rust",_ => "platform"}}),
             );
         }
     }
@@ -116,4 +116,41 @@ async fn collect(env: &Env, row: &Candidate) -> Result<()> {
 }
 fn text(s: &str) -> JsValue {
     JsValue::from_str(s)
+}
+
+// Keep our precise stage/chunk codes; never format arbitrary platform messages.
+fn diagnostic_code(error: &worker::Error) -> &str {
+    match error {
+        worker::Error::RustError(code)
+            if code.len() <= 128
+                && (code.starts_with("provider_receipt_")
+                    || code.starts_with("invalid_provider_receipt_"))
+                && code.bytes().all(|b| {
+                    b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b':' | b'=')
+                }) =>
+        {
+            code
+        }
+        _ => "provider_receipt_cleanup_failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn gc_diagnostics_keep_structured_chunk_failures_without_raw_messages() {
+        assert_eq!(
+            diagnostic_code(&fail("provider_receipt_delete_failed:chunk=23")),
+            "provider_receipt_delete_failed:chunk=23"
+        );
+        assert_eq!(
+            diagnostic_code(&fail("provider_receipt_secret token=ABC")),
+            "provider_receipt_cleanup_failed"
+        );
+        assert_eq!(
+            diagnostic_code(&fail("upstream arbitrary response")),
+            "provider_receipt_cleanup_failed"
+        );
+    }
 }
