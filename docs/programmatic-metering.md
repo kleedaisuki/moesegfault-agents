@@ -168,3 +168,41 @@ and the final Cloudflare invoice are not inferred from these controlled journeys
 Primary source: [Cloudflare Dynamic Workers pricing](https://developers.cloudflare.com/dynamic-workers/pricing/),
 read 2026-10-25. It defines unique ID/code daily counts, `.load()` identity
 behavior, per-fetch requests, and startup plus active CPU rather than I/O wait.
+
+## Central D1 batching for Session tool publication (2026-10-27)
+
+The actual native Cloudflare Loader acceptance recorded two successful harness
+`time` results 10,342 ms apart (`1793075724897` and `1793075735239`) in one
+program. That proves a user-visible sequential-tool gap, not that the clock
+function itself took ten seconds. The stopped original trace has no nested
+phase spans, so a precise production attribution ratio remains unknown.
+
+Source inspection connects the gap to a concrete path: nested tool admission and
+call/result publication invoke `SessionInner::persist`; `project` then calls
+`Store::update_session_observed`, which still uses the original ResourceMeter D1
+API. Each Session projection therefore had the already demonstrated nineteen
+binding round trips. The preceding Conversation and Vector Store improvements
+were opt-ins, so tool publication did not benefit.
+
+The original `ResourceMeter::require_d1` and `record_d1` now delegate to the same
+accepted two-batch implementation. Former per-route opt-ins return to those
+original method names; the batch helpers are private to ResourceMeter. This is
+one normal path, not another meter, cache, actor or financial state machine.
+Manual `require_observation`/`record_observation` for model/container/R2/wall-time
+resources remain unchanged. Ledger identities, exact tariffs, Session/account
+binding and unknown-observation funding fences are unchanged.
+
+A new compatibility test reuses the existing SQL fixtures **without executing the
+seven accepted tests**. It starts account and Session scopes with old ledger-first
+receipt states: read merely appended, or read observed with write appended but
+pending. The shared batch completes them without changing existing ledger rows,
+price, quantity or observed timestamp. Only the original exact ledger settles.
+
+The new actual Rust Session/native DynamicWorker benchmark compares one program
+with two time calls at fixed 20 ms D1 binding RTT against the accepted Files-batched
+Worker. It checks shorter sequential-tool gaps with unchanged business SQL,
+actual D1 quantities/charges and one 2000+1+2 microUSD dynamic allocation. It does
+not repeat the prior program replay/invalid-argument, Conversation or Files
+journeys, nor any real DeepSeek/OpenRouter request. Controlled timing is not a
+staging SLO; compilation and this new end-to-end proof remain required before
+claiming the central implementation accepted.
