@@ -95,7 +95,11 @@ class ReceiptGcFundingRecoveryTests(unittest.TestCase):
         self.db.close()
 
     def release_empty(self, now: int = 101) -> None:
-        self.db.execute(sql("UPDATE usage_reservations SET state='released'", GC), (str(now), "old", "a", "op", "1"))
+        self.db.execute(sql("UPDATE usage_reservations SET state='released'", GC), (str(now), "old", "a", "op", "1", str(now // 1000)))
+
+    def test_empty_release_keeps_reservation_seconds_and_lease_milliseconds_separate(self) -> None:
+        self.release_empty(1_793_073_600_123)
+        self.assertEqual(self.db.execute("SELECT state,updated_at FROM usage_reservations").fetchone(), ("released", 1_793_073_600))
 
     def test_empty_old_scope_is_released_only_with_expired_or_stale_fence(self) -> None:
         self.release_empty(99)
@@ -128,7 +132,7 @@ class ReceiptGcFundingRecoveryTests(unittest.TestCase):
         self.db.execute("UPDATE usage_reservations SET request_hash='{}'")
         self.db.execute("UPDATE provider_response_operations SET state='released',capacity_bytes=0,expires_at_ms=NULL")
         self.assertEqual(len(self.db.execute(sql("SELECT id,account_id,state,request_hash FROM usage_reservations WHERE state='reserved'", GC)).fetchall()), 1)
-        self.db.execute(sql("UPDATE usage_reservations SET state='released'", GC), ("99", "receipt-gc:synthetic:1", "a", "op", "1"))
+        self.db.execute(sql("UPDATE usage_reservations SET state='released'", GC), ("99", "receipt-gc:synthetic:1", "a", "op", "1", "0"))
         self.assertEqual(self.db.execute("SELECT state FROM usage_reservations").fetchone(), ("released",))
 
 

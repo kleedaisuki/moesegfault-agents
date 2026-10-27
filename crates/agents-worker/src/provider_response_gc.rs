@@ -240,8 +240,8 @@ async fn close_previous(env: &Env, previous: &Previous) -> Result<()> {
     // Atomic with observation admission: if a paused old invocation has already
     // declared a HEAD this cannot release; if this wins its later declaration
     // cannot pass the reservation's Reserved-state fence.
-    env.d1("DB")?.prepare("UPDATE usage_reservations SET state='released',updated_at=CAST(?1 AS INTEGER) WHERE id=?2 AND account_id=?3 AND state='reserved' AND NOT EXISTS(SELECT 1 FROM resource_observations WHERE run_id=?2 AND account_id=?3) AND EXISTS(SELECT 1 FROM provider_response_operations WHERE account_id=?3 AND operation_id=?4 AND (gc_attempt>CAST(?5 AS INTEGER) OR gc_lease_until_ms<=CAST(?1 AS INTEGER) OR state='released'))")
-        .bind(&[text(&now.to_string()),text(&previous.id),text(&funding.owner),text(&funding.operation),text(&funding.attempt.to_string())])?.run().await?;
+    env.d1("DB")?.prepare("UPDATE usage_reservations SET state='released',updated_at=CAST(?6 AS INTEGER) WHERE id=?2 AND account_id=?3 AND state='reserved' AND NOT EXISTS(SELECT 1 FROM resource_observations WHERE run_id=?2 AND account_id=?3) AND EXISTS(SELECT 1 FROM provider_response_operations WHERE account_id=?3 AND operation_id=?4 AND (gc_attempt>CAST(?5 AS INTEGER) OR gc_lease_until_ms<=CAST(?1 AS INTEGER) OR state='released'))")
+        .bind(&[text(&now.to_string()),text(&previous.id),text(&funding.owner),text(&funding.operation),text(&funding.attempt.to_string()),text(&(now/1000).to_string())])?.run().await?;
     #[derive(Deserialize)]
     struct State {
         state: ReservationState,
