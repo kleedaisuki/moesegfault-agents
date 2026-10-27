@@ -672,3 +672,19 @@ rustfmt/diff checks. The six new compiled-Worker/R2 fault journeys are pending
 Actions verification; this section is an implementation/incident record, not a
 successful repaired live Seedream receipt. Earlier accepted image journeys are
 not repeated by this increment.
+
+### Cleanup funding crash recovery
+
+Cleanup funding recovery closes the **original** attempt before admitting the
+next attempt: a completely empty reservation may be released only by one atomic
+`NOT EXISTS(resource_observations)` update under its expired/stale operation
+fence. An all-observed attempt settles through `ResourceMeter::settle_run` with
+its original saved pricing; a genuinely pending HEAD blocks another attempt and
+is not guessed as zero. A bounded receipt-funding sweep also finds stale
+reservations after operation capacity has already been released, covering a
+paused old invocation that creates its reservation late. New attempts recheck
+the operation fence before their first observation; finalizing the old hold
+prevents any new unobserved HEAD admission by that old invocation. Already
+removed frames release capacity without creating another paid cleanup scope.
+Five additional targeted SQL cases cover empty refund fencing, pending/observed
+separation, attempt CAS, and late reservation discovery after operation release.
