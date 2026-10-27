@@ -32,7 +32,8 @@ import { createVisionInputFixture, runDeepSeekVisionCountJourney } from './deeps
 import { createPromptProviderFixture, promptRegistry, runPromptTemplatesJourney } from './prompt-templates-journey.mjs';
 import { runResponsesToolBudgetJourney } from './responses-tool-budget.mjs';
 import { createNativeSemanticsProvider } from './native-semantics-journey.mjs';
-import { runPromptCacheInstructionsJourney, runPromptCacheToolForkJourney, runPromptCacheCompactionJourney } from './prompt-cache-journey.mjs';
+import { runPromptCacheInstructionsJourney, runPromptCacheToolForkJourney, runPromptCacheCompactionJourney,
+  runPromptCacheExplicitSessionCountJourney } from './prompt-cache-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -549,6 +550,8 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     t.diagnostic(JSON.stringify(await runPromptCacheToolForkJourney(promptCacheContext()))));
   await selected(t, 'Responses cache context compaction retains the latest revision and resets without stale policy', { timeout: 60000 }, async () =>
     t.diagnostic(JSON.stringify(await runPromptCacheCompactionJourney(promptCacheContext()))));
+  await selected(t, 'Responses cache explicit Session counting preserves legacy and versioned pins without admission', { timeout: 60000 }, async () =>
+    t.diagnostic(JSON.stringify(await runPromptCacheExplicitSessionCountJourney(promptCacheContext()))));
   const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
     .map(name => [name, mfOptions.workers[0].config.env[name]]));
   const configureCompact = async values => {

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { createNativeSemanticsScenario } from './native-semantics-journey.mjs';
+import { createBrowserPrincipal } from './browser-principal.mjs';
 
 const marker = '<agents_context_update>\n';
 const endMarker = '\n</agents_context_update>';
@@ -73,7 +75,8 @@ async function countWithoutMutation(scenario, sessionId, request) {
   const before = await snapshot(scenario, sessionId);
   const calls = scenario.state.calls;
   const measurementStart = scenario.state.countRequests.length;
-  const measured = await scenario.client.responses.inputTokens.count({ model: scenario.agent.id, ...request });
+  const { max_output_tokens: _outputBudget, ...countable } = request;
+  const measured = await scenario.client.responses.inputTokens.count({ model: scenario.agent.id, ...countable });
   const after = await snapshot(scenario, sessionId);
   assert.deepEqual(after.messages, before.messages, 'Count-only projection cannot append the context event to source history');
   assert.deepEqual(after.pinned, before.pinned, 'Count-only projection cannot change the pinned contract');
@@ -269,4 +272,114 @@ export async function runPromptCacheCompactionJourney(context) {
     stale_response_policy_not_reintroduced: true, ordinary_protected_roles_preserved: true,
     post_compaction_reset_and_count_match: true, old_source_response_immutable: true,
     model_ledger_rows: rows.length, external_network_calls: 0, cache_hits_claimed: false };
+}
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort()
+    .map(key => [key, canonical(value[key])]));
+  return value;
+}
+
+async function seedOwnedLegacySession(scenario, template) {
+  const now = Date.now();
+  const record = { ...structuredClone(template), id: randomUUID(), created_at_ms: now,
+    last_input_at_ms: now, input_revision: 0 };
+  delete record.pinned.prompt_layout;
+  record.pinned.instructions = 'CACHE-LEGACY-PIN-BEFORE-UPGRADE';
+  const namespace = await scenario.mf.getDurableObjectNamespace('SESSIONS');
+  const id = namespace.idFromName(`${scenario.principal.owner}:${record.id}`);
+  const hash = createHash('sha256').update(JSON.stringify(canonical(record.pinned))).digest('hex');
+  // Seed the actual pre-upgrade serialized contract, not a modern pin disguised
+  // by an HTTP override. All subsequent counting and inference use public routes.
+  await scenario.db.prepare(`INSERT INTO sessions(id,account_id,agent_id,do_id,status,config_snapshot_json,
+    instructions_hash,created_at,last_input_at,runtime_profile) VALUES(?,?,?,?,'active',?,?,?,?,?)`)
+    .bind(record.id, record.owner_id, record.agent_id, id.toString(), JSON.stringify(record), hash,
+      record.created_at_ms, record.last_input_at_ms, record.runtime_profile).run();
+  const initialized = await namespace.get(id).fetch('https://session/init', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(record),
+  });
+  assert.equal(initialized.status, 200, await initialized.text());
+  return record;
+}
+
+export async function runPromptCacheExplicitSessionCountJourney(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'cache-explicit-session', [
+    { output: [answer('explicit-legacy')], usage }, { output: [answer('explicit-v1')], usage },
+  ]);
+  scenario.state.count = count;
+  const modern = await scenario.request('POST', `/v1/agents/${scenario.agent.id}/sessions`, {}, 201, scenario.principal.apiKey);
+  assert.equal(modern.pinned.prompt_layout, 'append_only_v1');
+  const legacy = await seedOwnedLegacySession(scenario, modern);
+  await scenario.request('PATCH', `/v1/agents/${scenario.agent.id}`, {
+    instructions: 'CACHE-CURRENT-AGENT-EDIT-MUST-NOT-REPLACE-SESSION-PIN',
+  }, 200, scenario.principal.apiKey);
+  const foreignAgent = await scenario.request('POST', '/v1/agents', {
+    name: 'Different cache count agent', instructions: 'CACHE-DIFFERENT-AGENT',
+    model: scenario.agent.model, tools: [], workspace: false, compaction_percent: 80,
+  }, 201, scenario.principal.apiKey);
+  const other = await createBrowserPrincipal({ mf: context.mf, db: context.db,
+    encryptionKey: context.encryptionKey, owner: 'cache-explicit-session-other-owner' });
+  const beforeRejectedCounts = scenario.state.countRequests.length;
+  await assert.rejects(scenario.client.responses.inputTokens.count({ model: foreignAgent.id, input: 'WRONG-AGENT' },
+    { headers: { 'X-Agents-Session': legacy.id } }), error => error.status === 400 && error.code === 'response_context_mismatch');
+  const crossOwner = await context.mf.dispatchFetch('https://agents.test/v1/responses/input_tokens', {
+    method: 'POST', headers: { Authorization: `Bearer ${other.apiKey}`, 'Content-Type': 'application/json',
+      'X-Agents-Session': legacy.id }, body: JSON.stringify({ model: scenario.agent.id, input: 'WRONG-OWNER' }),
+  });
+  assert.equal(crossOwner.status, 404, await crossOwner.text());
+  assert.equal(scenario.state.countRequests.length, beforeRejectedCounts, 'An invalid explicit-session binding cannot fall back to a fresh agent renderer');
+  const responseIds = [];
+  for (const [index, record] of [legacy, modern].entries()) {
+    const before = await snapshot(scenario, record.id);
+    const headers = { 'X-Agents-Session': record.id };
+    const body = { model: scenario.agent.id, instructions: `CACHE-EXPLICIT-RESPONSE-${index}`, input: `CACHE-EXPLICIT-USER-${index}` };
+    const routeCount = await context.db.prepare('SELECT COUNT(*) AS n FROM response_routes WHERE account_id=?')
+      .bind(scenario.principal.owner).first('n');
+    const measurements = scenario.state.countRequests.length;
+    const measured = await scenario.client.responses.inputTokens.count(body, { headers });
+    const after = await snapshot(scenario, record.id);
+    assert.deepEqual(after.pinned, before.pinned);
+    assert.deepEqual(after.messages, before.messages);
+    assert.equal(after.input_revision, before.input_revision);
+    assert.equal(after.last_input_at_ms, before.last_input_at_ms);
+    assert.equal(after.run_id, before.run_id);
+    assert.equal(scenario.state.calls, index, 'Explicit-session counting cannot admit inference');
+    assert.equal(await context.db.prepare('SELECT COUNT(*) AS n FROM response_routes WHERE account_id=?')
+      .bind(scenario.principal.owner).first('n'), routeCount, 'Read-only count cannot reserve a public Response');
+    const response = await scenario.client.responses.create({ ...body, max_output_tokens: 64 }, {
+      headers: { ...headers, 'Idempotency-Key': `cache-explicit-count-${index}` },
+    }).asResponse();
+    const value = await response.json();
+    if (scenario.state.failure) throw scenario.state.failure;
+    assert.equal(response.status, 200, JSON.stringify(value));
+    assert.equal(value.status, 'completed');
+    assert.equal(response.headers.get('x-agents-session'), record.id);
+    const generation = scenario.state.requests[index];
+    assertMeasuredGeneration({ measured, requests: scenario.state.countRequests.slice(measurements) }, generation);
+    const prefix = text(generation.input[0]);
+    assert.ok(prefix.includes(record.pinned.instructions), 'Count and generation retain the explicit Session\'s actual original instructions');
+    assert.ok(!prefix.includes('CACHE-CURRENT-AGENT-EDIT'));
+    if (index === 0) {
+      assert.equal(updates(generation).length, 0, 'The pre-upgrade pin retains its established rendering');
+      assert.ok(prefix.includes(body.instructions), 'Legacy rendering preserves response instructions in its original prefix location');
+    } else {
+      assert.equal(updates(generation).length, 1);
+      assert.ok(!prefix.includes(body.instructions), 'The new explicit Session retains its pinned append-only layout');
+    }
+    responseIds.push(value.id);
+    const countsAfterGeneration = scenario.state.countRequests.length;
+    await assert.rejects(scenario.client.responses.inputTokens.count(body, { headers }),
+      error => error.status === 409 && error.code === 'response_context_unavailable');
+    assert.equal(scenario.state.countRequests.length, countsAfterGeneration,
+      'A nonempty explicit Session without a published parent boundary cannot guess history or count a fresh-agent substitute');
+    assert.equal(scenario.state.calls, index + 1);
+  }
+  const sessions = await scenario.request('GET', `/v1/agents/${scenario.agent.id}/sessions`, undefined, 200, scenario.principal.apiKey);
+  assert.equal(sessions.data.length, 2, 'Neither counting nor explicit generation silently admits another Session');
+  const rows = await knownModelRows(scenario, responseIds);
+  return { provider_calls: 2, legacy_and_v1_header_count_equal_generation: true,
+    original_pin_survives_agent_edit: true, count_preserves_session_and_response_admission: true,
+    wrong_agent_status: 400, wrong_owner_status: 404, nonempty_without_parent_status: 409, model_ledger_rows: rows,
+    external_network_calls: 0, cache_hits_claimed: false };
 }

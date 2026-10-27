@@ -112,6 +112,7 @@ export function selections(source, base, files) {
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context appends instruction changes and reset across cold continuation and exact count'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context tool revisions preserve historical forks without revoked aliases'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context compaction retains the latest revision and resets without stale policy'],
+    [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache explicit Session counting preserves legacy and versioned pins without admission'],
     [/execution[-_]lease/, 'ModelOperation execution lease cold loss and terminal admission rejection'],
     [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
