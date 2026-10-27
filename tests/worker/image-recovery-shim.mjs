@@ -53,9 +53,12 @@ export class Session extends RustSession {
   async fetch(request) {
     if (new URL(request.url).pathname !== '/__test/image-recovery') return super.fetch(request);
     const keys = [...(await this.fixtureStorage.list({ prefix: 'hosted:image:' })).keys()];
-    const roots = keys.filter(key => !key.slice('hosted:image:'.length).includes(':'));
     const operations = [];
-    for (const key of roots) operations.push({ key, value: await read(this.fixtureStorage, key) });
+    for (const key of keys) {
+      const index = await this.fixtureStorage.get(key);
+      if (typeof index?.generation !== 'string' || !Number.isSafeInteger(index.chunks)) continue;
+      operations.push({ key, value: await read(this.fixtureStorage, key) });
+    }
     return Response.json({ fault: this.fixtureFault, operations });
   }
 }
