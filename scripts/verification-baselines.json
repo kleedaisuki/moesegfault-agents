@@ -11198,5 +11198,124 @@
       ],
       "unresolved_checks": []
     }
+  },
+  {
+    "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+    "run_id": "40546096194",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12753008991,
+    "verified_phases": [
+      "wasm_build",
+      "rust_lib"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Compile changed Worker tests without replaying accepted cases",
+      "Run node scripts/incremental-checks.mjs run worker-rust",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12754845082,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "f63f0f58741bea92f1955b375cfbcdb0004b4430",
+      "receipts": [
+        {
+          "source_sha": "3799809521a64a287aa10a037e017760228e9422",
+          "run_id": "40517024757",
+          "reference": "docs/prompt-cache-engineering.md",
+          "scope": "Preserved accepted cache/product baseline; no old business regression replay"
+        },
+        {
+          "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+          "run_id": "40546096194",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Failed aggregate retained. Wasm, six new Rust guards, three tooling assertions and historical configuration fork passed. Only native output test decoder and issued-preflight error classification changed afterward; the explicit three failed leaves plus new error guard below remain required."
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "journey:Agent revisions append to an existing Session and survive compaction and cold recovery",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/http.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_WORKER_CASE": "Agent revisions append to an existing Session and survive compaction and cold recovery"
+          },
+          "reason": "Only this failed new configuration journey; preserve successful historical fork and six Rust/tooling receipts"
+        },
+        {
+          "id": "journey:Busy Agent revisions revoke queued tools only at safe execution boundaries",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/http.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_WORKER_CASE": "Busy Agent revisions revoke queued tools only at safe execution boundaries"
+          },
+          "reason": "Only this failed new configuration journey; preserve successful historical fork and six Rust/tooling receipts"
+        },
+        {
+          "id": "journey:Issued workspace effects remain unknown instead of revoked or replayed after Agent edits",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/http.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_WORKER_CASE": "Issued workspace effects remain unknown instead of revoked or replayed after Agent edits"
+          },
+          "reason": "Only this failed new configuration journey; preserve successful historical fork and six Rust/tooling receipts"
+        },
+        {
+          "id": "rust:agents-worker:session_configuration_issued_preflight_preserves_unknown_error_identity",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "session_configuration_issued_preflight_preserves_unknown_error_identity",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "New pure guard for the evidenced issued-recovery error classification repair"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+    "run_id": "40546096194",
+    "components": [
+      "native",
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+      "receipts": [
+        {
+          "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+          "run_id": "40546096194",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Only these individual jobs were successful in the failed aggregate: native build/two Core guards and three tooling assertions; no claim that the Worker job passed"
+        }
+      ],
+      "unresolved_checks": []
+    }
   }
 ]
