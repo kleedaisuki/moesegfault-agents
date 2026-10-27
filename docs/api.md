@@ -202,6 +202,27 @@ layers apply behind the stable prefix and cannot grant permissions. The agent pi
 still persists; agent updates do not rewrite it. Resend a desired top-level
 customization deliberately, without replaying historical input items.
 
+#### Prompt-cache layout
+
+Eligible new native Responses sessions pin `prompt_layout: "append_only_v1"`.
+Their built-in instructions, agent instructions and registered skills form a
+stable prefix. Changes to response-scoped `instructions`, the effective tool
+catalog or semantic runtime environment append a private system-context snapshot
+instead of rewriting that prefix. Unchanged snapshots are not appended again.
+Omitted/null instructions explicitly end a prior response-only override; an
+empty string remains an explicit value. Historical caller system/developer
+instructions and the original agent pin retain their existing semantics.
+
+These internal snapshots do not appear as fabricated user input items and do not
+authorize tools. Current declarations and execution bindings remain authoritative:
+removing a tool never keeps it callable for the sake of caching. Changes to actual
+tool schemas can still invalidate a provider's rendered prefix. Model/provider
+capabilities, cache persistence and compaction also affect reuse; a stable prefix
+is not a guaranteed cache hit. Existing pins without the layout keep their exact
+legacy renderer. Unsupported native model profiles retain the compatible layout.
+See [cache engineering](prompt-cache-engineering.md) for provider boundaries,
+incremental acceptance and actual usage measurements.
+
 | Parameter | Initial linear v0.3 baseline; expanded policy is linked above |
 |---|---|
 | `previous_response_id` | Continue the current head of the same owned agent/session |
