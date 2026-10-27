@@ -343,3 +343,70 @@ Build-path timings explain this slice's elapsed time: `cargo install worker-buil
 2m40s and Worker release build 4m36s; total Worker job 11m58s. Selected behavioral
 checks consumed approximately 4.56 seconds. This is evidence for caching the
 pinned build tool and compiled artifacts, not justification for more regressions.
+
+
+## Alarm lifetime fixes the later paid-result receipt failure
+
+The repaired native converter succeeded on a **new** staging input, not a replay
+of the original failure. Worker `e4e677702f469a676022e40039cd84f9a0c097cb`,
+assembly `302adceed320af8e7093100a8a15e9c0f860c779`, accepted a distinct 593-byte
+PDF (SHA-256 `63e07f3f678fb9907cab5a121d13fc7fe856f112151d1c9bbe29f9ab393ee1e9`).
+Native conversion completed with HTTP 200 in 98 ms, request 1,013 bytes and response
+185 bytes. Its immutable 0030 metadata survived the subsequent index failure.
+This is actual native conversion acceptance, not semantic search acceptance.
+
+The later failure was **not** an upstream BGE failure or Vectorize visibility.
+Readonly inspection of original generation `a85052b1-b90c-4b2b-943d-31e696a27870`
+proved `embed:0:1` had observed 34 input bytes and settled exactly 1 microusd.
+The parent turn `93e7ce2ed2ef433789312bdd3135fa21` retained a pending
+`receipt:0:read` for vector persistence, then recorded a failed turn at 27,216 ms.
+Earlier turns had similarly interrupted document-result and chunk-stage D1
+acknowledgments. The scheduler selected its entire effect future against a
+26-second timer and **dropped** the future at the deadline. The next claimant
+saw the durable `embedding` fence and conservatively failed the job, but called
+it `outcome_unknown` despite the known provider observation. The paid result was
+lost between provider completion and durable publication. No repeated embedding,
+reupload, direct SQL finance correction, or fabricated D1 row count was used.
+The original File and Store were deleted through normal APIs; pending original
+D1 observations retain their own unresolved financial evidence.
+
+### Native execution lifetime, not a larger HTTP timeout
+
+[Cloudflare's platform limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
+give HTTP `waitUntil` only 30 seconds after a response, but Durable Object alarm
+handlers have a 15-minute wall-time lifetime. Removing only the local timer would
+therefore leave a second platform cancellation trap. `FileIngest` uses the native
+alarm lifetime instead:
+
+- HTTP/cron kickoff stores only an immutable owner/store/file/generation key and
+  schedules an alarm; no vectors, document content, or credentials enter actor
+  snapshots. A hash of all four fields gives each generation its own actor.
+- D1 remains authoritative for eligibility, source hash, generation, lease,
+  funding and every external-effect fence. Claims also bind the expected actor
+  generation; a stale actor cannot claim a successor's work.
+- One alarm admits a bounded batch under an eight-minute **cooperative** budget.
+  Once admitted, the provider result and its D1 receipt finish; a timeout never
+  drops an in-flight receipt. Pending visibility schedules the next alarm.
+- Actual actor wall time uses the existing `durable_object/wall_ms` tariff,
+  not a duplicate outer `worker/wall_ms` charge. Cron and enqueue remain bounded
+  scheduling overhead. The existing D1 lease/funding state machine is reused.
+- Cold `embedding` fences with a known provider observation now report
+  `file_search_embedding_receipt_unavailable`; genuinely unobserved dispatches
+  retain `file_search_embedding_outcome_unknown`. Neither is re-embedded.
+
+This is a small native scheduling boundary, not a new workflow framework.
+[Durable execution research](https://www.usenix.org/conference/osdi20/presentation/zhang-haoran)
+helps explain the distinction between saved control state and an acknowledged
+external effect; it does not grant exactly-once semantics to opaque vendor HTTP.
+The additive Wrangler migration is `v4-file-ingest-alarms` and the binding is
+`FILE_INGEST`. No deployed D1 migration is rewritten.
+
+Pure source `8185f9e`, fixture `55b776c`, and known-receipt classification `327f61f`
+are the increment. The new controlled journey delays the D1 acknowledgment for
+**33 seconds after vector rows are committed**, exercising the actual Rust alarm
+without another real provider or language-model call. Existing retrieval fixture
+bindings are updated mechanically, not an invitation to rerun accepted journeys.
+Initial topic run 40450695349 failed in planning before compilation because an
+unrelated inherited composed selection was not an ancestor. Replacement topic
+run 40450872599 (`2f0658b`) isolates the finite two-check proof; its CI-only planner
+must not be merged into deployable source. Proof outcome is pending here.
