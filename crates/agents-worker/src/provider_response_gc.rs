@@ -126,9 +126,6 @@ async fn collect(env: &Env, row: &Candidate) -> Result<()> {
     let meter = ResourceMeter::with_account_pricing(env, &row.account_id, &run, pricing)?;
     let frames=env.d1("DB")?.prepare("SELECT descriptor_json FROM provider_response_frames WHERE account_id=? AND operation_id=? AND deleted=0 ORDER BY receipt_id LIMIT 4")
         .bind(&[text(&row.account_id),text(&row.operation_id)])?.all().await?.results::<Frame>()?;
-    meter
-        .record_observation("receipt_gc_attempt", Resource::R2Operation, "class_b", 0)
-        .await?;
     let deletion = async {
         for (index, frame) in frames.iter().enumerate() {
             let receipt: StoredResponse = serde_json::from_str(&frame.descriptor_json)?;
