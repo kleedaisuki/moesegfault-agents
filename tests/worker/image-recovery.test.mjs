@@ -53,7 +53,7 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
     const telemetry = [];
     let admission;
     let mf;
-    mf = new Miniflare(convertV4MiniflareOptions({ modulesRoot: build,
+    const options = convertV4MiniflareOptions({ modulesRoot: build,
       modules: [{ type: 'ESModule', path: path.join(build, 'worker/shim.mjs'), contents: await readFile(new URL('./image-recovery-shim.mjs', import.meta.url), 'utf8') },
         { type: 'ESModule', path: path.join(build, 'index.js') }, { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') }],
       compatibilityDate: '2026-10-23', compatibilityFlags: ['enable_request_signal'],
@@ -92,9 +92,10 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         const response = await providers.handle(request);
         assert.notEqual(response, undefined, 'Controlled recovery fixtures must never contact the public network');
         return response;
-      } }));
+      } });
+    mf = new Miniflare(options);
     try {
-      const db = await mf.getD1Database('DB'); await migrate(db);
+      let db = await mf.getD1Database('DB'); await migrate(db);
       const principal = await createBrowserPrincipal({ mf, db, encryptionKey, owner: `image-recovery-${name}` });
       const model = providers.register(`image-recovery-${name}`, [
         { output: [{ id: 'controlled-image-call', type: 'function_call', name: '__agents_image_generation', call_id: `controlled-${name}`,
@@ -120,7 +121,10 @@ test('compiled Rust Worker: paid image response recovery and precise failure bou
         faultReceipt = await until(async () => { const state = await inspect(); return state.fault.injected && state.operations[0]?.value.lifecycle_failure ? state : null; }, 'Actual fault injection');
         assert.equal(faultReceipt.fault.encrypted, true, 'The R2 response body is encrypted before storage');
         assert.ok(faultReceipt.operations[0]?.value.provider_replies.length > 0, 'The raw receipt pointer precedes the failed acknowledgement or artifact write');
-        await mf.unsafeEvictDurableObject('', 'Session', { name: `${principal.owner}:${route.session_id}` });
+        const worker = options.workers[0];
+        await mf.setOptions({ ...options, workers: [{ ...worker, config: { ...worker.config, env: { ...worker.config.env,
+          IMAGE_RECOVERY_RESTART: { type: 'text', value: `after-${name}` } } } }, ...options.workers.slice(1)] });
+        db = await mf.getD1Database('DB');
       }
       const response = await until(async () => {
         const value = await (await client.responses.retrieve(initial.id).asResponse()).json();
