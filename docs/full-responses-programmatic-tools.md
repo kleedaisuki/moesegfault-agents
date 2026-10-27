@@ -354,3 +354,35 @@ production gate. One new render-to-proof contract covers the missed boundary.
 Normal correction CI `40448958981` selects that one contract and reuses exact
 Worker artifact `12709167366` from the successful original build; it must not
 rebuild Rust or replay the previous five contracts to repair this metadata check.
+
+## Actual Cloudflare native Loader time program
+
+Deployment `40449131900` (assembly `302adce`, exact Worker `e4e6777`) completed
+one new real programmatic SDK submission, not a replay of the controlled
+journeys. Direct DeepSeek produced one program, the native Cloudflare Loader
+executed its original source request, and two causally labelled `time` calls
+returned the actual UTC receipts included in its final program result. The outer
+answer then completed. Response `resp_1e645029bacb4ac9928cebe5657d5fba` has 30
+canonical SSE events; raw GET equals the original terminal SSE. Current Python
+SDK 3.37.0 validated the actual wire, and the owned Session pin remained direct
+DeepSeek. No MCP, Conversation, image, workspace or Code Interpreter operation
+was selected. Its Session and temporary Agent were closed/deleted normally.
+
+Original-scope ledger postflight passed with **2,453 microusd** total: exactly
+one creation allocation (2,000), one request (1), one 100-ms CPU-capacity slot (2),
+two model reservations (109 + 119), execution resources (215) and Session
+maintenance (7). Every reservation in this precise new scope is settled, with no
+pending resource observation or new hold. Historical holds and the separate
+failed PDF generation are excluded; no manual balance adjustment was made. The
+single CPU-capacity allocation is not confused with program await wall time.
+Public usage remains null where the existing direct model protocol cannot
+honestly report the complete cache-write usage view; the two model ledger
+settlements remain independently inspectable.
+
+The two returned UTC times are 10,342 ms apart. That is a real end-to-end nested
+call interval, not evidence that reading the clock itself takes ten seconds or
+that this single sample establishes a latency percentile. It exposes further
+journal/funding overhead for incremental optimization without another paid
+probe. Receipts: `.temp/features-staging/programmatic-live-receipt.json` and
+`programmatic-live-postflight-original.json`; the read-only original Response
+snapshot is separate. No accepted POST was repeated.
