@@ -15,7 +15,13 @@ use sha2::{Digest, Sha256};
 #[path = "image_generation_transport.rs"]
 mod transport;
 
-pub(crate) use transport::{fetch_public_image_bytes, generate, materialize};
+#[path = "image_generation_observation.rs"]
+pub(crate) mod observation;
+pub(crate) use observation::{
+    ImageExchange, ImageFailure, ImageObservation, ImagePhase, ProviderReply,
+};
+
+pub(crate) use transport::{fetch_public_image_bytes, generate, materialize, recover_received};
 
 #[cfg(test)]
 #[path = "image_generation_tests.rs"]
