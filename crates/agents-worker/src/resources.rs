@@ -261,32 +261,12 @@ impl<'a> ResourceMeter<'a> {
     }
 
     pub async fn require_d1(&self, event: &str) -> Result<()> {
-        self.require_observation(&format!("{event}:read"), Resource::D1, "rows_read")
-            .await?;
-        self.require_observation(&format!("{event}:write"), Resource::D1, "rows_written")
-            .await
+        self.require_d1_batched(event).await
     }
 
     /// Call require_d1 before executing the query. Missing metadata remains held.
     pub async fn record_d1(&self, event: &str, result: &D1Result) -> Result<()> {
-        let meta = result
-            .meta()?
-            .ok_or_else(|| fail("d1_usage_metadata_missing"))?;
-        let read = meta
-            .rows_read
-            .ok_or_else(|| fail("d1_usage_metadata_missing"))? as u64;
-        let written = meta
-            .rows_written
-            .ok_or_else(|| fail("d1_usage_metadata_missing"))? as u64;
-        self.record_observation(&format!("{event}:read"), Resource::D1, "rows_read", read)
-            .await?;
-        self.record_observation(
-            &format!("{event}:write"),
-            Resource::D1,
-            "rows_written",
-            written,
-        )
-        .await
+        self.record_d1_batched(event, result).await
     }
 
     /// Bill observed byte-time without hour rounding. Caller tracks object size

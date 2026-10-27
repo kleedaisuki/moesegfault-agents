@@ -326,7 +326,7 @@ impl ConversationOperation {
             self.emit(phase, fields);
         };
         let meter = self.meter(env, owner)?;
-        if let Err(error) = meter.require_d1_batched(&event).await {
+        if let Err(error) = meter.require_d1(&event).await {
             report("d1.funding_failed", &error);
             return Err(error);
         }
@@ -339,7 +339,7 @@ impl ConversationOperation {
             }
         };
         let returned = util::now_ms();
-        if let Err(error) = meter.record_d1_batched(&event, &result).await {
+        if let Err(error) = meter.record_d1(&event, &result).await {
             report("d1.observation_failed", &error);
             return Err(error);
         }
@@ -369,7 +369,7 @@ impl ConversationOperation {
         let mut events = vec![];
         for _ in 0..count {
             let event = event(label)?;
-            meter.require_d1_batched(&event).await?;
+            meter.require_d1(&event).await?;
             events.push(event);
         }
         let results = work.await?;
@@ -377,7 +377,7 @@ impl ConversationOperation {
             return Err(fail("conversation_d1_measurement_missing"));
         }
         for (event, result) in events.iter().zip(&results) {
-            meter.record_d1_batched(event, result).await?;
+            meter.record_d1(event, result).await?;
         }
         Ok(results)
     }

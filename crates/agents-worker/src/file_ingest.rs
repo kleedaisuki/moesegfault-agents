@@ -56,10 +56,10 @@ pub(crate) async fn store_profile(
 ) -> Result<VectorServiceProfile> {
     crate::file_index::storage::require_paid_store(env, owner, store).await?;
     let read = format!("{event}:profile");
-    meter.require_d1_batched(&read).await?;
+    meter.require_d1(&read).await?;
     let result=env.d1("DB")?.prepare("SELECT service_profile_json FROM vector_stores WHERE id=?1 AND account_id=?2 AND status='completed' AND (expires_after_days IS NULL OR last_active_at+expires_after_days*86400000>unixepoch()*1000)")
         .bind(&[store.into(),owner.into()])?.all().await?;
-    meter.record_d1_batched(&read, &result).await?;
+    meter.record_d1(&read, &result).await?;
     let row = result
         .results::<StoreProfile>()?
         .into_iter()
@@ -78,10 +78,10 @@ pub(crate) async fn store_profile(
         return Ok(profile);
     }
     let write = format!("{event}:pin");
-    meter.require_d1_batched(&write).await?;
+    meter.require_d1(&write).await?;
     let result=env.d1("DB")?.prepare("UPDATE vector_stores SET service_profile_json=COALESCE(service_profile_json,?3) WHERE id=?1 AND account_id=?2 AND status='completed' RETURNING service_profile_json")
         .bind(&[store.into(),owner.into(),serde_json::to_string(&profile)?.into()])?.all().await?;
-    meter.record_d1_batched(&write, &result).await?;
+    meter.record_d1(&write, &result).await?;
     let encoded = result
         .results::<StoreProfile>()?
         .into_iter()

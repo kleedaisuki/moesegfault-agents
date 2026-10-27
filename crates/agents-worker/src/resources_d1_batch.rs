@@ -1,5 +1,5 @@
 //! Two accounting round trips per measured D1 query, independent of row counts.
-//! Conversation and Vector Store management opt in; other resource callers stay unchanged.
+//! Shared by the original ResourceMeter D1 API; no route-specific opt-in.
 use super::*;
 
 const DECLARE_SQL: &str = "INSERT INTO resource_observations(run_id,account_id,session_id,event_key,resource,unit,quantity,price_version,observed_at,status) SELECT ?1,?2,?3,?4,'d1',?5,NULL,?6,NULL,'pending' WHERE EXISTS(SELECT 1 FROM usage_reservations WHERE id=?1 AND account_id=?2 AND session_id IS ?3 AND state='reserved') ON CONFLICT(run_id,event_key) DO NOTHING";
@@ -21,7 +21,7 @@ struct Recorded {
 }
 
 impl ResourceMeter<'_> {
-    pub(crate) async fn require_d1_batched(&self, event: &str) -> Result<()> {
+    pub(super) async fn require_d1_batched(&self, event: &str) -> Result<()> {
         let started = crate::util::now_ms();
         let db = self.db()?;
         let mut statements = Vec::with_capacity(4);
@@ -66,7 +66,7 @@ impl ResourceMeter<'_> {
         Ok(())
     }
 
-    pub(crate) async fn record_d1_batched(&self, event: &str, result: &D1Result) -> Result<()> {
+    pub(super) async fn record_d1_batched(&self, event: &str, result: &D1Result) -> Result<()> {
         let started = crate::util::now_ms();
         let meta = result
             .meta()?
