@@ -237,8 +237,11 @@ without dropping ordinary protected system/developer history.
 The new compiled acceptance selectors cover instruction changes/reset, exact
 count, cold idempotency, tool-schema changes and historical branches, compaction,
 and explicit legacy/new Session pins. They use controlled providers and **do not
-claim simulated cache hits**. Runtime compilation and these selectors remain
-pending until their actual Actions receipts are recorded.
+claim simulated cache hits**. Normal Actions `40517024757`, source
+`3799809521a64a287aa10a037e017760228e9422`, passed all seven new Rust guards, four
+named compiled-Worker journeys, and four isolated tooling assertions. The
+downloaded plan contains only those new checks; dashboard/container artifacts
+were reused. The cancelled duplicate PR observation is not a passing run.
 
 ### Actual legacy staging baseline
 
@@ -263,3 +266,46 @@ production inference or existing accepted business journey was replayed.
 Incremental CI also reuses the downloaded normal-main `40471168005` tooling
 receipt for the unchanged draft-release permission check (`passed_current`, one
 executed test). It does not rerun that release check as part of cache work.
+
+### Actual append-only staging result
+
+Standard deployment `40519135055` succeeded with the same immutable source,
+Worker artifact `12741190507` and all six previously enabled tool features.
+Public health returned that exact build. The daemon remained source `3539c1c`
+and dashboard `1b7f2cd`; neither was rebuilt or relabeled. Deployment selected no
+old paid acceptance profile. The local driver then reused the exact saved
+baseline workload SHA-256, not a newly favorable prompt.
+
+| Turn | Input tokens | Reported cached tokens | First text (ms) | End-to-end (ms) | Model charge (microUSD) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Set ALPHA | 2,863 | 0 | 5,986 | 9,307 | 432 |
+| Change to BRAVO | 2,976 | 2,816 | 8,747 | 11,580 | 34 |
+| Omit/reset | 3,087 | 2,944 | 4,648 | 7,758 | 32 |
+
+All labels were correct and the Session actually pinned `append_only_v1`.
+Including the initial cold establishment, actual cache reads were 5,760/8,926
+input tokens (**64.53%**); the two follow-ups reused 5,760/6,063 (**95.00%**).
+The additional policy/snapshots increased total input by 854 tokens (10.58%), so
+this is not a claim of free context or lower first-turn cost.
+
+Exact model ledger rows, independently read for the two owned Session IDs,
+totaled **1,216 → 498 microUSD (−59.05%)** for the three completed turns. Both
+used `deepseek-2026-10-25-cn2026-v1:offpeak`; each side had three settled model
+rows with real provider request IDs, no new reserved holds and no pending
+resource observations. Both Sessions closed and their configurations were
+deleted. Infrastructure is separately billed; these figures deliberately exclude
+agent creation, account-level API overhead and incomparable retained-storage
+time, and are **model charges**, not total invoice comparisons. Cache-write
+usage remains unknown/null, not zero.
+
+This small paired observation establishes cache reuse and correct scope changes,
+not a latency SLO: the second candidate turn routed through FRA and had a much
+larger admission delay. The observed end-to-end times do not establish a speedup.
+No successful request was replayed. A transient read-only D1 fetch failure was
+retried as the same SELECT, without rerunning any model or tool work.
+
+Protected evidence: `.temp/prompt-cache-probe/{baseline,candidate}.json`, the
+byte-identical workload, both `*-finance.json` receipts, normal selected-check
+artifacts under `.temp/cache-first-ci-*`, and the deployment receipt/provenance
+under `.temp/cache-staging-deployment/`. Production has not been changed by this
+staging acceptance; existing Sessions retain their original pin/layout.
