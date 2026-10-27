@@ -131,7 +131,8 @@ impl McpBindings {
         let mut schema_bytes = 0usize;
         let mut tools = 0usize;
         for binding in &mut bindings {
-            if discover(env, owner, binding).await.is_err() {
+            if let Err(error) = discover(env, owner, binding).await {
+                mcp_transport::discovery_failed(binding, &error);
                 binding.tools.clear();
                 binding.discovery_error = Some("MCP server discovery failed".into());
             }

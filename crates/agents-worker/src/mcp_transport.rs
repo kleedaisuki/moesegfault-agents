@@ -14,10 +14,40 @@ use worker::{
 
 use crate::mcp_bindings::{Protocol, ServerBinding, fail};
 
+#[path = "mcp_diagnostics.rs"]
+mod diagnostics;
+use diagnostics::RpcTrace;
+
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 512 * 1024;
 const HEADER_TIMEOUT_MS: u64 = 30_000;
 const STALL_TIMEOUT_MS: u64 = 90_000;
+
+pub(crate) fn discovery_failed(server: &ServerBinding, error: &worker::Error) {
+    let code = diagnostics::error_code(error);
+    let phase = if [
+        "mcp_invalid_tool",
+        "mcp_invalid_schema",
+        "mcp_schema_",
+        "mcp_duplicate_tool",
+        "mcp_tool_limit",
+    ]
+    .iter()
+    .any(|prefix| code.starts_with(prefix))
+    {
+        "catalog_validation"
+    } else {
+        "discovery"
+    };
+    crate::util::emit(
+        "mcp.discovery_failed",
+        json!({
+            "server_label":server.label,"response_id":server.response,"protocol":server.protocol.version(),
+            "phase":phase,"error_code":code,
+            "error_type":diagnostics::error_type(error),
+        }),
+    );
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct RpcFailure {
@@ -64,6 +94,8 @@ pub(crate) struct RpcOutcome {
 
 /// Not Clone, Debug or Serialize: plaintext credentials only live across dispatch.
 pub(crate) struct PreparedRpc {
+    server_label: String,
+    rpc_method: String,
     endpoint: String,
     headers: BTreeMap<String, String>,
     body: Option<String>,
@@ -141,6 +173,8 @@ pub(crate) fn prepare(
         return Err(fail("mcp_request_limit"));
     }
     Ok(PreparedRpc {
+        server_label: server.label.clone(),
+        rpc_method: method.into(),
         endpoint: server.url.clone(),
         headers,
         body: Some(body),
@@ -177,6 +211,13 @@ impl PreparedRpc {
         }
     }
     pub(crate) async fn dispatch(self) -> Result<RpcOutcome> {
+        let mut trace = RpcTrace::new(&self);
+        let outcome = self.dispatch_observed(&mut trace).await;
+        trace.finish(&outcome);
+        outcome
+    }
+
+    async fn dispatch_observed(self, trace: &mut RpcTrace) -> Result<RpcOutcome> {
         let started = timestamp();
         let controller = AbortOnDrop(Some(AbortController::default()));
         let headers = Headers::new();
@@ -194,6 +235,7 @@ impl PreparedRpc {
         let fetch = Fetch::Request(request);
         let signal = controller.0.as_ref().unwrap().signal();
         let send = fetch.send_with_signal(&signal);
+        trace.phase = "send";
         let mut response = match timed(send, HEADER_TIMEOUT_MS).await {
             Ok(response) => response,
             Err(_) => {
@@ -206,6 +248,10 @@ impl PreparedRpc {
             }
         };
         let status = response.status_code();
+        trace.phase = "headers";
+        trace.status = Some(status);
+        trace.request_id = diagnostics::header(response.headers().get("x-request-id")?);
+        trace.ray_id = diagnostics::header(response.headers().get("cf-ray")?);
         let session_id = response.headers().get("mcp-session-id")?.filter(|value| {
             !value.is_empty()
                 && value.len() <= 256
@@ -226,6 +272,8 @@ impl PreparedRpc {
             });
         }
         let content_type = response.headers().get("content-type")?.unwrap_or_default();
+        trace.content_type =
+            diagnostics::header(content_type.split(';').next().map(|v| v.trim().to_owned()));
         if !(200..300).contains(&status) && !matches!(status, 400 | 404) {
             return Ok(failed(
                 "mcp_http_error",
@@ -237,22 +285,32 @@ impl PreparedRpc {
         let stream = response
             .stream()
             .map_err(|_| fail("mcp_transport_unknown"))?;
+        trace.phase = "read_body";
         let counted = futures::stream::unfold(
-            (stream, 0usize, false),
-            |(mut stream, bytes, stopped)| async move {
+            (stream, 0usize, false, trace.bytes.clone()),
+            |(mut stream, bytes, stopped, received)| async move {
                 if stopped {
                     return None;
                 }
                 let chunk = match timed_next(stream.next()).await {
                     Ok(Some(Ok(chunk))) => chunk,
                     Ok(None) => return None,
-                    _ => return Some((Err(fail("mcp_transport_stalled")), (stream, bytes, true))),
+                    _ => {
+                        return Some((
+                            Err(fail("mcp_transport_stalled")),
+                            (stream, bytes, true, received),
+                        ));
+                    }
                 };
                 if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(bytes) {
-                    return Some((Err(fail("mcp_response_limit")), (stream, bytes, true)));
+                    return Some((
+                        Err(fail("mcp_response_limit")),
+                        (stream, bytes, true, received),
+                    ));
                 }
                 let bytes = bytes + chunk.len();
-                Some((Ok(chunk), (stream, bytes, false)))
+                received.set(bytes as u64);
+                Some((Ok(chunk), (stream, bytes, false, received)))
             },
         );
         let (value, bytes) = if content_type
@@ -285,6 +343,7 @@ impl PreparedRpc {
                         started,
                     ));
                 }
+                trace.phase = "parse_json";
                 let value: Value = match serde_json::from_str(&event.data) {
                     Ok(value) => value,
                     Err(_) => {
@@ -330,6 +389,7 @@ impl PreparedRpc {
                 }
             }
             let length = bytes.len();
+            trace.phase = "parse_json";
             let value = match serde_json::from_slice(&bytes) {
                 Ok(value) => value,
                 Err(_) => {
@@ -350,6 +410,7 @@ impl PreparedRpc {
                 started,
             ));
         };
+        trace.phase = "parse_envelope";
         let mut outcome = parse_reply(value, &self.id, self.side_effect, status, started);
         outcome.payload_bytes = bytes as u64;
         outcome.session_id = session_id;

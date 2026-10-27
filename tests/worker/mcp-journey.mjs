@@ -67,7 +67,7 @@ export function createMcpTransport(native) {
       if (body.method === 'tools/list') {
         state.list++;
         if (state.listFailure) return new Response('Unavailable', { status: 503 });
-        return response({ ...(state.legacyVersion ? {} : { resultType: 'complete' }), tools: [{ name: 'echo', description: 'Echo one value.', inputSchema: mcpSchema }] });
+        return response({ ...(state.legacyVersion ? {} : { resultType: 'complete' }), tools: state.catalog ?? [{ name: 'echo', description: 'Echo one value.', inputSchema: mcpSchema }] });
       }
       assert.equal(body.method, 'tools/call');
       state.calls++;
@@ -362,4 +362,42 @@ export async function runMcpApprovalReuse(context) {
   assert.deepEqual(await scenario.read(pending.id), pending, 'Consent consumption cannot mutate the public parent');
   context.validateWire(accepted, []);
   return { model_calls: 2, remote_tool_calls: 1, consumed_approval_rejected: true, parent_immutable: true, mixed_caller_direct_supported: true };
+}
+
+export async function runMcpDescriptionJourney(context) {
+  const state=context.providers.state;
+  state.legacyVersion='2025-11-25';
+  state.expectedAuth='MCP-DESCRIPTION-SECRET';
+  const description='Read metadata.\n\nRepository topics:\tpublic only.';
+  state.catalog=[
+    {name:'ask_wiki_question',description:'An unselected question tool.\nThis is not an HTTP header.',inputSchema:{type:'object'}},
+    {name:'echo',description,inputSchema:mcpSchema},
+  ];
+  const scenario=await createNativeSemanticsScenario(context,'mcp-descriptions',[]);
+  await scenario.principal.browser('GET','/v1/account');
+  const tools=[{...mcpTool('MCP-DESCRIPTION-SECRET'),server_description:'Public documentation.\nMultiple lines.',allowed_tools:['echo']}];
+  const body={model:scenario.agent.id,input:'Count this metadata only.',tools,reasoning:{effort:'none'}};
+  const result=await scenario.client.responses.inputTokens.count(body);
+  assert.equal(result.object,'response.input_tokens');
+  assert.ok(result.input_tokens>0);
+  assert.equal(scenario.state.calls,0);
+  assert.equal(state.calls,0);
+  assert.equal(state.list,1);
+  assert.equal((await context.db.prepare('SELECT COUNT(*) n FROM sessions WHERE account_id=?').bind(scenario.principal.owner).first()).n,0);
+  const goodLogs=context.telemetry.filter(v=>v.event==='mcp.transport');
+  assert.equal(goodLogs.length,4);
+  assert.ok(goodLogs.some(v=>v.fields.mcp_method==='server/discover' && v.fields.status===400 && v.fields.mcp_protocol_error_code===-32600));
+  assert.ok(goodLogs.some(v=>v.fields.mcp_method==='tools/list' && v.fields.status===200 && v.fields.response_bytes>0));
+  state.catalog=[{name:'echo',description:'Invalid control\u0000must still fail',inputSchema:mcpSchema}];
+  await assert.rejects(()=>scenario.client.responses.inputTokens.count(body),error=>error.status===503 && error.code==='mcp_discovery_failed');
+  const invalid=context.telemetry.find(v=>v.event==='mcp.discovery_failed' && v.fields.error_code==='mcp_invalid_tool_description');
+  assert.ok(invalid);
+  assert.equal(invalid.fields.phase,'catalog_validation');
+  assert.equal(invalid.fields.server_label,'owned');
+  assert.equal(scenario.state.calls,0);
+  assert.equal(state.calls,0);
+  assert.ok(!JSON.stringify(context.telemetry).includes('MCP-DESCRIPTION-SECRET'));
+  assert.ok(!JSON.stringify(context.telemetry).includes(description));
+  return {valid_multiline_catalog_count:result.input_tokens,invalid_control_rejected:true,emitted_upstream_status_and_rpc_code:true,
+    remote_tool_calls:0,model_calls:0,metadata_lists:state.list,session_creations:0};
 }

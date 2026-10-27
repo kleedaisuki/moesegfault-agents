@@ -227,6 +227,8 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "grant_event"
                 | "request_path"
                 | "error_type"
+                | "server_label"
+                | "mcp_method"
                 | "capacity_generation"
                 | "request_id"
                 | "session_id"
@@ -249,7 +251,9 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "workspace_revision"
                 | "build_id"
         );
-        if numeric && value.as_u64().is_some() {
+        if key == "mcp_protocol_error_code" && value.as_i64().is_some() {
+            safe.insert(key.clone(), value.clone());
+        } else if numeric && value.as_u64().is_some() {
             safe.insert(key.clone(), value.clone());
         } else if key == "content_type"
             && value.as_str().is_some_and(|v| {
@@ -292,6 +296,7 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "usage_reported"
                 | "restored"
                 | "success"
+                | "outcome_unknown"
         ) && value.is_boolean()
         {
             safe.insert(key.clone(), value.clone());
@@ -321,6 +326,8 @@ fn event_name(event: &str) -> &str {
         | "provider.failed"
         | "provider.compaction_started"
         | "provider.compaction_completed"
+        | "mcp.transport"
+        | "mcp.discovery_failed"
         | "tool.completed"
         | "tool.failed"
         | "session.checkpoint"
@@ -603,6 +610,23 @@ mod tests {
         assert!(fields["observation"].get("observation").is_none());
     }
 
+    #[test]
+    fn mcp_diagnostics_preserve_remote_codes_and_catalog_stage_without_descriptions() {
+        let fields = sanitize_fields(
+            json!({"server_label":"owned", "mcp_method":"server/discover",
+            "phase":"parse_envelope", "status":400,"mcp_protocol_error_code":-32600,
+            "request_id":"list-owned-0","provider_request_id":"upstream-owned","ray_id":"cf-owned",
+            "response_bytes":1622,"duration_ms":5134,"outcome_unknown":false,
+            "description":"private remote description","authorization":"private"}),
+        );
+        assert_eq!(fields["mcp_protocol_error_code"], -32600);
+        assert_eq!(fields["server_label"], "owned");
+        assert_eq!(fields["mcp_method"], "server/discover");
+        assert_eq!(fields["outcome_unknown"], false);
+        assert_eq!(event_name("mcp.transport"), "mcp.transport");
+        assert_eq!(event_name("mcp.discovery_failed"), "mcp.discovery_failed");
+        assert!(!fields.to_string().contains("private"));
+    }
     #[test]
     fn automatic_compaction_diagnostics_keep_transport_and_terminal_evidence() {
         let fields = sanitize_fields(json!({"phase":"compaction","protocol":"anthropic",

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createIdentityFixture } from './auth-journey.mjs';
 import { createNativeSemanticsProvider, collectNativeEvents } from './native-semantics-journey.mjs';
-import { createMcpTransport, runMcpApprovalJourney, runMcpDeferredJourney, runMcpDeniedAndUnknown, runMcpApprovalReuse, runMcpLegacyJourney } from './mcp-journey.mjs';
+import { createMcpTransport, runMcpApprovalJourney, runMcpDeferredJourney, runMcpDeniedAndUnknown, runMcpApprovalReuse, runMcpLegacyJourney, runMcpDescriptionJourney } from './mcp-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -31,6 +31,7 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
   const deployment = JSON.parse(await readFile(path.join(root, 'wrangler.jsonc'), 'utf8'));
   await mkdir(path.join(root, '.temp'), { recursive: true });
   const directory = process.env.MAGENTS_MCP_REPLAY_STORAGE ? path.resolve(root, process.env.MAGENTS_MCP_REPLAY_STORAGE) : await mkdtemp(path.join(root, '.temp/mcp-worker-'));
+  const telemetry=[];
   const mf = new Miniflare(convertV4MiniflareOptions({
     modulesRoot: build,
     modules: [
@@ -41,6 +42,7 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
       { type: 'ESModule', path: path.join(build, 'index.js') },
       { type: 'CompiledWasm', path: path.join(build, 'index_bg.wasm') },
     ],
+    handleStructuredLogs({message}) { try { const value=JSON.parse(message); if(typeof value.event==='string')telemetry.push(value); } catch {} },
     compatibilityDate: '2026-10-23', compatibilityFlags: ['enable_request_signal'],
     resourcePersistencePath: path.join(directory, 'storage'),
     d1Databases: ['DB'], r2Buckets: ['WORKSPACES', 'CONVERSATIONS', 'DIAGNOSTICS'],
@@ -119,12 +121,12 @@ test('compiled Rust Worker: owned MCP count, approval and exactly-once execution
     assert.equal(checked.status, 0, checked.stderr || checked.stdout);
     return JSON.parse(checked.stdout);
   }
-  const context = { mf, db, encryptionKey, request, providers, validateWire };
+  const context = { mf, db, encryptionKey, request, providers, validateWire, telemetry };
   const reference = JSON.parse(await readFile(path.join(root, 'tests/fixtures/mcp-token-count.json'), 'utf8'));
   const receipt = {};
   const chosen = process.env.MAGENTS_MCP_CASE?.split(',');
   let selected = 0;
-  for (const [id, run] of [['mcp_approval', () => runMcpApprovalJourney(context, reference)], ['mcp_deferred', () => runMcpDeferredJourney(context)], ['mcp_negative', () => runMcpDeniedAndUnknown(context)], ['mcp_claim', () => runMcpApprovalReuse(context)], ['mcp_legacy', () => runMcpLegacyJourney(context)]]) {
+  for (const [id, run] of [['mcp_approval', () => runMcpApprovalJourney(context, reference)], ['mcp_deferred', () => runMcpDeferredJourney(context)], ['mcp_negative', () => runMcpDeniedAndUnknown(context)], ['mcp_claim', () => runMcpApprovalReuse(context)], ['mcp_legacy', () => runMcpLegacyJourney(context)], ['mcp_descriptions', () => runMcpDescriptionJourney(context)]]) {
     if (chosen && !chosen.includes(id)) continue;
     selected++;
     await t.test(id, async () => {

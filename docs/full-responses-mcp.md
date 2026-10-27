@@ -180,3 +180,51 @@ was then reopened with the exact Wasm for a read-only tail: raw SDK
 agreed, with zero model/tool dispatch and no new API grants. The typed SDK helper
 was checked separately. This tail passed in 3.97 seconds. Gateway authentication
 is not re-claimed from the fixture's internal namespace read.
+
+## Multiline public metadata and precise discovery diagnosis (2026-10-27)
+
+After staging MCP activation, the first real metadata count returned 503
+`mcp_discovery_failed` before creating a Session, Response, model request or remote
+tool call. The original trace lacked transport or catalog evidence, so it cannot
+prove which HTTP exchanges that particular CF invocation completed.
+
+A single discriminating anonymous metadata-only probe to the documented DeepWiki
+`/mcp` endpoint negotiated 2025-11-25: initialize 200 SSE, initialized 202, tools/list
+200 SSE (1622 bytes, three tools). The first, unselected `ask_wiki_question` tool
+contained a newline in its 108-byte description. No tool was invoked; the AI-powered
+question operation was never permitted. The original adapter validated the whole
+catalog using the same control-character prohibition as headers, before applying
+the user's `read_wiki_structure` allowlist. It therefore deterministically rejected
+this valid public catalog. Probe receipt and public response are retained under the
+MCP diagnostic topic's `.temp/mcp-metadata/`, not as an account credential.
+
+Descriptions are now bounded human-readable data: LF, CR and tab are preserved,
+while NUL, escape and other non-whitespace control characters remain rejected.
+Header values and tool names retain their stricter validators. Empty optional
+descriptions are accepted. The rmcp DTOs, schema validator, owner permissions,
+header authority, approval protocol and no-replay execution fences are unchanged.
+This distinction follows the MCP Tool model's human-readable `description`, not an
+HTTP-header grammar:
+https://modelcontextprotocol.io/specification/2025-11-25/server/tools .
+The provider's current documentation identifies `/mcp` as the supported Streamable
+HTTP endpoint: https://docs.devin.ai/work-with-devin/deepwiki-mcp .
+
+Every transport exit now emits a bounded structural `mcp.transport` event: server
+label, request method and identity, stage, HTTP status, normalized MIME type,
+upstream request ID / CF ray when actually present, received wire-body bytes,
+duration, signed JSON-RPC error code and outcome uncertainty. These pass through
+the real emission filter. HTTP request IDs are distinct from JSON-RPC identities;
+missing headers remain null, not fabricated. A later catalog rejection emits
+`mcp.discovery_failed` with `catalog_validation` and its specific trusted code
+(e.g. `mcp_invalid_tool_description`) rather than erasing it in `Err(_)`.
+Authorization headers, session capabilities, descriptions and raw tool output are
+not ordinary telemetry attributes. Cancellation still drops/aborts the same
+request; it does not retry `tools/call`.
+
+Two new pure contracts and one new compiled-Worker SDK count journey are added.
+The journey accepts a real-style multiline catalog, rejects a new NUL-containing
+catalog, verifies emitted status/protocol/cause evidence and performs zero model
+or remote tool calls. Targeted rustfmt, JS syntax and diff checks pass locally;
+Actions compilation/runtime and a repaired real CF metadata count remain pending.
+Older accepted MCP approval, deferred discovery and legacy tool-call journeys must
+not be replayed for this increment.

@@ -228,7 +228,10 @@ impl ServerDeclaration {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let description = optional::<String>(value, "server_description")?;
-        if description.as_ref().is_some_and(|value| !text(value, 4096)) {
+        if description
+            .as_ref()
+            .is_some_and(|value| !description_text(value))
+        {
             return Err(fail("invalid_mcp_server_description"));
         }
         if headers
@@ -455,13 +458,15 @@ pub(crate) struct DiscoveredTool {
 
 impl DiscoveredTool {
     fn from_sdk(tool: Tool) -> Result<Self> {
-        if !text(&tool.name, 256)
-            || tool
-                .description
-                .as_ref()
-                .is_some_and(|value| !text(value, 4096))
+        if !text(&tool.name, 256) {
+            return Err(fail("mcp_invalid_tool_name"));
+        }
+        if tool
+            .description
+            .as_ref()
+            .is_some_and(|value| !description_text(value))
         {
-            return Err(fail("mcp_invalid_tool"));
+            return Err(fail("mcp_invalid_tool_description"));
         }
         let input_schema = Value::Object(tool.input_schema.as_ref().clone());
         if serde_json::to_vec(&input_schema)?.len() > 64 * 1024 {
@@ -566,6 +571,12 @@ pub(crate) fn fail(code: &str) -> Error {
 }
 fn text(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+}
+fn description_text(value: &str) -> bool {
+    value.len() <= 4096
+        && !value
+            .chars()
+            .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
 }
 fn identifier(value: &str, max: usize) -> bool {
     text(value, max)
@@ -710,6 +721,38 @@ mod tests {
             let mut value = server();
             value["headers"] = json!({header:"do-not-forward"});
             assert!(ServerDeclaration::parse(&value).is_err(), "{header}");
+        }
+    }
+
+    #[test]
+    fn multiline_catalog_descriptions_are_data_not_http_header_values() {
+        let key = agents_auth::random_token().unwrap();
+        let mut declaration = server();
+        declaration["server_description"] =
+            json!("Documentation server.\n\nPublic metadata\tcontinues here.");
+        declaration["allowed_tools"] = json!(["read_wiki_structure"]);
+        let mut binding = ServerDeclaration::parse(&declaration)
+            .unwrap()
+            .bind("owner", "response", &key)
+            .unwrap();
+        let tools = serde_json::from_value(json!([
+            {"name":"ask_wiki_question","description":"Question tool.\nNot allowed for this user.","inputSchema":{"type":"object"}},
+            {"name":"read_wiki_structure","description":"Read topics.\r\n\tRepository metadata.","inputSchema":{"type":"object"}}
+        ])).unwrap();
+        binding.insert_tools(tools).unwrap();
+        assert_eq!(binding.tools.len(), 1);
+        assert_eq!(
+            binding.tools[0].description.as_deref(),
+            Some("Read topics.\r\n\tRepository metadata.")
+        );
+        assert!(!header_value("not-a-header\nvalue"));
+        assert!(!text("not-a-tool\nname", 256));
+        for description in ["NUL\0suffix", "escape\u{1b}suffix", &"x".repeat(4097)] {
+            let invalid: Tool = serde_json::from_value(
+                json!({"name":"read", "description":description, "inputSchema":{"type":"object"}}),
+            )
+            .unwrap();
+            assert!(DiscoveredTool::from_sdk(invalid).is_err());
         }
     }
 }
