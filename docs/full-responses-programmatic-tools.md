@@ -327,3 +327,15 @@ cheap render contract covers the runtime flags, exact binding and tariffs,
 MCP-only absence, source non-mutation and production isolation. No accepted
 runtime journey or paid model call was repeated to check this configuration.
 A new coherent deployment and actual remote MCP/Loader operation remain required.
+
+The first normal activation candidate (`e4e6777`, CI `40447538513`) built the
+new Worker and passed only the five selected activation/cache contracts. Deploy
+`40448681624` then correctly stopped **before changing infrastructure**, because
+the independent provenance validator still duplicated an older four-runtime
+vocabulary and rejected MCP/programmatic. This was not a Cloudflare Loader or
+beta-permission error. The repair shares the known-runtime vocabulary between
+rendering and provenance, retaining unknown-feature rejection and the independent
+production gate. One new render-to-proof contract covers the missed boundary.
+Normal correction CI `40448958981` selects that one contract and reuses exact
+Worker artifact `12709167366` from the successful original build; it must not
+rebuild Rust or replay the previous five contracts to repair this metadata check.
