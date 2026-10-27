@@ -10554,5 +10554,155 @@
         }
       ]
     }
+  },
+  {
+    "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+    "run_id": "40457317258",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12713441826,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "527f03adbafd221d0433a90697fbecd20d3b0e13",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Final runtime plus five new production dependency-preparation checks already passed; exact Worker12713441826 and native packages404575 retained"
+        },
+        {
+          "source_sha": "abeede4c388d68a8b16b653ed2e5a4ef92a4bc74",
+          "run_id": "40460395278",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Aggregate remains failed: actual six promotion unittest cases Ran6/OK0.081s, then reporting did not recognize scripts/test_*.py. Fix only result parser, do not rerun successful cases or relabel aggregate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "native"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "527f03adbafd221d0433a90697fbecd20d3b0e13",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Final runtime plus five new production dependency-preparation checks already passed; exact Worker12713441826 and native packages404575 retained"
+        },
+        {
+          "source_sha": "abeede4c388d68a8b16b653ed2e5a4ef92a4bc74",
+          "run_id": "40460395278",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Aggregate remains failed: actual six promotion unittest cases Ran6/OK0.081s, then reporting did not recognize scripts/test_*.py. Fix only result parser, do not rerun successful cases or relabel aggregate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "3539c1c9fb3a247c465249eb59a4dd2a438b116e",
+    "run_id": "40353675534",
+    "components": [
+      "container"
+    ],
+    "status": "verified",
+    "artifact_id": 12663918464,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "527f03adbafd221d0433a90697fbecd20d3b0e13",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Final runtime plus five new production dependency-preparation checks already passed; exact Worker12713441826 and native packages404575 retained"
+        },
+        {
+          "source_sha": "abeede4c388d68a8b16b653ed2e5a4ef92a4bc74",
+          "run_id": "40460395278",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Aggregate remains failed: actual six promotion unittest cases Ran6/OK0.081s, then reporting did not recognize scripts/test_*.py. Fix only result parser, do not rerun successful cases or relabel aggregate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "1b7f2cd09fc0be114fbbab673c85b5e0a894811f",
+    "run_id": "40338717364",
+    "components": [
+      "dashboard"
+    ],
+    "status": "verified",
+    "artifact_id": 12657194328,
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "527f03adbafd221d0433a90697fbecd20d3b0e13",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Final runtime plus five new production dependency-preparation checks already passed; exact Worker12713441826 and native packages404575 retained"
+        },
+        {
+          "source_sha": "abeede4c388d68a8b16b653ed2e5a4ef92a4bc74",
+          "run_id": "40460395278",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Aggregate remains failed: actual six promotion unittest cases Ran6/OK0.081s, then reporting did not recognize scripts/test_*.py. Fix only result parser, do not rerun successful cases or relabel aggregate"
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+    "run_id": "40457317258",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "527f03adbafd221d0433a90697fbecd20d3b0e13",
+      "receipts": [
+        {
+          "source_sha": "bb18283f80cdc1a9cf87a020de174eb828fc0a8c",
+          "run_id": "40457317258",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Final runtime plus five new production dependency-preparation checks already passed; exact Worker12713441826 and native packages404575 retained"
+        },
+        {
+          "source_sha": "abeede4c388d68a8b16b653ed2e5a4ef92a4bc74",
+          "run_id": "40460395278",
+          "reference": "docs/incremental-verification.md",
+          "scope": "Aggregate remains failed: actual six promotion unittest cases Ran6/OK0.081s, then reporting did not recognize scripts/test_*.py. Fix only result parser, do not rerun successful cases or relabel aggregate"
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "node:unittest-script-result-reporting",
+          "argv": [
+            "node",
+            "--test",
+            "--test-name-pattern=unittest reporting recognizes",
+            "scripts/incremental-checks.test.mjs"
+          ],
+          "env": {},
+          "reason": "One new direct-unittest result reporting regression after six real remote promotion passes; no six-case, native or app replay"
+        }
+      ]
+    }
   }
 ]
