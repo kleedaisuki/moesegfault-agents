@@ -239,6 +239,17 @@ was rejected before dispatch; replay did not repeat the approved effect. This
 did not repeat the accepted client or time/MCP journeys and made no external
 model or network calls. Conversation execution remains a separate increment.
 
+Conversation publication uses causal events rather than transport views: a
+locally supplied result may appear both in accepted Response input and in the
+program's emitted trace, but identical type/call/caller/value is stored once,
+under its accepted input identity. Different callers or values are not merged.
+The first actual Conversation journey (`40446153577`) completed its live
+continuation and exposed this duplicate-publication defect; its failing result
+is retained rather than described as acceptance. Legacy steering also binds
+additional input capacity to the current public Response and checks both that
+Response and its unchanged funding Run after the reservation await. A callback
+Response must never spend the already-converted parent output escrow.
+
 ## Verification boundary
 
 The earlier workerd/Miniflare component proof passed eight isolation/duplex checks;
