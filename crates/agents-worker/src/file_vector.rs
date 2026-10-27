@@ -464,7 +464,7 @@ pub enum IngestProgress {
 }
 
 #[path = "file_document.rs"]
-mod document;
+pub(crate) mod document;
 
 async fn vectors_for_batch(
     env: &Env,

@@ -216,6 +216,11 @@ pub(crate) fn classify_error(text: &str) -> (u16, &'static str, &'static str) {
             "billing_unavailable",
             "Pricing for this resource is not configured; contact the service administrator",
         ),
+        "conversation_actor_transport_failed" => (
+            503,
+            "conversation_actor_transport_failed",
+            "Conversation metadata RPC was interrupted; inspect the original request and scope before retrying",
+        ),
         "workspace_startup_timeout" => (
             503,
             "workspace_startup_timeout",
@@ -365,6 +370,31 @@ fn attachment_input_error(text: &str) -> Option<(u16, &'static str, &'static str
             "invalid_file_input",
             400,
             "Provide exactly one supported file source",
+        ),
+        (
+            "invalid_file_url",
+            400,
+            "Use a public HTTPS file URL without credentials or redirects",
+        ),
+        (
+            "remote_file_unavailable",
+            422,
+            "The public file could not be read within the bounded input capability",
+        ),
+        (
+            "remote_file_outcome_unknown",
+            409,
+            "File preparation is interrupted or in progress; this response intent will not download it again",
+        ),
+        (
+            "file_detail_unavailable",
+            422,
+            "This adapter supports file text extraction with auto detail, not PDF page-image rendering",
+        ),
+        (
+            "native_cache_control_unsupported",
+            422,
+            "This provider manages caching automatically and does not support explicit content cache breakpoints",
         ),
         ("invalid_file_id", 400, "The file ID is invalid"),
         (

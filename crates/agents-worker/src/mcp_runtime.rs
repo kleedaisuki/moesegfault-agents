@@ -547,11 +547,11 @@ async fn discover(env: &Env, owner: &str, server: &mut ServerBinding) -> Result<
         {
             return Err(fail("mcp_protocol_version_unavailable"));
         }
-    } else if outcome.failure.as_ref().is_some_and(|failure| {
-        failure.protocol_code == Some(-32601)
-            || (failure.protocol_code.is_none()
-                && matches!(failure.http_status, Some(400 | 404 | 405)))
-    }) {
+    } else if outcome
+        .failure
+        .as_ref()
+        .is_some_and(|failure| failure.permits_legacy_initialize("server/discover"))
+    {
         server.protocol = Protocol::Legacy;
         let initialized = mcp_transport::prepare(
             env,
@@ -570,9 +570,9 @@ async fn discover(env: &Env, owner: &str, server: &mut ServerBinding) -> Result<
         let result = initialized
             .result
             .ok_or_else(|| fail("mcp_initialize_failed"))?;
-        server.protocol = result["protocolVersion"]
-            .as_str()
-            .and_then(Protocol::negotiated)
+        let result: rmcp::model::InitializeResult =
+            serde_json::from_value(result).map_err(|_| fail("mcp_invalid_initialize"))?;
+        server.protocol = Protocol::negotiated(&result.protocol_version.to_string())
             .filter(|version| *version != Protocol::Current)
             .ok_or_else(|| fail("mcp_protocol_version_unavailable"))?;
         server.session_id = initialized.session_id;

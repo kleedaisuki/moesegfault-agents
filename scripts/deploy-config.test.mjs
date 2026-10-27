@@ -87,6 +87,13 @@ test('native FileSearch tariffs are explicit byte/dimension allocations and unav
   assert.throws(() => renderDeploymentConfig(source, env), /explicit staging FileSearch/);
 });
 
+test('Code capacity provenance injects the actual verified image source rather than the assembly label', () => {
+  const containerSource = 'd'.repeat(40);
+  const rendered = renderDeploymentConfig(input(), { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha, CONTAINER_SOURCE_SHA: containerSource }).env.staging;
+  assert.equal(rendered.vars.DAEMON_IMAGE_SOURCE, containerSource);
+  assert.notEqual(rendered.vars.DAEMON_IMAGE_SOURCE, rendered.vars.DEPLOYMENT_ASSEMBLY_SHA);
+});
+
 test('runtime feature allowlist enables only Worker search independently of acceptance', () => {
   const source = input();
   source.env.staging.containers.push({ class_name: 'Session4G', image: 'unbuilt-4g' });
@@ -140,7 +147,7 @@ test('deployment build identity cannot be missing, truncated, free-form, or supp
 test('rendering permits an environment with no preexisting variables', () => {
   const source = input();
   delete source.env.staging.vars;
-  assert.deepEqual(renderDeploymentConfig(source, { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha }).env.staging.vars, { BUILD_ID: sha, DEPLOYMENT_ASSEMBLY_SHA: sha });
+  assert.deepEqual(renderDeploymentConfig(source, { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha }).env.staging.vars, { BUILD_ID: sha, DEPLOYMENT_ASSEMBLY_SHA: sha, DAEMON_IMAGE_SOURCE: sha });
 });
 
 test('reused container source remains immutable while the deployment identity advances', () => {
@@ -195,4 +202,20 @@ test('core staging leaves unaccepted hosted tools disabled without changing othe
   assert.equal(source.env.staging.vars.HOSTED_TOOL_CAPABILITIES_JSON, undefined);
   assert.equal(renderDeploymentConfig(source, { ...base, DEPLOY_ENVIRONMENT: 'production' }).env.production.vars.HOSTED_TOOL_CAPABILITIES_JSON, undefined);
   assert.equal(renderDeploymentConfig(source, { ...base, DEPLOY_ENVIRONMENT: 'staging', ACCEPTANCE_PROFILE: 'none' }).env.staging.vars.HOSTED_TOOL_CAPABILITIES_JSON, undefined);
+});
+
+test('image-only staging preserves verified cleanup apps while Code rejects before paid admission', async () => {
+  const source = JSON.parse(await readFile(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
+  const env = { DEPLOY_ENVIRONMENT: 'staging', CLOUDFLARE_ACCOUNT_ID: account, GITHUB_SHA: sha,
+    CONTAINER_SOURCE_SHA: 'd'.repeat(40), RUNTIME_FEATURES: 'web_search,file_search,image_generation' };
+  const runtime = deploymentRuntime(env), stage = renderDeploymentConfig(source, env).env.staging;
+  assert.equal(runtime.imageGeneration, true); assert.equal(runtime.codeInterpreter, false);
+  assert.equal(runtime.legacyContainerCompatible, false);
+  assert.deepEqual(stage.containers.map(app => [app.class_name, app.instance_type]), [['Session', 'basic'], ['Session4G', 'standard-1']]);
+  assert.ok(stage.containers.every(app => app.image.endsWith(`:${env.CONTAINER_SOURCE_SHA}`)));
+  const capabilities = JSON.parse(stage.vars.HOSTED_TOOL_CAPABILITIES_JSON);
+  assert.equal(capabilities.platform_images, true); assert.equal(capabilities.platform_search, true); assert.equal(capabilities.file_search, true);
+  assert.deepEqual(capabilities.available_container_profiles, []); assert.equal(capabilities.code_network_disabled, false);
+  assert.equal(stage.vars.HOSTED_TOOL_RUNTIMES.includes('code_interpreter'), false);
+  assert.equal(stage.vars.DAEMON_IMAGE_SOURCE, env.CONTAINER_SOURCE_SHA);
 });

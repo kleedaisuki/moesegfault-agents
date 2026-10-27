@@ -351,6 +351,18 @@ impl Api {
         print_response_object(response).await
     }
 
+    pub async fn response_operation(
+        &self,
+        path: &str,
+        body: Value,
+        key: Option<&str>,
+    ) -> Result<()> {
+        let response = self
+            .request_with_key("POST", path, Some(body), None, key)
+            .await?;
+        print_response_object(response).await
+    }
+
     pub async fn retrieve_response_stream(&self, path: &str, raw_events: bool) -> Result<()> {
         let response = self.request("GET", path, None, None).await?;
         response_stream(response, raw_events).await

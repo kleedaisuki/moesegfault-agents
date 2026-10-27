@@ -25,7 +25,7 @@ const INPUT: &str = "compact.input.v1";
 const RESULT: &str = "compact.result.v1";
 const OUTPUT: &str = "compact.output.v1";
 const RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
-const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_FOLLOWERS: usize = 8;
 
 /// Constructed only by the authenticated edge after resolving owned context.
@@ -41,9 +41,11 @@ pub(crate) struct PreparedCompact {
     pub prefix_hash: String,
     pub instructions: Option<String>,
     pub protected: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<Message>,
     #[serde(default)]
     pub native_input: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retained: Vec<Value>,
     pub guidance: Option<String>,
     pub controls: Value,
@@ -231,7 +233,28 @@ impl DurableObject for ModelOperation {
 }
 
 impl PreparedCompact {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn normalize_source(&mut self, native: bool) {
+        if native {
+            self.messages.clear();
+            self.retained.clear();
+        } else {
+            self.native_input = None;
+        }
+    }
+
+    fn retained_source(&self) -> impl Iterator<Item = &Value> {
+        self.retained.iter().chain(
+            self.native_input
+                .iter()
+                .flatten()
+                .filter(|item| self.retained.is_empty() && item["role"] == "user"),
+        )
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        if serde_json::to_vec(self)?.len() > MAX_INPUT_BYTES {
+            return Err(failure("compaction_input_too_large"));
+        }
         let hex =
             |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
         if self.owner.is_empty()
@@ -240,7 +263,6 @@ impl PreparedCompact {
             || !hex(&self.request_hash)
             || !hex(&self.prefix_hash)
             || (self.messages.is_empty() && self.native_input.as_ref().is_none_or(Vec::is_empty))
-            || serde_json::to_vec(self)?.len() > MAX_INPUT_BYTES
             || self.retained.iter().any(|item| item["role"] != "user")
             || self
                 .protected
@@ -281,6 +303,7 @@ impl Inner {
                 return self.fail(&mut receipt, "operation_input_invalid").await;
             }
         };
+        drop(bytes);
         let trace = input
             .traceparent
             .as_deref()
@@ -543,7 +566,7 @@ impl Inner {
             &compaction_item_id(&receipt.operation),
         )?;
         let mut output =
-            provider::compaction::retained_messages(&receipt.operation, &input.retained)
+            provider::compaction::retained_messages(&receipt.operation, input.retained_source())
                 .map_err(failure)?;
         output.push(item);
         compacted_response(
@@ -860,6 +883,95 @@ fn terminal(status: u16, code: &str, message: &str) -> Result<Response> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    fn compact_input(bytes: usize) -> PreparedCompact {
+        let source = json!({"role":"user","content":"x".repeat(bytes)});
+        PreparedCompact {
+            owner: "owner".into(),
+            operation: "cmp_fixture".into(),
+            request_hash: "a".repeat(64),
+            agent: "agent".into(),
+            model: serde_json::from_value(json!({"provider":"deepseek", "model":"deepseek-flash",
+                "context_window":1_000_000,"max_output_tokens":64,"protocol":"responses"}))
+            .unwrap(),
+            prefix_hash: "b".repeat(64),
+            instructions: Some("Preserve this ongoing rule 雪.".into()),
+            protected: vec![Message::text("system", "Fixed instructions.")],
+            messages: vec![Message::text("user", source["content"].as_str().unwrap())],
+            native_input: Some(vec![source.clone()]),
+            retained: vec![source],
+            guidance: None,
+            controls: json!({}),
+            traceparent: None,
+        }
+    }
+
+    #[test]
+    fn compact_native_storage_keeps_one_source_and_byte_identical_user_output() {
+        let mut input = compact_input(800 * 1024);
+        let legacy = serde_json::to_vec(&input).unwrap();
+        let expected =
+            provider::compaction::retained_messages(&input.operation, input.retained_source())
+                .unwrap();
+        input.normalize_source(true);
+        let encoded = serde_json::to_vec(&input).unwrap();
+        assert!(legacy.len() > 2 * 1024 * 1024);
+        assert!(encoded.len() < 1024 * 1024);
+        assert!(legacy.len() > encoded.len() * 2);
+        let decoded: PreparedCompact = serde_json::from_slice(&encoded).unwrap();
+        decoded.validate().unwrap();
+        assert!(decoded.messages.is_empty());
+        assert!(decoded.retained.is_empty());
+        assert_eq!(
+            provider::compaction::retained_messages(&decoded.operation, decoded.retained_source())
+                .unwrap(),
+            expected
+        );
+        assert_eq!(decoded.instructions, input.instructions);
+        assert_eq!(
+            serde_json::to_vec(&decoded.protected).unwrap(),
+            serde_json::to_vec(&input.protected).unwrap()
+        );
+        eprintln!(
+            "compact_source_serialized_bytes legacy={} native={}",
+            legacy.len(),
+            encoded.len()
+        );
+        // Older receipts still contain explicit retained users and projection.
+        let recovered: PreparedCompact = serde_json::from_slice(&legacy).unwrap();
+        assert_eq!(
+            provider::compaction::retained_messages(
+                &recovered.operation,
+                recovered.retained_source()
+            )
+            .unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn compact_portable_storage_retains_legacy_projection_and_bounded_admission() {
+        let mut input = compact_input(128);
+        let expected =
+            provider::compaction::retained_messages(&input.operation, input.retained_source())
+                .unwrap();
+        input.normalize_source(false);
+        assert!(input.native_input.is_none());
+        assert_eq!(input.messages[0].content, "x".repeat(128));
+        assert_eq!(
+            provider::compaction::retained_messages(&input.operation, input.retained_source())
+                .unwrap(),
+            expected
+        );
+        let recovered: PreparedCompact =
+            serde_json::from_slice(&serde_json::to_vec(&input).unwrap()).unwrap();
+        recovered.validate().unwrap();
+        let mut oversized = compact_input(MAX_INPUT_BYTES);
+        oversized.normalize_source(true);
+        assert!(
+            matches!(oversized.validate(), Err(Error::RustError(code)) if code == "compaction_input_too_large")
+        );
+    }
     #[test]
     fn operation_identity_is_owner_bound_and_unambiguous() {
         assert_eq!(

@@ -162,6 +162,72 @@ are not undo operations for completed model, shell or local-function side effect
 See [the Responses contract](responses-spaces-v0.3.md) for storage, cancellation,
 continuation and unsupported capabilities.
 
+### Exact counting and standalone compaction
+
+```sh
+magents responses count count-request.json
+cat count-request.json | magents responses count -
+magents responses compact compact-request.json --idempotency-key compact-operation-1
+```
+
+Both commands forward the JSON object unchanged to the native
+`/v1/responses/input_tokens` or `/v1/responses/compact` endpoint. Files and stdin
+share the existing 1 MiB request limit; replies use the 16 MiB Responses limit.
+`model` remains your owned agent ID, not an upstream model name. The server
+resolves owned context, pinned instructions, tools and attachments; the CLI never
+guesses a tokenizer or converts the request into Chat messages. Unsupported exact
+counts fail rather than returning an estimate. Neither command automatically
+retries a transport or HTTP failure.
+
+Compaction is a paid model operation. Choose an `--idempotency-key` before
+dispatch and retain it with the exact request for explicit recovery. Reusing it
+with different input must conflict. Omitting the key lets the server create a
+new operation; submitting again without the original key is not recovery.
+`compact` prints the **entire** returned object, including every retained user
+item and the opaque compaction item in `output`. Use the complete `output` array
+as the next Responses `input`; do not extract only text or discard roles/opaque
+state. Its `instructions` field is guidance for the compaction operation, not a
+replacement for pinned agent instructions or a new ongoing custom layer. See
+[the auxiliary contract](full-responses-auxiliary.md).
+
+## Durable Conversations and code containers
+
+```sh
+magents conversations create conversation.json --idempotency-key conversation-operation-1
+magents conversations show CONVERSATION_ID
+magents conversations update CONVERSATION_ID metadata.json
+magents conversations items CONVERSATION_ID create items.json
+magents conversations items CONVERSATION_ID list --limit 20 --order asc
+magents conversations items CONVERSATION_ID show ITEM_ID
+magents conversations items CONVERSATION_ID delete ITEM_ID
+magents conversations delete CONVERSATION_ID
+# Only after deletion and completion of active responses:
+magents conversations purge CONVERSATION_ID
+magents containers show CONTAINER_ID
+magents containers delete CONTAINER_ID
+```
+
+Conversation create accepts `{"metadata":{},"items":[]}` (either field optional),
+update accepts `{"metadata":{...}}`, and item create accepts `{"items":[...]}`.
+Each file argument also accepts `-` for stdin. Requests and typed JSON replies
+are forwarded without lossy projections; the server validates supported items,
+ownership, mutations and capacity. There is no conversation-list endpoint.
+Item listing defaults to descending order, follows `--after LAST_ID` when
+`has_more` is true, and supports explicit ascending order. Attach the returned
+Conversation ID through the `conversation` field of a `responses create` request;
+Conversations are not aliases for session IDs. Conversation create's optional
+idempotency key identifies only the exact create; appends are not implicitly
+replayed or deduplicated by the CLI.
+
+Conversation delete changes API visibility, not physical retention. `purge` is
+a separate irreversible operation for retained conversation items and requires
+prior deletion and no active response/capacity hold; it does not erase separately
+stored response snapshots, workspace versions or financial records. Container
+commands use the owned opaque ID returned by code execution. They do not create
+a container, resume the creator's model harness, or erase its session/history.
+Successful empty deletion responses produce no stdout. All operations use normal
+authentication, server-side admission and metering, with no automatic retries.
+
 ## Space and files
 
 Each account has one Space, shared across its dashboard, CLI and API callers.

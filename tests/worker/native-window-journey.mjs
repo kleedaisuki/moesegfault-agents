@@ -107,6 +107,26 @@ export async function runNativeWindowRejectionJourney(context) {
     unfit, model_ledger_rows: 0, external_network_calls: 0 };
 }
 
+export async function runNativeWindowCountRejectionJourney(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'window-count-rejection', []);
+  scenario.state.count = windowFixtureCount;
+  scenario.agent = await context.request('PATCH', `/v1/agents/${scenario.agent.id}`, {
+    model: { ...scenario.agent.model, context_window: capacity, max_output_tokens: outputBudget }, compaction_percent: 99,
+  }, 200, scenario.principal.apiKey);
+  const sessions = () => context.request('GET', `/v1/agents/${scenario.agent.id}/sessions`, undefined, 200, scenario.principal.apiKey);
+  assert.deepEqual((await sessions()).data, []);
+  await assert.rejects(scenario.client.responses.inputTokens.count({ model: scenario.agent.id,
+    input: 'UNFIT-LATEST-COUNT-GROUP-' + 'x'.repeat(6000), truncation: 'auto' }),
+  error => error.status === 400 && error.code === 'context_length_exceeded');
+  assert.deepEqual((await sessions()).data, [], 'A rejected read-only fit cannot admit a Session');
+  assert.equal(scenario.state.calls, 0);
+  assert.ok(scenario.state.countRequests.length >= 1, 'The input is rejected from actual prepared counting, not a character guess');
+  await assertModelLedger(scenario, []);
+  return { provider_calls: 0, synthetic_counter_calls: scenario.state.countRequests.length,
+    status: 400, code: 'context_length_exceeded', no_session_admission: true, model_ledger_rows: 0,
+    external_network_calls: 0, counter_kind: 'deterministic-synthetic-provider-endpoint-not-production-tokenizer' };
+}
+
 export async function runContextCapacityJourney(context) {
   const custom = 'CURRENT-RESPONSE-INSTRUCTIONS-KEEP';
   const original = 'ORIGINAL-CONTEXT-CAPACITY-INPUT';
@@ -264,6 +284,48 @@ export async function runConversationWindowCountJourney(context) {
   return { provider_calls: 1, warmup_generations: 0, conversation_omitted_model_from_owned_predecessor: true,
     immutable_native_window_selected: true, later_session_head_excluded: true, metadata_preserves_anchor: true,
     external_item_edit_invalidates_anchor: true, count_preserves_source_and_user_clock: true, external_network_calls: 0 };
+}
+
+export async function runConversationCapacityRejectionJourney(context) {
+  const scenario = await createNativeSemanticsScenario(context, 'capacity-rejection', []);
+  scenario.state.count = windowFixtureCount;
+  const conversation = await scenario.client.conversations.create();
+  const before = await context.db.prepare('SELECT retained_bytes FROM conversation_capacity_accounts WHERE account_id=?')
+    .bind(scenario.principal.owner).first();
+  // Declared synthetic retained history exercises actual conditional SQL and
+  // the public rejection boundary without writing 256 MiB or calling a model.
+  const occupied = 256 * 1024 * 1024 - before.retained_bytes - 32768;
+  await context.db.prepare(`INSERT INTO conversation_capacity_objects(account_id,conversation_id,object_id,digest,bytes,state,updated_at_ms)
+    VALUES(?, 'fixture-existing-history', 'retained', ?, ?, 'reserved', 0)`)
+    .bind(scenario.principal.owner, 'a'.repeat(64), occupied).run();
+  await context.db.prepare(`UPDATE conversation_capacity_objects SET state='retained'
+    WHERE account_id=? AND conversation_id='fixture-existing-history'`).bind(scenario.principal.owner).run();
+  const request = { conversation: conversation.id, input: 'MUST-REJECT-BEFORE-ANY-MODEL-WORK' };
+  const rejected = await scenario.invoke(request, 409, 'capacity-rejected-before-admission');
+  assert.equal(rejected.value.error.code, 'conversation_capacity_exceeded');
+  assert.equal(rejected.headers.get('x-agents-conversation-writer-released'), 'true');
+  const responseId = rejected.headers.get('x-agents-response');
+  assert.ok(responseId?.startsWith('resp_'));
+  const funding = await context.db.prepare('SELECT state FROM usage_reservations WHERE account_id=? AND id=?')
+    .bind(scenario.principal.owner, 'conv-response:' + responseId).first();
+  assert.equal(funding.state, 'settled', 'Known rejected admission closes its resource cleanup hold after actual measurements');
+  const retry = await scenario.invoke(request, 409, 'capacity-rejected-before-admission');
+  assert.equal(retry.value.error.code, 'conversation_request_closed', 'A closed rejected identity cannot reopen a writer');
+  await scenario.client.conversations.delete(conversation.id);
+  const purged = await context.mf.dispatchFetch('https://agents.test/v1/conversations/' + conversation.id + '/purge', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + scenario.principal.apiKey },
+  });
+  assert.equal(purged.status, 200, 'A known rejected writer must not strand delete/purge behind a pending TTL');
+  const escrow = (await context.db.prepare(`SELECT state,remaining_bytes FROM conversation_response_capacity
+    WHERE account_id=? AND conversation_id=?`).bind(scenario.principal.owner, conversation.id).all()).results;
+  assert.ok(escrow.every(row => row.state === 'released' && row.remaining_bytes === 0));
+  assert.equal((await context.db.prepare(`SELECT COUNT(*) AS n FROM usage_ledger l JOIN usage_reservations r ON r.id=l.reservation_id
+    WHERE r.account_id=? AND l.resource='model'`).bind(scenario.principal.owner).first()).n, 0);
+  assert.equal(scenario.state.calls, 0);
+  assert.equal(scenario.state.countRequests.length, 0, 'Capacity rejection precedes even native model preparation');
+  return { provider_calls: 0, counter_calls: 0, declared_synthetic_preexisting_history_bytes: occupied,
+    pending_writer_reclaimed_immediately: true, known_resource_cleanup_hold_settled: true,
+    rejected_identity_fenced: true, metadata_delete_and_explicit_purge_without_TTL_wait: true, external_network_calls: 0 };
 }
 
 export async function runNativeWindowJourney(context) {

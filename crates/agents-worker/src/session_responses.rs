@@ -985,15 +985,19 @@ impl SessionInner {
             }
             Err(error) => return Err(error),
         };
+        provider::responses::PreparedRequest::validate_input_capabilities(&config, &owned_native)
+            .map_err(Error::RustError)?;
         let mut resolved = crate::responses_attachments::resolve(
             &self.env,
             &data.record.owner_id,
             &create.response_id,
             &Value::Array(owned_native),
             data.record.pinned.workspace,
+            &self.state.storage(),
         )
         .await?;
         if let Some(seed) = &conversation_seed {
+            resolved.remote_frozen |= seed.remote_frozen;
             let mut seen = resolved
                 .attachments
                 .iter()
@@ -1320,6 +1324,7 @@ impl SessionInner {
                 &create.response_id,
                 &original_items,
                 create.execution.warmup,
+                traceparent.as_deref(),
             )
             .await?
         {
@@ -1531,6 +1536,10 @@ impl SessionInner {
         }
         drop(acceptance);
         self.persist().await?;
+        if resolved.remote_frozen {
+            crate::responses_attachments::erase_remote(&self.state.storage(), &create.response_id)
+                .await?;
+        }
         self.programmatic_mailbox_committed(&response.id);
         if let Some(parent) = create.execution.steering_parent.as_deref() {
             self.forward_steering_successor(parent, Some(&response), &[]);

@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { codeRequest, countCodeBeforeAdmission, main, summarizeCode, verifyCodeResourceLifetime } from './hosted-code-sdk.mjs';
+import { codeRequest, countCodeBeforeAdmission, main, summarizeCode, verifyCapacity, verifyCodeResourceLifetime } from './hosted-code-sdk.mjs';
 
 const cid = `cntr_${'a'.repeat(32)}`;
 const phases = ['response.code_interpreter_call.in_progress', 'response.code_interpreter_call_code.delta',
   'response.code_interpreter_call_code.done', 'response.code_interpreter_call.interpreting', 'response.code_interpreter_call.completed'];
 const events = phases.map(type => ({ type, item_id: 'ci-owned' }));
 const response = { status: 'completed', output: [{ id: 'ci-owned', type: 'code_interpreter_call', status: 'completed',
-  container_id: cid, code: 'print(42)', outputs: [{ type: 'logs', logs: '42\ncgroup_memory_max=1073741824\n' }] }] };
+  container_id: cid, code: 'print(42)', outputs: [{ type: 'logs', logs: '42\nguest_physical_bytes=1272700928\n' }] }] };
 
 test('Code profile admission never prepins a basic Session before selecting the real 4g executor', async () => {
   const body = codeRequest('owned-agent', 'code-1234-abcd.csv', '4g'), order = [];
@@ -44,16 +44,29 @@ test('Code evidence requires real typed output, phases and CID while retaining o
   assert.equal(result.codeSha256, createHash('sha256').update('print(42)').digest('hex'));
   assert.equal(Object.hasOwn(result, 'code'), false);
   assert.equal(Object.hasOwn(result, 'logs'), false);
-  assert.equal(result.actualCgroupMemoryBytes, 1073741824);
-  assert.throws(() => summarizeCode(response, events, '4g'), /actual_cgroup_memory_cap_proof_required/);
-  const fourGiB = { ...response, output: [{ ...response.output[0], outputs: [{ type: 'logs', logs: '42\ncgroup_memory_max=4294967296\n' }] }] };
-  assert.equal(summarizeCode(fourGiB, events, '4g').actualCgroupMemoryBytes, 4294967296);
+  assert.equal(result.allocationBytes, 1073741824);
+  assert.equal(result.guestPhysicalBytes, 1272700928);
+  assert.throws(() => summarizeCode(response, events, '4g'), /actual_guest_does_not_match/);
+  const fourGiB = { ...response, output: [{ ...response.output[0], outputs: [{ type: 'logs', logs: '42\nguest_physical_bytes=4366254080\n' }] }] };
+  assert.equal(summarizeCode(fourGiB, events, '4g').allocationBytes, 4294967296);
   for (const output of [[], [...response.output, ...response.output], [{ ...response.output[0], status: 'failed' }],
     [{ ...response.output[0], container_id: 'cntr_fake' }], [{ ...response.output[0], outputs: [] }]]) {
     assert.throws(() => summarizeCode({ ...response, output }, events));
   }
   assert.throws(() => summarizeCode(response, events.slice(1)));
   assert.throws(() => summarizeCode(response, [...events].reverse()));
+});
+
+test('actual Code capacity requires VM provenance and keeps allocation separate from observed physical memory', () => {
+  const source = 'a'.repeat(40), code = summarizeCode(response, events);
+  const capacity = { capacity_source: 'cloudflare_vm', allocation_bytes: 1073741824, guest_physical_bytes: 1272700928,
+    allocation: { memory_limit: '1g', application_class: 'Session', image_source: source } };
+  assert.equal(verifyCapacity({ agents_capacity: capacity }, code, '1g', source), capacity);
+  assert.throws(() => verifyCapacity({ memory_limit: '1g' }, code, '1g', source));
+  for (const invalid of [{ ...capacity, capacity_source: 'cgroup' }, { ...capacity, guest_physical_bytes: capacity.allocation_bytes },
+    { ...capacity, allocation: { ...capacity.allocation, image_source: 'b'.repeat(40) } }]) {
+    assert.throws(() => verifyCapacity({ agents_capacity: invalid }, code, '1g', source));
+  }
 });
 
 test('live Code entrypoint rejects unbounded invocation before any network or key use', async () => {

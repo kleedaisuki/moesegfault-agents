@@ -13,11 +13,11 @@ export function requireDistinctEnvironmentDatabases(input) {
 
 export function deploymentRuntime(env) {
   const features = env.RUNTIME_FEATURES ?? 'configured';
-  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation'].includes(features)) throw new Error('Invalid runtime feature allowlist');
+  if (!['configured', 'none', 'web_search', 'file_search', 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation'].includes(features)) throw new Error('Invalid runtime feature allowlist');
   if (features !== 'configured' && env.DEPLOY_ENVIRONMENT !== 'staging') throw new Error('Runtime feature overrides are staging-only');
   const limited = env.DEPLOY_ENVIRONMENT === 'staging' && (features !== 'configured' || env.ACCEPTANCE_PROFILE === 'responses-increment');
   const workerFeatures = limited && features !== 'none' && features !== 'configured' ? features.split(',') : [];
-  return { features, limited, workerFeatures, webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter'), imageGeneration: workerFeatures.includes('image_generation') };
+  return { features, limited, workerFeatures, legacyContainerCompatible: limited && !workerFeatures.some(feature => feature === 'code_interpreter' || feature === 'image_generation'), webSearch: workerFeatures.includes('web_search'), fileSearch: workerFeatures.includes('file_search'), codeInterpreter: workerFeatures.includes('code_interpreter'), imageGeneration: workerFeatures.includes('image_generation') };
 }
 
 // Seed endpoint discovery, 2026-10-26: /api/v1/images/models/bytedance-seed/seedream-5-0-flash/endpoints.
@@ -63,10 +63,10 @@ export function renderDeploymentConfig(input, env) {
   config.assets.directory = resolve(config.assets.directory);
   delete config.build;
   const target = config.env[environment];
-  target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha };
+  target.vars = { ...target.vars, BUILD_ID: workerSource, DEPLOYMENT_ASSEMBLY_SHA: sha, DAEMON_IMAGE_SOURCE: containerSource };
   if (runtime.limited) {
     target.vars.HOSTED_TOOL_RUNTIMES = runtime.workerFeatures.join(',');
-    if (!runtime.codeInterpreter) target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
+    if (runtime.legacyContainerCompatible) target.containers = target.containers.filter(container => container.class_name !== 'Session4G');
     target.vars.HOSTED_TOOL_CAPABILITIES_JSON = JSON.stringify({
       version: 1, platform_images: runtime.imageGeneration, platform_search: runtime.webSearch, file_search: runtime.fileSearch,
       container_memory: null, available_container_profiles: runtime.codeInterpreter ? ['1g', '4g'] : [],
@@ -78,7 +78,7 @@ export function renderDeploymentConfig(input, env) {
       delete target.vars.FILE_SEARCH_PROFILE_JSON;
     }
   }
-  if (runtime.codeInterpreter) {
+  if (runtime.codeInterpreter || runtime.imageGeneration) {
     for (const [className, instanceType] of [['Session', 'basic'], ['Session4G', 'standard-1']]) {
       const apps = target.containers.filter(container => container.class_name === className);
       if (apps.length !== 1 || apps[0].instance_type !== instanceType) throw new Error('Missing explicit Code executor profile app');

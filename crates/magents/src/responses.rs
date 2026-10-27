@@ -7,6 +7,15 @@ use crate::{client::Api, read_json, segment, space::Page};
 
 #[derive(Subcommand)]
 pub enum Responses {
+    /// Count the server-rendered input from JSON; use '-' for stdin. No local estimates.
+    Count { file: PathBuf },
+    /// Compact from JSON; return the complete reusable window, not a text summary.
+    Compact {
+        file: PathBuf,
+        /// Reuse only for an explicit retry of the identical paid operation. Never auto-retries.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
     /// Create from Responses API JSON; use '-' for stdin. Local tools are never auto-executed.
     Create {
         file: PathBuf,
@@ -70,6 +79,21 @@ pub enum Responses {
 
 pub async fn run(api: &Api, command: Responses) -> Result<()> {
     match command {
+        Responses::Count { file } => {
+            api.response_operation("/v1/responses/input_tokens", read_object(&file)?, None)
+                .await
+        }
+        Responses::Compact {
+            file,
+            idempotency_key,
+        } => {
+            api.response_operation(
+                "/v1/responses/compact",
+                read_object(&file)?,
+                idempotency_key.as_deref(),
+            )
+            .await
+        }
         Responses::Create {
             file,
             session,
@@ -77,10 +101,7 @@ pub async fn run(api: &Api, command: Responses) -> Result<()> {
             events,
             idempotency_key,
         } => {
-            let mut body = read_json(&file)?;
-            if !body.is_object() {
-                bail!("Responses request must be a JSON object");
-            }
+            let mut body = read_object(&file)?;
             if stream {
                 body["stream"] = true.into();
             }
@@ -141,6 +162,14 @@ pub async fn run(api: &Api, command: Responses) -> Result<()> {
             .await
         }
     }
+}
+
+fn read_object(file: &std::path::Path) -> Result<serde_json::Value> {
+    let body = read_json(file)?;
+    if !body.is_object() {
+        bail!("Responses request must be a JSON object");
+    }
+    Ok(body)
 }
 
 fn path(id: &str) -> Result<String> {

@@ -171,7 +171,16 @@ fn prepare(
     kind: Kind,
     bytes: &[u8],
 ) -> Result<PreparedConversion> {
-    let ai = env.ai(&profile.ai_binding)?;
+    prepare_binding(env, &profile.ai_binding, kind, bytes)
+}
+
+fn prepare_binding(
+    env: &Env,
+    binding: &str,
+    kind: Kind,
+    bytes: &[u8],
+) -> Result<PreparedConversion> {
+    let ai = env.ai(binding)?;
     let method = Reflect::get(ai.as_ref(), &JsValue::from_str("toMarkdown"))
         .map_err(|_| fail("file_search_document_service_unavailable"))?
         .dyn_into::<Function>()
@@ -238,6 +247,20 @@ async fn convert(prepared: PreparedConversion) -> Result<String> {
         return Err(fail("file_search_document_text_limit"));
     }
     Ok(text)
+}
+
+/// Responses attachments share the admitted native document-text parser. This
+/// never invokes embedding, OCR, images, or an unpriced custom converter.
+pub(crate) async fn attachment_text(env: &Env, bytes: &[u8]) -> Result<Option<String>> {
+    let kind = match kind(bytes) {
+        Ok(Some(kind)) => kind,
+        Ok(None) => return Ok(None),
+        Err(Error::RustError(code)) if code == "unsupported_or_empty_document" => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    convert(prepare_binding(env, "AI", kind, bytes)?)
+        .await
+        .map(Some)
 }
 
 #[derive(Deserialize)]

@@ -123,3 +123,108 @@ actual conversion, metadata deletion and explicit purge, then cold read-only
 Response survival. It does not replay accepted auto-window generations.
 Nine local actual-SQL lifecycle/concurrency/property checks passed; this is not
 a substitute for the new Worker lifecycle or subsequent real-provider staging.
+
+## Definite rejection and pending recovery
+
+`reclaim_pending` is shared by admission and explicit purge. Activated runs and
+legacy/unknown leases without a pending deadline cannot be reclaimed by elapsed
+time. A definite capacity rejection uses the exact Response/generation fence
+immediately instead of waiting for that deadline. It reloads canonical header
+state after a failed header allocation, removes only never-accepted admission
+membership and releases the writer. The response cleanup funding closes only
+after the authority confirms release and actual resource measurements settle.
+A settled rejected identity with no admission membership cannot reopen a writer;
+accepted completed/cancelled memberships retain their existing retry path.
+Unknown publication/accounting outcomes keep their holds.
+
+Actions `40348610976`, source `c1bac6f`, Worker artifact `12662202226`, passed
+only the new `capacity-rejection` lifecycle. Declared synthetic pre-existing
+logical history drove the real public conditional admission boundary without
+writing 256 MiB. The actual Worker returned capacity 409, immediately released
+the writer, settled its known resource cleanup scope, fenced the rejected-key
+retry, and accepted metadata DELETE plus irreversible purge without a TTL wait.
+Provider calls, counter calls and model ledger rows were all zero. Earlier
+successful generations and nine SQL properties were not replayed.
+
+A small subsequent call-site integration preserves idempotent writer-release
+acknowledgments after irreversible purge. No-append acknowledgments require the
+exact already-released escrow generation; admission/activation/extension/append
+remain denied. This lets a retired queued Session finish cleanup without a
+permanent purged-404 loop, without inventing zero unknown model usage. That
+terminal acknowledgment wiring remains for the next coherent artifact build;
+it is not relabeled as executed in the earlier source-bound receipt.
+
+## Actual Cloudflare pre-admission interruption (2026-10-27)
+
+The one authorized context submission on Worker `1d1c3a2` / assembly `3539c1c9`
+returned HTTP 500 after 63,951 ms. The original route was
+`resp_78a70f2f64e24b659f72c9cbf73e67c0`, Session
+`f743705e-343d-41be-9988-c8ce1523f39c`. Read-only reconciliation found no model
+reservation, no retained Response and no running Session. Its separate account
+scope `conv-response:resp_78a70f2f64e24b659f72c9cbf73e67c0` retained its original
+20,000-microUSD hold with all resource observations known: actor 28,460 ms,
+parent 35,445 ms. Logical output escrow remained reserved at 93,071,671 bytes.
+No model request was repeated and no balance or escrow row was manually edited.
+
+The whole funded Conversation request was wrapped in `blockConcurrencyWhile`,
+including grant checks, asynchronous D1 publication/accounting and their final
+observations. Cloudflare documents a [30-second callback timeout followed by
+object reset](https://developers.cloudflare.com/durable-objects/api/state/), and
+[recommends keeping this guard out of ordinary external-I/O request
+handling](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/).
+The actor duration excludes grant setup and observation closure; it is not the
+complete guard duration. The measured RPC interval exceeds that platform bound.
+This is a concrete primitive mismatch, not evidence that inference failed.
+
+Conversation requests now retain the same per-object serialization using a Rust
+async mutex, without placing remote I/O inside the platform initialization guard.
+Published header/intents, numeric quota coordination and unknown-money fences
+are unchanged. A new zero-model actual-Worker test inserts one real 33-second
+asynchronous D1 delay and overlaps two metadata writers; it checks final order,
+no regular `blockConcurrencyWhile` use and real measured long actor time.
+Actions `40363780747`, source `00b6db05`, Worker artifact `12669457980`,
+passed that one new actual-Worker case in 35,788 ms. It observed real actor time
+above 33 seconds, preserved the second writer's final metadata, used zero
+regular platform guards, and left no pending resource observations or model
+ledger entries. No external service or model was called.
+
+Structured operational events preserve Conversation/request/operation/grant IDs,
+trace/span correlation, lock waiting, RPC duration, grant checking, individual
+D1 funding/RPC/observation durations, and pending/activated/generation boundaries.
+Known Conversation transport failure has a diagnostic 503 code rather than
+being silently flattened to `internal_error`; original response route identity
+is retained on admission failure. Private source remains in its controlled
+canonical stores and diagnostic receipts; keys and private bodies are not logged.
+Original financial/logical holds still require fenced recovery on the original
+IDs after the corrected artifact is deployed, not a new paid submission.
+
+### Original observed resource scope closure
+
+After a canonical never-activated pending generation is retired and its writer
+is durably cleared, reclamation now validates the original owner-bound
+`conv-response:` maintenance scope and delegates to `ResourceMeter::settle_run`.
+It neither records a new old interval nor reprices historical resource usage:
+the original ledger sum is the settlement authority. The current cleanup scope
+pays for its own lookup. Any original pending observation still prevents
+settlement; model-money reservations are a different scope and are untouched.
+A closed admission may still be observed through its retained accepted receipt,
+but cannot acquire a fresh pending writer or funding grant for new work.
+
+Actions `40367465993`, source `9201f205`, Worker artifact `12669804907`, passed
+one new zero-model lifecycle in 3,654 ms. The actual public create lost its
+successful reserve acknowledgment before Session acceptance, leaving a real
+known resource hold and output escrow. A fixture-only deadline advance selected
+normal never-activated recovery; standard metadata DELETE/purge released escrow
+and settled the original scope to exactly its prior ledger sum. Original ledger
+row count/amount were unchanged; no provider, model or external service ran.
+This mirrors the preserved 3539 pre-admission failure without repeating its
+Response POST. The later small closed-admission observation guard remains for
+the next coherent artifact build, not relabeled as part of that earlier receipt.
+
+For the original staging recovery, deploy the corrected artifact first and use
+the existing owned Conversation metadata DELETE/purge path. Check the same
+Response/Session IDs still show no running/model work; verify the original
+logical generation becomes released with zero remaining bytes and the exact
+`conv-response:` scope settles to its original ledger sum. If any canonical
+activation or unknown observation exists, stop at its fence and retain the hold.
+Do not modify balance rows, invent durations or submit another Response.

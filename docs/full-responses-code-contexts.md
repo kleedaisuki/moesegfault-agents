@@ -391,8 +391,9 @@ Origins are immutable and redirects are rejected. Decrypted keys are neither
 serialized nor logged.
 
 The authenticated capability contract reports actual accepted memory limits and
-an atomic prepare boot header. The reference daemon currently validates exact
-1g/4g cgroups; the executor-level memory domain also expresses16g/64g without
+an atomic prepare boot header. External reference executors validate exact
+1g/4g cgroups; the separately attested managed Cloudflare VM boundary is described
+in `full-responses-interpreter-memory.md`. The executor memory domain also expresses16g/64g without
 pretending those are available Cloudflare SKUs. Provider selection precedes CF
 physical-profile selection. `source_profile` routes the original actor only;
 `executor_kind` and `memory_limit` describe its actual Code resource. An external
@@ -447,13 +448,17 @@ verified daemon provenance rather than the old disabled-runtime exception.
 `tests/e2e/hosted-code-sdk.mjs --memory 1g|4g` is the tracked narrow live driver.
 Each selected profile permits one new direct-DeepSeek Response and one Python
 cell, with an 8192-token context and 512-token output bound. The cell prints 42,
-publishes the exact nine-byte CSV and reads the kernel's `memory.max`; a metadata
-memory label alone cannot satisfy the expected 1073741824/4294967296-byte cap.
+publishes the exact nine-byte CSV and reads actual kernel `MemTotal`. The original
+live failures established that Cloudflare's process cgroup is unbounded, not a
+finite 1g/4g cgroup. Owned container metadata must therefore supply matching
+`cloudflare_vm` allocation/class/image evidence, with separate nominal allocation
+and observed guest bytes; the actual cell observation must equal that guest value.
 It then archives the harness, observes the independent CID still running, deletes
 the CID, requires 404, and reads the unchanged ordinary File. A fresh receipt
 fences intent before submission; ambiguous accepted operations must be reconciled,
-not retried. Actual Cloudflare profile runs, application/SKU identity and scoped
-financial closure are still required before claiming managed Code delivery.
+not retried. At that preparation checkpoint, actual Cloudflare profile runs and
+scoped financial closure were still pending. The later sections retain both the
+initial runtime failure and the completed managed delivery receipts.
 
 ## Actual managed CF startup observation (2026-10-26)
 
@@ -509,3 +514,48 @@ and settling their real start/stop costs. The new profile-specific live behavior
 and financial closure remain required after repair. Safe metadata and original
 operation identities are retained under `.temp/code-staging/` in the integration
 checkout; the original source/run conclusions remain unchanged.
+
+The initial runtime failures were subsequently repaired; the following receipts
+close that managed boundary without rewriting the original failed operations.
+
+## Actual managed Cloudflare delivery completed, 2026-10-27
+
+Staging deployment `40360107662` enabled the explicit Code selector without a
+rebuild. Its assembly/daemon source is
+`3539c1c9fb3a247c465249eb59a4dd2a438b116e`; actual Worker source remains
+`1d1c3a21d6bf91cfd90029bf7230834ae414c83b`, not the newer assembly label.
+Deployment provenance binds Worker artifact `12663258034` from `40349988842`
+and daemon artifact `12663918464` from successful normal CI `40353675534`.
+
+Each repaired profile used one new bounded direct-DeepSeek Response and one real
+Python cell. Neither original failed Code request was replayed. Both passed all
+five native Code phases and original-payload Python SDK 3.37 validation (117
+events for 1g, 121 for 4g), printed 42, and published the exact nine-byte CSV with
+SHA-256 `e642f71729782d3a01113233973eacdad72f4ddf49d5e9b9535c28ae82fceef5`.
+
+| Profile | Native response | Real CID, subsequently deleted | Allocation / observed guest bytes | Total / compute microUSD |
+| --- | --- | --- | --- | --- |
+| basic 1g | `resp_27e56a74268b440da021c61678a03f2e` | `cntr_28aad6df300a4c069ba582d5a120a847` | 1073741824 / 1272700928 | 1815 / 1183 |
+| standard-1 4g | `resp_f1e0c4f679424601af1c3013b9fa153d` | `cntr_d48f7fbfe72f4966a6c3c67bec2e1772` | 4294967296 / 4366254080 | 1298 / 849 |
+
+Both live metadata proofs reported `capacity_source=cloudflare_vm`, the matching
+`Session`/`Session4G` class and exact verified daemon source. Each actual cell's
+independent `MemTotal` observation matched the separately published guest bytes;
+neither result pretends the guest's unbounded cgroup has a finite 1g/4g ceiling.
+
+For each same accepted operation, normal harness archival left the CID running;
+explicit Containers DELETE then produced CID 404 while the ordinary published
+File remained readable with the original nine bytes. Both catalog allocations
+are deleted/released and both compute leases settled against their actual wall
+intervals. The scoped postflights include the new account operations as well as
+Session rows: zero new holds and zero pending observations. Managed catalog
+`memory_limit=NULL` correctly retains its existing `source_profile` fallback;
+no representation rewrite or manual SQL settlement was used. All collectors
+stopped after the final receipts.
+
+The operator receipts are in the integration worktree's
+`.temp/code-staging/repaired-{1g,4g}-{receipt,postflight-confirmed}.json`.
+The earlier failed preparations and their genuinely unknown exit-time financial
+holds remain separate historical reconciliation work; they are not relabeled
+successful or silently refunded by these new clean receipts. Do not rerun either
+repaired profile, the accepted BYOK guest journey, or the original paid failures.

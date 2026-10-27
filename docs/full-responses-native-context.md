@@ -197,3 +197,16 @@ The intermediate fixture attempt `40335614120` failed on that distinction and
 is not capability evidence. Topic CI selectors are non-promoting and must not
 be copied into the integrated product source. Real provider/staging acceptance
 of this slice remains distinct from these controlled compiled-Worker receipts.
+
+### Read-only overflow error checkpoint
+
+Actions `40352405166`, source `cdcf6d98`, Worker artifact `12664616848`, passed
+only the new `count-rejection` negative. Its actual prepared synthetic provider
+counter measured an unfit latest input group, and the read-only API returned
+HTTP 400 with `context_length_exceeded`, not a generic 500. No Session was
+admitted, no generation ran and no model ledger row was created. The synthetic
+counter is not evidence about a production tokenizer. Canonical accepted failed
+Responses keep SDK `server_error` plus the domain `agents_error_code`; only the
+auxiliary request-error mapping changed. No successful or earlier negative
+journey was replayed. The Wasm build also type-checked the later purge-cleanup
+ACK wiring, but this negative did not execute that separate terminal branch.

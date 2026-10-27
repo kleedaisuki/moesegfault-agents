@@ -899,7 +899,13 @@ impl SessionInner {
                     let running = resource.allocation.state == ContextState::Ready
                         && resource.allocation.expires_at_ms > util::now_ms()
                         && self.resource_is_live(&record,&resource).await?;
-                    Response::from_json(&catalog::public(&resource.allocation, running))
+                    let mut value = catalog::public(&resource.allocation, running);
+                    if running && resource.backend.is_managed() {
+                        if let Some(capacity) = self.workspace(&record).python_capacity(resource.allocation.daemon_boot_id.as_deref().unwrap_or("")).await? {
+                            value["agents_capacity"] = capacity;
+                        }
+                    }
+                    Response::from_json(&value)
                 }
                 "/code-resources/delete" => {
                     if self.retire_code_resource(&input.allocation_id, Retirement::ExplicitDelete, &meter).await? {

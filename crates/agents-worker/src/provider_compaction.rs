@@ -94,9 +94,12 @@ pub(crate) fn completed_summary(completion: &Completion) -> Result<&str, String>
         .ok_or_else(|| "empty_compaction".into())
 }
 
-pub(crate) fn retained_messages(operation: &str, source: &[Value]) -> Result<Vec<Value>, String> {
+pub(crate) fn retained_messages<'a>(
+    operation: &str,
+    source: impl IntoIterator<Item = &'a Value>,
+) -> Result<Vec<Value>, String> {
     source
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(index, item)| {
             let mut item = item.clone();

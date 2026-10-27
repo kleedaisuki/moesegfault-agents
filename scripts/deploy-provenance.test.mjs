@@ -360,3 +360,13 @@ test('core-compatible staging excludes only pending checks for its disabled cand
   value.expectedPlan = structuredClone(value.plan);
   assert.throws(() => verifyDeploymentEvidence(value), /missing_declared_remediation/);
 });
+
+test('image-only runtime still requires a normal verified daemon for preserved cleanup apps', async () => {
+  const { deploymentRuntime } = await import('./deploy-config.mjs');
+  const runtime = deploymentRuntime({ DEPLOY_ENVIRONMENT: 'staging', RUNTIME_FEATURES: 'web_search,file_search,image_generation' });
+  assert.equal(runtime.legacyContainerCompatible, false);
+  const value = fixture(); value.workerRuntimeFeatures = runtime.workerFeatures;
+  assert.deepEqual(verifyDeploymentEvidence(value).worker_runtime_features, runtime.workerFeatures);
+  value.coreContainer = true;
+  assert.throws(() => verifyDeploymentEvidence(value), /images_require_normal_verified_deployment/);
+});

@@ -25,6 +25,7 @@ pub(super) struct ConversationRelease {
 
 pub(super) struct ConversationSeed {
     pub(super) attachments: Vec<crate::space::OwnedFile>,
+    pub(super) remote_frozen: bool,
     journal: Vec<Message>,
     messages: Vec<Message>,
     pending: Vec<Message>,
@@ -217,9 +218,10 @@ impl SessionInner {
         let resolved = crate::responses_attachments::resolve(
             &self.env,
             &data.record.owner_id,
-            response_id,
+            &format!("{response_id}:conversation"),
             &json!(input.admission.items),
             data.record.pinned.workspace,
+            &self.state.storage(),
         )
         .await?;
         let source_items = resolved
@@ -262,6 +264,7 @@ impl SessionInner {
         });
         Ok(Some(ConversationSeed {
             attachments: resolved.attachments,
+            remote_frozen: resolved.remote_frozen,
             journal,
             messages,
             pending,
@@ -278,6 +281,7 @@ impl SessionInner {
         response_id: &str,
         input_items: &[Value],
         warmup: bool,
+        traceparent: Option<&str>,
     ) -> Result<std::result::Result<Option<String>, Response>> {
         let Some(input) = input else {
             return Ok(Ok(None));
@@ -299,6 +303,7 @@ impl SessionInner {
             &record.id,
             input.admission.revision,
             &capacity,
+            traceparent,
         )
         .await?;
         if response.status_code() >= 300 {

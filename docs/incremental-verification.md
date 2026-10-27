@@ -141,3 +141,23 @@ Compilation-only Worker checks run with Actions' inherited stdio before filtered
 unit execution, so a long warning stream cannot hide the compiler's actual error.
 Failures also retain bounded output tails in structured receipts and print their
 critical tails synchronously before termination.
+
+## Native v0.3.0 release packaging
+
+`release-magents.yml` uses `scripts/magents-release-checks.mjs` to select only
+the four new native-context actual-binary journeys and affected progressive-help
+case. It reuses the normal Rust argv builder and positive-execution receipt
+runner, with `--release`, the matrix's explicit native `--target`, and `--exact`.
+Both Linux and Windows must execute their own release binary; a Linux debug
+receipt is not Windows or release-profile evidence. Missing cases, zero-test
+success, a mismatched host platform, or an undefined package version fail closed.
+The finite selection is for `0.3.0`; later releases must declare their increment
+rather than silently replay every historical CLI test or silently select none.
+
+Each target retains its source/version/target/host/profile plan and exact argv,
+executed counts and results under `.temp/magents-release-checks/TARGET/` in a
+separate `native-checks-VERSION-TARGET` Actions artifact. This is a narrow
+platform-specific receipt, not a new global proof catalog. Its artifact name
+cannot match the public `magents-*` download pattern. Existing tag/source checks,
+actual distributable `--version`, archive metadata, byte-exact SHA-256 sidecars,
+two-platform package dependency and no-clobber attachment remain unchanged.

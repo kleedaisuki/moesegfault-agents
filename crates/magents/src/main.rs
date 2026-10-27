@@ -1,6 +1,7 @@
 mod auth;
 mod client;
 mod config;
+mod conversations;
 mod downloads;
 mod responses;
 mod space;
@@ -61,6 +62,16 @@ enum Command {
         #[command(subcommand)]
         command: responses::Responses,
     },
+    /// Manage durable Conversations and their original items, independently of sessions.
+    Conversations {
+        #[command(subcommand)]
+        command: conversations::Conversations,
+    },
+    /// Inspect or delete an owned code container without starting a model run.
+    Containers {
+        #[command(subcommand)]
+        command: Containers,
+    },
     /// Manage uploaded files and immutable workspace versions.
     Space {
         #[command(subcommand)]
@@ -100,6 +111,17 @@ enum Auth {
     },
     Logout,
     Status,
+}
+
+#[derive(Subcommand)]
+enum Containers {
+    Show {
+        id: String,
+    },
+    /// Delete the code container, not its creator's session or financial history.
+    Delete {
+        id: String,
+    },
 }
 #[derive(Subcommand)]
 enum Agents {
@@ -459,6 +481,15 @@ async fn main() -> Result<()> {
         Command::Agents { command } => agents(&api, command).await?,
         Command::Space { command } => space::run(&api, command).await?,
         Command::Responses { command } => responses::run(&api, command).await?,
+        Command::Conversations { command } => conversations::run(&api, command).await?,
+        Command::Containers { command } => {
+            let (method, id) = match command {
+                Containers::Show { id } => ("GET", id),
+                Containers::Delete { id } => ("DELETE", id),
+            };
+            api.response_object(method, &format!("/v1/containers/{}", segment(&id)?), None)
+                .await?;
+        }
         Command::Skills { command } => {
             let (method, path, body) = match command {
                 Skills::List => ("GET", "/v1/skills".into(), None),

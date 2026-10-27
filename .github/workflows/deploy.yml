@@ -20,7 +20,7 @@ on:
       runtime_features:
         description: Runtime feature allowlist, independent of whether a journey runs
         type: choice
-        options: [configured, none, web_search, file_search, 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation']
+        options: [configured, none, web_search, file_search, 'web_search,file_search', 'web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation']
         default: configured
         required: true
 
@@ -45,7 +45,7 @@ jobs:
           node --input-type=module <<'REQUEST'
           const profile=process.env.ACCEPTANCE_PROFILE, environment=process.env.DEPLOY_ENVIRONMENT;
           const features=process.env.RUNTIME_FEATURES ?? 'configured';
-          if (!['configured','none','web_search','file_search','web_search,file_search','web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation'].includes(features)) throw Error('Invalid runtime feature allowlist');
+          if (!['configured','none','web_search','file_search','web_search,file_search','web_search,file_search,code_interpreter', 'web_search,file_search,code_interpreter,image_generation', 'web_search,file_search,image_generation'].includes(features)) throw Error('Invalid runtime feature allowlist');
           if (environment!=='staging' && features!=='configured') throw Error('Runtime feature overrides are staging-only');
           if (!['staging','production'].includes(environment) || !['none','direct-deepseek-usage-probe','responses-increment'].includes(profile)) throw Error('Invalid finite operation scope');
           if (!/^[1-9][0-9]{0,14}$/.test(process.env.SOURCE_RUN ?? '')) throw Error('Invalid source CI identity');
@@ -133,7 +133,7 @@ jobs:
           if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository ?? '') || !/^[1-9][0-9]{0,14}$/.test(source ?? '')) throw Error('Invalid CI identity');
           if (process.env.DEPLOY_ENVIRONMENT !== 'staging' && process.env.ACCEPTANCE_PROFILE !== 'none') throw Error('Paid acceptance is staging-only');
           const run = JSON.parse(execFileSync('gh', ['api', `repos/${repository}/actions/runs/${source}`], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 }));
-          const compatible=deploymentRuntime(process.env).limited;
+          const compatible=deploymentRuntime(process.env).legacyContainerCompatible;
           if (run.id !== Number(source) || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
             || run.status !== 'completed' || (!compatible && run.conclusion !== 'success') || run.head_sha !== process.env.GITHUB_SHA
             || run.path !== '.github/workflows/ci.yml' || !['push', 'workflow_dispatch'].includes(run.event)

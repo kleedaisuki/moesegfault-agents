@@ -183,3 +183,82 @@ two Code deployment/provenance cases and five narrow staging-driver contracts
 remain selected. Changed Wasm, native packages, daemon image and dashboard are
 built under normal CI from the exact new source; artifact/dependency fingerprint
 gates are unchanged. The new compact media transport is not part of this source.
+
+## Independent feature rollout and corrected capacity source
+
+The next composed selection boundary is `afba8e9`, not a fabricated compiled
+artifact. Exact normal component baselines now come from successful source CI
+`40338717364` / `1b7f2cd`; its Worker/container/dashboard artifact IDs are pinned
+individually. Controlled native-window, context quota/purge/count, media, MCP,
+indexing-resume and programmatic receipts retain their original sources and
+partial aggregate outcomes in the catalog. They are not replayed for a green
+combined label.
+
+New work selected after that boundary is exactly five relevant CLI binary cases
+(four new cases and the changed progressive-help contract), three native capacity
+source/discovery cases, one free native document price/capability guard, and twelve
+new or materially changed deployment/driver cases. No old compiled Worker
+journey, managed Python cell, SDK trajectory or provider request is selected.
+Changed Wasm/native/daemon inputs build normally; the identical dashboard reuses
+its exact `1b7f2cd` artifact.
+
+The additive `web_search,file_search,image_generation` staging profile keeps both
+verified daemon application bindings for existing cleanup but advertises no Code
+memory profile and no Code runtime. Image activation still requires successful
+normal CI and normal verified container provenance, never the old disabled-runtime
+exception. This lets independent new user capabilities ship while managed Code
+gets its separate actual-runtime acceptance. The later Code selector can enable
+its already built corrected source without replaying any accepted operation.
+
+### Single namespace-fixture repair without positive-case replay
+
+Run `40349988842` at `1d1c3a2` built the actual Worker (`12663258034`) and daemon
+image (`12663702294`), passed the one new free native document guard and all
+ twelve selected tooling cases, and skipped the identical dashboard. Its native
+receipt `12663691578` records five actual CLI binary cases and two new capacity
+cases as `passed_current`, each with one executed test. The aggregate native job
+failed only because the namespace fixture's synthetic mount path contained
+literal `../../`, which the real absolute-path validator correctly rejected.
+The subsequent native clippy step was skipped, not passed.
+
+The correction canonicalizes that synthetic fixture path only. Its composed
+selection references the original successful leaves and keeps only
+`namespace_ancestor_mount_finds_the_actual_process_not_a_matching_sibling_limit`
+unresolved. The exact Worker and dashboard artifacts are reused from their real
+sources. The daemon is rebuilt because its tracked test-file fingerprint changed;
+normal native lint/type checking remains required. No passing CLI/capacity/tooling
+case, old Worker journey or provider request is replayed for the repair.
+
+## Recovery-source composition after actual managed Code delivery
+
+Selection `35676de` composes the separately accepted zero-generation quota/count
+negative scopes, private native-source serialization, remote/cache metadata,
+legacy MCP negotiation, live programmatic client continuation, and real slow-I/O/
+lost-ACK Conversation recovery receipts. Original failed aggregate conclusions
+and exact-artifact local tails stay explicit. These are selection receipts, not
+a claim that the combined source or a public remote server was already exercised.
+
+The next normal plan builds only the changed Worker and runs the four new cheap
+native-release selector contracts. Native/daemon `3539c1c` and dashboard `1b7f2cd`
+retain their exact artifact identities. No accepted Code cell, old CLI binary
+case, native-window generation, compaction, MCP or programmatic model journey is
+replayed. The original failed Conversation response is recovered only through
+its existing standard metadata DELETE/purge and canonical never-activated fence;
+its old resource scope settles from its original observed ledger, never from a
+new model request or invented refund.
+
+### Structured diagnosis survives collection
+
+Future owned metadata collectors preserve `conversation.phase` and bounded
+operation/conversation/request/grant/span identifiers, phase and route, lock-wait,
+D1 funding/RPC/observation durations, pending/activated/deadline/generation, and
+upstream status/request/generation identifiers plus byte counts, codec and image
+dimensions. Same-invocation records keep the already-sanitized structured fields
+instead of reducing them to Session/run IDs. Merge identity includes phase,
+operation and span so distinct phases in the same millisecond do not collapse.
+The process-local reducer extension leaves old captures and the shared classifier
+unchanged. Its offline actual reduction/correlation probe retained all 21 expected
+structured fields and no Authorization/prompt fields, with zero network clients.
+Full sensitive execution bodies belong in authorized encrypted short-retention
+receipts, not plaintext global tail output. Missing source-emitted upstream detail
+cannot be reconstructed by pretending that a generic error is sufficiently precise.

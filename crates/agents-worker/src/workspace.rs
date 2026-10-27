@@ -555,7 +555,18 @@ impl<'a> Workspace<'a> {
                 )
                 .await?;
             self.arm_usage().await?;
-            start_container(&container, &self.token().await?).map_err(|_| startup_unavailable())?;
+            let image_source = self
+                .env
+                .var("DAEMON_IMAGE_SOURCE")
+                .ok()
+                .map(|value| value.to_string());
+            start_container(
+                &container,
+                &self.token().await?,
+                self.runtime_profile,
+                image_source.as_deref(),
+            )
+            .map_err(|_| startup_unavailable())?;
             self.configure_inactivity(&container).await?;
         } else {
             self.ensure_compute_lease().await?;
@@ -1637,12 +1648,34 @@ async fn snapshot_response(mut response: TimedResponse) -> Result<TimedResponse>
     )))
 }
 
-fn start_container(container: &Container, token: &str) -> Result<()> {
+fn start_container(
+    container: &Container,
+    token: &str,
+    profile: agents_core::RuntimeProfile,
+    image_source: Option<&str>,
+) -> Result<()> {
     // worker 0.8.7's ContainerStartupOptions -> Object conversion recursively
     // invokes itself. Use the same platform API with an explicit dictionary.
     let options = js_sys::Object::new();
     let env = js_sys::Object::new();
     js_sys::Reflect::set(&env, &"MAGENTS_DAEMON_TOKEN".into(), &token.into())?;
+    if let Some(source) = image_source.filter(|source| {
+        source.len() == 40
+            && source
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    }) {
+        let application_class = match profile {
+            agents_core::RuntimeProfile::Basic1g => "Session",
+            agents_core::RuntimeProfile::Standard4g => "Session4G",
+        };
+        let allocation = json!({"memory_limit":PythonMemoryTier::from_core(profile),"application_class":application_class,"image_source":source});
+        js_sys::Reflect::set(
+            &env,
+            &"MAGENTS_CF_ALLOCATION".into(),
+            &allocation.to_string().into(),
+        )?;
+    }
     js_sys::Reflect::set(&options, &"env".into(), &env)?;
     js_sys::Reflect::set(&options, &"enableInternet".into(), &JsValue::TRUE)?;
     let start = js_sys::Reflect::get(container.as_ref(), &"start".into())?

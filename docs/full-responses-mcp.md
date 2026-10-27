@@ -53,6 +53,73 @@ acceptance receipt; compiler/runtime outcomes must be attached after execution.
 - https://developers.openai.com/api/docs/guides/tools-connectors-mcp
 - https://developers.openai.com/api/docs/guides/tools-tool-search
 
+## Modern / legacy HTTP negotiation
+
+The anonymous DeepWiki metadata probe on 2026-10-26 rejected a modern
+`server/discover` request with HTTP 400 and JSON-RPC `-32600`, advertising
+2025-11-25, 2025-06-18 and 2025-03-26 (plus the older HTTP+SSE revision).
+This is an era-detection response, not a failed tool execution. The previous
+adapter accepted only method-not-found or non-JSON-RPC errors as fallback signals.
+
+The metadata-only probe now follows the modern HTTP compatibility rule: HTTP 400
+without a recognized modern protocol error can enter one legacy initialization.
+The typed rmcp error constants distinguish header mismatch, missing client
+capability and unsupported modern version, including pre-routing errors with a
+null request ID; none authorizes legacy downgrade. Only `server/discover` may
+take this transition. `tools/call`, unknown methods and ambiguous effects never
+retry or fall back. The fixed endpoint, caller credential envelope and redirect
+prohibition remain unchanged.
+
+Legacy initialization offers 2025-11-25 in its body without sending a premature
+`MCP-Protocol-Version` header. rmcp's `InitializeResult` validates the response;
+the supported server-selected revision and session ID remain on the owned
+binding and its frozen approval intent. Subsequent requests use that exact
+version. rmcp already accepts legacy tool results without `resultType`; no JSON
+normalization or removal of typed permission/output fields is needed. The
+deprecated two-endpoint HTTP+SSE transport is not introduced by this increment.
+
+At 2026-10-26T16:07:01Z an anonymous direct metadata follow-up to the same fixed
+`https://mcp.deepwiki.com/mcp` endpoint completed `initialize` (HTTP 200 SSE,
+without a version header), negotiated 2025-11-25 with DeepWiki 2.14.3, then
+completed `notifications/initialized` (202) and `tools/list` (200 SSE) using that
+version. No session ID was issued. The legacy list omitted `resultType` and
+returned `ask_wiki_question`, `read_wiki_contents`, and `read_wiki_structure` with
+typed input/output schemas. Authorization, model invocations and tool calls were
+all absent. This establishes live protocol/metadata compatibility, not a deployed
+Worker tool-execution receipt. The follow-up must not invoke the model-backed
+`ask_wiki_question` tool.
+
+### Compiled compatibility acceptance
+
+Run [40355372320](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40355372320)
+at `c9c73b0ee0a77228a085664fbad5fdb3631c8e56` passed the new Rust metadata-only
+fallback/method-fence contract, Wasm checking, release linking and bundling. Its
+aggregate is **failed**: the original fixture incorrectly required only one
+initialization across two Responses, after the real approval/tool path completed.
+The established contract requires fresh authorized discovery for each new Response.
+
+Using that exact retained Worker (Wasm SHA-256
+`8f5273c3eda725f7e64d1d12dd3b7ef2ddde32993f2ca906b9a87d44013f41fb`), fixture
+`05f7caefe19c12beb6d6c9c49c5ec208419305cf` passed only `mcp_legacy` locally in
+11.63 seconds. It exercised the original `-32600` / HTTP 400 probe rejection,
+header-free initialization, a 2025-06-18 counter-offer, distinct session IDs and
+refreshed credentials for the approved Response, zero calls before approval and
+one approved RPC. Legacy results omitted `resultType` without losing structured
+content. Raw SDK GET equaled the creation body, strict Python SDK 3.37.0 accepted
+both snapshots, and the read-only tail dispatched nothing. No old MCP cases were
+selected; two controlled provider replies were used, with all unplanned outbound
+traffic denied and no live model service calls.
+
+Reproduction: set `WORKER_BUILD_DIR` to the extracted run's `worker` artifact,
+`MAGENTS_MCP_CASE=mcp_legacy`, `MAGENTS_CURRENT_SCHEMA_PYTHON` to the locked
+current-SDK interpreter, and run `node --test tests/worker/mcp.test.mjs` from the
+fixture source. The original failed aggregate is not relabeled as a green CI run.
+
+References:
+- https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#backward-compatibility
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#protocol-version-header
+
 The production limitations of global Fetch DNS authority remain relevant: a
 future deployment adding private origins must review SSRF protection rather than
 mistaking hostname syntax validation for resolved-address pinning.

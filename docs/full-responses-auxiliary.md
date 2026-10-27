@@ -331,6 +331,35 @@ Worker artifact `12658363089` / verification artifact `12658952375`. It rebuilt
 the changed Wasm and executed only that new contract, not the already accepted
 media lifecycle or earlier compact/vision cases.
 
+### One durable source per compact operation
+
+New native-purpose operations retain the complete native input once. Their user
+window is derived in source order when projecting output; the same user bodies
+are not also serialized as a Chat projection and a separate retained-item list.
+Portable Chat/Anthropic operations retain their established Message projection
+and explicit user window instead. Previously persisted envelopes still decode
+with both older fields and retain their original output identities. Protected
+instructions, source bytes, provider pins and idempotency hashes do not change.
+
+The edge drops its no-longer-used count request before awaiting the model actor.
+The bounded resolved-input envelope now matches the 8 MiB exact-renderer ceiling,
+rather than rejecting a valid context because three internal copies exceeded the
+old 2 MiB limit. Oversize input fails at the edge before actor creation or model
+admission. New serialization contracts compare exact envelope byte counts and
+old/new canonical retained output; they do not claim a measured latency or RSS
+improvement or replay accepted inference journeys.
+
+Actions `40351436054` passed both new serialization/compatibility contracts and
+built Worker artifact `12664162588` (verification `12663797748`). For one 800 KiB
+synthetic user body, the actual encoded private envelope decreased from
+2,458,242 to 819,758 bytes (66.65%); retained public output and protected
+instructions were unchanged, including after decoding the old envelope. No
+model, tool or previously accepted SDK journey ran for this measurement.
+The input decoder also releases its encoded byte buffer before inference so it
+does not retain a second full context through long-running provider I/O. This
+lifetime-only line awaits the next composed build; it does not change the
+measured serialization format or claim a separate RSS result.
+
 Provider image transport reference:
 https://api-docs.deepseek.com/guides/vision/#using-images-with-the-anthropic-api
 
@@ -359,3 +388,102 @@ the later media/context-management source changes. Safe local receipts:
 `.temp/code-staging/live-compact-receipt.json` and
 `.temp/code-staging/compact-postflight-after-terminal.json`. The bounded metadata
 collector stopped; neither raw model windows nor credentials were retained.
+
+
+## Public file inputs: frozen execution and read-only counting
+
+The Responses `input_file.file_url` execution resolver now uses the same native
+credential-free global Fetch reader as public image inputs and generated assets.
+It accepts public HTTPS origins, including signed queries, but never userinfo,
+private/local addresses, non-443 ports, fragments, redirects or caller/provider
+headers. The source URL and query do not become model text or telemetry. The
+reader bounds both declared and streamed body size (4 MiB per input and aggregate
+attachment budget); text materialization is capped at 256 KiB.
+
+Verified UTF-8 becomes the same filename/content JSON renderer as inline text.
+PDF/DOCX/XLSX reuse the existing bounded native document-text converter, with no
+OCR, image-description model, embedding or invented provider token usage. Other
+binary/large inputs require an actual owned File and workspace import; execution
+uses normal owner quota and funded R2 publication. Read-only count never creates
+such a File, Session or workspace and reports its capability boundary instead.
+Both count and execution prepay their actual Worker/DO read interval independently
+of model credit. Known failed or rejected HTTP outcomes still settle known I/O.
+
+Execution preparation uses the Session's existing transactional and chunked
+storage. A response/part identity pins an owner-bound source digest before
+download. A saved renderer result is reused; a dispatched-but-interrupted attempt
+cannot download or convert a potentially changed source again. Temporary receipts
+are removed after canonical accepted Response/native state owns the frozen view.
+Before acceptance they are retained as private Session retry state, not Files or
+observability data. Ordinary idempotent response replay reads canonical state and
+never revisits the public URL. Count has no execution identity and keeps its bytes
+only for that one read-only operation.
+
+`prompt_cache_breakpoint` survives the file-to-text renderer unchanged. `detail`
+`auto` selects this adapter's text path; `low`/`high`/`original` receive explicit
+422 `file_detail_unavailable`, not an invalid-field error or false page-image
+support. OpenAI documents PDF detail as a page-image control, separately from
+extracted text: https://developers.openai.com/api/docs/guides/file-inputs .
+
+New verification is scoped to `tests/worker/remote-file-input.test.mjs`: actual
+compiled Worker + OpenAI SDK remote text/count/create equivalence, metadata,
+owner isolation, no forwarded secrets, redirect/size rejection, prepaid failure
+and stable response intent. Actions run `40350857149`, source
+`01c2d840712d2f433c935b046781b6380a2dd557`, passed the two new Rust contracts
+and the actual compiled-Worker SDK journey (1/1). Worker artifact `12663479621`
+and receipt artifact `12665370102` bind the successful boundary; its one model
+action used the controlled native provider, not paid external inference.
+
+Follow-up source `02484f1` separates syntax acceptance from visual execution
+capability for inline/owned sources too and prevents an additional external read
+after the aggregate budget is exhausted. `2839913` retains the honest opaque ZIP
+workspace fallback. Actions `40353046769`, source
+`29dbd6c9473e8be95c96b3302647dfa25f122829`, passed the changed Rust metadata
+contract and only the new Worker metadata/aggregate fragment (1/1). The real
+count route returns 422 for legal but unsupported inline/owned visual detail;
+after sixteen 256-KiB remote text parts it rejects the exhausted aggregate
+budget without a seventeenth download, Session, File or provider count/model
+submission. It does not replay the accepted remote front or any prior
+PDF/embedding/Space/image acceptance.
+
+
+### Image cache metadata is a provider capability
+
+Image and file attachments share the same explicit-marker validator and the
+same preservation operation. Native image freezing retains
+`prompt_cache_breakpoint` at its original content position; a capable native
+BYOK transport receives it unchanged, including the count projection. This
+transport fidelity is not a claim of measured vendor cache hits.
+
+DeepSeek's published Responses contract says that caching is automatic, explicit
+cache controls are unsupported, and unsupported parameters may be silently
+ignored: https://api-docs.deepseek.com/guides/responses_api/#compatibility-details .
+Its documented image fields contain no explicit breakpoint. Consequently the
+unified PreparedRequest input-capability boundary rejects explicit nested
+content breakpoints with 422 `native_cache_control_unsupported` for DeepSeek,
+instead of letting the recipe ignore metadata and pretending it took effect.
+The check applies to new and restored prepared contexts and to source preparation
+before remote fetch. Only semantic content/output parts are examined; arbitrary
+function arguments and tool schemas are user data, not cache directives.
+
+The new `image-metadata` fragment in the existing compiled-Worker fixture covers
+BYOK image/count fidelity and DeepSeek count/create rejection with zero model
+submissions and zero remote-image requests. Existing vision, remote-file and
+retrieval cases remain sealed. Actions `40357053617`, source
+`47289e05a5dcd25f09cf8e2c865ccfaf273796b6`, built Worker artifact `12667840590`
+and passed both new Rust contracts (1/1 each). Its new SDK front passed BYOK
+image/count marker fidelity and both DeepSeek 422 boundaries, but the aggregate
+job failed only at the final fixture SQL query: ledger ownership belongs to
+`usage_reservations`, not a nonexistent `usage_ledger.account_id`.
+
+Test-only correction `5ac7cc2` uses that established ownership join. The same
+unchanged artifact then passed the complete failed `image-metadata` fragment
+locally in actual workerd/OpenAI SDK (1/1, 8.0 s test duration), with zero remote
+image reads, zero generation submissions/model ledger entries and no active
+Session after rejection. Its WASM SHA-256 is
+`eee448586c7e52937a48cef84223eea2bb48f98ee1a1df90fc5f82950ddfe05a`.
+No second compilation, prior vision/remote/retrieval journey, or paid provider
+request was performed. Select this fixture with
+`MAGENTS_REMOTE_FILE_CASE=image-metadata`; the default remote-file case is
+already accepted and must not be replayed merely because this file gained a
+new fragment. The failed aggregate Actions run is not relabeled green.
