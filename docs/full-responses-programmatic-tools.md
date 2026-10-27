@@ -250,6 +250,19 @@ additional input capacity to the current public Response and checks both that
 Response and its unchanged funding Run after the reservation await. A callback
 Response must never spend the already-converted parent output escrow.
 
+The repaired Conversation-only journey passed in
+[GHA 40447143197](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40447143197),
+source `c96b7d673061cc447bc5dd17cb70e7fb0dd4a464`, Worker artifact `12709156140`,
+verification artifact `12709535070`. The retained receipt records two public
+Responses, two controlled model rounds, an implicit Conversation predecessor,
+the unchanged native heap nonce, two converted output escrows and exactly one
+funded execution/native program fetch. Raw current-SDK SSE and GET, immutable
+parent usage, one local-result Conversation event, same-key observation and
+the single creation/request/CPU allocation all passed. Only two new Rust
+contracts ran, for causal publication and the steering epoch. No accepted
+client, approval, time/MCP or external-model journey was repeated. This proves
+the real workerd Loader path, not deployed Cloudflare staging or its invoice.
+
 ## Verification boundary
 
 The earlier workerd/Miniflare component proof passed eight isolation/duplex checks;
