@@ -353,7 +353,17 @@ export async function runDynamicContextStaleJourney(context) {
       if (!open.reservations && !open.observations) break;
       await new Promise(resolve => setTimeout(resolve, 20));
     } while (Date.now() < deadline);
-    assert.deepEqual(open, { reservations: 0, observations: 0 }, 'Known malformed output cannot leave a funded unknown-outcome hold');
+    const held = open.reservations ? (await db.prepare(`SELECT r.id,r.idempotency_key,r.state,
+      CAST(r.reserved_microusd AS TEXT) AS reserved_microusd,CAST(r.settled_microusd AS TEXT) AS settled_microusd,
+      (SELECT COUNT(*) FROM usage_ledger l WHERE l.reservation_id=r.id) AS ledger_rows,
+      (SELECT GROUP_CONCAT(l.resource||':'||l.event_key,'|') FROM usage_ledger l WHERE l.reservation_id=r.id) AS ledger_events,
+      (SELECT COUNT(*) FROM resource_observations o WHERE o.run_id=r.id) AS observations,
+      (SELECT GROUP_CONCAT(o.event_key||':'||o.status,'|') FROM resource_observations o WHERE o.run_id=r.id) AS observation_events,
+      (SELECT COUNT(*) FROM resource_observations o WHERE o.run_id=r.id AND o.status='pending') AS pending_observations
+      FROM usage_reservations r WHERE r.account_id=? AND r.session_id=? AND r.state='reserved'`)
+      .bind(scenario.principal.owner, id).all()).results : [];
+    assert.deepEqual(open, { reservations: 0, observations: 0 },
+      `Known malformed output cannot leave a funded unknown-outcome hold: ${JSON.stringify(held)}`);
     const incomplete = await scenario.invoke({ previous_response_id: malformed.value.id,
       input: 'Observe the original partial decision without completing or executing its arguments.',
       tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-incomplete-provider');
