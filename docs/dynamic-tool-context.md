@@ -168,3 +168,43 @@ replacement, removal/stale-call correction and compact/cold recovery. Compare
 the changed request to its adjacent warm control under `auto`; inspect both
 actual provider cache reads and logical execution receipts. Do not replay the
 already accepted startup or old product suites.
+
+## Source review checkpoint
+
+An independent, source-only review covered the new DynamicV2 dispatcher and its
+Session/native/count/layout integration on 2026-10-28. This did not run a build,
+business test, paid request or production operation. Runtime acceptance is a
+separate gate.
+
+Three concrete defects were reported and repaired in the reviewed source:
+
+1. `session.rs` originally parsed the fallible logical dispatcher envelope before
+   recording a known, paid `pending_completion`. A malformed envelope could lose
+   settlement of already reported usage. The raw completion is now settled first;
+   failed projection accumulates usage, clears the known pending result, persists
+   its precise diagnostic and then terminates without issuing an effect.
+2. A newly sampled bare registered-tool call could bypass wrapper-only
+   catalog/schema validation. `registered_tools::completion` now assigns the same
+   server-observed catalog digest to fresh known registered names, except actual
+   caller-local declarations. Already-journaled legacy pending calls are not
+   reclassified or replayed. Non-null wrapper namespaces are rejected rather than
+   treated as plain registered authority.
+3. An incomplete internal wrapper was removed from the logical call list but
+   initially retained as an unanswered native function call, poisoning a later
+   user continuation. `effective_output` now omits unissued incomplete private
+   calls from effective native replay; the raw provider receipt remains intact.
+   Only completed internal invocations become executable logical calls.
+
+The reviewed routes validate named and allowed-tool restrictions against the
+logical server-owned call, not merely the shared outer alias. Caller-local
+names cannot be converted into server execution through the wrapper. Native
+stream/output projection keeps internal calls private while the tool journal
+retains logical names and arguments. The sampled catalog digest is server-owned;
+current permission/schema checks and original issued-effect recovery remain
+separate. Active configuration, skills and response-scoped context positions are
+retained through compaction and required-position auto-window selection, and the
+count renderer follows the same transition representation.
+
+No remaining P1/P2 defect was found in this bounded reviewed scope after those
+repairs. This is a source-review conclusion, not a claim that the new artifact
+has compiled or that its real-provider cache behavior has passed.

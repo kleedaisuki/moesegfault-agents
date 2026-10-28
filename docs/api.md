@@ -730,10 +730,13 @@ not be immediately cancellable. Clients should poll status rather than assuming
 that a transport disconnect cancels an accepted operation.
 
 `SessionRecord` contains `id`, `owner_id`, `agent_id`, `status`, `created_at_ms`,
-`last_input_at_ms`, `input_revision`, `pinned`, and optional `workspace_snapshot`.
+`last_input_at_ms`, `input_revision`, `pinned`, optional effective `configuration`,
+active `context_layout`, and optional `workspace_snapshot`.
 Status values are `idle`, `running`, and `closed`. The pinned record contains the
 agent revision, full resolved tool/skill definitions, model configuration,
-instructions, compaction percentage, and workspace setting.
+instructions, compaction percentage, and workspace setting at creation. It is not
+the active prompt or current tool catalog. Active layout and effective
+configuration can evolve without invalidating historical reference provenance.
 
 Status `messages` is the preserved append-only conversation journal, not the
 compacted model prompt. Compaction replaces only the derived active context;
@@ -762,7 +765,8 @@ past the deadline; when it completes, a session already idle for ten minutes is
 archived and its container released immediately. A new append during checkpoint
 invalidates the pending idle close. Closed sessions cannot silently be resumed by
 appending; explicitly resume them or create a new session. An explicit resume is
-user activity and starts a new ten-minute idle period without changing the pin.
+user activity and starts a new ten-minute idle period. It restores existing
+history/workspace and catches up compatible configuration at a safe boundary.
 
 ## Account endpoints
 
