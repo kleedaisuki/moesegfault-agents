@@ -82,7 +82,7 @@ The `finally` block observes status; it never resubmits input or closes a possib
 | Request safe closure/checkpoint | `DELETE /v1/sessions/{id}`; inspect readiness before downloading |
 | Intentionally reopen closed session | `POST /v1/sessions/{id}/resume`; preserve its existing pin |
 
-Agent edits affect future sessions, not existing pins. Closed sessions cannot be resumed just by appending. User appends and steering reset the ten-minute idle clock; tool/model output does not. An active run may outlast the deadline and close after finishing.
+Agent instruction/tool edits append durable configuration revisions to existing sessions at safe execution boundaries; they do not rewrite the original pin. Model/workspace authority and pinned skill changes still need a new session. Closed sessions cannot be resumed just by appending. User appends and steering reset the ten-minute idle clock; configuration changes and tool/model output do not. An active run may outlast the deadline and close after finishing. See [configuration updates](https://github.com/kleedaisuki/moesegfault-agents/blob/main/docs/session-config-updates.md).
 
 For lightweight management polling, `GET /v1/sessions/{id}/view` omits full history/pin and includes message count, latest response ID, and outstanding local calls. ETag plus `If-None-Match` supports 304. Fetch source records incrementally using `GET /v1/sessions/{id}/messages` with one opaque session-bound `before`/`after` cursor and `limit` 1–100 (default latest 50). Records retain stable source sequences through compaction; pages include `start`, `end`, `high_water`, both cursors, and older/newer flags. Keep the legacy full status endpoint when its complete representation is actually needed.
 

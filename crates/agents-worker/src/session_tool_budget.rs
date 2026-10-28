@@ -87,10 +87,7 @@ impl SessionInner {
                         .as_ref()
                         .is_some_and(|registry| registry.is_server_search(name))
             });
-            if !hosted
-                && !resolved_server
-                && !record.pinned.tools.iter().any(|tool| tool.name == name)
-            {
+            if !hosted && !resolved_server && !record.tools().iter().any(|tool| tool.name == name) {
                 return Ok(true);
             }
             let limit = run
@@ -118,7 +115,7 @@ pub(super) fn filter_exhausted_tools(
     }
     definitions.retain(|definition| {
         let name = &definition.function.name;
-        !record.pinned.tools.iter().any(|tool| &tool.name == name)
+        !record.tools().iter().any(|tool| &tool.name == name)
             && !run
                 .response
                 .as_ref()

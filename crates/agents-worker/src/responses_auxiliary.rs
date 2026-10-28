@@ -165,6 +165,10 @@ pub(crate) struct CompactionState {
     pub prefix_hash: String,
     pub instructions: Option<String>,
     pub messages: Vec<Message>,
+    // Provenance only: a sealed old configuration cannot override the current
+    // authoritative Agent revision journal or re-enable a revoked tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<agents_core::SessionConfiguration>,
 }
 
 impl CompactionState {
@@ -180,9 +184,18 @@ impl CompactionState {
             prefix_hash,
             instructions,
             messages,
+            configuration: None,
         };
         state.validate()?;
         Ok(state)
+    }
+
+    pub(crate) fn with_configuration(
+        mut self,
+        configuration: Option<agents_core::SessionConfiguration>,
+    ) -> Self {
+        self.configuration = configuration;
+        self
     }
 
     fn validate(&self) -> worker::Result<()> {

@@ -34,10 +34,6 @@ impl Revision {
                 .collect(),
         }
     }
-
-    pub(crate) fn contains(&self, index: usize) -> bool {
-        self.updates.binary_search(&index).is_ok()
-    }
 }
 
 pub(crate) fn enabled(pinned: &PinnedContext, config: &crate::provider::ProviderConfig) -> bool {

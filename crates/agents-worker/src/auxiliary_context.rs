@@ -23,6 +23,7 @@ pub(crate) struct Context {
     pub config: ProviderConfig,
     pub prepared: PreparedRequest,
     pub measured_input_tokens: Option<u64>,
+    pub configuration: Option<agents_core::SessionConfiguration>,
 }
 
 pub(crate) async fn prepare(
@@ -36,6 +37,13 @@ pub(crate) async fn prepare(
     let selected = crate::auxiliary_source::select(env, owner, request, session_header).await?;
     let source = selected.previous;
     let pinned = selected.pinned;
+    let configuration = selected.configuration;
+    let configurations = selected.configurations;
+    let registered = configuration
+        .as_ref()
+        .map_or(pinned.tools.as_slice(), |configuration| {
+            configuration.tools.as_slice()
+        });
     let config = provider::resolve_config(env, owner, &pinned.model).await?;
     let item_context =
         crate::session::native_items::ItemContext::new(owner, &request.model, &pinned, &config)?;
@@ -47,6 +55,8 @@ pub(crate) async fn prepare(
     let mut pending_search = Vec::new();
     let mut context_revision = None;
     let mut context_updates = vec![];
+    let mut configuration_positions = vec![];
+    let mut obsolete_updates = vec![];
     let requested_profile =
         crate::runtime_profiles::requested_tools_for(&request.tools, &pinned.tool_services)?;
     let mut profile = selected
@@ -69,6 +79,8 @@ pub(crate) async fn prepare(
         }
         context_revision = context.context_revision;
         context_updates = context.context_updates;
+        configuration_positions = context.configuration_positions;
+        obsolete_updates = context.obsolete_updates;
         inherited_discovery = context.discovery;
         pending_search = context
             .general_pending_calls
@@ -95,6 +107,8 @@ pub(crate) async fn prepare(
                 })
                 .collect();
             context_updates.clear();
+            configuration_positions.clear();
+            obsolete_updates.clear();
             instructions = context.response_instructions;
         }
     }
@@ -212,7 +226,7 @@ pub(crate) async fn prepare(
         registry.register_mcp(&mcp).map_err(fail)?;
         registry
             .reserve_server_names(
-                context_prefix::definitions(&pinned)
+                context_prefix::registered_definitions(registered)
                     .iter()
                     .map(|definition| definition.function.name.as_str()),
             )
@@ -236,7 +250,29 @@ pub(crate) async fn prepare(
     let mut native = provider::responses::message_items(&[Message::text("system", prefix.clone())])
         .map_err(fail)?;
     native.append(&mut prior_native);
+    let mut configuration_positions = configuration_positions
+        .into_iter()
+        .map(|index| index + 1)
+        .collect::<Vec<_>>();
+    let mut obsolete_positions = obsolete_updates
+        .into_iter()
+        .map(|index| index + 1)
+        .collect::<Vec<_>>();
+    let response_positions = context_updates
+        .iter()
+        .map(|index| index + 1)
+        .filter(|index| configuration_positions.binary_search(index).is_err())
+        .collect::<Vec<_>>();
     native.extend(native_input);
+    if !compact {
+        for configuration in &configurations {
+            if let Some(position) = configuration_positions.last() {
+                obsolete_positions.push(*position);
+            }
+            configuration_positions.push(native.len());
+            native.push(crate::configuration::item(configuration));
+        }
+    }
     let mut messages = vec![Message::text("system", prefix)];
     messages.append(&mut prior_messages);
     messages.extend(normalized.messages.iter().cloned());
@@ -254,7 +290,7 @@ pub(crate) async fn prepare(
         .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
         .cloned()
         .collect();
-    let definitions = context_prefix::definitions(&pinned);
+    let definitions = context_prefix::registered_definitions(registered);
     if reserved_tool_conflict(request, &definitions) {
         return Err(fail("invalid_auxiliary_request"));
     }
@@ -295,7 +331,7 @@ pub(crate) async fn prepare(
     tools.extend(bindings.render_native(
         &declarations,
         true,
-        pinned.tools.iter().any(|tool| tool.name == "time"),
+        registered.iter().any(|tool| tool.name == "time"),
     )?);
     let mut controls = request.native_controls();
     if let Some(choice) = controls.get_mut("tool_choice") {
@@ -304,25 +340,25 @@ pub(crate) async fn prepare(
     if let Some(personality) = personality {
         controls["personality"] = personality;
     }
-    let mut context_positions = context_updates
-        .into_iter()
-        .map(|index| index + 1)
-        .collect::<Vec<_>>();
     if !compact && crate::prompt_context::enabled(&pinned, &config) {
         let snapshot =
             crate::prompt_context::snapshot(&pinned, profile, instructions.as_deref(), &tools);
         if let Some((_, item)) =
             crate::prompt_context::update(context_revision.as_deref(), &snapshot)
         {
-            context_positions.push(native.len());
+            if let Some(position) = response_positions.last() {
+                obsolete_positions.push(*position);
+            }
             native.push(item);
         }
     }
+    obsolete_positions.sort_unstable();
+    obsolete_positions.dedup();
     let (prepared, measured_input_tokens) = if controls["truncation"] == "auto" {
         let fitted = crate::responses_auxiliary::resource_count(
             env,
             owner,
-            crate::native_window::fit_with_context(
+            crate::native_window::fit_with_revisions(
                 &config,
                 &native,
                 &tools,
@@ -335,7 +371,7 @@ pub(crate) async fn prepare(
                     max_tool_calls: true,
                     ..Default::default()
                 },
-                &context_positions,
+                &obsolete_positions,
             ),
         )
         .await?;
@@ -358,6 +394,7 @@ pub(crate) async fn prepare(
         config,
         prepared,
         measured_input_tokens,
+        configuration,
     })
 }
 

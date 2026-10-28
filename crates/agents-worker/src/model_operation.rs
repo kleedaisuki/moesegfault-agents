@@ -40,6 +40,8 @@ pub(crate) struct PreparedCompact {
     pub model: ModelConfig,
     pub prefix_hash: String,
     pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<agents_core::SessionConfiguration>,
     pub protected: Vec<Message>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<Message>,
@@ -615,6 +617,7 @@ impl Inner {
             input.instructions.clone(),
             messages,
         )?
+        .with_configuration(input.configuration.clone())
         .seal(
             &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
             &receipt.owner,
@@ -942,6 +945,7 @@ mod tests {
     fn compact_input(bytes: usize) -> PreparedCompact {
         let source = json!({"role":"user","content":"x".repeat(bytes)});
         PreparedCompact {
+            configuration: None,
             owner: "owner".into(),
             operation: "cmp_fixture".into(),
             request_hash: "a".repeat(64),

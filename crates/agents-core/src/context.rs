@@ -73,6 +73,15 @@ pub struct RegisteredSkill {
     pub instructions: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfiguration {
+    pub agent_revision: u64,
+    pub instructions: String,
+    pub tools: Vec<RegisteredTool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable_tools: Vec<String>,
+}
+
 /// Pin provider-context rendering independently of future harness upgrades.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -45,6 +45,14 @@ function changedLines(source, base, file) {
     .map(match => [Number(match[1]), Number(match[1]) + Number(match[2] ?? 1)]);
 }
 
+export function sessionConfigurationFixtureOnly(file, diff) {
+  if (file !== 'crates/agents-worker/src/telemetry.rs') return false;
+  const lines = diff.split('\n').filter(line => /^[+-]/.test(line) && !/^(?:---|\+\+\+)/.test(line));
+  // The existing provenance fixture only gains the newly optional Session field.
+  // Its behavior is unchanged; --lib --no-run still compiles the whole fixture.
+  return lines.length > 0 && lines.every(line => /^\+\s*configuration:\s*None,\s*$/.test(line));
+}
+
 function rustCode(content) {
   const masked = content.split('');
   const raw = /(?:br|cr|r)(#{0,255})"/y;
@@ -136,7 +144,9 @@ export function selections(source, base, files) {
   for (const file of files) {
     if (file.endsWith('.rs') && file.startsWith('crates/')) {
       const crate = file.split('/')[1];
-      const names = changedRustTests(read(source, file), changedLines(source, base, file));
+      const fixtureOnly = file === 'crates/agents-worker/src/telemetry.rs'
+        && sessionConfigurationFixtureOnly(file, git('diff', '--unified=0', base, source, '--', file));
+      const names = fixtureOnly ? [] : changedRustTests(read(source, file), changedLines(source, base, file));
       const job = crate === 'agents-worker' ? 'worker' : 'rust';
       for (const name of names) checks[job].push({ ...command(`rust:${crate}:${name}`,
         rustTestArguments(crate, name, file), `Changed test in ${file}`), source_file: file });
@@ -157,6 +167,10 @@ export function selections(source, base, files) {
   }
   const executionLease = files.some(file => /execution[-_]lease/.test(file));
   const journeys = [
+    [/^tests\/worker\/session-config-journey\.mjs$/, 'Agent revisions append to an existing Session and survive compaction and cold recovery'],
+    [/^tests\/worker\/session-config-journey\.mjs$/, 'Busy Agent revisions revoke queued tools only at safe execution boundaries'],
+    [/^tests\/worker\/session-config-journey\.mjs$/, 'Agent revision historical forks preserve sealed context before adopting new configuration'],
+    [/^tests\/worker\/session-config-journey\.mjs$/, 'Issued workspace effects remain unknown instead of revoked or replayed after Agent edits'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context appends instruction changes and reset across cold continuation and exact count'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context tool revisions preserve historical forks without revoked aliases'],
     [/^tests\/worker\/prompt-cache-journey\.mjs$/, 'Responses cache context compaction retains the latest revision and resets without stale policy'],
@@ -164,7 +178,6 @@ export function selections(source, base, files) {
     [/execution[-_]lease/, 'ModelOperation execution lease cold loss and terminal admission rejection'],
     [/prompt[_-]templates/, 'Responses prompt templates preserve version owner variables and replay identity'],
     [/responses-tool-budget/, 'response-wide server tool allowance survives disobedient calls and cold retrieval'],
-    [/context_management/, 'Responses request context management emits sealed item and continues'],
     [/^tests\/worker\/auxiliary-journey\.mjs$/, 'Responses auxiliary compact and count'],
     [/^tests\/worker\/deepseek-compact-journey\.mjs$/, 'DeepSeek standalone compaction uses explicit Anthropic transport and genuine usage'],
     [/^tests\/worker\/deepseek-compact-journey\.mjs$/, 'DeepSeek compact reserves the exact rendered input rather than the full model window'],

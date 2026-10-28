@@ -594,6 +594,9 @@ impl SessionInner {
         if let Some(existing) = self.read_response(&create.response_id).await? {
             return self.existing_response(existing, &request).await;
         }
+        if self.snapshot()?.run.is_none() {
+            self.refresh_configuration().await?;
+        }
         self.prepare_conversation_execution(&request, &create.response_id, &mut create.execution)
             .await?;
         if self.branch_dispatched(&create.response_id).await? {
@@ -801,6 +804,19 @@ impl SessionInner {
                     "Provide each outstanding function result exactly once before continuing",
                 );
             }
+        }
+        if request.tool_choice.as_ref().is_some_and(|choice| {
+            choice["type"] == "function"
+                && choice["name"].as_str().is_some_and(|name| {
+                    tools::tool_kind(name).is_some()
+                        && !data.record.tools().iter().any(|tool| tool.name == name)
+                })
+        }) {
+            return util::json_error(
+                400,
+                "tool_not_enabled",
+                "The registered tool is not enabled by the current Agent configuration",
+            );
         }
         let mut definitions = tool_definitions(&data.record);
         let mut discovery = match self
@@ -1187,7 +1203,11 @@ impl SessionInner {
                 });
             }
         }
-        let mut prefix = system_prefix(&data.record);
+        let mut prefix = if config.protocol != agents_core::ProviderProtocol::Responses {
+            crate::configuration::legacy_prefix(&data.record, &[], None)
+        } else {
+            system_prefix(&data.record)
+        };
         if config.protocol != agents_core::ProviderProtocol::Responses {
             for instruction in data
                 .history_instructions

@@ -25,6 +25,10 @@ pub(crate) struct ResponseContext {
     pub context_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_updates: Vec<usize>,
+    #[serde(default)]
+    pub configuration_positions: Vec<usize>,
+    #[serde(default)]
+    pub obsolete_updates: Vec<usize>,
     pub pending_calls: Vec<provider::ToolCall>,
     pub source_end: usize,
     pub compacted: bool,
@@ -95,7 +99,7 @@ fn context_view(data: &PersistedSession, response: &ResponseRun) -> Result<Conte
                 point.pending_calls.clone(),
             )
         }
-        None if head => (
+        None if head && data.record.configuration.is_none() => (
             data.journal.len(),
             data.native_context
                 .as_ref()
@@ -175,7 +179,11 @@ impl SessionInner {
             let data = data
                 .as_ref()
                 .ok_or_else(|| Error::RustError("session_not_initialized".into()))?;
-            context_view(data, &response).map(|view| (data.record.clone(), view))
+            let mut record = data.record.clone();
+            if let Some(point) = &response.branch_point {
+                record.configuration = point.configuration.clone();
+            }
+            context_view(data, &response).map(|view| (record, view))
         };
         let (record, view) = match selected {
             Err(Error::RustError(code)) if code == "response_history_unavailable" => {
@@ -206,6 +214,24 @@ impl SessionInner {
             .into_iter()
             .map(|index| index - 1)
             .collect();
+        let configuration_positions = view
+            .native
+            .as_ref()
+            .map(super::native::configuration_positions)
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|index| index - 1)
+            .collect();
+        let obsolete_updates = view
+            .native
+            .as_ref()
+            .map(super::native::obsolete_positions)
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|index| index - 1)
+            .collect();
         let native_provider_binding = view.native.map(|reference| reference.provider_binding);
         Response::from_json(&ResponseContext {
             discovery: response.discovery.clone(),
@@ -224,6 +250,8 @@ impl SessionInner {
             native_provider_binding,
             context_revision,
             context_updates,
+            configuration_positions,
+            obsolete_updates,
             pending_calls: view.pending_calls,
             source_end: view.source_end,
             compacted: view.compacted,
@@ -256,6 +284,7 @@ mod tests {
             workspace: branch::WorkspaceSeed::Empty,
             native: None,
             discovery: None,
+            configuration: None,
         });
         response
     }

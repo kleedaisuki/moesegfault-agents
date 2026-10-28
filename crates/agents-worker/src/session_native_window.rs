@@ -76,10 +76,10 @@ impl SessionInner {
             return Err(Error::RustError("native_context_window_invalid".into()));
         }
         let begin = indices[cut - 1];
-        let kept = crate::native_window::kept_indices_with_context(
+        let kept = crate::native_window::kept_indices_with_revisions(
             input,
             cut,
-            &super::native::context_positions(expected)?,
+            &super::native::obsolete_positions(expected)?,
         )?;
         let protected = kept
             .iter()
@@ -87,15 +87,11 @@ impl SessionInner {
             .filter(|index| *index > 0 && *index < cut)
             .map(|index| indices[index - 1])
             .collect();
+        let trusted = super::native::context_positions(expected)?;
         let selected = kept
             .into_iter()
             .filter(|index| *index > 0)
-            .filter(|index| {
-                !expected
-                    .context
-                    .as_ref()
-                    .is_some_and(|context| context.contains(indices[*index - 1]))
-            })
+            .filter(|index| trusted.binary_search(index).is_err())
             .map(|index| input[index].clone())
             .collect::<Vec<_>>();
         let (messages, instructions) = crate::native_window::project(&selected)?;
@@ -109,18 +105,23 @@ impl SessionInner {
         data.input_tokens = tokens;
         data.measured_messages = data.messages.len();
         context.messages_end = data.messages.len();
-        let superseded = expected
-            .context
-            .as_ref()
-            .map(|context| &context.updates[..context.updates.len().saturating_sub(1)])
-            .unwrap_or(&[]);
+        let superseded = super::native::obsolete_positions(expected)?
+            .into_iter()
+            .map(|position| indices[position - 1])
+            .collect::<Vec<_>>();
         context.history.window = Some(
             crate::native_window::Window { begin, protected }
-                .without(context.history.end, superseded)?,
+                .without(context.history.end, &superseded)?,
         );
         if let Some(revision) = context.history.context.as_mut() {
             let window = context.history.window.as_ref().unwrap();
             revision
+                .updates
+                .retain(|index| window.contains(*index, context.history.end));
+        }
+        if let Some(configuration) = context.history.configuration.as_mut() {
+            let window = context.history.window.as_ref().unwrap();
+            configuration
                 .updates
                 .retain(|index| window.contains(*index, context.history.end));
         }

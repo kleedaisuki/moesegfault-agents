@@ -37,11 +37,20 @@ pub(super) fn triggered(data: &PersistedSession, measured: Option<u64>) -> Resul
             let added = budget::working_tokens(
                 &data.messages[data.measured_messages.min(data.messages.len())..],
             )?;
-            InputSize::WorkingEstimate(if data.input_tokens == 0 {
-                budget::working_tokens(&data.messages)?
-            } else {
-                data.input_tokens.saturating_add(added)
-            })
+            let configuration_messages = data
+                .pending_configurations
+                .iter()
+                .map(crate::configuration::message)
+                .collect::<Vec<_>>();
+            let configuration_tokens = budget::working_tokens(&configuration_messages)?;
+            InputSize::WorkingEstimate(
+                (if data.input_tokens == 0 {
+                    budget::working_tokens(&data.messages)?
+                } else {
+                    data.input_tokens.saturating_add(added)
+                })
+                .saturating_add(configuration_tokens),
+            )
         }
     };
     policy
@@ -105,6 +114,7 @@ impl SessionInner {
                 .or_else(|| response.request.instructions.clone()),
             protected,
         )?
+        .with_configuration(data.record.configuration.clone())
         .seal(
             &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
             &data.record.owner_id,

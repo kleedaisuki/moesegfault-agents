@@ -208,6 +208,7 @@ mod tests {
             last_input_at_ms: 42,
             input_revision: 0,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
+            configuration: None,
             workspace_snapshot: None,
             runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };

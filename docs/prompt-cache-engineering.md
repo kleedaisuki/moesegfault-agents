@@ -123,15 +123,17 @@ caching with reusable prompt KV caching.
 
 ## Concrete transition model
 
-An effective context has four distinct owners:
+An effective context has five distinct owners:
 
 1. **Platform policy**: versioned, deterministic built-in instructions.
 2. **Session pin**: resolved agent instructions, registered tools/skills,
-   workspace/model settings. Agent edits affect new Sessions; old Sessions and
-   same-agent historical branches retain their original contract.
-3. **Response scope**: top-level custom instructions and admitted tool controls.
+   workspace/model settings. Existing Sessions retain this original base prefix.
+3. **Live Agent configuration**: durable instruction/tool revisions appended at
+   safe boundaries without rewriting the base; see [live updates](session-config-updates.md).
+   Model/workspace authority and pinned skill changes still require a new Session.
+4. **Response scope**: top-level custom instructions and admitted tool controls.
    This state is selected for the current Response, not inherited accidentally.
-4. **Environment observations**: actual working directory, workspace lifecycle or
+5. **Environment observations**: actual working directory, workspace lifecycle or
    execution-policy changes. Append facts only when changed and observed; do not
    inject a fresh timestamp or random container generation at the front each turn.
 
