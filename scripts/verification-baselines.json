@@ -11806,5 +11806,153 @@
       ],
       "unresolved_checks": []
     }
+  },
+  {
+    "source_sha": "5b2a5935713649a3b24653a724a4fae1ed8e90bd",
+    "run_id": "40650889172",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12799584371,
+    "verified_phases": [
+      "wasm_build",
+      "rust_lib"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Compile changed Worker tests without replaying accepted cases",
+      "Run node scripts/incremental-checks.mjs run worker-rust",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12800415089,
+    "verified_checks": [
+      {
+        "id": "rust:agents-worker:dynamic_context_diagnostics_preserve_static_guards_without_error_content",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "dynamic_context_diagnostics_preserve_static_guards_without_error_content",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "status": "passed_current",
+        "executed_tests": 1,
+        "duration_ms": 234,
+        "input_fingerprint": "3329ef584fbe7ea0371d008ed4b537dfd40242f5b145535abaf8fbe5938d1e61",
+        "receipt_path": "worker-rust.json"
+      }
+    ],
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "5b2a5935713649a3b24653a724a4fae1ed8e90bd",
+      "receipts": [
+        {
+          "source_sha": "3799809521a64a287aa10a037e017760228e9422",
+          "run_id": "40517024757",
+          "reference": "docs/prompt-cache-engineering.md",
+          "scope": "Preserved accepted cache/product baseline; no old business regression replay"
+        },
+        {
+          "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+          "run_id": "40546096194",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Failed aggregate retained. Wasm, six new Rust guards, three tooling assertions and historical configuration fork passed. Only native output test decoder and issued-preflight error classification changed afterward; the explicit three failed leaves plus new error guard below remain required."
+        },
+        {
+          "source_sha": "bf0fd027ff685ae501593295a8a77304c14d8455",
+          "run_id": "40550908238",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Failed aggregate retained. Actual downloaded receipts prove busy revocation, issued-operation unknown preservation, one new pure error guard and two decoder checks passed. Successful Worker build artifact12756000291 is reused unchanged; only the lifecycle fixture expectation was repaired afterward."
+        },
+        {
+          "source_sha": "4b29c77ca782e6b27eb18f96ef10fcb0439e3379",
+          "run_id": "40617982649",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Normal successful CI40617982649 reused exact Worker12756000291 from bf0fd027/40550908238 and executed only the previously failing lifecycle; downloaded verification-worker12785862611 records passed_current/executed_tests2. All preceding configuration/cache/business positives were retained without replay; complete controlled configuration increment, not a claim of real-provider staging acceptance."
+        },
+        {
+          "source_sha": "63e5360a04e7e084fac5cc1d03c991e85b8b465f",
+          "run_id": "40647641984",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Failed aggregate retained. Exact Worker artifact12798234412 compiled/bundled; three NEW dynamic Rust guards, native Core clippy and eight NEW selector assertions passed. All three NEW controlled journeys failed before provider dispatch and remain explicit unresolved requirements. No old business/cache checks were replayed."
+        },
+        {
+          "source_sha": "5b2a5935713649a3b24653a724a4fae1ed8e90bd",
+          "run_id": "40650889172",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Failed aggregate retained. Worker12799584371 and the one NEW diagnostic guard passed; prior three dynamic pure guards/native/eight selector checks were not replayed. All three controlled leaves failed because workspace:true fixtures omitted native Container binding; the test-only stopped-proxy repair must pass them on this identical Worker before acceptance."
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "journey:Dynamic Session catalogs preserve provider prefixes across callable tool and instruction revisions",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/http.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_WORKER_CASE": "Dynamic Session catalogs preserve provider prefixes across callable tool and instruction revisions"
+          },
+          "reason": "Only this failed new dynamic-context journey after supplying its stopped native Container test capability; reuse verified Wasm and all passed guards"
+        },
+        {
+          "id": "journey:Dynamic Session catalog revisions close stale calls and preserve caller tool ownership",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/http.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_WORKER_CASE": "Dynamic Session catalog revisions close stale calls and preserve caller tool ownership"
+          },
+          "reason": "Only this failed new dynamic-context journey after supplying its stopped native Container test capability; reuse verified Wasm and all passed guards"
+        },
+        {
+          "id": "journey:Dynamic Session catalogs retain concrete tool memory through compaction cold recovery and historical forks",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/http.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_WORKER_CASE": "Dynamic Session catalogs retain concrete tool memory through compaction cold recovery and historical forks"
+          },
+          "reason": "Only this failed new dynamic-context journey after supplying its stopped native Container test capability; reuse verified Wasm and all passed guards"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "5b2a5935713649a3b24653a724a4fae1ed8e90bd",
+    "run_id": "40650889172",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "5b2a5935713649a3b24653a724a4fae1ed8e90bd",
+      "receipts": [
+        {
+          "source_sha": "5b2a5935713649a3b24653a724a4fae1ed8e90bd",
+          "run_id": "40650889172",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Only the actual successful tooling job is retained here; it selected no test replays. Earlier eight selector assertions remain tied to their original actual receipt."
+        }
+      ],
+      "unresolved_checks": []
+    }
   }
 ]

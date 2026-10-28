@@ -224,3 +224,26 @@ count renderer follows the same transition representation.
 No remaining P1/P2 defect was found in this bounded reviewed scope after those
 repairs. This is a source-review conclusion, not a claim that the new artifact
 has compiled or that its real-provider cache behavior has passed.
+
+### Controlled-fixture container capability checkpoint
+
+Normal CI `40647641984` and `40650889172` compiled the new Rust/Wasm artifact
+and passed the selected pure guards, but their three new controlled Worker
+journeys failed before provider dispatch. This was a missing fixture capability,
+not evidence that catalog input or provider schemas were rejected: all three
+new journeys enable workspace authority in advance, while ordinary Miniflare
+DO state has no native Container binding. Existing `Workspace::ensure_compute_lease`
+checks the binding before native preparation, and cold restoration checks its
+inactivity fallback before entering the Responses route. Both correctly reject
+the missing binding with `Session container binding is missing`.
+
+The controlled fixture must supply a stopped (`running:false`) Container proxy,
+with start/connect attempts throwing, so catalog-only and invalid-argument cases
+cannot silently start compute. Production container bindings and funding checks
+must not be weakened. The exact CI2 artifact `12799584371` can be reused unchanged
+for the repaired fixture; no new production build is needed for this correction.
+The failed aggregate runs remain failures. One approved bounded local probe used
+the already compiled artifact and no provider network calls; its temporary shim
+was restored and no debug payload was committed. A precise standalone error code
+for an actually missing production Container binding remains a separate
+observability improvement, not a prerequisite for this fixture-only correction.
