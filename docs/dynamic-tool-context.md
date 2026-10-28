@@ -247,3 +247,40 @@ the already compiled artifact and no provider network calls; its temporary shim
 was restored and no debug payload was committed. A precise standalone error code
 for an actually missing production Container binding remains a separate
 observability improvement, not a prerequisite for this fixture-only correction.
+
+### Known malformed output and maintenance funding scope
+
+After the Container fixture repair, CI `40653880540` passed the new lifecycle and
+compact/cold/fork journeys. The remaining busy/revocation journey reached its
+known-malformed-output accounting tail: the model completion was settled with
+its reported usage, the Session had no active run, and there were no pending
+resource observations. Its assertion incorrectly expected every active-Session
+reservation to disappear.
+
+One approved exact-artifact local probe identified the sole remaining row as
+`maintenance:{session}:0`, with the same idempotency key, an 18 micro-USD reserve,
+no ledger entries and no observations. This is the existing `cleanup::ensure`
+backstop funded before inference for eventual conversation export, not an
+unknown model outcome or leaked run hold. The assertion must validate that
+specific owner/Session/archive-generation funding identity separately and require
+the actual completion/run holds to be settled. Do not release the backstop or
+weaken cleanup funding to satisfy a test. The exact Worker artifact remains
+unchanged; only the new assertion's financial scope requires correction.
+
+### Mixed incomplete-output handle mapping
+
+Omitting an unissued private call from effective history also changes physical
+entry offsets. Public item IDs must keep their original provider-output ordinal,
+but the corresponding `ItemRef.index` must count only retained preceding output
+items. Using `history.end - raw_output_count + raw_ordinal` after filtering can
+bind a visible message/reasoning handle to the wrong stored entry when it appears
+before an omitted call.
+
+The history writer and handle registrar now share `effective_output_indices`,
+which consumes the same registered-output selection. Registration uses the raw
+ordinal only for the public ID and the retained ordinal for physical addressing.
+A new bounded property guard covers mixed retained/omitted output, all-kept
+compatibility, and invalid end/count rejection. The new incomplete-flow fixture
+adds a public message before the partial wrapper and resolves its owned handle
+through count-only input preparation. This preserves raw provider receipts and
+canonical streaming identity without creating a false tool-output obligation.
