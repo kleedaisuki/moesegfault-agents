@@ -61,7 +61,9 @@ async function patch(change) {
 }
 async function invoke(name, input, extra = {}) {
   assert.ok(report.submissions < 9);
-  const counted = payload(input, extra); delete counted.max_output_tokens; delete counted.context_management;
+  const generation = payload(input, extra);
+  const counted = Object.fromEntries(['model', 'previous_response_id', 'input', 'tool_choice', 'reasoning']
+    .map(field => [field, generation[field]]));
   const count = await request('/v1/responses/input_tokens', 'POST', counted);
   assert.ok(Number.isSafeInteger(count.input_tokens));
   if (!name.startsWith('post_compact')) assert.ok(count.input_tokens >= 109_000 && count.input_tokens <= 120_000);
@@ -89,6 +91,9 @@ async function invoke(name, input, extra = {}) {
   const final = events.findLast(event => ['response.completed', 'response.failed', 'response.incomplete'].includes(event.type))?.response;
   assert.ok(final, 'Observe original accepted ID after EOF; do not resubmit');
   assertCanonicalEvents(events);
+  assert.ok(!JSON.stringify(events).includes('__agents_call_tool'), 'Private dispatcher must not leak through any public event');
+  assert.ok(!events.some(event => event.type.startsWith('response.function_call_arguments.')
+    || event.item?.type === 'function_call'), 'Registered server tools must not emit caller-local function events');
   const calls = final.output.filter(item => item.type === 'function_call');
   Object.assign(row, { response_id: final.id, status: final.status, duration_ms: performance.now() - started,
     text: final.output.flatMap(item => item.content ?? []).filter(part => part.type === 'output_text').map(part => part.text).join('').trim(),
@@ -133,13 +138,15 @@ try {
     `Use bash exactly once to write file ${report.filename} with exactly ${report.marker}, then read it back in that same command. Include your active policy label, file name and observed contents in the final answer.`,
     { max_tool_calls: 1 });
   assert.ok(ran.text.startsWith('BRAVO') && ran.text.includes(report.filename) && ran.text.includes(report.marker));
-  assert.equal(ran.calls.length, 1); assert.equal(ran.calls[0].name, 'bash');
+  assert.equal(ran.calls.length, 0, 'Server-owned tools must not become caller-local function calls');
   const after = await request(`/v1/sessions/${report.session_id}`);
+  assert.equal(after.context_layout, 'dynamic_v2');
   assert.equal(after.configuration.agent_revision, enabled.revision);
   assert.deepEqual(after.configuration.tools.map(tool => tool.name), ['bash']);
   const fresh = after.messages.slice(start);
-  const call = fresh.flatMap(message => message.tool_calls ?? []).find(call => call.function.name === 'bash');
-  assert.ok(call);
+  const actualCalls = fresh.flatMap(message => message.tool_calls ?? []);
+  assert.equal(actualCalls.length, 1);
+  const call = actualCalls[0]; assert.equal(call.function.name, 'bash');
   const command = JSON.parse(call.function.arguments).command;
   assert.ok(command.includes(report.filename) && command.includes(report.marker));
   const output = fresh.find(message => message.role === 'tool' && message.tool_call_id === call.id);
