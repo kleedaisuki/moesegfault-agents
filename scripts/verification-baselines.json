@@ -12067,7 +12067,7 @@
     ],
     "selection_base": {
       "status": "composed_accepted",
-      "source_sha": "19e9bb83c628db1e65a1cfe909e61993da3cac9b",
+      "source_sha": "829f8a48ac635494827ffcb024afc61687d9608e",
       "receipts": [
         {
           "source_sha": "3799809521a64a287aa10a037e017760228e9422",
@@ -12121,7 +12121,7 @@
           "source_sha": "4e5e9ab0204880da08ab53140884b4db81719001",
           "run_id": "40658272878",
           "reference": "docs/dynamic-tool-context.md",
-          "scope": "Preserve all previously accepted scopes. The selection boundary includes only the new bounded compact-tail implementation and modified compact fixture, which are NOT accepted yet: both are explicitly mandatory below. Compile-only compaction_tail:None addition to existing terminal fixture is not a changed business assertion."
+          "scope": "Preserve accepted scopes while explicitly requiring the new compact-tail guard and changed compact leaf below. Selection includes bounded current-user retention, all-mode no-progress paid-summary fence and compiler-only optional None fixture fields; none of those new behaviors are accepted until the listed checks pass."
         }
       ],
       "unresolved_checks": [
