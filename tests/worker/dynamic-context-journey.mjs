@@ -282,6 +282,15 @@ export async function runDynamicContextStaleJourney(context) {
     { output: [{ type: 'function_call', id: 'upstream-dynamic-malformed', call_id: 'dynamic_malformed_gateway',
       name: dispatcher, arguments: '{not-json', status: 'completed' }], usage,
       check: body => latestCatalog(body, ['bash']) },
+    { output: [{ type: 'function_call', id: 'upstream-dynamic-incomplete', call_id: 'dynamic_incomplete_gateway',
+      name: dispatcher, arguments: '{"name":"bash","arguments":{"command":', status: 'incomplete' }],
+      status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, usage,
+      check: body => latestCatalog(body, ['bash']) },
+    responseAction('DYNAMIC-AFTER-INCOMPLETE-CONTINUATION', body => {
+      latestCatalog(body, ['bash']);
+      assert.ok(!body.input.some(item => item.call_id === 'dynamic_incomplete_gateway'),
+        'An incomplete private dispatch is diagnostic evidence, not an unmatched callable in effective replay history');
+    }),
   ]);
   scenario.state.count = measure;
   await patch(scenario, { instructions: initial, tools: ['time'], workspace: true });
@@ -341,12 +350,29 @@ export async function runDynamicContextStaleJourney(context) {
       await new Promise(resolve => setTimeout(resolve, 20));
     } while (Date.now() < deadline);
     assert.deepEqual(open, { reservations: 0, observations: 0 }, 'Known malformed output cannot leave a funded unknown-outcome hold');
-    assert.equal(scenario.state.calls, 7);
-    return { provider_calls: 7, actual_clock_calls: 0, actual_workspace_starts: 0,
+    const incomplete = await scenario.invoke({ previous_response_id: malformed.value.id,
+      input: 'Observe the original partial decision without completing or executing its arguments.',
+      tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-incomplete-provider');
+    assert.equal(incomplete.value.status, 'incomplete');
+    assert.equal(incomplete.value.incomplete_details.reason, 'max_output_tokens');
+    assert.deepEqual(incomplete.value.output.filter(item => item.type === 'function_call'), [],
+      'A private partial call cannot become a caller-local callback obligation');
+    assert.equal(incomplete.value.usage.input_tokens, measure(scenario.state.requests[7]));
+    assert.equal(incomplete.value.usage.output_tokens, 1);
+    const resumed = await scenario.invoke({ previous_response_id: incomplete.value.id,
+      input: 'Continue normally without inventing a tool result for the incomplete private dispatch.',
+      tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-incomplete-continuation');
+    assert.equal(resumed.value.status, 'completed'); assert.equal(resumed.headers.get('x-agents-session'), id);
+    const completed = await session(scenario, id);
+    assert.ok(!completed.messages.flatMap(message => message.tool_calls ?? []).some(call => call.id === 'dynamic_incomplete_gateway'));
+    assert.ok(!completed.messages.some(message => message.role === 'tool' && message.tool_call_id === 'dynamic_incomplete_gateway'));
+    assert.equal(scenario.state.calls, 9);
+    return { provider_calls: 9, actual_clock_calls: 0, actual_workspace_starts: 0,
       stale_catalog_closed_with_current_revision: true, removed_tool_closed_without_effect: true,
       inner_schema_enforced: true, caller_local_callback_preserved: true,
       malformed_known_usage_settled_before_projection: true, malformed_no_effect_or_unknown_hold: true,
-      model_ledger_rows: await modelRows(scenario, 7), external_network_calls: 0 };
+      incomplete_private_dispatch_not_executed_or_replayed: true, incomplete_usage_settled_and_continuation_valid: true,
+      model_ledger_rows: await modelRows(scenario, 9), external_network_calls: 0 };
   } finally { release.resolve(); releaseRemoval.resolve(); await pending.catch(() => {}); }
 }
 
