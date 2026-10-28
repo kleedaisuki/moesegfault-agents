@@ -3055,7 +3055,11 @@ fn apply_resume(
     {
         return Err("stale_resume");
     }
+    let configuration = data.record.configuration.clone();
+    let context_layout = data.record.context_layout;
     data.record = admitted;
+    data.record.configuration = configuration;
+    data.record.context_layout = context_layout;
     data.archive_funding = None;
     data.archive_backstop_generation = None;
     Ok(true)
