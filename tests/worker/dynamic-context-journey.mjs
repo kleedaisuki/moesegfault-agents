@@ -20,6 +20,9 @@ const answer = value => ({ type: 'message', id: `upstream-dynamic-${value}`, rol
 const responseAction = (value, check = () => {}) => ({ output: [answer(value)], usage, check });
 const session = (scenario, id) => scenario.request('GET', `/v1/sessions/${id}`, undefined, 200, scenario.principal.apiKey);
 const patch = (scenario, change) => scenario.request('PATCH', `/v1/agents/${scenario.agent.id}`, change, 200, scenario.principal.apiKey);
+const failureDiagnostic = (scenario, response) => JSON.stringify({ response,
+  provider_dispatches: scenario.state.calls, count_probes: scenario.state.countCalls,
+  fixture_failure: scenario.state.failure?.message ?? null });
 
 function catalogs(body) {
   return body.input.flatMap((item, index) => {
@@ -175,8 +178,8 @@ export async function runDynamicContextLifecycleJourney(context) {
     body: JSON.stringify({ model: scenario.agent.id, input: 'DYNAMIC-LIFECYCLE-START', tool_choice: 'auto', max_output_tokens: 128 }) });
   const first = { value: await response.json(), headers: response.headers };
   if (scenario.state.failure) throw scenario.state.failure;
-  assert.equal(response.status, 200, JSON.stringify(first.value));
-  assert.equal(first.value.status, 'completed');
+  assert.equal(response.status, 200, failureDiagnostic(scenario, first.value));
+  assert.equal(first.value.status, 'completed', failureDiagnostic(scenario, first.value));
   const id = first.headers.get('x-agents-session');
   assert.equal(id, legacy.id, 'A legacy active Session is adopted, not silently replaced');
   const source = await scenario.read(first.value.id);
@@ -295,6 +298,7 @@ export async function runDynamicContextStaleJourney(context) {
   scenario.state.count = measure;
   await patch(scenario, { instructions: initial, tools: ['time'], workspace: true });
   const first = await scenario.invoke({ input: 'DYNAMIC-STALE-START', tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-stale-start');
+  assert.equal(first.value.status, 'completed', failureDiagnostic(scenario, first.value));
   const id = first.headers.get('x-agents-session');
   const pending = scenario.invoke({ previous_response_id: first.value.id, input: 'A queued old catalog decision.',
     tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-stale-pending');
@@ -416,6 +420,7 @@ export async function runDynamicContextCompactJourney(context) {
   await patch(scenario, { instructions: initial, tools: ['time'], workspace: true });
   const first = await scenario.invoke({ input: `DYNAMIC-UNCOMPACTED-USER-WINDOW: retain exact path ${path} and observe the clock.`,
     tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-memory-source');
+  assert.equal(first.value.status, 'completed', failureDiagnostic(scenario, first.value));
   const id = first.headers.get('x-agents-session');
   const source = await scenario.read(first.value.id);
   const sourceItems = (await scenario.client.responses.inputItems.list(first.value.id)).data;
