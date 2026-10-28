@@ -330,3 +330,105 @@ eligible native Session obtains the cache layout. For the local chat example,
 choosing “新对话” is enough—no key or agent configuration change is required.
 Production deployment provenance/receipt is retained under
 `.temp/cache-production-deployment/`.
+
+## Long-context transition experiment — 2026-10-28
+
+The earlier 3K-token startup probe cannot quantify the impact at a mature
+conversation length. A new direct DeepSeek Flash experiment used the deployed
+Worker `bf0fd027ff685ae501593295a8a77304c14d8455` and a frozen, imported synthetic
+reference history from repository source `f27897bd9084a477054c8e782be9387ddd95d7a9`.
+The count-only renderer calibrated **109,992 input tokens** across 65 messages
+(510,651 reference characters). This was not 65 paid conversations or repeated
+padding. Initial model usage independently matched the exact count.
+
+Reproducible runner: [`cache-long-context.mjs`](../tests/e2e/cache-long-context.mjs).
+Structured observations, per-operation tariffs/provider IDs and response IDs:
+[`prompt-cache-110k-2026-10-28.json`](benchmarks/prompt-cache-110k-2026-10-28.json).
+The workload hash is
+`638b2eb431f54cf2d4fbc8a1636c6adeed9ecdababbe5af5cef0f43761d582d5`.
+Protected full workload/receipts remain under `.temp/cache-110k/` and
+`.temp/cache-110k-tools/`.
+
+### Method and controls
+
+- Establish two warm append-only controls around 110K before changing only the
+  durable Agent instructions. Keep model, output policy and all tools unchanged.
+- Keep the model's output to a short policy label to minimize output variance.
+  Output cap is 64 tokens, except the deliberate compaction request's 2,048-token
+  budget. Wait five seconds between submissions. Record actual reported cache
+  reads, input/missed tokens, SDK first-text timing and separately settled costs.
+- **Do not use `tool_choice:none` to claim active tool-schema behavior.** The
+  vendored official DeepSeek Responses converter drops tools under that choice
+  (`responses/request/tools.rs::convert_tools`). The initial declaration-edit
+  observation under `none` therefore measures a configuration notification, not
+  the real callable-schema change.
+- For the valid tool case, fork the already sealed pre-tool-change long history
+  into an owned test Agent. Establish that fork's own warm baseline, then use
+  `tool_choice:auto` while changing `[]` to `[time]`, followed by a warm follow-up.
+  No tool execution is requested. One settled model operation per response and
+  completed label-only outputs distinguish this from a tool-execution benchmark.
+- The original accepted Responses are not replayed. Historical context is reused
+  locally; the fork has its own measured cold/warm establishment. No
+  cross-Session cache-sharing assumption is made.
+
+### Actual cache and model-charge observations
+
+The table deliberately separates the two warm baselines instead of mixing cold
+startup into their rates. Prices below are actual model-ledger micro-USD, all
+under `deepseek-2026-10-25-cn2026-v1:offpeak`, not a public pricing promise.
+
+| Stage | Input tokens | Cached | Missed | Hit rate | Model micro-USD | First text ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ordinary warm control | 110,034 | 109,824 | 210 | 99.81% | 363 | 9,817 |
+| Agent instructions changed | 110,256 | 109,952 | 304 | 99.72% | 377 | 9,704 |
+| Instructions follow-up | 110,276 | 110,080 | 196 | 99.82% | 361 | 11,523 |
+| Active-tools warm control (`auto`) | 110,517 | 110,336 | 181 | 99.84% | 360 | 4,273 |
+| Enable callable time schema (`auto`) | 111,168 | 0 | 111,168 | 0.00% | 16,677 | 5,586 |
+| Active-tools follow-up (`auto`) | 111,189 | 110,976 | 213 | 99.81% | 367 | 4,388 |
+| Compact: summary + continuation aggregate | 117,636 | 0 | 117,636 | 0.00% | 17,649 | 25,300 |
+| First post-compact append | 596 | 384 | 212 | 64.43% | 35 | 11,268 |
+| Second post-compact append | 616 | 384 | 232 | 62.34% | 38 | 9,505 |
+
+Instruction changes cost about 0.09 percentage points against the adjacent warm
+control, with 304 rather than 210 uncached tokens. Actual model cost increased
+by 14 micro-USD, then returned to 361 micro-USD on the next append. This supports
+the append-only instruction design at 110K, not merely at startup.
+
+Callable tool-schema mutation **did lose the warm prefix in this route**. The
+first changed request cost 46.3 times its warm control, followed by 99.81% reuse
+and near-baseline cost. The official vendored Flash renderer explains the
+mechanism: `deepseek-recipe-encoding/src/v4/dsv41.rs::render_conversation` appends
+the tool prompt to the **first system message**, ahead of the long history.
+Appending a trusted configuration event cannot by itself prevent that upstream
+schema-prefix change. The disabled-tool observation must not be substituted for
+this measured active-tool result. Other models/transports require their own
+capability-specific conclusion.
+
+Compaction is not one ordinary generation: its summary operation consumed
+117,060 input tokens under a distinct source-as-data transport and cost 17,561
+micro-USD; the continuation consumed 576 and cost 88. Both reported zero cache
+reads in their aggregate. Later requests missed only 212/232 tokens, comparable
+to the long warm controls, despite their much smaller percentage denominators.
+The lower post-compact percentage is not evidence of a large ongoing bill.
+
+**Scope boundary:** this is a cache/prefill microbenchmark, not task quality or
+summary-fidelity acceptance. The policy-label workload produced only two summary
+output tokens and a sub-1K active context. That is not a representative retained
+working set for a real 110K engineering task; do not extrapolate its compression
+ratio or post-compact total cost to such a task. All updated policy labels were
+correct, but that does not establish preservation of the reference corpus.
+First-text timings are individual end-to-end observations across AMS/HKG routes,
+not latency percentiles or a causal speedup claim. Unknown cache-write usage
+remains null, not zero.
+
+There were 14 successful Responses submissions and 15 settled model operations,
+including one summary, costing **70,434 micro-USD** in model charges. Resource
+charges at the scoped closure observations brought the total to 70,970
+micro-USD. Both test Sessions closed, their conversations were archived and own
+test Agents deleted; no reserved holds or pending resource observations remained.
+No successful operation or previously accepted product regression was replayed.
+
+The next optimization target is the active tool-declaration path, not rewriting
+the already effective append-only instruction mechanism. Any capability-specific
+incremental loading/masking solution must preserve actual execution revocation;
+retaining revoked tools as callable solely to improve a cache metric is invalid.

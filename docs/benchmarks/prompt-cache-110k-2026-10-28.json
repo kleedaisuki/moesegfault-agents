@@ -1,0 +1,571 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-28",
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "worker_source": "bf0fd027ff685ae501593295a8a77304c14d8455",
+  "reference_source": "f27897bd9084a477054c8e782be9387ddd95d7a9",
+  "workload_hash": "638b2eb431f54cf2d4fbc8a1636c6adeed9ecdababbe5af5cef0f43761d582d5",
+  "source_characters": 510651,
+  "imported_messages": 65,
+  "initial_counted_input_tokens": 109992,
+  "request_max_output_tokens": 64,
+  "compact_request_max_output_tokens": 2048,
+  "wait_between_submissions_ms": 5000,
+  "context_window": 1000000,
+  "cache_write_usage": "unknown",
+  "experiment_scope": "Imported synthetic reference history and short policy-label output: cache behavior, not summary fidelity or a task-quality benchmark.",
+  "experiments": [
+    {
+      "kind": "instructions_and_compact_tool_choice_none",
+      "session_id": "c21ac556-cdd5-41d6-9b9a-a3826f259602",
+      "source_session_id": null,
+      "submissions": 10,
+      "rows": [
+        {
+          "name": "cold_110k",
+          "input_tokens_before": 109992,
+          "accepted_ms": 19045.7123,
+          "first_text_ms": 29485.658399999997,
+          "cf_ray": "a5179cd31ff5a419-AMS",
+          "response_id": "resp_fc30af32522e4637b400425b038ba991",
+          "status": "completed",
+          "duration_ms": 39985.36749999999,
+          "text": "ALPHA",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 109992,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 0
+            },
+            "output_tokens": 3,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 109995
+          },
+          "cached_tokens": 0,
+          "missed_tokens": 109992,
+          "hit_rate": 0,
+          "model_microusd": 16501,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 16501,
+              "tokens": 109995,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "6b78c5fc-6f8f-46d3-8db8-ae0e8dd3f142"
+            }
+          ]
+        },
+        {
+          "name": "warm_control_1",
+          "input_tokens_before": 110013,
+          "accepted_ms": 4114.966400000005,
+          "first_text_ms": 11684.624899999995,
+          "cf_ray": "a5179e1e7b3c4150-AMS",
+          "response_id": "resp_eea32fd54ecc4c65a521ab6a2f0abd3a",
+          "status": "completed",
+          "duration_ms": 21155.843299999993,
+          "text": "ALPHA",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110013,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 109824
+            },
+            "output_tokens": 3,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110016
+          },
+          "cached_tokens": 109824,
+          "missed_tokens": 189,
+          "hit_rate": 0.9982820212156746,
+          "model_microusd": 360,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 360,
+              "tokens": 110016,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "f700a058-1bdb-419d-a0c4-1cad652a8af7"
+            }
+          ]
+        },
+        {
+          "name": "warm_control_2",
+          "input_tokens_before": 110034,
+          "accepted_ms": 2215.460300000006,
+          "first_text_ms": 9817.321299999996,
+          "cf_ray": "a5179ef26af104ac-HKG",
+          "response_id": "resp_4c563db9091544e494fc192c135a594f",
+          "status": "completed",
+          "duration_ms": 18861.240699999995,
+          "text": "ALPHA",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110034,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 109824
+            },
+            "output_tokens": 3,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110037
+          },
+          "cached_tokens": 109824,
+          "missed_tokens": 210,
+          "hit_rate": 0.9980914989912208,
+          "model_microusd": 363,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 363,
+              "tokens": 110037,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "ef737f88-5b9f-4986-aa97-c0cf4e53663b"
+            }
+          ]
+        },
+        {
+          "name": "instructions_changed",
+          "input_tokens_before": 110256,
+          "accepted_ms": 1965.3981999999996,
+          "first_text_ms": 9704.4654,
+          "cf_ray": "a517a08439c90865-HKG",
+          "response_id": "resp_b784009a3d914fbb8aaa091129a0b5d5",
+          "status": "completed",
+          "duration_ms": 18706.641300000003,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110256,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 109952
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110258
+          },
+          "cached_tokens": 109952,
+          "missed_tokens": 304,
+          "hit_rate": 0.9972427804382528,
+          "model_microusd": 377,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 377,
+              "tokens": 110258,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "5a17c9be-363b-4874-8af1-d97ac93d3979"
+            }
+          ]
+        },
+        {
+          "name": "instructions_warm",
+          "input_tokens_before": 110276,
+          "accepted_ms": 2875.758099999999,
+          "first_text_ms": 11522.736400000002,
+          "cf_ray": "a517a1304d27fea8-AMS",
+          "response_id": "resp_8d57093b25fc4c53b609adebc8a8d1b1",
+          "status": "completed",
+          "duration_ms": 20722.636300000006,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110276,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 110080
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110278
+          },
+          "cached_tokens": 110080,
+          "missed_tokens": 196,
+          "hit_rate": 0.9982226413725561,
+          "model_microusd": 361,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 361,
+              "tokens": 110278,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "2cf51191-0052-4c96-acbb-e39e37e60e41"
+            }
+          ]
+        },
+        {
+          "name": "tool_declaration_changed",
+          "input_tokens_before": 110674,
+          "accepted_ms": 2092.1870000000054,
+          "first_text_ms": 10773.381500000003,
+          "cf_ray": "a517a20d4e7a20fa-HKG",
+          "response_id": "resp_3847cd186df94412a6e3a69b2cdfa374",
+          "status": "completed",
+          "duration_ms": 20478.493700000006,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110674,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 110208
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110676
+          },
+          "cached_tokens": 110208,
+          "missed_tokens": 466,
+          "hit_rate": 0.995789435639807,
+          "model_microusd": 402,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 402,
+              "tokens": 110676,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "a56128e4-c8e7-41a7-903b-430eeb4e72c8"
+            }
+          ]
+        },
+        {
+          "name": "tools_warm",
+          "input_tokens_before": 110694,
+          "accepted_ms": 1937.8638000000064,
+          "first_text_ms": 9740.919399999999,
+          "cf_ray": "a517a2c65e850506-HKG",
+          "response_id": "resp_627a88000cb14567a926e3e749b5f0a6",
+          "status": "completed",
+          "duration_ms": 19629.9988,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110694,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 110464
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110696
+          },
+          "cached_tokens": 110464,
+          "missed_tokens": 230,
+          "hit_rate": 0.9979221999385693,
+          "model_microusd": 368,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 368,
+              "tokens": 110696,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "eaf8434a-16b4-45cd-bdc3-877d46714de9"
+            }
+          ]
+        },
+        {
+          "name": "compact",
+          "input_tokens_before": 110714,
+          "accepted_ms": 4480.007200000022,
+          "first_text_ms": 25299.704700000002,
+          "cf_ray": "a517a3859d780a59-AMS",
+          "response_id": "resp_82bd6913810642199b62a9fe03034d07",
+          "status": "completed",
+          "duration_ms": 34564.25630000001,
+          "text": "BRAVO",
+          "compaction_items": 1,
+          "usage": {
+            "input_tokens": 117636,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 0
+            },
+            "output_tokens": 4,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 117640
+          },
+          "cached_tokens": 0,
+          "missed_tokens": 117636,
+          "hit_rate": 0,
+          "model_microusd": 17649,
+          "model_operations": [
+            {
+              "event": "compact:0",
+              "microusd": 17561,
+              "tokens": 117062,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "4be41d3c-a7c2-48b5-93e5-dd542df1af20"
+            },
+            {
+              "event": "round:0",
+              "microusd": 88,
+              "tokens": 578,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "2fc50567-71d1-480c-9193-43d60188b214"
+            }
+          ]
+        },
+        {
+          "name": "post_compact_1",
+          "input_tokens_before": 596,
+          "accepted_ms": 3282.8657999999996,
+          "first_text_ms": 11268.320100000012,
+          "cf_ray": "a517a4a6ce3066cc-AMS",
+          "response_id": "resp_d2949a21f95e421296dfc934b99f37d3",
+          "status": "completed",
+          "duration_ms": 19978.017200000002,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 596,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 384
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 598
+          },
+          "cached_tokens": 384,
+          "missed_tokens": 212,
+          "hit_rate": 0.6442953020134228,
+          "model_microusd": 35,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 35,
+              "tokens": 598,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "1a1e968d-8707-4f73-bf11-d84285a5e227"
+            }
+          ]
+        },
+        {
+          "name": "post_compact_2",
+          "input_tokens_before": 616,
+          "accepted_ms": 2301.9593999999925,
+          "first_text_ms": 9504.916300000012,
+          "cf_ray": "a517a57d7fef14b4-HKG",
+          "response_id": "resp_448c6893cc3f4093b23cd888ae54ef68",
+          "status": "completed",
+          "duration_ms": 18181.275200000004,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 616,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 384
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 618
+          },
+          "cached_tokens": 384,
+          "missed_tokens": 232,
+          "hit_rate": 0.6233766233766234,
+          "model_microusd": 38,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 38,
+              "tokens": 618,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "eefdb300-2f54-44b7-9a21-f745df71abc7"
+            }
+          ]
+        }
+      ],
+      "model_microusd": 36454,
+      "total_microusd_at_observation": 36862,
+      "open_reservations": 0,
+      "pending_observations": 0,
+      "cleanup": "session_closed_agent_deleted"
+    },
+    {
+      "kind": "active_tools_tool_choice_auto",
+      "session_id": "branch_c41a8828f260caa17ea2f3252acf7751bf980f5fbb57c53b3274a66afebf349d",
+      "source_session_id": "c21ac556-cdd5-41d6-9b9a-a3826f259602",
+      "submissions": 4,
+      "rows": [
+        {
+          "name": "tools_auto_fork_baseline",
+          "input_tokens_before": 110496,
+          "accepted_ms": 6185.9974,
+          "first_text_ms": 10834.166799999999,
+          "cf_ray": "a517ace3dc82dd42-HKG",
+          "response_id": "resp_065ea1f345c9407bbead34d11185c0e8",
+          "status": "completed",
+          "duration_ms": 13889.261299999998,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110496,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 0
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110498
+          },
+          "cached_tokens": 0,
+          "missed_tokens": 110496,
+          "hit_rate": 0,
+          "model_microusd": 16576,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 16576,
+              "tokens": 110498,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "7a917e72-c68d-413b-934e-ebf2dbbd0491"
+            }
+          ]
+        },
+        {
+          "name": "tools_auto_warm_baseline",
+          "input_tokens_before": 110517,
+          "accepted_ms": 1134.6345999999976,
+          "first_text_ms": 4273.229499999994,
+          "cf_ray": "a517ad6b4ee3dd38-HKG",
+          "response_id": "resp_4f7d7b6d0deb424f9d66aaba95c43211",
+          "status": "completed",
+          "duration_ms": 7245.3499999999985,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 110517,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 110336
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 110519
+          },
+          "cached_tokens": 110336,
+          "missed_tokens": 181,
+          "hit_rate": 0.998362242912855,
+          "model_microusd": 360,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 360,
+              "tokens": 110519,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "a3eac48e-2f52-4288-917c-4a66357efdf3"
+            }
+          ]
+        },
+        {
+          "name": "tools_auto_changed",
+          "input_tokens_before": 111168,
+          "accepted_ms": 1288.0820999999996,
+          "first_text_ms": 5585.7621,
+          "cf_ray": "a517adc4da960b03-HKG",
+          "response_id": "resp_9d8ee626caa94d7f945e21b9549fde1d",
+          "status": "completed",
+          "duration_ms": 8268.023099999999,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 111168,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 0
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 111170
+          },
+          "cached_tokens": 0,
+          "missed_tokens": 111168,
+          "hit_rate": 0,
+          "model_microusd": 16677,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 16677,
+              "tokens": 111170,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "7430a83b-12a3-40cf-8adf-c29ee4bd60ce"
+            }
+          ]
+        },
+        {
+          "name": "tools_auto_rewarmed",
+          "input_tokens_before": 111189,
+          "accepted_ms": 2164.3928000000014,
+          "first_text_ms": 4388.2546000000075,
+          "cf_ray": "a517ae244a2407aa-HKG",
+          "response_id": "resp_57c88fab41494f0190242eb83217c236",
+          "status": "completed",
+          "duration_ms": 7188.5202999999965,
+          "text": "BRAVO",
+          "compaction_items": 0,
+          "usage": {
+            "input_tokens": 111189,
+            "input_tokens_details": {
+              "cache_write_tokens": null,
+              "cached_tokens": 110976
+            },
+            "output_tokens": 2,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 111191
+          },
+          "cached_tokens": 110976,
+          "missed_tokens": 213,
+          "hit_rate": 0.9980843428756442,
+          "model_microusd": 367,
+          "model_operations": [
+            {
+              "event": "round:0",
+              "microusd": 367,
+              "tokens": 111191,
+              "price_version": "deepseek-2026-10-25-cn2026-v1:offpeak",
+              "provider_request_id": "12665aee-b0fe-4cf1-a0a9-f66cc7d83aa4"
+            }
+          ]
+        }
+      ],
+      "model_microusd": 33980,
+      "total_microusd_at_observation": 34108,
+      "open_reservations": 0,
+      "pending_observations": 0,
+      "cleanup": "session_closed_agent_deleted"
+    }
+  ]
+}
