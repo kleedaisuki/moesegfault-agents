@@ -41,6 +41,30 @@ test('mechanical fixture fields do not hide actual changed behavior in another h
   assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/session.rs', diff), [[31, 32]]);
 });
 
+test('legacy History and Revision literals accept only empty metadata and an identical vector comma', () => {
+  const history = '@@ -100 +100,4 @@\n-        updates: vec![1, 4, 7]\n+        updates: vec![1, 4, 7],\n'
+    + '+        active: Default::default(),\n+        guidance_digest: None,\n+        catalog_digest: None,\n';
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/configuration.rs', history), []);
+  const revision = history.replace('+        catalog_digest: None,\n', '');
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/prompt_context.rs', revision), []);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/context_prefix.rs', history), [[100, 104]]);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/configuration.rs', history.replace('+        updates: vec![1, 4, 7],', '+        updates: vec![1, 4, 8],')), [[100, 104]]);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/configuration.rs', history.replace('guidance_digest: None', 'guidance_digest: Some(new)')), [[100, 104]]);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/configuration.rs', history + '+        assert!(false);\n'), [[100, 104]]);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/configuration.rs', history + '-        assert!(old);\n'), [[100, 104]]);
+  const commaOnly = '@@ -100 +100 @@\n-        updates: vec![1, 4, 7]\n+        updates: vec![1, 4, 7],\n';
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/configuration.rs', commaOnly), [[100, 101]]);
+});
+
+test('legacy RunState literals accept only absent catalog and empty observed-call metadata', () => {
+  const metadata = '@@ -10,0 +11,2 @@\n+        registered_catalog: None,\n+        registered_calls: Default::default(),\n';
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/session.rs', metadata), []);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/configuration.rs', metadata), [[11, 13]]);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/session.rs', metadata.replace('registered_catalog: None', 'registered_catalog: Some(new)')), [[11, 13]]);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/session.rs', metadata.replace('Default::default()', 'nonempty()')), [[11, 13]]);
+  assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/session.rs', metadata + '-        registered_calls: old,\n'), [[11, 13]]);
+});
+
 test('registered dispatcher increment binds exactly its three new Rust guards', () => {
   const source = fs.readFileSync(new URL('../crates/agents-worker/src/registered_tools.rs', import.meta.url), 'utf8');
   const names = changedRustTests(source, [[1, source.split('\n').length + 1]]);

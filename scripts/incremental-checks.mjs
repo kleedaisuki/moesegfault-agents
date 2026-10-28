@@ -46,17 +46,37 @@ function changedLines(source, base, file) {
 
 export function dynamicContextChangedLines(file, diff) {
   const ranges = [];
-  const optionalLayout = /^crates\/(?:agents-core|agents-worker)\/src\/.*\.rs$/.test(file);
   const hunks = [...diff.matchAll(/^@@ .* \+(\d+)(?:,(\d+))? @@.*$/gm)];
   for (const [index, hunk] of hunks.entries()) {
     const body = diff.slice(hunk.index + hunk[0].length, hunks[index + 1]?.index ?? diff.length);
     const changes = body.split('\n').filter(line => /^[+-]/.test(line) && !/^(?:---|\+\+\+)/.test(line));
-    // Old fixtures still compile under --lib --no-run; adding only the optional
-    // legacy-default field does not justify replaying their accepted behavior.
-    if (optionalLayout && changes.length && changes.every(line => /^\+\s*context_layout:\s*None,\s*$/.test(line))) continue;
+    if (dynamicContextFixtureHunkOnly(file, changes)) continue;
     ranges.push([Number(hunk[1]), Number(hunk[1]) + Number(hunk[2] ?? 1)]);
   }
   return ranges;
+}
+
+function dynamicContextFixtureHunkOnly(file, changes) {
+  if (!/^crates\/(?:agents-core|agents-worker)\/src\/.*\.rs$/.test(file) || !changes.length) return false;
+  const fields = {
+    'crates/agents-worker/src/configuration.rs': /^\+\s*(?:active:\s*Default::default\(\)|(?:guidance_digest|catalog_digest):\s*None),\s*$/,
+    'crates/agents-worker/src/prompt_context.rs': /^\+\s*(?:active:\s*Default::default\(\)|guidance_digest:\s*None),\s*$/,
+    'crates/agents-worker/src/session.rs': /^\+\s*(?:registered_catalog:\s*None|registered_calls:\s*Default::default\(\)),\s*$/,
+  };
+  const additions = changes.filter(line => line.startsWith('+'));
+  const removals = changes.filter(line => line.startsWith('-'));
+  const emptyField = line => /^\+\s*context_layout:\s*None,\s*$/.test(line) || fields[file]?.test(line);
+  const metadata = additions.filter(emptyField);
+  if (!metadata.length) return false;
+  const remaining = additions.filter(line => !emptyField(line));
+  if (!removals.length) return remaining.length === 0;
+  if (!/\/(?:configuration|prompt_context)\.rs$/.test(file) || removals.length !== remaining.length) return false;
+  // Extending the old struct literal only adds a comma to its unchanged final
+  // vector field. Values, assertions and any other deletion remain behavioral.
+  return removals.every((line, index) => {
+    const before = line.slice(1).trimEnd();
+    return /^\s*updates:\s*vec!\[.*\]$/.test(before) && remaining[index].slice(1).trimEnd() === before + ',';
+  });
 }
 
 export function sessionConfigurationFixtureOnly(file, diff) {
