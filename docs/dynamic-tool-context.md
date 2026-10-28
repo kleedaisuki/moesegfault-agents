@@ -284,3 +284,49 @@ compatibility, and invalid end/count rejection. The new incomplete-flow fixture
 adds a public message before the partial wrapper and resolves its owned handle
 through count-only input preparation. This preserves raw provider receipts and
 canonical streaming identity without creating a false tool-output obligation.
+
+### Real direct-DeepSeek 110K staging checkpoint
+
+[Staging 40660068028](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40660068028)
+deployed exact source `4e5e9ab0204880da08ab53140884b4db81719001` from
+successful normal CI `40658272878`, retaining all six hosted feature flags and
+unchanged dashboard/container artifacts. Production has not received this increment.
+
+The authenticated OpenAI Node SDK 7.43.0 experiment continued an owned, sealed
+approximately 110K history through a new child Session. It used direct
+`deepseek-flash`, `tool_choice:auto`, real server-owned Bash once, and separate
+server-side catalog/instruction revisions. Percentages below use actual provider
+cached input / total input, not estimated count or startup-only probes.
+
+| Phase | Input tokens | Cached tokens | Hit rate |
+| --- | ---: | ---: | ---: |
+| Warm control | 110,519 | 110,336 | 99.8344% |
+| Instructions updated | 110,622 | 110,464 | 99.8572% |
+| Tools changed, one real Bash effect | 222,134 | 221,568 | 99.7452% |
+| Following turn | 111,360 | 111,104 | 99.7701% |
+| Tools removed, instructions updated | 111,571 | 111,232 | 99.6962% |
+
+The Bash row aggregates two model rounds; it is not a 222K single input. The
+single journaled command wrote/read a fresh random file, returned exit 0 and the
+expected content. Public Responses/SSE did not expose the private dispatcher as
+a caller-owned function. The unchanged approximately 110K source consists of
+65 imported reference messages, not 65 paid historical turns. The old active
+schema experiment's zero-hit mutation remains historical evidence, not this run.
+
+The seventh response compacted but answered the preceding label-only question
+instead of its new user request. A single follow-up, originally planned memory
+check recalled both the exact random filename and contents correctly, with no
+new tool call. Thus factual summary memory survived; replacing working history
+with only platform+summary lost the exact active user question. This is an actual
+failed semantic boundary, not a successful compact acceptance. The original
+receipt remains failed and all known provider outcomes are retained.
+
+The targeted repair persists the exact current user input outside the summary,
+including native multipart content, and strengthens only the compact controlled
+leaf with a request-only sentinel intentionally omitted from its summary. Source
+review also identified that restoring an unbounded since-user tool transcript
+could prevent compaction from shrinking a long autonomous task and repeat paid
+summaries without progress; the repair must bound retained execution history
+and fence repeat compaction at the same journal boundary for every mode.
+Previously successful lifecycle/busy checks and paid Bash/configuration calls
+must not be replayed. Resume the same child Session for the failed compact tail.
