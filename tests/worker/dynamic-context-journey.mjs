@@ -113,6 +113,32 @@ async function modelRows(scenario, expected) {
   return rows.length;
 }
 
+async function sessionHolds(db, owner, id) {
+  return (await db.prepare(`SELECT r.id,r.idempotency_key,r.request_hash,r.state,
+    CAST(r.reserved_microusd AS TEXT) AS reserved_microusd,CAST(r.settled_microusd AS TEXT) AS settled_microusd,
+    (SELECT COUNT(*) FROM usage_ledger l WHERE l.reservation_id=r.id) AS ledger_rows,
+    (SELECT GROUP_CONCAT(l.resource||':'||l.event_key,'|') FROM usage_ledger l WHERE l.reservation_id=r.id) AS ledger_events,
+    (SELECT COUNT(*) FROM resource_observations o WHERE o.run_id=r.id) AS observations,
+    (SELECT GROUP_CONCAT(o.event_key||':'||o.status,'|') FROM resource_observations o WHERE o.run_id=r.id) AS observation_events,
+    (SELECT COUNT(*) FROM resource_observations o WHERE o.run_id=r.id AND o.status='pending') AS pending_observations
+    FROM usage_reservations r WHERE r.account_id=? AND r.session_id=? AND r.state='reserved' ORDER BY r.id`)
+    .bind(owner, id).all()).results;
+}
+
+function activeMaintenance(holds, owner, id) {
+  assert.equal(holds.length, 1, 'The active test Session has exactly its funded future-archive backstop');
+  const hold = holds[0];
+  const snapshot = JSON.parse(hold.request_hash);
+  assert.equal(snapshot.owner, owner); assert.equal(snapshot.session, id);
+  assert.equal(snapshot.generation, 0, 'This fresh test Session has not archived any generation');
+  assert.equal(typeof snapshot.pricing.version, 'string');
+  assert.equal(hold.id, `maintenance:${id}:0`); assert.equal(hold.idempotency_key, hold.id);
+  assert.equal(hold.state, 'reserved'); assert.ok(BigInt(hold.reserved_microusd) > 0n);
+  assert.equal(hold.settled_microusd, null); assert.equal(hold.ledger_rows, 0);
+  assert.equal(hold.observations, 0); assert.equal(hold.pending_observations, 0);
+  return hold;
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
@@ -321,6 +347,8 @@ export async function runDynamicContextStaleJourney(context) {
       tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-local-return');
     assert.equal(final.value.status, 'completed');
     assert.equal(final.headers.get('x-agents-session'), id);
+    const db = await scenario.mf.getD1Database('DB');
+    const maintenance = activeMaintenance(await sessionHolds(db, scenario.principal.owner, id), scenario.principal.owner, id);
     const malformed = await scenario.invoke({ previous_response_id: final.value.id,
       input: 'Observe the original malformed provider decision without retrying it.',
       tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-malformed-provider');
@@ -337,7 +365,6 @@ export async function runDynamicContextStaleJourney(context) {
       'Neither stale nor revoked decisions can execute the old clock');
     assert.ok(!failedSession.messages.flatMap(message => message.tool_calls ?? []).some(call => call.id === 'dynamic_malformed_gateway'),
       'A malformed gateway decision never becomes an executable logical tool call');
-    const db = await scenario.mf.getD1Database('DB');
     const model = (await db.prepare(`SELECT r.state,l.quantity,l.price_version FROM usage_reservations r
       JOIN usage_ledger l ON l.reservation_id=r.id WHERE r.account_id=? AND r.idempotency_key=? AND l.resource='model'`)
       .bind(scenario.principal.owner, `completion:${malformed.value.id}:round:0`).all()).results;
@@ -347,23 +374,16 @@ export async function runDynamicContextStaleJourney(context) {
     const deadline = Date.now() + 2000;
     do {
       open = await db.prepare(`SELECT
-        (SELECT COUNT(*) FROM usage_reservations WHERE account_id=? AND session_id=? AND state='reserved') AS reservations,
+        (SELECT COUNT(*) FROM usage_reservations WHERE account_id=? AND session_id=? AND state='reserved' AND id!=?) AS reservations,
         (SELECT COUNT(*) FROM resource_observations WHERE account_id=? AND session_id=? AND status='pending') AS observations`)
-        .bind(scenario.principal.owner, id, scenario.principal.owner, id).first();
+        .bind(scenario.principal.owner, id, maintenance.id, scenario.principal.owner, id).first();
       if (!open.reservations && !open.observations) break;
       await new Promise(resolve => setTimeout(resolve, 20));
     } while (Date.now() < deadline);
-    const held = open.reservations ? (await db.prepare(`SELECT r.id,r.idempotency_key,r.state,
-      CAST(r.reserved_microusd AS TEXT) AS reserved_microusd,CAST(r.settled_microusd AS TEXT) AS settled_microusd,
-      (SELECT COUNT(*) FROM usage_ledger l WHERE l.reservation_id=r.id) AS ledger_rows,
-      (SELECT GROUP_CONCAT(l.resource||':'||l.event_key,'|') FROM usage_ledger l WHERE l.reservation_id=r.id) AS ledger_events,
-      (SELECT COUNT(*) FROM resource_observations o WHERE o.run_id=r.id) AS observations,
-      (SELECT GROUP_CONCAT(o.event_key||':'||o.status,'|') FROM resource_observations o WHERE o.run_id=r.id) AS observation_events,
-      (SELECT COUNT(*) FROM resource_observations o WHERE o.run_id=r.id AND o.status='pending') AS pending_observations
-      FROM usage_reservations r WHERE r.account_id=? AND r.session_id=? AND r.state='reserved'`)
-      .bind(scenario.principal.owner, id).all()).results : [];
+    const held = await sessionHolds(db, scenario.principal.owner, id);
     assert.deepEqual(open, { reservations: 0, observations: 0 },
       `Known malformed output cannot leave a funded unknown-outcome hold: ${JSON.stringify(held)}`);
+    assert.deepEqual(held, [maintenance], 'Malformed output cannot alter or consume the independently funded active-session archive backstop');
     const incomplete = await scenario.invoke({ previous_response_id: malformed.value.id,
       input: 'Observe the original partial decision without completing or executing its arguments.',
       tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-incomplete-provider');
@@ -385,6 +405,7 @@ export async function runDynamicContextStaleJourney(context) {
       stale_catalog_closed_with_current_revision: true, removed_tool_closed_without_effect: true,
       inner_schema_enforced: true, caller_local_callback_preserved: true,
       malformed_known_usage_settled_before_projection: true, malformed_no_effect_or_unknown_hold: true,
+      active_session_maintenance_backstop_preserved: true,
       incomplete_private_dispatch_not_executed_or_replayed: true, incomplete_usage_settled_and_continuation_valid: true,
       model_ledger_rows: await modelRows(scenario, 9), external_network_calls: 0 };
   } finally { release.resolve(); releaseRemoval.resolve(); await pending.catch(() => {}); }
