@@ -573,12 +573,24 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     t.diagnostic(JSON.stringify(await runSessionConfigHistoricalForkJourney(promptCacheContext()))));
   await selected(t, 'Issued workspace effects remain unknown instead of revoked or replayed after Agent edits', { timeout: 60000 }, async () =>
     t.diagnostic(JSON.stringify(await runSessionConfigIssuedRecoveryJourney(promptCacheContext()))));
+  const dynamicJourney = async journey => {
+    const env = mfOptions.workers[0].config.env;
+    env.DYNAMIC_CONTEXT_FIXTURE = { type: 'text', value: '1' };
+    await mf.setOptions(mfOptions);
+    db = await mf.getD1Database('DB');
+    try { return await journey(promptCacheContext()); }
+    finally {
+      delete env.DYNAMIC_CONTEXT_FIXTURE;
+      await mf.setOptions(mfOptions);
+      db = await mf.getD1Database('DB');
+    }
+  };
   await selected(t, 'Dynamic Session catalogs preserve provider prefixes across callable tool and instruction revisions', { timeout: 90000 }, async () =>
-    t.diagnostic(JSON.stringify(await runDynamicContextLifecycleJourney(promptCacheContext()))));
+    t.diagnostic(JSON.stringify(await dynamicJourney(runDynamicContextLifecycleJourney))));
   await selected(t, 'Dynamic Session catalog revisions close stale calls and preserve caller tool ownership', { timeout: 90000 }, async () =>
-    t.diagnostic(JSON.stringify(await runDynamicContextStaleJourney(promptCacheContext()))));
+    t.diagnostic(JSON.stringify(await dynamicJourney(runDynamicContextStaleJourney))));
   await selected(t, 'Dynamic Session catalogs retain concrete tool memory through compaction cold recovery and historical forks', { timeout: 90000 }, async () =>
-    t.diagnostic(JSON.stringify(await runDynamicContextCompactJourney(promptCacheContext()))));
+    t.diagnostic(JSON.stringify(await dynamicJourney(runDynamicContextCompactJourney))));
   const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
     .map(name => [name, mfOptions.workers[0].config.env[name]]));
   const configureCompact = async values => {

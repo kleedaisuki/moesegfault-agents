@@ -18,15 +18,16 @@ async function write(storage, key, value) {
   await storage.put(key, { generation, chunks, bytes: bytes.length });
 }
 
-// This fixture module is absent from release bundles. Only the issued-recovery
-// case supplies a stopped container; any attempt to start/contact it fails.
+// This fixture module is absent from release bundles. Workspace-authorized
+// journeys can supply a stopped container; starting/contacting it still fails.
 export class Session extends FixtureSession {
   constructor(ctx, env) {
     const attempts = [];
     const stopped = { running: false, start() { attempts.push('start'); throw Error('Unexpected new container start'); },
       getTcpPort() { attempts.push('connect'); throw Error('Unexpected new container request'); },
       async setInactivityTimeout() {}, async destroy() { attempts.push('destroy'); } };
-    const state = env.SESSION_CONFIG_ISSUED_FIXTURE === '1' ? new Proxy(ctx, { get(target, field) {
+    const stoppedFixture = env.SESSION_CONFIG_ISSUED_FIXTURE === '1' || env.DYNAMIC_CONTEXT_FIXTURE === '1';
+    const state = stoppedFixture ? new Proxy(ctx, { get(target, field) {
       if (field === 'container') return stopped;
       const value = Reflect.get(target, field, target);
       return typeof value === 'function' && field !== 'constructor' ? value.bind(target) : value;
