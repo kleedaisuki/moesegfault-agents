@@ -1128,7 +1128,11 @@ impl SessionInner {
         Ok(())
     }
 
-    pub(super) async fn replace_native_after_compaction(&self, run: &RunState) -> Result<()> {
+    pub(super) async fn replace_native_after_compaction(
+        &self,
+        run: &RunState,
+        active: Option<&[Value]>,
+    ) -> Result<()> {
         let _guard = self.persistence.lock().await;
         let data = self.snapshot()?;
         let Some(context) = data.native_context else {
@@ -1136,9 +1140,18 @@ impl SessionInner {
         };
         let mut items = provider::responses::message_items(&data.history_instructions)
             .map_err(Error::RustError)?;
-        items.extend(
-            provider::responses::message_items(&data.messages[1..]).map_err(Error::RustError)?,
-        );
+        if let Some(active) = active {
+            items.extend(
+                provider::responses::message_items(&data.messages[1..2])
+                    .map_err(Error::RustError)?,
+            );
+            items.extend_from_slice(active);
+        } else {
+            items.extend(
+                provider::responses::message_items(&data.messages[1..])
+                    .map_err(Error::RustError)?,
+            );
+        }
         let configuration = match context.history.configuration.as_ref() {
             Some(configuration) => {
                 let indices = self
