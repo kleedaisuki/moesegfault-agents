@@ -424,6 +424,10 @@ export async function runDynamicContextStaleJourney(context) {
 export async function runDynamicContextCompactJourney(context) {
   const path = '/workspace/dynamic-context-proof.txt';
   const summaryMarker = 'DYNAMIC-SUMMARY-RETAINED-PATH-AND-CLOCK';
+  const currentRequest = { type: 'message', role: 'user', content: [
+    { type: 'input_text', text: 'Compact and retain that exact path and clock observation.' },
+    { type: 'input_text', text: 'DYNAMIC-CURRENT-REQUEST-ONLY: append fresh-tail-9b67 to your answer.' },
+  ] };
   let agentB; let firstClock; let secondClock;
   const summary = responseAction('placeholder');
   summary.check = body => {
@@ -431,6 +435,7 @@ export async function runDynamicContextCompactJourney(context) {
     assert.match(text(body.input[0]), /^Summarize this agent session for continuation\./);
     const source = JSON.stringify(body.input);
     assert.ok(source.includes(path) && source.includes(String(firstClock)) && source.includes('dynamic_memory_time'));
+    assert.ok(source.includes('fresh-tail-9b67'), 'The summarizer sees the current request but must not own its continued execution');
     summary.output = [answer(`${summaryMarker}: path=${path}; original_clock_unix_ms=${firstClock}; retain the current task.`)];
   };
   const scenario = await createNativeSemanticsScenario(context, 'dynamic-compact', [
@@ -443,6 +448,13 @@ export async function runDynamicContextCompactJourney(context) {
       assert.ok(JSON.stringify(body.input).includes(`${summaryMarker}: path=${path}; original_clock_unix_ms=${firstClock}`));
       assert.ok(!JSON.stringify(body.input).includes('DYNAMIC-UNCOMPACTED-USER-WINDOW'));
       assert.ok(JSON.stringify(body.input).includes(changed));
+      const summaryIndex = body.input.findIndex(item => text(item).includes(summaryMarker));
+      const current = body.input.flatMap((item, index) => text(item).includes('fresh-tail-9b67') ? [{ item, index }] : []);
+      assert.equal(current.length, 1, 'The latest real user request survives exactly once outside the summary and trusted runtime frames');
+      assert.ok(current[0].index > summaryIndex, 'The preserved current request executes after the historical summary');
+      assert.equal(current[0].item.role, 'user');
+      assert.deepEqual(current[0].item.content, currentRequest.content, 'Native multipart current input survives without lossy Chat projection');
+      assert.ok(!text(body.input[summaryIndex]).includes('fresh-tail-9b67'), 'A summary mention is not preservation of the executable current user turn');
     }),
     dispatchAction('dynamic_cold_time', 'time', {}, body => {
       latestCatalog(body, ['time', 'bash']);
@@ -466,7 +478,7 @@ export async function runDynamicContextCompactJourney(context) {
   const source = await scenario.read(first.value.id);
   const sourceItems = (await scenario.client.responses.inputItems.list(first.value.id)).data;
   agentB = await patch(scenario, { instructions: changed, tools: ['time', 'bash'] });
-  const compact = await scenario.invoke({ previous_response_id: first.value.id, input: 'Compact and retain that exact path and clock observation.',
+  const compact = await scenario.invoke({ previous_response_id: first.value.id, input: [currentRequest],
     tool_choice: 'auto', max_output_tokens: 256, context_management: [{ type: 'compaction', compact_threshold: 1 }] }, 200, 'dynamic-memory-compact');
   assert.equal(compact.value.status, 'completed');
   assert.equal(compact.value.output.filter(item => item.type === 'compaction').length, 1);
@@ -489,6 +501,7 @@ export async function runDynamicContextCompactJourney(context) {
   assert.deepEqual((await scenario.client.responses.inputItems.list(first.value.id)).data, sourceItems);
   return { provider_calls: 7, actual_clock_calls: 2, summaries: 1, concrete_retained_path: path,
     exact_original_clock_retained: Number.isSafeInteger(firstClock), cold_current_clock_observed: Number.isSafeInteger(secondClock),
-    latest_catalog_and_policy_survive_compaction: true, historical_source_unchanged: true,
+    latest_catalog_and_policy_survive_compaction: true, current_request_preserved_outside_summary: true,
+    exact_native_current_input_preserved: true, historical_source_unchanged: true,
     model_ledger_rows: await modelRows(scenario, 7), external_network_calls: 0 };
 }
