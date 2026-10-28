@@ -133,7 +133,7 @@ async function legacyClockSession(scenario, context) {
 
 export async function runDynamicContextLifecycleJourney(context) {
   let agentA; let agentB; let agentInstructions; let agentC; let agentD;
-  let initialRevision; let timeRevision;
+  let initialRevision; let timeRevision; let timeCatalogCount;
   let legacy;
   const scenario = await createNativeSemanticsScenario(context, 'dynamic-lifecycle', [
     responseAction('DYNAMIC-INITIAL', body => {
@@ -146,7 +146,10 @@ export async function runDynamicContextLifecycleJourney(context) {
       assert.deepEqual(output(body, legacy.call_id), legacy.result);
       assert.notEqual(text(body.input[0]), legacy.legacy_prefix, 'Old pin bytes are provenance, not the live rendering invariant');
     }),
-    dispatchAction('dynamic_live_time', 'time', {}, body => { timeRevision = latestCatalog(body, ['time']).revision; }),
+    dispatchAction('dynamic_live_time', 'time', {}, body => {
+      timeRevision = latestCatalog(body, ['time']).revision;
+      timeCatalogCount = catalogs(body).length;
+    }),
     responseAction('DYNAMIC-TIME-OBSERVED', body => {
       latestCatalog(body, ['time']);
       assert.ok(Number.isSafeInteger(output(body, 'dynamic_live_time').unix_ms), 'The actual Rust harness executed the newly enabled clock');
@@ -154,7 +157,7 @@ export async function runDynamicContextLifecycleJourney(context) {
     responseAction('DYNAMIC-INSTRUCTIONS-ONLY', body => {
       assert.equal(latestCatalog(body, ['time']).revision, timeRevision,
         'An instruction-only revision cannot stale an otherwise valid tool call');
-      assert.equal(catalogs(body).length, 2, 'Unchanged tools are not retransmitted merely because Agent instructions changed');
+      assert.equal(catalogs(body).length, timeCatalogCount, 'Unchanged tools are not retransmitted merely because Agent instructions changed');
       assert.ok(JSON.stringify(body.input).includes(agentInstructions.instructions));
     }),
     responseAction('DYNAMIC-BASH-CATALOG', body => latestCatalog(body, ['bash'])),
