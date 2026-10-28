@@ -381,3 +381,16 @@ retains both the original semantic failure and its targeted recovery. A compact
 summary uses a different task prefix and replaces the long working history;
 its aggregate cache percentage is not comparable to ordinary-turn 110K hit
 rates. The first short post-compact recall used 755 input / 512 cached tokens.
+
+### Production release
+
+[Production 40668550769](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40668550769)
+succeeded after the exact-source staging and targeted real-provider gate above.
+Public `https://agents.moesegfault.dev/healthz` returned HTTP 200, `status:ok`,
+build `4ababff69904cfc21be970f2412519500c33e640`. Deployment reused the accepted
+Worker artifact, original daemon/dashboard sources and configured feature set;
+no old paid or business acceptance profile was selected. The original pin is
+retained solely as compatible creation provenance, not a frozen live prompt.
+An older Session's first safe-boundary layout adoption may rebuild its cached
+prefix once; subsequent registered catalog changes append context rather than
+mutating the fixed dispatcher schema.

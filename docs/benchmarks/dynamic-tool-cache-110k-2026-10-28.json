@@ -218,5 +218,12 @@
   "experiment_session_id": "branch_c28e0a96d72aecba6c2eb2589961bf1de919803cfdc9fbbc98f07251da39cba6",
   "source_response_id": "resp_8d57093b25fc4c53b609adebc8a8d1b1",
   "actual_bash_execution_id": "7a2ab743ef452e7b5efa2439e87e0553f89438dfa07ee960f20605480895faab",
-  "feature_acceptance": "passed_with_targeted_compact_recovery"
+  "feature_acceptance": "passed_with_targeted_compact_recovery",
+  "production": {
+    "deployment_run": "40668550769",
+    "build": "4ababff69904cfc21be970f2412519500c33e640",
+    "health_http_status": 200,
+    "health_status": "ok",
+    "old_business_or_paid_acceptance_replayed": false
+  }
 }
