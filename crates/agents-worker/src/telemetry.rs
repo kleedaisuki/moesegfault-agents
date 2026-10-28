@@ -332,6 +332,7 @@ fn token(value: &str, max: usize) -> bool {
 fn event_name(event: &str) -> &str {
     match event {
         "request.completed"
+        | "context.failed"
         | "request.failed"
         | "observer.completed"
         | "observer.recovery"

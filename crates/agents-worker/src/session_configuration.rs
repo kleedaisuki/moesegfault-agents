@@ -82,7 +82,9 @@ impl SessionInner {
     }
 
     pub(super) async fn refresh_configuration(&self) -> Result<()> {
-        self.adopt_dynamic_context().await?;
+        self.adopt_dynamic_context()
+            .await
+            .map_err(|error| self.context_failure("adoption", error))?;
         loop {
             let before = self.snapshot()?;
             if before.run.as_ref().is_some_and(|run| !boundary(run)) {

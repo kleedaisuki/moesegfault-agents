@@ -604,7 +604,10 @@ impl SessionInner {
         if config.protocol != ProviderProtocol::Responses {
             return Ok(());
         }
-        let mut input = self.native_generation_input(config).await?;
+        let mut input = self
+            .native_generation_input(config)
+            .await
+            .map_err(|error| self.context_failure("native_history", error))?;
         let (mut controls, tools) = {
             let data = self.data.borrow();
             let run = data
@@ -697,7 +700,8 @@ impl SessionInner {
             }
         }
         self.append_native_context_update(config, &tools, definitions, &mut input)
-            .await?;
+            .await
+            .map_err(|error| self.context_failure("runtime_context", error))?;
         let (history, capacity, output) = {
             let data = self.data.borrow();
             let data = data.as_ref().unwrap();
@@ -728,7 +732,8 @@ impl SessionInner {
             &obsolete,
             &required,
         )
-        .await?;
+        .await
+        .map_err(|error| self.context_failure("native_prepare", error))?;
         if fitted.input_tokens.is_none() && history.window.is_some() {
             let tokens = crate::responses_auxiliary::count_rendered(config, &fitted.prepared)
                 .await?

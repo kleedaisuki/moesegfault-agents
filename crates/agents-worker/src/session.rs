@@ -468,7 +468,9 @@ impl DurableObject for Session {
         if req.path() == "/responses" || req.path().starts_with("/responses/") {
             return match inner.response_route(req).await {
                 Ok(response) => Ok(response),
-                Err(error) => crate::routes::error_response(&error),
+                Err(error) => crate::routes::error_response(
+                    &inner.context_failure("response_admission", error),
+                ),
             };
         }
         if req.path().starts_with("/branches/") {
@@ -960,6 +962,44 @@ impl DurableObject for Session {
 }
 
 impl SessionInner {
+    fn context_failure(&self, stage: &str, error: Error) -> Error {
+        let known = safe_error_code(&error);
+        let code = if known == "run_failed" {
+            match stage {
+                "adoption" => "dynamic_context_adoption_failed",
+                "native_history" => "dynamic_context_history_failed",
+                "runtime_context" => "dynamic_context_transition_failed",
+                "native_prepare" => "dynamic_context_prepare_failed",
+                _ => "dynamic_context_admission_failed",
+            }
+            .to_owned()
+        } else {
+            known
+        };
+        if self
+            .env
+            .var("ENVIRONMENT")
+            .ok()
+            .is_some_and(|value| value.to_string() == "test")
+        {
+            let detail = error.to_string().chars().take(512).collect::<String>();
+            console_error!(
+                "Synthetic context diagnostic: stage={} cause={}",
+                stage,
+                detail
+            );
+        }
+        util::emit(
+            "context.failed",
+            json!({"session_id":self.snapshot().ok().map(|data| data.record.id),
+            "stage":stage,"error_code":code,"outcome":error_family(&error)}),
+        );
+        if matches!(&error, Error::RustError(_)) {
+            Error::RustError(code)
+        } else {
+            error
+        }
+    }
     fn snapshot(&self) -> Result<PersistedSession> {
         self.data
             .borrow()
@@ -2718,6 +2758,9 @@ where
 }
 
 fn safe_error_code(error: &Error) -> String {
+    if let Some(code) = context_cause(error) {
+        return code;
+    }
     let text = error.to_string();
     let message = match error {
         Error::RustError(message) => message.as_str(),
@@ -2788,6 +2831,48 @@ fn safe_error_code(error: &Error) -> String {
         }
     }
     "run_failed".into()
+}
+
+pub(crate) fn context_cause(error: &Error) -> Option<String> {
+    let Error::RustError(message) = error else {
+        return None;
+    };
+    let static_message = match message.as_str() {
+        "invalid native Responses context" => Some("native_context_shape_invalid"),
+        "native controls must be an object" => Some("native_controls_shape_invalid"),
+        "native controls contain a harness-owned or unsupported field" => {
+            Some("native_controls_unsupported")
+        }
+        "invalid native output limit" => Some("native_output_limit_invalid"),
+        "native output limit exceeds the prepared model budget" => {
+            Some("native_output_budget_exceeded")
+        }
+        "native tools must be resolved to caller or harness bindings" => {
+            Some("native_tools_unresolved")
+        }
+        _ => None,
+    };
+    if let Some(code) = static_message {
+        return Some(code.into());
+    }
+    (message.len() <= 96
+        && message
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        && [
+            "native_context_",
+            "native_output_",
+            "native_controls_",
+            "native_tools_",
+            "configuration_",
+            "registered_tool_",
+            "dynamic_context_",
+            "session_storage_",
+            "session_chunk_",
+        ]
+        .iter()
+        .any(|prefix| message.starts_with(prefix)))
+    .then(|| message.clone())
 }
 
 fn complete_failed_tool_group(
@@ -3081,6 +3166,32 @@ fn execution_key(run: &str, round: u64, call: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_context_diagnostics_preserve_static_guards_without_error_content() {
+        assert_eq!(
+            safe_error_code(&Error::RustError("native_context_append_conflict".into())),
+            "native_context_append_conflict"
+        );
+        assert_eq!(
+            safe_error_code(&Error::RustError(
+                "native output limit exceeds the prepared model budget".into()
+            )),
+            "native_output_budget_exceeded"
+        );
+        assert_eq!(
+            safe_error_code(&Error::RustError("tool_outcome_unknown".into())),
+            "tool_outcome_unknown"
+        );
+        for text in [
+            "native_context_invalid /workspace/private",
+            "native_context_invalid: secret",
+            "native_context_invalid\nsecret",
+            "user_private_error",
+        ] {
+            assert!(context_cause(&Error::RustError(text.into())).is_none());
+        }
+    }
 
     #[test]
     fn initialization_retry_checks_identity_without_replacing_mutable_state() {
