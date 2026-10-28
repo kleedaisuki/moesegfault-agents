@@ -332,10 +332,14 @@ mod tests {
             }
             assert!(triggered(&data, Some(u64::MAX)).unwrap());
             data.run.as_mut().unwrap().compaction_source_end = Some(data.journal.len());
-            let recovered: PersistedSession =
-                serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
-            assert!(!triggered(&recovered, Some(u64::MAX)).unwrap());
-            assert!(!triggered(&recovered, None).unwrap());
+            // Run metadata is serialized in state; the journal is restored
+            // separately from journal:N chunks, not from PersistedSession JSON.
+            let recovered: RunState =
+                serde_json::from_slice(&serde_json::to_vec(data.run.as_ref().unwrap()).unwrap())
+                    .unwrap();
+            data.run = Some(recovered);
+            assert!(!triggered(&data, Some(u64::MAX)).unwrap());
+            assert!(!triggered(&data, None).unwrap());
             data.journal
                 .push(Message::tool_result("call_new", "New evidence"));
             assert!(triggered(&data, Some(u64::MAX)).unwrap());
