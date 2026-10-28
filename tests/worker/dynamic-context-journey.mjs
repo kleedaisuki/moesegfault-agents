@@ -311,7 +311,8 @@ export async function runDynamicContextStaleJourney(context) {
     { output: [{ type: 'function_call', id: 'upstream-dynamic-malformed', call_id: 'dynamic_malformed_gateway',
       name: dispatcher, arguments: '{not-json', status: 'completed' }], usage,
       check: body => latestCatalog(body, ['bash']) },
-    { output: [{ type: 'function_call', id: 'upstream-dynamic-incomplete', call_id: 'dynamic_incomplete_gateway',
+    { output: [answer('DYNAMIC_VISIBLE_PARTIAL'),
+      { type: 'function_call', id: 'upstream-dynamic-incomplete', call_id: 'dynamic_incomplete_gateway',
       name: dispatcher, arguments: '{"name":"bash","arguments":{"command":', status: 'incomplete' }],
       status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, usage,
       check: body => latestCatalog(body, ['bash']) },
@@ -393,6 +394,14 @@ export async function runDynamicContextStaleJourney(context) {
       'A private partial call cannot become a caller-local callback obligation');
     assert.equal(incomplete.value.usage.input_tokens, measure(scenario.state.requests[7]));
     assert.equal(incomplete.value.usage.output_tokens, 1);
+    const visible = incomplete.value.output.find(item => item.type === 'message');
+    assert.ok(visible); assert.equal(text(visible), 'DYNAMIC_VISIBLE_PARTIAL');
+    assert.equal(visible.id, `item_${incomplete.value.id}_0_0`, 'Filtering a later private item cannot renumber the already public raw ordinal');
+    const handleCount = await preview(scenario, id, { previous_response_id: incomplete.value.id,
+      input: [{ type: 'item_reference', id: visible.id }], tools: [local], tool_choice: 'auto' });
+    assert.ok(handleCount.value.input_tokens > 0, 'The public message handle resolves to its actual retained native slot');
+    assert.ok(handleCount.requests.every(request => !request.input.some(item => item.type === 'item_reference')),
+      'The count transport receives resolved native bytes, not an unresolved platform handle');
     const resumed = await scenario.invoke({ previous_response_id: incomplete.value.id,
       input: 'Continue normally without inventing a tool result for the incomplete private dispatch.',
       tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-incomplete-continuation');
@@ -407,6 +416,7 @@ export async function runDynamicContextStaleJourney(context) {
       malformed_known_usage_settled_before_projection: true, malformed_no_effect_or_unknown_hold: true,
       active_session_maintenance_backstop_preserved: true,
       incomplete_private_dispatch_not_executed_or_replayed: true, incomplete_usage_settled_and_continuation_valid: true,
+      visible_item_handle_resolves_after_private_item_filtering: true,
       model_ledger_rows: await modelRows(scenario, 9), external_network_calls: 0 };
   } finally { release.resolve(); releaseRemoval.resolve(); await pending.catch(() => {}); }
 }
