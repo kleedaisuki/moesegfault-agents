@@ -29,18 +29,17 @@ function catalogs(body) {
     assert.ok(value.endsWith(catalogEnd));
     const catalog = JSON.parse(value.slice(catalogStart.length, -catalogEnd.length));
     assert.match(catalog.revision, /^[a-f0-9]{64}$/);
-    assert.ok(Number.isSafeInteger(catalog.configuration_revision));
+    assert.equal(catalog.configuration_revision, undefined, 'Instruction-only Agent metadata cannot churn an unchanged tool catalog');
     assert.ok(Array.isArray(catalog.tools));
     return [{ index, catalog }];
   });
 }
 
-function latestCatalog(body, names, configurationRevision) {
+function latestCatalog(body, names) {
   const entries = catalogs(body);
   assert.ok(entries.length, 'Generation receives an explicit effective catalog, including an empty one');
   const catalog = entries.at(-1).catalog;
   assert.deepEqual(catalog.tools.map(tool => tool.name).sort(), [...names].sort());
-  if (configurationRevision !== undefined) assert.equal(catalog.configuration_revision, configurationRevision);
   assert.equal(body.tool_choice, 'auto', 'A disabled tool set would not test active schema rendering');
   const declaration = body.tools.filter(tool => tool.name === dispatcher);
   assert.equal(declaration.length, 1, 'The real fixed-schema dispatcher exists even for an empty catalog');
@@ -138,7 +137,7 @@ export async function runDynamicContextLifecycleJourney(context) {
   let legacy;
   const scenario = await createNativeSemanticsScenario(context, 'dynamic-lifecycle', [
     responseAction('DYNAMIC-INITIAL', body => {
-      initialRevision = latestCatalog(body, [], agentA.revision).revision;
+      initialRevision = latestCatalog(body, []).revision;
       const callIndex = body.input.findIndex(item => item.type === 'function_call' && item.call_id === legacy.call_id);
       assert.ok(callIndex >= 0, 'An actual old bare-call record survives v2 adoption even though the tool is no longer available');
       assert.equal(body.input[callIndex].name, 'time');
@@ -147,19 +146,20 @@ export async function runDynamicContextLifecycleJourney(context) {
       assert.deepEqual(output(body, legacy.call_id), legacy.result);
       assert.notEqual(text(body.input[0]), legacy.legacy_prefix, 'Old pin bytes are provenance, not the live rendering invariant');
     }),
-    dispatchAction('dynamic_live_time', 'time', {}, body => { timeRevision = latestCatalog(body, ['time'], agentB.revision).revision; }),
+    dispatchAction('dynamic_live_time', 'time', {}, body => { timeRevision = latestCatalog(body, ['time']).revision; }),
     responseAction('DYNAMIC-TIME-OBSERVED', body => {
-      latestCatalog(body, ['time'], agentB.revision);
+      latestCatalog(body, ['time']);
       assert.ok(Number.isSafeInteger(output(body, 'dynamic_live_time').unix_ms), 'The actual Rust harness executed the newly enabled clock');
     }),
     responseAction('DYNAMIC-INSTRUCTIONS-ONLY', body => {
       assert.equal(latestCatalog(body, ['time']).revision, timeRevision,
         'An instruction-only revision cannot stale an otherwise valid tool call');
+      assert.equal(catalogs(body).length, 2, 'Unchanged tools are not retransmitted merely because Agent instructions changed');
       assert.ok(JSON.stringify(body.input).includes(agentInstructions.instructions));
     }),
-    responseAction('DYNAMIC-BASH-CATALOG', body => latestCatalog(body, ['bash'], agentC.revision)),
+    responseAction('DYNAMIC-BASH-CATALOG', body => latestCatalog(body, ['bash'])),
     responseAction('DYNAMIC-EMPTY-CATALOG', body => {
-      assert.equal(latestCatalog(body, [], agentD.revision).revision, initialRevision,
+      assert.equal(latestCatalog(body, []).revision, initialRevision,
         'The digest describes actual catalog content, not an ever-changing Agent revision counter');
     }),
   ]);
@@ -200,6 +200,7 @@ export async function runDynamicContextLifecycleJourney(context) {
   const instructions = { previous_response_id: second.id, input: 'Instruction-only continuation.', tool_choice: 'auto', max_output_tokens: 128 };
   const countedInstructions = await preview(scenario, id, instructions);
   const third = await scenario.invoke(instructions, 200, 'dynamic-instructions');
+  assert.equal((await session(scenario, id)).configuration.agent_revision, agentInstructions.revision);
   matchesPreview(countedInstructions, scenario.state.requests[3]);
   sameProviderPrefix(scenario.state.requests[2], scenario.state.requests[3]);
   agentC = await patch(scenario, { tools: ['bash'] });
@@ -246,7 +247,7 @@ export async function runDynamicContextStaleJourney(context) {
   const stale = dispatchAction('dynamic_stale_time', 'time', {}, body => { oldRevision = latestCatalog(body, ['time']).revision; entered.resolve(); });
   stale.gate = release;
   const removed = dispatchAction('dynamic_revoked_time', 'time', {}, body => {
-    currentRevision = latestCatalog(body, ['time', 'bash'], agentB.revision).revision;
+    currentRevision = latestCatalog(body, ['time', 'bash']).revision;
     assert.notEqual(currentRevision, oldRevision);
     const result = output(body, 'dynamic_stale_time');
     assert.equal(result.error.code, 'tool_catalog_changed');
@@ -260,7 +261,7 @@ export async function runDynamicContextStaleJourney(context) {
     stale,
     removed,
     dispatchAction('dynamic_invalid_bash', 'bash', { command: 17 }, body => {
-      latestCatalog(body, ['bash'], agentC.revision);
+      latestCatalog(body, ['bash']);
       const result = output(body, 'dynamic_revoked_time');
       assert.equal(result.error.code, 'tool_revoked'); assert.equal(result.unix_ms, undefined);
     }),
@@ -330,19 +331,19 @@ export async function runDynamicContextCompactJourney(context) {
     summary,
     responseAction('DYNAMIC-COMPACT-CONTINUATION', body => {
       assert.equal(catalogs(body).length, 1, 'Compaction retains only the current effective tool catalog');
-      latestCatalog(body, ['time', 'bash'], agentB.revision);
+      latestCatalog(body, ['time', 'bash']);
       assert.ok(JSON.stringify(body.input).includes(`${summaryMarker}: path=${path}; original_clock_unix_ms=${firstClock}`));
       assert.ok(!JSON.stringify(body.input).includes('DYNAMIC-UNCOMPACTED-USER-WINDOW'));
       assert.ok(JSON.stringify(body.input).includes(changed));
     }),
     dispatchAction('dynamic_cold_time', 'time', {}, body => {
-      latestCatalog(body, ['time', 'bash'], agentB.revision);
+      latestCatalog(body, ['time', 'bash']);
       assert.equal(catalogs(body).length, 1, 'Cold recovery cannot append the same catalog again');
       assert.ok(JSON.stringify(body.input).includes(path) && JSON.stringify(body.input).includes(String(firstClock)));
     }),
     responseAction('DYNAMIC-COLD-MEMORY-OBSERVED', body => { secondClock = output(body, 'dynamic_cold_time').unix_ms; assert.ok(Number.isSafeInteger(secondClock)); }),
     responseAction('DYNAMIC-HISTORICAL-FORK', body => {
-      latestCatalog(body, ['time', 'bash'], agentB.revision);
+      latestCatalog(body, ['time', 'bash']);
       assert.ok(JSON.stringify(body.input).includes(path));
       assert.ok(!JSON.stringify(body.input).includes('DYNAMIC-COLD-USER-REQUEST'), 'A sealed old boundary cannot borrow later source turns');
       assert.ok(!JSON.stringify(body.input).includes('DYNAMIC-COLD-MEMORY-OBSERVED'));
