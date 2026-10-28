@@ -136,6 +136,13 @@ pub(crate) fn error_response(error: &worker::Error) -> Result<Response> {
         _ => error.to_string(),
     };
     let (status, code, message) = classify_error(&text);
+    if code == "internal_error" {
+        if let Some(cause) = crate::session::context_cause(error) {
+            return Response::from_json(&json!({"error":{"code":code,"message":message,
+                "type":"agents_error","agents_error_code":cause}}))
+            .map(|response| response.with_status(status));
+        }
+    }
     util::json_error(status, code, message)
 }
 
@@ -1059,6 +1066,7 @@ async fn create_session_inner_at_pinned(
         input_revision: 0,
         pinned,
         configuration: None,
+        context_layout: None,
         workspace_snapshot: None,
         runtime_profile,
     };

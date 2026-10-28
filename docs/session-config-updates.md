@@ -11,25 +11,31 @@ or creating a replacement Session.
 - D1 owns the Agent row and its append-only, owner-scoped configuration revision
   log. Exact revision comparison and log publication are atomic; concurrent
   edits cannot silently overwrite another edit from a stale merged payload.
-- A Session keeps its original `pinned` prefix. Its separate `configuration`
+- A Session keeps its original `pinned` creation snapshot for historical
+  provenance and existing reference compatibility, not as a live prompt invariant.
+  Its separate `configuration`
   overlay records the latest applied `agent_revision`, full Agent instructions,
   resolved available registered tools and any `unavailable_tools`.
 - Existing idle Sessions apply accepted edits on their next use. A busy Session
   pulls changes at safe model/tool boundaries, not by rewriting an in-flight
   provider request. There is no global synchronous fan-out or unsolicited model
   run. Configuration edits do not reset the user-input inactivity clock or reopen
-  closed Sessions; explicit resume retains the original pin and then catches up.
-- Native Responses appends a trusted `<agents_configuration_update>` system item
-  to the existing private journal. Its complete replacement scope is **Agent
-  instructions and registered tool availability**, not platform policy or caller
-  role history. Storage-owned positions, not a matching string in user input,
-  identify an authoritative internal revision.
+  closed Sessions; explicit resume restores history/workspace and then catches up.
+- Dynamic native context separates necessary Agent instruction guidance from the
+  ordinary, versioned `agents_tool_catalog` reference. Tool descriptions, schemas
+  and availability are not system instructions. A fixed real dispatcher carries
+  logical name/arguments; its provider declaration does not contain the changing
+  inventory and remains present for an empty catalog. Server-owned positions and
+  decision provenance, not a textual marker or model-written version, identify
+  the authoritative configuration.
 
-The original cache-layout policy is not edited in place. The new configuration
-event explains its own scope, so an already-existing legacy or append-only-v1
-Session can receive the update without replacing its initial prefix. Providers
-that cannot preserve inline system-message caching use compatible rendering;
-correct configuration semantics take priority over a cache-hit claim.
+The active `context_layout` is independent of the historical pin. Current native
+Sessions adopt the dynamic layout at safe boundaries; older sealed Responses
+retain their original rendering identity. Adopting a new layout can legitimately
+rebuild a provider prefix once. The previous requirement that the live Session
+must always render its original pin bytes is intentionally removed. See
+[dynamic context and dispatch](dynamic-tool-context.md) for wire capabilities and
+trade-offs; ordinary context never grants execution authority.
 
 ## Scope and tool safety
 
@@ -51,9 +57,14 @@ commands are not undone. Call/output relationships and known model usage remain
 journaled. A caller-local tool is not reinterpreted as a harness tool when names
 collide; existing binding identity and collision validation still apply.
 
-Changing tool schemas can invalidate a provider's rendered cache prefix. The
-configuration notification does not invent unsupported inline-tool APIs or keep
-removed tools callable to preserve cache hits.
+Dynamic registered-tool catalogs no longer repeat each changing schema in the
+provider's top-level declarations. The fixed dispatcher remains a real function
+tool; backend validation enforces the current inner schema and permission. A
+stale or revoked selection receives a structured catalog-change/revocation result
+for continuation, rather than an unexplained missing-tool failure. Caller-local
+and native hosted tool declarations retain their existing public API ownership;
+their upstream cache behavior remains provider-dependent. No unsupported inline
+tool-loading API is invented and no revoked grant survives merely for caching.
 
 ## Compaction, cold recovery and historical context
 

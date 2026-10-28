@@ -47,6 +47,8 @@ pub(crate) struct BranchPoint {
     pub discovery: Option<crate::tool_discovery::ToolRegistry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<agents_core::SessionConfiguration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_layout: Option<agents_core::PromptLayout>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -350,6 +352,7 @@ impl SessionInner {
             native,
             discovery: response.discovery.clone(),
             configuration: self.snapshot()?.record.configuration,
+            context_layout: self.snapshot()?.record.context_layout,
         });
         Ok(())
     }
@@ -568,6 +571,7 @@ impl SessionInner {
         let mut imported = data;
         if imported.record.agent_id == seed.agent_id {
             imported.record.configuration = seed.point.configuration.clone();
+            imported.record.context_layout = seed.point.context_layout;
         } else {
             let configuration = crate::configuration::initial(&imported.record.pinned);
             imported.record.configuration = Some(configuration.clone());
@@ -595,14 +599,30 @@ impl SessionInner {
         imported.messages.extend(messages);
         imported.pending = pending;
         if let (Some(reference), Some(items)) = (&seed.point.native, &seed.native_items) {
+            let foreign = imported.record.agent_id != seed.agent_id;
+            let updates = if foreign {
+                super::native::context_positions(reference)?
+            } else {
+                vec![]
+            };
+            let selected = items
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    updates
+                        .binary_search(&(index + 1))
+                        .is_err()
+                        .then_some(item.clone())
+                })
+                .collect::<Vec<_>>();
             let mut history = self
                 .native_import(
-                    items,
+                    &selected,
                     &reference.provider_binding,
                     &format!("branch:{}", seed.child_response_id),
                 )
                 .await?;
-            if let Some(history) = history.as_mut() {
+            if let Some(history) = history.as_mut().filter(|_| !foreign) {
                 let indices = reference
                     .window
                     .as_ref()

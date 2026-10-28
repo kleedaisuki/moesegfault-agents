@@ -29,6 +29,10 @@ pub(crate) struct ResponseContext {
     pub configuration_positions: Vec<usize>,
     #[serde(default)]
     pub obsolete_updates: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_state: Option<crate::prompt_context::Revision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration_state: Option<crate::configuration::History>,
     pub pending_calls: Vec<provider::ToolCall>,
     pub source_end: usize,
     pub compacted: bool,
@@ -182,6 +186,7 @@ impl SessionInner {
             let mut record = data.record.clone();
             if let Some(point) = &response.branch_point {
                 record.configuration = point.configuration.clone();
+                record.context_layout = point.context_layout;
             }
             context_view(data, &response).map(|view| (record, view))
         };
@@ -232,6 +237,12 @@ impl SessionInner {
             .into_iter()
             .map(|index| index - 1)
             .collect();
+        let (context_state, configuration_state) = view
+            .native
+            .as_ref()
+            .map(super::native::transition_states)
+            .transpose()?
+            .unwrap_or_default();
         let native_provider_binding = view.native.map(|reference| reference.provider_binding);
         Response::from_json(&ResponseContext {
             discovery: response.discovery.clone(),
@@ -252,6 +263,8 @@ impl SessionInner {
             context_updates,
             configuration_positions,
             obsolete_updates,
+            context_state,
+            configuration_state,
             pending_calls: view.pending_calls,
             source_end: view.source_end,
             compacted: view.compacted,
@@ -285,6 +298,7 @@ mod tests {
             native: None,
             discovery: None,
             configuration: None,
+            context_layout: None,
         });
         response
     }

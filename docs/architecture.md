@@ -33,9 +33,10 @@ dashboard / CLI ── Identity ───┼─ Rust edge Worker
 |---|---|---|
 | Account identity | Identity subject (`sub`) | Never derive ownership from email or request body |
 | Subscription | moeSegFault Billing | Cache only bounded, validated entitlement snapshots |
-| Agent configuration | D1 owner-scoped row with revision | Survives sessions; updates affect new sessions only |
+| Agent configuration | D1 owner-scoped row and revision log | Instruction/tool edits reach existing sessions at safe boundaries |
 | Session and execution journal | Session DO storage | Survives isolate eviction and reconnect |
-| Resolved instructions/tools/skills | Immutable `PinnedContext` in session | Full content and versions, not mutable registry references |
+| Creation snapshot | Historical `PinnedContext` in session | Reference provenance; not a live prompt/tool invariant |
+| Effective instructions/tool catalog and active layout | Session DO, sealed at Response boundaries | Versioned live context; retained through compact/cold recovery |
 | Steering input | DO sequenced inbox | Durable before acceptance; consumed at model/tool boundaries |
 | Workspace | Container while live; committed R2 snapshot while released | Explicit checkpoint before planned release |
 | Billable consumption | Append-only D1 usage ledger | Unique event IDs; never derived from sampled telemetry |
@@ -96,7 +97,7 @@ The user-confirmed inactivity rule is precise:
   archive conversation state, and release the container immediately.
 * An idle session closes at its deadline. A closed session remains readable but
   does not silently accept new input. Explicit resume readmits it under current
-  quotas, preserves the pin/workspace, and resets the idle period as user activity;
+  quotas, restores history/workspace, catches up compatible configuration, and resets the idle period as user activity;
   alternatively create a new session.
 
 ```text
@@ -128,15 +129,18 @@ execution state. Exactly-once external side effects are not promised.
 ## Context, caching, and compaction
 
 The server registry resolves tools and personalized skills at session creation.
-The session stores the complete schemas/instructions and versions, sorts registry
-entries by name/version, and computes a canonical SHA-256 prefix digest. Existing
-sessions do not observe agent edits, registry deployments, or new skill versions.
+The session stores a resolved creation snapshot for historical provenance. Its
+effective Agent instructions and registered tool catalog are separate, versioned
+state: accepted edits apply at safe execution boundaries, not by freezing the
+snapshot or trusting a textual marker. Active layout is sealed with historical
+Response boundaries. Model, physical workspace authority and selected skills
+retain their creation scope unless a separate explicit lifecycle changes them.
 
 ```text
-stable platform instructions + resolved tool schemas + skill content
-    + pinned user instructions
-    + compacted summary (changes only at compaction boundaries)
-    + append-only recent conversation, tool calls/results, and steering
+minimal platform policy + fixed real dispatch schema
+    + evolving Agent instruction guidance
+    + ordinary versioned tool catalog, skills and runtime references
+    + derived summary and recent conversation, actual calls/results, and steering
 ```
 
 Never inject current time, trace IDs, current credits, or mutable account data into
@@ -150,11 +154,14 @@ percentage, not a model-specific token threshold. Model context limits come from
 server-validated model metadata. Trigger at the earlier of the selected context
 percentage or the input budget after reserving the output allowance. Include
 tools, instructions, summaries, pending tool exchanges, and safety reserve in token
-accounting. If the immutable prefix itself cannot fit, reject instead of endlessly
+accounting. If the required active context itself cannot fit, reject instead of endlessly
 compacting. Keep a complete source journal; a model summary is a derived view and
 must not overwrite the sole copy of user conversation. Compact only complete
-tool-call/result exchanges, preserve pinned bytes, and make the summary visible
-in provenance through its source sequence range and digest.
+tool-call/result exchanges, retain the latest effective guidance/catalog, and make the summary visible
+in provenance through its source sequence range and digest. The original pin is
+not required to remain the live rendered prefix. The native registered dispatcher
+does not replace caller-local tool ownership or confer new workspace permissions;
+see [dynamic context](dynamic-tool-context.md) for wire and validation boundaries.
 
 The research rationale is [Prompt Cache (MLSys 2024)](https://arxiv.org/abs/2311.04934):
 attention-state reuse benefits repeated prompt segments, but implementing its

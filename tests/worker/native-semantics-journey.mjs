@@ -29,7 +29,7 @@ async function deadline(operation, label, milliseconds = 12000) {
   } finally { clearTimeout(timer); }
 }
 
-function nativeFrames(id, model, output, status = 'completed', reportedUsage = usage) {
+function nativeFrames(id, model, output, status = 'completed', reportedUsage = usage, incompleteDetails = null) {
   const frames = [];
   const push = (type, fields) => frames.push({ type, sequence_number: frames.length, ...fields });
   push('response.created', { response: { id, object: 'response', status: 'in_progress' } });
@@ -82,7 +82,7 @@ function nativeFrames(id, model, output, status = 'completed', reportedUsage = u
   }
   push(`response.${status}`, { response: { id, object: 'response', model, status, output, usage: reportedUsage,
     error: status === 'failed' ? { code: 'server_error', message: 'Synthetic known-usage failure' } : null,
-    incomplete_details: null } });
+    incomplete_details: incompleteDetails } });
   return frames;
 }
 
@@ -145,7 +145,8 @@ export function createNativeSemanticsProvider() {
         action.check?.(body);
         const id = `upstream-native-${state.calls}`;
         const reportedUsage = typeof action.usage === 'function' ? await action.usage(body) : action.usage;
-        return transport(nativeFrames(id, state.model, action.output, action.status, reportedUsage ?? usage), action.gate, state);
+        return transport(nativeFrames(id, state.model, action.output, action.status, reportedUsage ?? usage,
+          action.incomplete_details ?? null), action.gate, state);
       } catch (error) { state.failure = error; throw error; }
     },
   };

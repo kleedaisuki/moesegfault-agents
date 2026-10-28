@@ -56,6 +56,7 @@ fn view_value(data: &PersistedSession) -> Value {
         "context_tokens":data.input_tokens,
         "context_window":data.record.pinned.model.context_window,
         "compact_count":data.compact_count,
+        "context_layout":data.record.context_layout,
         "pending_messages":data.pending,"message_count":data.journal.len(),
         "last_error":data.last_error,
         "checkpoint_pending":data.checkpoint_error.is_some(),
@@ -89,6 +90,7 @@ mod tests {
             input_revision: 0,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
             configuration: None,
+            context_layout: None,
             workspace_snapshot: None,
             runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };

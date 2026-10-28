@@ -10,6 +10,15 @@ Initial resources were provisioned in the Cloudflare account belonging to this r
 
 `CI` computes affected areas from the actual Git diff. Documentation-only changes do not rebuild the platform; dashboard-only changes do not build containers. Native Rust checks, wasm/Worker builds, dashboard interaction tests and isolated container journeys run independently. Cargo, npm and Docker BuildKit caches are keyed by their real inputs. Actions are pinned by commit; Dependabot reviews updates.
 
+Measured feedback cost in normal CI `40647641984` (2026-10-28): validating/installing
+the exact Worker build tool took 107 seconds, release packaging took 197 seconds,
+and the three selected new controlled journeys took 7 seconds. Tool bootstrap
+and release-artifact reuse, not broad test pruning, dominate this example.
+Fixture-only corrections reused exact Worker `12799584371` in `40653880540`
+without another Rust/Wasm build. Keep verified artifact identity independent of
+test-source edits; do not rebuild merely to adjust a fixture or inspect a known
+operation's financial state. These are individual job timings, not a CI latency SLO.
+
 Schema-only changes run the native SQL checks and compiled-Worker integration,
 without rebuilding the container. Responses and Space SDK contract changes run
 the tooling lane; deployed journeys are also collected there to catch invalid

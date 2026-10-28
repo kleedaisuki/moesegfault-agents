@@ -18,15 +18,15 @@ Capture returned JSON from session creation and session identifiers on stderr. U
 | Add direction to a running task | `magents sessions steer SESSION_ID 'Focus on persistence'` | Queue durable input for a safe model/tool boundary |
 | Independent parallel work | `magents sessions start AGENT_ID` | Separate session, subject to account limits |
 | Finish and checkpoint | `magents sessions close SESSION_ID` | Request safe close/persistence, not durable-data deletion |
-| Continue a closed session | `magents sessions resume SESSION_ID`, then new input | Explicit readmission preserving the old pin and workspace |
+| Continue a closed session | `magents sessions resume SESSION_ID`, then new input | Explicit readmission restoring history/workspace and adopting effective Agent changes at a safe boundary |
 
-One session permits one active run. Steering does not launch a second loop or instantly cancel an in-flight external command. Check status rather than assuming an immediate effect. Resume is subject to current plan/resource admission; it does not load the agent's newest configuration.
+One session permits one active run. Steering does not launch a second loop or instantly cancel an in-flight external command. Check status rather than assuming an immediate effect. Resume is subject to current plan/resource admission; compatible instruction/tool changes catch up without silently changing model or workspace authority.
 
 ## Keep the two clocks and two histories distinct
 
 The idle deadline is ten minutes after the last accepted user append, including steering. Model output, tool activity, status reads, and exports do not refresh it. A running task may continue past the deadline; once it finishes, an already-expired session closes and releases its container. Explicit resume counts as user activity and starts a new ten-minute period. Do not send dummy input to simulate observation.
 
-Sessions pin agent revision, instructions, resolved tools/skills, model budgets, and workspace setting. Configuration or registry edits affect new sessions only. Compaction changes the derived model context, not the original append-only journal. Pending steering may remain separate until consumed.
+The creation snapshot is historical provenance, not the current instruction/tool authority. Agent instruction and registered-tool edits reach existing Sessions at safe boundaries and survive compaction; inspect effective `configuration` instead of treating `pinned.tools` as live availability. Model, physical workspace authority and selected skills retain their creation scope. Compaction changes derived model context, not the source journal. Pending steering may remain separate until consumed.
 
 ## Recover without duplicate work
 

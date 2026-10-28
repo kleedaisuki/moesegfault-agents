@@ -6,6 +6,14 @@ deployed cache-hit improvement or of a universally supported KV-control API.
 
 ## Decision
 
+**Superseded design premise:** the immutable-live-pin approach below describes
+the earlier implementation and its measurements. The current direction removes
+that invariant: creation snapshots are historical provenance, while effective
+configuration/layout evolve. A fixed real dispatcher and ordinary versioned tool
+catalog replace repeated mutable top-level registered schemas. See
+[dynamic context and dispatch](dynamic-tool-context.md) for the new construction,
+provider limits and its separate acceptance; old measurements remain unchanged.
+
 Preserve a deterministic, versioned platform prefix and immutable Session pin.
 Represent eligible response-scoped instruction and environment changes as
 authoritative append-only context transitions at the point where they take

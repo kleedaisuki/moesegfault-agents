@@ -104,16 +104,18 @@ pub(super) fn obsolete_positions(reference: &branch::NativeHistoryRef) -> Result
     let latest_context = reference
         .context
         .as_ref()
-        .and_then(|context| context.updates.last());
+        .map(|context| context.live_positions())
+        .unwrap_or_default();
     let latest_configuration = reference
         .configuration
         .as_ref()
-        .and_then(|configuration| configuration.updates.last());
+        .map(|configuration| configuration.live_positions())
+        .unwrap_or_default();
     Ok(all
         .into_iter()
         .filter(|position| {
-            Some(&indices[*position - 1]) != latest_context
-                && Some(&indices[*position - 1]) != latest_configuration
+            !latest_context.contains(&indices[*position - 1])
+                && !latest_configuration.contains(&indices[*position - 1])
         })
         .collect())
 }
@@ -137,6 +139,31 @@ pub(super) fn configuration_positions(reference: &branch::NativeHistoryRef) -> R
         .into_iter()
         .map(|index| index + 1)
         .collect())
+}
+
+pub(super) fn transition_states(
+    reference: &branch::NativeHistoryRef,
+) -> Result<(
+    Option<crate::prompt_context::Revision>,
+    Option<crate::configuration::History>,
+)> {
+    context_positions(reference)?;
+    let indices = reference
+        .window
+        .as_ref()
+        .map(|window| window.indices(reference.end))
+        .transpose()?
+        .unwrap_or_else(|| (0..reference.end).collect());
+    Ok((
+        reference
+            .context
+            .as_ref()
+            .map(|context| context.rebased(&indices)),
+        reference
+            .configuration
+            .as_ref()
+            .map(|configuration| configuration.rebased(&indices)),
+    ))
 }
 
 fn binding(record: &SessionRecord, config: &ProviderConfig) -> Result<String> {
@@ -480,6 +507,7 @@ impl SessionInner {
 
     pub(super) fn validate_native_generation(
         config: &ProviderConfig,
+        record: &SessionRecord,
         request: &crate::responses_wire::ResponseRequest,
         bindings: &crate::tool_rendering::ToolBindings<'_>,
         definitions: &[tools::ToolDefinition],
@@ -491,6 +519,9 @@ impl SessionInner {
         let mut controls = request.native_controls();
         if let Some(choice) = controls.get_mut("tool_choice") {
             *choice = bindings.rewrite_choice(choice.clone(), provider::is_deepseek(config))?;
+            if crate::registered_tools::enabled(record) {
+                *choice = crate::registered_tools::choice(choice.clone(), record.tools());
+            }
         }
         options.native = Some(
             provider::responses::PreparedRequest::new_with_effects(
@@ -502,6 +533,7 @@ impl SessionInner {
                     definitions,
                     false,
                     provider::is_deepseek(config),
+                    Some(record),
                 )?,
                 &controls,
                 provider::controls::HarnessControlEffects {
@@ -572,7 +604,10 @@ impl SessionInner {
         if config.protocol != ProviderProtocol::Responses {
             return Ok(());
         }
-        let mut input = self.native_generation_input(config).await?;
+        let mut input = self
+            .native_generation_input(config)
+            .await
+            .map_err(|error| self.context_failure("native_history", error))?;
         let (mut controls, tools) = {
             let data = self.data.borrow();
             let run = data
@@ -611,6 +646,7 @@ impl SessionInner {
                     definitions,
                     run.tool_budget_exhausted(),
                     provider::is_deepseek(config),
+                    Some(&data.as_ref().unwrap().record),
                 )?,
             )
         };
@@ -655,10 +691,17 @@ impl SessionInner {
                         .any(|tool| tool.kind == "programmatic_tool_calling"),
                 }
                 .rewrite_choice(choice.clone(), provider::is_deepseek(config))?;
+                if crate::registered_tools::enabled(&data.as_ref().unwrap().record) {
+                    *choice = crate::registered_tools::choice(
+                        choice.clone(),
+                        data.as_ref().unwrap().record.tools(),
+                    );
+                }
             }
         }
-        self.append_native_context_update(config, &tools, &mut input)
-            .await?;
+        self.append_native_context_update(config, &tools, definitions, &mut input)
+            .await
+            .map_err(|error| self.context_failure("runtime_context", error))?;
         let (history, capacity, output) = {
             let data = self.data.borrow();
             let data = data.as_ref().unwrap();
@@ -671,7 +714,11 @@ impl SessionInner {
             )
         };
         let obsolete = obsolete_positions(&history)?;
-        let mut fitted = crate::native_window::fit_with_revisions(
+        let required = context_positions(&history)?
+            .into_iter()
+            .filter(|index| !obsolete.contains(index))
+            .collect::<Vec<_>>();
+        let mut fitted = crate::native_window::fit_with_transitions(
             config,
             &input,
             &tools,
@@ -683,8 +730,10 @@ impl SessionInner {
                 ..Default::default()
             },
             &obsolete,
+            &required,
         )
-        .await?;
+        .await
+        .map_err(|error| self.context_failure("native_prepare", error))?;
         if fitted.input_tokens.is_none() && history.window.is_some() {
             let tokens = crate::responses_auxiliary::count_rendered(config, &fitted.prepared)
                 .await?
@@ -729,7 +778,19 @@ impl SessionInner {
 
     pub(super) async fn compaction_source(&self, config: &ProviderConfig) -> Result<Vec<Value>> {
         if config.protocol == ProviderProtocol::Responses {
-            self.native_generation_input(config).await
+            let input = self.native_generation_input(config).await?;
+            let updates = self
+                .native_branch_ref()?
+                .map(|history| context_positions(&history))
+                .transpose()?
+                .unwrap_or_default();
+            Ok(input
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    (index > 0 && updates.binary_search(&index).is_err()).then_some(item)
+                })
+                .collect())
         } else {
             provider::responses::message_items(&self.snapshot()?.messages[1..])
                 .map_err(Error::RustError)
@@ -850,27 +911,49 @@ impl SessionInner {
         }
         context.messages_end = data.messages.len();
         for configuration in &data.pending_configurations {
-            let index = context.history.end;
-            let mut updates = context
-                .history
-                .configuration
+            let prior = context.history.configuration.clone();
+            let items = if crate::registered_tools::enabled(&data.record) {
+                crate::configuration::dynamic_items(
+                    &data.record.pinned,
+                    configuration,
+                    prior.as_ref(),
+                )
+            } else {
+                vec![("legacy", crate::configuration::item(configuration))]
+            };
+            let mut updates = prior
                 .as_ref()
                 .map(|history| history.updates.clone())
                 .unwrap_or_default();
-            updates.push(index);
+            let mut active = prior
+                .as_ref()
+                .map(|history| history.active.clone())
+                .unwrap_or_default();
+            for (offset, (name, _)) in items.iter().enumerate() {
+                let index = context.history.end + offset;
+                updates.push(index);
+                active.insert((*name).into(), index);
+            }
+            let values = items.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
             context.history = mutate_history(
                 &self.state.storage(),
                 &data.record.id,
                 Some(&context.history),
                 &provider_binding,
-                &format!("configuration:{}", configuration.agent_revision),
+                &format!(
+                    "configuration:{:?}:{}",
+                    data.record.context_layout, configuration.agent_revision
+                ),
                 Mutation::Append,
-                &[crate::configuration::item(configuration)],
+                &values,
             )
             .await?;
             context.history.configuration = Some(crate::configuration::History {
                 revision: configuration.agent_revision,
                 updates,
+                active,
+                guidance_digest: Some(crate::configuration::guidance_digest(configuration)),
+                catalog_digest: Some(crate::registered_tools::revision(configuration)),
             });
         }
         let mut input =
@@ -888,11 +971,13 @@ impl SessionInner {
         &self,
         config: &ProviderConfig,
         tools: &[Value],
+        definitions: &[tools::ToolDefinition],
         input: &mut Vec<Value>,
     ) -> Result<()> {
         let _guard = self.persistence.lock().await;
         let data = self.snapshot()?;
-        if !crate::prompt_context::enabled(&data.record.pinned, config) {
+        let dynamic = crate::registered_tools::enabled(&data.record);
+        if !dynamic && !crate::prompt_context::enabled(&data.record.pinned, config) {
             return Ok(());
         }
         let run = data
@@ -906,12 +991,33 @@ impl SessionInner {
                 .as_deref()
                 .or(response.request.instructions.as_deref())
         });
-        let snapshot = crate::prompt_context::snapshot(
-            &data.record.pinned,
-            data.record.runtime_profile,
-            instructions,
-            tools,
-        );
+        let available = data
+            .record
+            .tools()
+            .iter()
+            .filter(|registered| {
+                definitions
+                    .iter()
+                    .any(|definition| definition.function.name == registered.name)
+            })
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        let snapshot = if dynamic {
+            crate::prompt_context::dynamic_snapshot(
+                &data.record.pinned,
+                data.record.runtime_profile,
+                instructions,
+                response.and_then(|response| response.request.tool_choice.as_ref()),
+                &available,
+            )
+        } else {
+            crate::prompt_context::snapshot(
+                &data.record.pinned,
+                data.record.runtime_profile,
+                instructions,
+                tools,
+            )
+        };
         let mut context = data
             .native_context
             .ok_or_else(|| fault("native_context_unavailable"))?;
@@ -919,17 +1025,27 @@ impl SessionInner {
             return Err(fault("native_context_provider_mismatch"));
         }
         let previous = context.history.context.as_ref();
-        let Some((digest, item)) = crate::prompt_context::update(
-            previous.map(|context| context.digest.as_str()),
-            &snapshot,
-        ) else {
+        let digest = crate::prompt_context::digest(&snapshot);
+        if previous.is_some_and(|context| context.digest == digest) {
             return Ok(());
+        }
+        let items = if dynamic {
+            crate::prompt_context::dynamic_items(&snapshot, previous)
+        } else {
+            vec![("legacy", crate::prompt_context::item(&snapshot))]
         };
-        let index = context.history.end;
         let mut updates = previous
             .map(|context| context.updates.clone())
             .unwrap_or_default();
-        updates.push(index);
+        let mut active = previous
+            .map(|context| context.active.clone())
+            .unwrap_or_default();
+        for (offset, (name, _)) in items.iter().enumerate() {
+            let index = context.history.end + offset;
+            updates.push(index);
+            active.insert((*name).into(), index);
+        }
+        let values = items.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
         context.history = mutate_history(
             &self.state.storage(),
             &data.record.id,
@@ -942,16 +1058,21 @@ impl SessionInner {
                 run.round
             ),
             Mutation::Append,
-            std::slice::from_ref(&item),
+            &values,
         )
         .await?;
-        context.history.context = Some(crate::prompt_context::Revision { digest, updates });
-        input.push(item);
+        context.history.context = Some(crate::prompt_context::Revision {
+            digest,
+            updates,
+            active,
+            guidance_digest: Some(crate::prompt_context::digest(&snapshot["instructions"])),
+        });
+        input.extend(values);
         util::emit(
             "context.prepared",
             json!({
                 "session_id":data.record.id,"run_id":run.id,"round":run.round,
-                "prompt_layout":"append_only_v1","prefix_bytes":system_prefix(&data.record).len(),
+                "prompt_layout":if dynamic {"dynamic_v2"} else {"append_only_v1"},"prefix_bytes":system_prefix(&data.record).len(),
                 "context_updates":context.history.context.as_ref().map_or(0, |context| context.updates.len()),
                 "tool_set_sha256":snapshot["tool_set_sha256"],
             }),
@@ -982,6 +1103,16 @@ impl SessionInner {
                 data.messages.len(),
             )
         };
+        // The raw paid receipt remains intact. An unissued incomplete private
+        // dispatcher call is not a pending tool obligation in effective context.
+        let indices = super::native_items::effective_output_indices(
+            turn,
+            crate::registered_tools::enabled(&self.snapshot()?.record),
+        )?;
+        let output = indices
+            .into_iter()
+            .map(|index| turn.output[index].clone())
+            .collect::<Vec<_>>();
         context.history = mutate_history(
             &self.state.storage(),
             &session,
@@ -989,7 +1120,7 @@ impl SessionInner {
             &context.history.provider_binding,
             &format!("output:{}:{}", run.id, run.round),
             Mutation::Append,
-            &turn.output,
+            &output,
         )
         .await?;
         context.messages_end = messages_end + 1;
@@ -997,7 +1128,11 @@ impl SessionInner {
         Ok(())
     }
 
-    pub(super) async fn replace_native_after_compaction(&self, run: &RunState) -> Result<()> {
+    pub(super) async fn replace_native_after_compaction(
+        &self,
+        run: &RunState,
+        active: Option<&[Value]>,
+    ) -> Result<()> {
         let _guard = self.persistence.lock().await;
         let data = self.snapshot()?;
         let Some(context) = data.native_context else {
@@ -1005,54 +1140,37 @@ impl SessionInner {
         };
         let mut items = provider::responses::message_items(&data.history_instructions)
             .map_err(Error::RustError)?;
-        items.extend(
-            provider::responses::message_items(&data.messages[1..]).map_err(Error::RustError)?,
-        );
+        if let Some(active) = active {
+            items.extend(
+                provider::responses::message_items(&data.messages[1..2])
+                    .map_err(Error::RustError)?,
+            );
+            items.extend_from_slice(active);
+        } else {
+            items.extend(
+                provider::responses::message_items(&data.messages[1..])
+                    .map_err(Error::RustError)?,
+            );
+        }
         let configuration = match context.history.configuration.as_ref() {
             Some(configuration) => {
-                let index = configuration
-                    .updates
-                    .last()
-                    .copied()
-                    .ok_or_else(|| fault("native_configuration_revision_invalid"))?;
-                let key = format!("native:{}:entry:{index}", context.history.generation);
-                let bytes = crate::session_storage::read_many(&self.state.storage(), &[key])
-                    .await?
-                    .into_iter()
-                    .next()
-                    .flatten()
-                    .ok_or_else(|| fault("native_context_entry_missing"))?;
-                let update: Value = serde_json::from_slice(&bytes)?;
-                let index = items.len();
-                items.push(update);
-                Some(crate::configuration::History {
-                    revision: configuration.revision,
-                    updates: vec![index],
-                })
+                let indices = self
+                    .retain_context_items(
+                        &context.history,
+                        configuration.live_positions(),
+                        &mut items,
+                    )
+                    .await?;
+                Some(configuration.rebased(&indices))
             }
             None => None,
         };
         let revision = match context.history.context.as_ref() {
             Some(revision) => {
-                let index = revision
-                    .updates
-                    .last()
-                    .copied()
-                    .ok_or_else(|| fault("native_context_revision_invalid"))?;
-                let key = format!("native:{}:entry:{index}", context.history.generation);
-                let bytes = crate::session_storage::read_many(&self.state.storage(), &[key])
-                    .await?
-                    .into_iter()
-                    .next()
-                    .flatten()
-                    .ok_or_else(|| fault("native_context_entry_missing"))?;
-                let update: Value = serde_json::from_slice(&bytes)?;
-                let index = items.len();
-                items.push(update);
-                Some(crate::prompt_context::Revision {
-                    digest: revision.digest.clone(),
-                    updates: vec![index],
-                })
+                let indices = self
+                    .retain_context_items(&context.history, revision.live_positions(), &mut items)
+                    .await?;
+                Some(revision.rebased(&indices))
             }
             None => None,
         };
@@ -1074,6 +1192,28 @@ impl SessionInner {
         });
         Ok(())
     }
+
+    async fn retain_context_items(
+        &self,
+        history: &branch::NativeHistoryRef,
+        mut positions: Vec<usize>,
+        items: &mut Vec<Value>,
+    ) -> Result<Vec<usize>> {
+        positions.sort_unstable();
+        positions.dedup();
+        let keys = positions
+            .iter()
+            .map(|index| format!("native:{}:entry:{index}", history.generation))
+            .collect::<Vec<_>>();
+        let values = crate::session_storage::read_many(&self.state.storage(), &keys).await?;
+        let mut indices = vec![usize::MAX; items.len()];
+        for (index, value) in positions.into_iter().zip(values) {
+            let bytes = value.ok_or_else(|| fault("native_context_entry_missing"))?;
+            items.push(serde_json::from_slice(&bytes)?);
+            indices.push(index);
+        }
+        Ok(indices)
+    }
 }
 
 fn native_tools(
@@ -1082,9 +1222,16 @@ fn native_tools(
     definitions: &[tools::ToolDefinition],
     exhausted: bool,
     bridge: bool,
+    record: Option<&SessionRecord>,
 ) -> Result<Vec<Value>> {
     let Some(request) = request else {
-        return provider::responses::tool_items(definitions).map_err(Error::RustError);
+        let tools = provider::responses::tool_items(definitions).map_err(Error::RustError)?;
+        return Ok(
+            match record.filter(|record| crate::registered_tools::enabled(record)) {
+                Some(record) => crate::registered_tools::render(tools, record.tools()),
+                None => tools,
+            },
+        );
     };
     let retained = definitions
         .iter()
@@ -1110,7 +1257,12 @@ fn native_tools(
         });
     }
     tools.extend(declared);
-    Ok(tools)
+    Ok(
+        match record.filter(|record| crate::registered_tools::enabled(record)) {
+            Some(record) => crate::registered_tools::render(tools, record.tools()),
+            None => tools,
+        },
+    )
 }
 
 pub(super) fn completion_failure(completion: &Completion) -> Option<&'static str> {

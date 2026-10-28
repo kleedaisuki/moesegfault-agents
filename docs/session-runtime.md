@@ -5,7 +5,7 @@
 | State | Authority | Lifetime |
 | --- | --- | --- |
 | Agent configuration, account/plan, quota admission | D1 | User/account data |
-| Original instructions and resolved tool/skill pin | Session Durable Object | Immutable base prefix, including explicit resume |
+| Creation snapshot (`pinned`) | Session Durable Object | Historical provenance/reference compatibility, not live prompt authority |
 | Effective Agent instruction/tool configuration | D1 revision log / Session Durable Object applied overlay | Durable user configuration; appended at safe boundaries |
 | Canonical conversation events | Append-only DO journal entries | User data; never discarded by compaction |
 | Active model prompt and compaction summaries | DO state chunks | Rebuildable intermediate state |
@@ -42,7 +42,7 @@ The run safety ceiling is 128 model rounds; this is distinct from inactivity. Pr
 
 Only accepted user input advances `last_input_at_ms`. Model tokens, tool calls, reads and keepalives do not. A running task continues after ten minutes without new input. When it finishes, it archives immediately if that deadline has passed. Idle sessions archive at the same deadline.
 
-A normal archive checkpoints the workspace, writes an immutable conversation export, registers its retained-byte clock, commits `Closed`, and releases the Container. A persisted `archive_pending` phase makes release retryable after a crash. A successfully closed session can be explicitly resumed using `POST /v1/sessions/{id}/resume`; D1 readmits it under live-session quotas and the DO preserves its exact pinned prefix and workspace. The explicit resume gesture starts a new idle window.
+A normal archive checkpoints the workspace, writes an immutable conversation export, registers its retained-byte clock, commits `Closed`, and releases the Container. A persisted `archive_pending` phase makes release retryable after a crash. A successfully closed session can be explicitly resumed using `POST /v1/sessions/{id}/resume`; D1 readmits it under live-session quotas and the DO restores its history and workspace, then adopts compatible effective configuration/layout changes at safe boundaries. The explicit resume gesture starts a new idle window.
 
 Physical release has its own durable receipt after checkpoint publication. A successful stop acknowledgement pins the end timestamp; if the stop is confirmed but its acknowledgement was lost, no exit time is invented. The original clock, lease and uncertainty remain in an accounting journal with their budget hold. A saved release outcome is replayed before detaching the old active clock/lease, allowing a later workspace generation without accidentally destroying or charging it as the old one.
 
@@ -52,7 +52,15 @@ Workspace compute stays warm behind an independent funded lease, not an active-r
 
 ## Prompt-cache and compaction invariants
 
-Instructions, sorted registry definitions and skill contents are resolved once at session creation. No live registry lookup mutates an existing session. OpenRouter receives a stable opaque session identifier for routing/cache affinity. Dynamic user conversation and summaries follow the fixed prefix.
+The creation snapshot is not a requirement to freeze live instructions or tools.
+Effective Agent revisions are adopted at safe boundaries and retained across
+compaction. Dynamic native context uses a minimal platform system contract,
+necessary instruction guidance and ordinary tool-catalog references. A fixed
+dispatcher declaration replaces repetition of the mutable registered schemas;
+the backend validates each current inner schema and grant. Active layout and
+provider-decision catalog provenance are separate from historical pin hashes.
+OpenRouter retains its stable opaque Session routing identifier. See
+[dynamic context](dynamic-tool-context.md) for provider and compatibility boundaries.
 
 The compaction threshold is a validated percentage of authoritative model context, also bounded by the reserved output budget. Last reported provider token usage is authoritative for the measured prefix. Only newly appended content uses a conservative UTF-8-byte upper bound until the next usage report. The complete source event journal is separate from this compacted prompt.
 

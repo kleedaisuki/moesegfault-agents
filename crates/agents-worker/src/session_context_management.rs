@@ -3,6 +3,39 @@
 use super::*;
 use crate::context_management::{InputSize, Policy};
 
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct ActiveTurn {
+    pub messages: Vec<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<Vec<Value>>,
+}
+
+impl ActiveTurn {
+    // Native input must already exclude storage-owned configuration/runtime
+    // positions. Their user role is transport, not a new user exchange.
+    pub(super) fn capture(messages: &[Message], native: Option<&[Value]>) -> Self {
+        // This boundary has drained issued calls. Keep the current request
+        // exact, but let the summary carry resolved work so long tasks shrink.
+        let messages = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .cloned()
+            .into_iter()
+            .collect();
+        let native = native.map(|items| {
+            items
+                .iter()
+                .rev()
+                .find(|item| item["role"] == "user")
+                .cloned()
+                .into_iter()
+                .collect()
+        });
+        Self { messages, native }
+    }
+}
+
 pub(super) fn policy(data: &PersistedSession) -> Result<Policy> {
     let model = &data.record.pinned.model;
     let threshold = data
@@ -22,12 +55,18 @@ pub(super) fn policy(data: &PersistedSession) -> Result<Policy> {
 
 pub(super) fn triggered(data: &PersistedSession, measured: Option<u64>) -> Result<bool> {
     let policy = policy(data)?;
-    if policy.emits_item()
-        && data
-            .run
-            .as_ref()
-            .and_then(|run| run.response.as_ref())
-            .is_some_and(|response| response.compaction_source_end == Some(data.journal.len()))
+    // Retaining the live turn can leave the input above the threshold. Only
+    // real journal progress makes another paid summary useful, in every mode.
+    if data
+        .run
+        .as_ref()
+        .is_some_and(|run| run.compaction_source_end == Some(data.journal.len()))
+        || policy.emits_item()
+            && data
+                .run
+                .as_ref()
+                .and_then(|run| run.response.as_ref())
+                .is_some_and(|response| response.compaction_source_end == Some(data.journal.len()))
     {
         return Ok(false);
     }
@@ -59,6 +98,27 @@ pub(super) fn triggered(data: &PersistedSession, measured: Option<u64>) -> Resul
 }
 
 impl SessionInner {
+    pub(super) async fn active_compaction_turn(
+        &self,
+        data: &PersistedSession,
+    ) -> Result<ActiveTurn> {
+        let native = if let Some(context) = &data.native_context {
+            let items = self.native_export(&context.history).await?;
+            let updates = super::native::context_positions(&context.history)?;
+            Some(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, item)| {
+                        updates.binary_search(&(index + 1)).is_err().then_some(item)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        Ok(ActiveTurn::capture(&data.messages[1..], native.as_deref()))
+    }
     pub(super) async fn exact_compaction_tokens(
         &self,
         config: &ProviderConfig,
@@ -78,6 +138,7 @@ impl SessionInner {
         &self,
         data: &PersistedSession,
         summary: &Completion,
+        active: &ActiveTurn,
     ) -> Result<Option<Value>> {
         if !policy(data)?.emits_item() {
             return Ok(None);
@@ -96,15 +157,23 @@ impl SessionInner {
             .as_str()
             .filter(|text| !text.is_empty())
             .ok_or_else(|| Error::RustError("empty_compaction".into()))?;
-        let mut protected = vec![Message::text(
-            "system",
-            crate::context_prefix::prefix(&data.record.pinned),
-        )];
+        let mut protected = vec![Message::text("system", system_prefix(&data.record))];
         protected.extend(data.history_instructions.iter().cloned());
         protected.push(Message::text(
             "user",
             format!("Earlier session context (summary):\n{text}"),
         ));
+        let native = active
+            .native
+            .as_ref()
+            .map(|tail| {
+                let mut items =
+                    provider::responses::message_items(&protected).map_err(Error::RustError)?;
+                items.extend_from_slice(tail);
+                Ok::<_, Error>(items)
+            })
+            .transpose()?;
+        protected.extend(active.messages.iter().cloned());
         crate::responses_auxiliary::CompactionState::new(
             data.record.agent_id.clone(),
             data.record.pinned.prefix_hash(),
@@ -115,6 +184,7 @@ impl SessionInner {
             protected,
         )?
         .with_configuration(data.record.configuration.clone())
+        .with_native(native)
         .seal(
             &self.env.secret("DATA_ENCRYPTION_KEY")?.to_string(),
             &data.record.owner_id,
@@ -162,6 +232,119 @@ impl SessionInner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_compaction_retains_current_turn_and_exact_native_facts() {
+        let messages = vec![
+            Message::text("user", "Earlier task"),
+            Message::text("assistant", "Earlier answer"),
+            Message::text("user", "Current request: retain nonce-28"),
+            Message::text("assistant", "Working on current request"),
+            Message::tool_result("call_current", "verified current result"),
+        ];
+        let current = json!({"type":"message","role":"user","content":[
+            {"type":"input_text","text":"Current request: retain nonce-28"},
+            {"type":"input_image","image_url":"https://example.org/current.png"}
+        ]});
+        let native = vec![
+            json!({"type":"message","role":"user","content":"Earlier task"}),
+            current.clone(),
+            json!({"type":"reasoning","encrypted_content":"opaque-current-fact"}),
+            json!({"type":"function_call","call_id":"call_current","name":"__agents_call_tool","arguments":"{}"}),
+            json!({"type":"function_call_output","call_id":"call_current","output":"verified current result"}),
+        ];
+        let active = ActiveTurn::capture(&messages, Some(&native));
+        assert_eq!(active.messages.len(), 1);
+        assert_eq!(active.messages[0].content, messages[2].content);
+        assert_eq!(
+            active.native.as_deref(),
+            Some(std::slice::from_ref(&current))
+        );
+        let mut long_task = native.clone();
+        for index in 0..512 {
+            long_task.push(
+                json!({"type":"function_call","call_id":format!("call_{index}"),
+                "name":"__agents_call_tool","arguments":"{}"}),
+            );
+            long_task.push(
+                json!({"type":"function_call_output","call_id":format!("call_{index}"),
+                "output":"previous resolved evidence"}),
+            );
+        }
+        assert_eq!(
+            ActiveTurn::capture(&messages, Some(&long_task)).native,
+            active.native
+        );
+        let recovered: ActiveTurn =
+            serde_json::from_slice(&serde_json::to_vec(&active).unwrap()).unwrap();
+        assert_eq!(recovered.native, active.native);
+
+        let protected = vec![
+            Message::text("system", "platform"),
+            Message::text("user", "Earlier session context (summary): old facts only"),
+        ];
+        let mut sealed_native = provider::responses::message_items(&protected).unwrap();
+        sealed_native.extend_from_slice(recovered.native.as_deref().unwrap());
+        let mut projected = protected;
+        projected.extend(recovered.messages);
+        let hash = "a".repeat(64);
+        let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let item = crate::responses_auxiliary::CompactionState::new(
+            "agent".into(),
+            hash.clone(),
+            None,
+            projected,
+        )
+        .unwrap()
+        .with_native(Some(sealed_native.clone()))
+        .seal(key, "owner", "cmp_current")
+        .unwrap();
+        let expanded = crate::responses_auxiliary::expand_for_prefix(
+            key,
+            "owner",
+            "agent",
+            &hash,
+            &[item],
+            "current platform",
+        )
+        .unwrap();
+        assert_eq!(expanded.items, sealed_native[1..]);
+        assert_eq!(expanded.items[1], current);
+        assert_eq!(expanded.items.len(), 2);
+        assert!(
+            !expanded
+                .items
+                .iter()
+                .any(|item| item.get("call_id").is_some())
+        );
+        assert!(ActiveTurn::capture(&[], None).messages.is_empty());
+        assert!(
+            ActiveTurn::capture(&[Message::text("assistant", "no user")], Some(&[]))
+                .native
+                .unwrap()
+                .is_empty()
+        );
+
+        for explicit in [false, true] {
+            let mut data = explicit_state();
+            if !explicit {
+                data.run.as_mut().unwrap().response = None;
+            }
+            assert!(triggered(&data, Some(u64::MAX)).unwrap());
+            data.run.as_mut().unwrap().compaction_source_end = Some(data.journal.len());
+            // Run metadata is serialized in state; the journal is restored
+            // separately from journal:N chunks, not from PersistedSession JSON.
+            let recovered: RunState =
+                serde_json::from_slice(&serde_json::to_vec(data.run.as_ref().unwrap()).unwrap())
+                    .unwrap();
+            data.run = Some(recovered);
+            assert!(!triggered(&data, Some(u64::MAX)).unwrap());
+            assert!(!triggered(&data, None).unwrap());
+            data.journal
+                .push(Message::tool_result("call_new", "New evidence"));
+            assert!(triggered(&data, Some(u64::MAX)).unwrap());
+        }
+    }
 
     fn explicit_state() -> PersistedSession {
         let mut data = super::super::tests::state();

@@ -192,36 +192,46 @@ call/output items. Continuing chains append only new input and the outstanding
 function results, never reimport returned assistant history. Unknown fields and
 unsupported item types produce parameter errors rather than silent no-ops.
 
-Keep the immutable server behavioral contract, resolved server tools/skills, and
-pinned agent instructions separate from user customization. Top-level
+Keep the platform behavioral contract separate from effective Agent configuration
+and response customization. Top-level
 `instructions` is response-scoped: it survives repeated compaction verbatim during
 that response, but omitting it on the next response does not inherit the override.
 Typed `system`/`developer` input items, by contrast, are retained historical
 instructions and persist in later linear continuation and compaction. Both user
-layers apply behind the stable prefix and cannot grant permissions. The agent pin
-still persists; Agent instruction/tool edits append a separate durable Session
-configuration revision at safe boundaries rather than rewriting that pin.
+layers cannot grant execution permissions. Agent instruction/tool edits append a
+durable Session configuration revision at safe boundaries. The `pinned` creation
+snapshot remains historical provenance, not a rule freezing live prompt bytes or
+tool availability. Inspect effective `configuration` and active `context_layout`.
 Resend a desired response-only customization deliberately, without replaying
 historical input items. See [live configuration updates](session-config-updates.md).
 
 #### Prompt-cache layout
 
-Eligible new native Responses sessions pin `prompt_layout: "append_only_v1"`.
-Their built-in instructions, agent instructions and registered skills form a
-stable prefix. Changes to response-scoped `instructions`, the effective tool
-catalog or semantic runtime environment append a private system-context snapshot
-instead of rewriting that prefix. Unchanged snapshots are not appended again.
+Dynamic native Responses context keeps a minimal platform system contract and
+appends versioned effective configuration. Necessary instruction guidance is
+separate from ordinary tool-catalog/environment references; changing tool
+descriptions and schemas are not system instructions. A real, fixed-schema
+dispatcher transports registered tool name/arguments, so catalog edits do not
+rewrite a complete top-level registered-tool table. Caller-local function calls
+retain their public API representation; server-owned calls stay server-owned.
+Session journals/exports retain logical registered names/arguments, while the
+transport envelope remains private.
+The backend owns the observed decision revision, validates the current inner
+schema/grant and returns structured correction for a stale/revoked selection.
+Unchanged context is not appended again.
 Omitted/null instructions explicitly end a prior response-only override; an
 empty string remains an explicit value. Historical caller system/developer
-instructions and the original agent pin retain their existing semantics.
+instructions retain their existing semantics. The old creation snapshot does not
+override a newer effective Agent configuration.
 
 These internal snapshots do not appear as fabricated user input items and do not
-authorize tools. Current declarations and execution bindings remain authoritative:
-removing a tool never keeps it callable for the sake of caching. Changes to actual
-tool schemas can still invalidate a provider's rendered prefix. Model/provider
-capabilities, cache persistence and compaction also affect reuse; a stable prefix
-is not a guaranteed cache hit. Existing pins without the layout keep their exact
-legacy renderer. Unsupported native model profiles retain the compatible layout.
+authorize tools. Current execution bindings remain authoritative: removing a tool
+never keeps its grant alive for caching. Caller-local/native hosted declarations
+and provider-specific role rendering can still affect upstream prefix reuse.
+Cache persistence and compaction also matter; stable bytes do not guarantee a hit.
+Current Sessions can adopt the new active layout at safe boundaries, potentially
+rebuilding a prefix once. Sealed older Response boundaries keep their historical
+layout/reference identity rather than being rewritten by that adoption.
 See [cache engineering](prompt-cache-engineering.md) for provider boundaries,
 incremental acceptance and actual usage measurements.
 
@@ -229,7 +239,7 @@ incremental acceptance and actual usage measurements.
 |---|---|
 | `previous_response_id` | Continue the current head of the same owned agent/session |
 | `instructions` | Response-scoped text; combined custom instructions at most 64 KiB |
-| `tools` | At most 128 local function definitions, distinct from pinned server tools |
+| `tools` | At most 128 local function definitions, distinct from effective registered server tools |
 | `tool_choice` | `auto`, `none`, `required`, or `{type:"function",name:"..."}` naming an available function |
 | `parallel_tool_calls` | Boolean tool-parallelism policy |
 | `max_output_tokens` | Positive, no larger than the pinned agent output budget |
@@ -689,7 +699,7 @@ Returned `AgentConfig` adds `id`, `owner_id`, `revision`, `created_at_ms`, and
 `updated_at_ms`. Instruction/registered-tool edits publish live configuration
 revisions for existing Sessions on their next safe execution boundary; model,
 workspace authority and pinned skill changes still require a new Session.
-The original pin is preserved. See [configuration lifetimes](session-config-updates.md).
+The creation snapshot is historical provenance, not live instruction/tool authority. See [configuration lifetimes](session-config-updates.md).
 `compaction_percent`
 is an integer from 1 through 99, relative to the selected model context window.
 The service can compact earlier to preserve output headroom. Model registry entries
@@ -701,11 +711,11 @@ and skill content are deployment-managed in the initial version.
 |---|---|---|
 | GET | `/v1/sessions` | List caller's sessions |
 | GET | `/v1/agents/{id}/sessions` | List caller's sessions for this agent |
-| POST | `/v1/agents/{id}/sessions` | Create an idle session with a pinned configuration |
+| POST | `/v1/agents/{id}/sessions` | Create an idle session with a creation snapshot and effective context |
 | GET | `/v1/sessions/{id}` | Current session status |
 | GET | `/v1/sessions/{id}/view` | Small conditional status view without journal or full pin |
 | GET | `/v1/sessions/{id}/messages` | Bounded source-journal page with opaque cursors |
-| POST | `/v1/sessions/{id}/resume` | Explicitly readmit an archived session under current plan limits; preserve pinned config and workspace |
+| POST | `/v1/sessions/{id}/resume` | Explicitly readmit an archived session under current plan limits; restore history/workspace and adopt compatible Agent revisions |
 | POST | `/v1/sessions/{id}/messages` | `{"messages":[{"role":"user","content":"…"}],"stream":false}`; append and run |
 | POST | `/v1/sessions/{id}/steer` | `{"content":"Prioritize the failing test first"}`; durable input for active run |
 | DELETE | `/v1/sessions/{id}` | Request safe close and workspace checkpoint |
@@ -720,10 +730,13 @@ not be immediately cancellable. Clients should poll status rather than assuming
 that a transport disconnect cancels an accepted operation.
 
 `SessionRecord` contains `id`, `owner_id`, `agent_id`, `status`, `created_at_ms`,
-`last_input_at_ms`, `input_revision`, `pinned`, and optional `workspace_snapshot`.
+`last_input_at_ms`, `input_revision`, `pinned`, optional effective `configuration`,
+active `context_layout`, and optional `workspace_snapshot`.
 Status values are `idle`, `running`, and `closed`. The pinned record contains the
 agent revision, full resolved tool/skill definitions, model configuration,
-instructions, compaction percentage, and workspace setting.
+instructions, compaction percentage, and workspace setting at creation. It is not
+the active prompt or current tool catalog. Active layout and effective
+configuration can evolve without invalidating historical reference provenance.
 
 Status `messages` is the preserved append-only conversation journal, not the
 compacted model prompt. Compaction replaces only the derived active context;
@@ -752,7 +765,8 @@ past the deadline; when it completes, a session already idle for ten minutes is
 archived and its container released immediately. A new append during checkpoint
 invalidates the pending idle close. Closed sessions cannot silently be resumed by
 appending; explicitly resume them or create a new session. An explicit resume is
-user activity and starts a new ten-minute idle period without changing the pin.
+user activity and starts a new ten-minute idle period. It restores existing
+history/workspace and catches up compatible configuration at a safe boundary.
 
 ## Account endpoints
 

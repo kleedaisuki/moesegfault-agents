@@ -5,6 +5,26 @@ use sha2::{Digest, Sha256};
 const PREFIX: &str = "mnri1.";
 const MAX_HANDLE_BYTES: usize = 8192;
 
+pub(super) fn effective_output_indices(
+    turn: &provider::responses::NativeTurn,
+    dynamic: bool,
+) -> Result<Vec<usize>> {
+    if !dynamic {
+        return Ok((0..turn.output.len()).collect());
+    }
+    let retained = crate::registered_tools::effective_output(turn);
+    let mut indices = Vec::with_capacity(retained.len());
+    for (index, item) in turn.output.iter().enumerate() {
+        if retained.get(indices.len()) == Some(item) {
+            indices.push(index);
+        }
+    }
+    if indices.len() != retained.len() {
+        return Err(invalid());
+    }
+    Ok(indices)
+}
+
 pub(crate) struct ItemContext {
     pub owner: String,
     pub agent: String,
@@ -325,11 +345,12 @@ impl ItemRef {
         response_id: &str,
         round: u64,
         ordinal: usize,
+        physical_ordinal: usize,
         item_count: usize,
         item: &Value,
     ) -> Result<Self> {
         let first = history.end.checked_sub(item_count).ok_or_else(invalid)?;
-        if ordinal >= item_count {
+        if physical_ordinal >= item_count {
             return Err(invalid());
         }
         let reference = Self {
@@ -338,7 +359,7 @@ impl ItemRef {
             response_id: response_id.into(),
             public_id: format!("item_{response_id}_{round}_{ordinal}"),
             generation: history.generation.clone(),
-            index: first + ordinal,
+            index: first + physical_ordinal,
             agent: record.agent_id.clone(),
             pin_hash: record.pinned.prefix_hash(),
             provider_binding: history.provider_binding.clone(),
@@ -507,7 +528,9 @@ impl SessionInner {
                 run.round.saturating_sub(1),
             )
         };
-        for (ordinal, raw) in turn.output.iter().enumerate() {
+        let indices = effective_output_indices(turn, crate::registered_tools::enabled(&record))?;
+        for (physical_ordinal, ordinal) in indices.iter().copied().enumerate() {
+            let raw = &turn.output[ordinal];
             let ordinary = matches!(raw["type"].as_str(), Some("message" | "reasoning"));
             if ordinary == calls {
                 continue;
@@ -518,7 +541,8 @@ impl SessionInner {
                 &response_id,
                 round,
                 ordinal,
-                turn.output.len(),
+                physical_ordinal,
+                indices.len(),
                 raw,
             )?;
             if calls {
@@ -737,6 +761,42 @@ impl SessionInner {
 mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn dynamic_context_item_handles_preserve_raw_ordinals_and_effective_positions(
+            keep in prop::collection::vec(any::<bool>(), 0..64), base in 0usize..2048,
+        ) {
+            let output = keep.iter().enumerate().map(|(index, keep)| {
+                if *keep { json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":format!("visible-{index}"),"annotations":[]}]}) }
+                else { json!({"type":"function_call","name":crate::registered_tools::ALIAS,"call_id":format!("private-{index}"),"status":"incomplete","arguments":"{\"name\":"}) }
+            }).collect::<Vec<_>>();
+            let turn: provider::responses::NativeTurn = serde_json::from_value(json!({
+                "provider_response_id":"upstream","status":"incomplete","output":output,
+                "usage_details":null,"cache_write_tokens":null,"error":null,
+                "incomplete_details":{"reason":"max_output_tokens"}
+            })).unwrap();
+            let indices = effective_output_indices(&turn, true).unwrap();
+            let expected = keep.iter().enumerate().filter_map(|(index, keep)| keep.then_some(index)).collect::<Vec<_>>();
+            prop_assert_eq!(&indices, &expected);
+            prop_assert_eq!(effective_output_indices(&turn, false).unwrap(), (0..keep.len()).collect::<Vec<_>>());
+            let record = super::super::tests::state().record;
+            let history = branch::NativeHistoryRef { source_session_id:record.id.clone(), generation:"a".repeat(64),
+                end:base+indices.len(), provider_binding:"b".repeat(64), window:None, context:None, configuration:None };
+            for (physical, raw) in indices.iter().copied().enumerate() {
+                let reference = ItemRef::new(&record, &history, "resp_mapping", 0, raw, physical, indices.len(), &turn.output[raw]).unwrap();
+                prop_assert_eq!(reference.index, base + physical);
+                prop_assert_eq!(reference.public_id, format!("item_resp_mapping_0_{raw}"));
+                if keep.iter().all(|keep| *keep) { prop_assert_eq!(reference.index, history.end-keep.len()+raw); }
+            }
+            if let Some(&raw) = indices.first() {
+                let mut bad = history.clone(); bad.end = indices.len()-1;
+                prop_assert!(ItemRef::new(&record, &bad, "resp_mapping", 0, raw, 0, indices.len(), &turn.output[raw]).is_err());
+                prop_assert!(ItemRef::new(&record, &history, "resp_mapping", 0, raw, indices.len(), indices.len(), &turn.output[raw]).is_err());
+            }
+        }
+    }
     fn reference() -> ItemRef {
         ItemRef {
             version: 1,

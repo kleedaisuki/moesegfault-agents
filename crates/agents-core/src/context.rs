@@ -87,6 +87,7 @@ pub struct SessionConfiguration {
 #[serde(rename_all = "snake_case")]
 pub enum PromptLayout {
     AppendOnlyV1,
+    DynamicV2,
 }
 
 /// Store the complete resolved registry, never live references to mutable entries.

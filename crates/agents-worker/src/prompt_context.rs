@@ -13,6 +13,10 @@ pub(crate) const POLICY: &str = "Runtime context is updated by system messages n
 pub(crate) struct Revision {
     pub digest: String,
     pub updates: Vec<usize>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub active: std::collections::BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance_digest: Option<String>,
 }
 
 impl Revision {
@@ -22,6 +26,17 @@ impl Revision {
             && !self.updates.is_empty()
             && self.updates.iter().all(|index| *index < end)
             && self.updates.windows(2).all(|pair| pair[0] < pair[1])
+            && self
+                .active
+                .values()
+                .all(|index| self.updates.binary_search(index).is_ok())
+    }
+    pub(crate) fn live_positions(&self) -> Vec<usize> {
+        if self.active.is_empty() {
+            self.updates.last().copied().into_iter().collect()
+        } else {
+            self.active.values().copied().collect()
+        }
     }
 
     pub(crate) fn rebased(&self, indices: &[usize]) -> Self {
@@ -32,8 +47,59 @@ impl Revision {
                 .enumerate()
                 .filter_map(|(new, old)| self.updates.binary_search(old).is_ok().then_some(new))
                 .collect(),
+            active: self
+                .active
+                .iter()
+                .filter_map(|(name, old)| {
+                    indices
+                        .iter()
+                        .position(|index| index == old)
+                        .map(|new| (name.clone(), new))
+                })
+                .collect(),
+            guidance_digest: self.guidance_digest.clone(),
         }
     }
+}
+
+pub(crate) fn dynamic_snapshot(
+    pinned: &PinnedContext,
+    profile: RuntimeProfile,
+    instructions: Option<&str>,
+    choice: Option<&Value>,
+    available: &[String],
+) -> Value {
+    json!({"instructions":instructions,"tool_choice":choice,
+        "available_registered_tools":available,
+        "environment":{"workspace":pinned.workspace,"runtime_profile":profile}})
+}
+
+pub(crate) fn dynamic_items(
+    snapshot: &Value,
+    previous: Option<&Revision>,
+) -> Vec<(&'static str, Value)> {
+    let mut items = vec![];
+    let guidance = digest(&snapshot["instructions"]);
+    if previous.and_then(|revision| revision.guidance_digest.as_deref()) != Some(guidance.as_str())
+        && (!snapshot["instructions"].is_null() || previous.is_some())
+    {
+        let text = snapshot["instructions"].as_str().map_or(
+            "Response-specific instructions ended. Continue using the current Agent instructions.".to_owned(),
+            |instructions| format!("Instructions for this response and its tool rounds only (replace the previous response-specific override):\n{instructions}"),
+        );
+        items.push((
+            "instructions",
+            json!({"type":"message","role":"system","content":[{"type":"input_text","text":text}]}),
+        ));
+    }
+    let mut runtime = snapshot.clone();
+    runtime.as_object_mut().unwrap().remove("instructions");
+    items.push((
+        "runtime",
+        json!({"type":"message","role":"user","content":[{"type":"input_text",
+        "text":format!("<agents_runtime_context>\n{runtime}\n</agents_runtime_context>")}]}),
+    ));
+    items
 }
 
 pub(crate) fn enabled(pinned: &PinnedContext, config: &crate::provider::ProviderConfig) -> bool {
@@ -159,7 +225,9 @@ mod tests {
         assert_eq!(
             Revision {
                 digest: "same".into(),
-                updates: vec![0, 3, 7]
+                updates: vec![0, 3, 7],
+                active: Default::default(),
+                guidance_digest: None,
             }
             .rebased(&[0, 2, 3, 8])
             .updates,

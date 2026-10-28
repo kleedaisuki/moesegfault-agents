@@ -169,6 +169,8 @@ pub(crate) struct CompactionState {
     // authoritative Agent revision journal or re-enable a revoked tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<agents_core::SessionConfiguration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<Vec<Value>>,
 }
 
 impl CompactionState {
@@ -185,6 +187,7 @@ impl CompactionState {
             instructions,
             messages,
             configuration: None,
+            native: None,
         };
         state.validate()?;
         Ok(state)
@@ -195,6 +198,11 @@ impl CompactionState {
         configuration: Option<agents_core::SessionConfiguration>,
     ) -> Self {
         self.configuration = configuration;
+        self
+    }
+
+    pub(crate) fn with_native(mut self, native: Option<Vec<Value>>) -> Self {
+        self.native = native;
         self
     }
 
@@ -312,15 +320,26 @@ fn expand_items(
         found = true;
         let mut state = CompactionState::open(key, owner, item, agent, prefix_hash)?;
         instructions = state.instructions;
-        if state.messages.first().is_some_and(|message| {
-            message.role == "system"
-                && base.is_some_and(|base| message.content.as_str() == Some(base))
-        }) {
+        let remove_prefix = state.messages.first().is_some_and(|message| {
+            // The authenticated sealed state owns this prefix slot. A live
+            // rendering upgrade must not revive its old Agent guidance.
+            message.role == "system" && base.is_some()
+        });
+        if remove_prefix {
             state.messages.remove(0);
         }
-        output.extend(
-            crate::provider::responses::message_items(&state.messages).map_err(|_| invalid())?,
-        );
+        match state.native {
+            Some(mut native) => {
+                if remove_prefix && !native.is_empty() {
+                    native.remove(0);
+                }
+                output.extend(native);
+            }
+            None => output.extend(
+                crate::provider::responses::message_items(&state.messages)
+                    .map_err(|_| invalid())?,
+            ),
+        }
     }
     Ok(ExpandedCompaction {
         items: output,

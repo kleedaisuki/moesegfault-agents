@@ -21,10 +21,9 @@ pub fn run_provenance(
     build_id: &str,
     trace_id: &str,
 ) -> Value {
-    let registry_version = record.pinned.tools.first().map_or("none", |first| {
+    let registry_version = record.tools().first().map_or("none", |first| {
         if record
-            .pinned
-            .tools
+            .tools()
             .iter()
             .all(|tool| tool.version == first.version)
         {
@@ -36,7 +35,10 @@ pub fn run_provenance(
     json!({
         "agent_id":record.agent_id,"session_id":record.id,"run_id":run_id,
         "build_id":validated_build_id(Some(build_id)),"trace_id":trace_id,
-        "config_revision":record.pinned.agent_revision,"prefix_hash":record.pinned.prefix_hash(),
+        "config_revision":record.configuration_revision(),"prefix_hash":record.pinned.prefix_hash(),
+        "prefix_hash_kind":"origin_provenance","context_layout":record.context_layout,
+        "catalog_revision":crate::registered_tools::revision(&record.configuration.clone()
+            .unwrap_or_else(|| crate::configuration::initial(&record.pinned))),
         "registry_version":registry_version
     })
 }
@@ -258,6 +260,12 @@ fn sanitize_fields_at(fields: Value, depth: u8) -> Value {
                 | "build_id"
                 | "prompt_layout"
                 | "tool_set_sha256"
+                | "context_layout"
+                | "catalog_revision"
+                | "observed_catalog_revision"
+                | "current_catalog_revision"
+                | "transport_alias"
+                | "prefix_hash_kind"
         );
         if key == "mcp_protocol_error_code" && value.as_i64().is_some() {
             safe.insert(key.clone(), value.clone());
@@ -324,6 +332,7 @@ fn token(value: &str, max: usize) -> bool {
 fn event_name(event: &str) -> &str {
     match event {
         "request.completed"
+        | "context.failed"
         | "request.failed"
         | "observer.completed"
         | "observer.recovery"
@@ -691,6 +700,7 @@ mod tests {
             input_revision: 1,
             pinned: agents_core::PinnedContext::resolve(&agent, vec![tool], vec![]),
             configuration: None,
+            context_layout: None,
             workspace_snapshot: None,
             runtime_profile: agents_core::RuntimeProfile::Basic1g,
         };
