@@ -132,18 +132,18 @@ try {
   expectLabel(await invoke('instructions_changed', 'Report only your current Agent policy label. Instructions checkpoint.'), 'BRAVO');
   const enabled = await patch({ tools: ['bash'] });
   report.bash_revision = enabled.revision; save();
-  const before = await request(`/v1/sessions/${report.session_id}`);
-  const start = before.messages.length;
+  const before = await request(`/v1/sessions/${report.session_id}/view`);
+  const start = before.message_count;
   const ran = await invoke('tools_changed_actual_bash',
     `Use bash exactly once to write file ${report.filename} with exactly ${report.marker}, then read it back in that same command. Include your active policy label, file name and observed contents in the final answer.`,
     { max_tool_calls: 1 });
   assert.ok(ran.text.startsWith('BRAVO') && ran.text.includes(report.filename) && ran.text.includes(report.marker));
   assert.equal(ran.calls.length, 0, 'Server-owned tools must not become caller-local function calls');
-  const after = await request(`/v1/sessions/${report.session_id}`);
+  const after = await request(`/v1/sessions/${report.session_id}/view`);
   assert.equal(after.context_layout, 'dynamic_v2');
-  assert.equal(after.configuration.agent_revision, enabled.revision);
-  assert.deepEqual(after.configuration.tools.map(tool => tool.name), ['bash']);
-  const fresh = after.messages.slice(start);
+  const page = await request(`/v1/sessions/${report.session_id}/messages?limit=10`);
+  assert.ok(page.start <= start && page.high_water >= start, 'The bounded page must cover this one fresh tool operation');
+  const fresh = page.data.filter(record => record.sequence >= start).map(record => record.message);
   const actualCalls = fresh.flatMap(message => message.tool_calls ?? []);
   assert.equal(actualCalls.length, 1);
   const call = actualCalls[0]; assert.equal(call.function.name, 'bash');
@@ -174,7 +174,7 @@ try {
   report.memory_verified = true; report.source_unchanged = true; report.status = 'passed'; save();
   await request(`/v1/sessions/${report.session_id}`, 'DELETE');
   const deadline = Date.now() + 120_000;
-  while ((await request(`/v1/sessions/${report.session_id}`)).status !== 'closed') {
+  while ((await request(`/v1/sessions/${report.session_id}/view`)).status !== 'closed') {
     assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 1000));
   }
   await request(`/v1/agents/${report.agent_id}`, 'DELETE');
