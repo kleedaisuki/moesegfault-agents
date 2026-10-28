@@ -169,6 +169,22 @@ the changed request to its adjacent warm control under `auto`; inspect both
 actual provider cache reads and logical execution receipts. Do not replay the
 already accepted startup or old product suites.
 
+## Incremental execution checkpoints
+
+Normal CI [40647641984](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40647641984),
+source `63e5360a04e7e084fac5cc1d03c991e85b8b465f`, remains **failed overall**.
+Its Core all-targets clippy, Worker Wasm compilation/bundle, three new Rust guards
+and eight new selector assertions passed. Worker artifact `12798234412` and
+verification receipt `12798980204` preserve the exact successful build/phases;
+native/tooling receipts are `12798490871` / `12798535727`.
+
+All three new controlled Worker journeys failed at initial context preparation,
+before their controlled provider boundary. They are explicit unresolved checks,
+not accepted runtime behavior. No old product/cache journey was replayed and no
+real model was invoked. Source review and successful compilation are not a
+substitute for this gate. Passing phases are retained rather than rerun merely
+because the aggregate failed.
+
 ## Source review checkpoint
 
 An independent, source-only review covered the new DynamicV2 dispatcher and its
