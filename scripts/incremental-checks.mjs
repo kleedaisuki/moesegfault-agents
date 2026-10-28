@@ -247,6 +247,7 @@ function remediation(source, check) {
 
 const CHECK_COMMON = ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/agents-worker/Cargo.toml', 'crates/agents-core', 'crates/agents-auth', 'crates/agents-worker/src/util.rs', 'crates/agents-worker/src/resources.rs'];
 const TOOL_CHECK_INPUTS = {
+  'dynamic-context-selection.test.mjs': ['scripts/incremental-checks.mjs', 'tests/worker/dynamic-context-journey.mjs', 'crates/agents-worker/src/registered_tools.rs'],
   'paid-route-policy.test.mjs': ['tests/e2e/paid-route-policy.mjs', 'crates/agents-worker/src/provider.rs', 'crates/agents-worker/src/provider_config.rs', 'wrangler.jsonc'],
   'test_paid_route_policy.py': ['tests/e2e/paid_route_policy.py', 'tests/e2e/conftest.py', 'crates/agents-worker/src/provider.rs', 'crates/agents-worker/src/provider_config.rs', 'wrangler.jsonc'],
   'test_current_responses_sdk_contract.py': ['tests/e2e/current_responses_sdk.py', 'tests/e2e/response_checks.py', 'tests/e2e/validate_responses_wire.py', 'tests/e2e/requirements-current.lock'],
@@ -275,6 +276,7 @@ export function checkInputPaths(source, check, runGit = git) {
     if (!own) throw Error(`Cannot bind Rust check source: ${check.id}`);
     const base = path.basename(own);
     const groups = [
+      [/^registered_tools\.rs$/, /\/(?:registered_tools|configuration|context_prefix|prompt_context|responses_schema)\.rs$/],
       [/^provider/, /\/(?:provider[^/]*|responses_controls|responses_wire|responses_schema)\.rs$/],
       [/^(?:session|conversation|workspace|response_(?:routes|index|websocket)|resources)/, /\/(?:session[^/]*|conversation[^/]*|workspace[^/]*|response_[^/]*|store[^/]*|resources|cleanup|checkpoint_gc|space)\.rs$/],
       [/^(?:store|model_|auxiliary|context_prefix)/, /\/(?:store[^/]*|model_[^/]*|auxiliary[^/]*|responses_auxiliary|context_prefix|metering|resources)\.rs$/],

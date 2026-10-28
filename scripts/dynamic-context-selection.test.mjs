@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
-import { dynamicContextChangedLines, selections } from './incremental-checks.mjs';
+import { changedRustTests, checkInputPaths, dynamicContextChangedLines, rustTestArguments, selections } from './incremental-checks.mjs';
 
 test('dynamic context increments select only the three new user journeys', () => {
   const selected = selections('a'.repeat(40), 'b'.repeat(40), ['tests/worker/dynamic-context-journey.mjs']);
@@ -39,4 +39,28 @@ test('mechanical fixture fields do not hide actual changed behavior in another h
   const diff = '@@ -10,0 +11 @@\n+            context_layout: None,\n'
     + '@@ -30 +31 @@\n-    assert_eq!(before, old);\n+    assert_eq!(before, new);\n';
   assert.deepEqual(dynamicContextChangedLines('crates/agents-worker/src/session.rs', diff), [[31, 32]]);
+});
+
+test('registered dispatcher increment binds exactly its three new Rust guards', () => {
+  const source = fs.readFileSync(new URL('../crates/agents-worker/src/registered_tools.rs', import.meta.url), 'utf8');
+  const names = changedRustTests(source, [[1, source.split('\n').length + 1]]);
+  assert.deepEqual(names, [
+    'dynamic_context_dispatcher_schema_and_catalog_revision_do_not_depend_on_instructions',
+    'dynamic_context_envelope_preserves_native_identity_and_checks_current_schema',
+    'dynamic_context_layout_keeps_origin_provenance_out_of_live_guidance',
+  ]);
+  for (const name of names) assert.deepEqual(rustTestArguments('agents-worker', name, 'crates/agents-worker/src/registered_tools.rs'),
+    ['cargo', 'test', '--locked', '-p', 'agents-worker', '--lib', name, '--', '--nocapture']);
+});
+
+test('pure registered dispatcher receipts exclude unrelated runtime fixes without losing their dependencies', () => {
+  const file = 'crates/agents-worker/src/registered_tools.rs';
+  const check = { id: 'rust:agents-worker:dynamic_context_layout_keeps_origin_provenance_out_of_live_guidance',
+    argv: ['cargo', 'test', '-p', 'agents-worker', '--lib', 'dynamic_context_layout_keeps_origin_provenance_out_of_live_guidance'], source_file: file };
+  const files = [file, 'crates/agents-worker/src/configuration.rs', 'crates/agents-worker/src/context_prefix.rs',
+    'crates/agents-worker/src/prompt_context.rs', 'crates/agents-worker/src/responses_schema.rs',
+    'crates/agents-worker/src/session.rs', 'crates/agents-worker/src/workspace.rs'];
+  const paths = checkInputPaths('a'.repeat(40), check, () => files.join('\n'));
+  for (const file of files.slice(0, 5)) assert.ok(paths.includes(file));
+  for (const file of files.slice(5)) assert.ok(!paths.includes(file), `Unrelated ${file} must not invalidate an accepted pure guard`);
 });

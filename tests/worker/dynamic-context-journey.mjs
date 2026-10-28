@@ -279,6 +279,9 @@ export async function runDynamicContextStaleJourney(context) {
       assert.ok(result, 'An ordinary caller-local callback remains paired with its real provider call');
       assert.ok(JSON.stringify(result.output).includes('CLIENT-OBSERVATION-17'));
     }),
+    { output: [{ type: 'function_call', id: 'upstream-dynamic-malformed', call_id: 'dynamic_malformed_gateway',
+      name: dispatcher, arguments: '{not-json', status: 'completed' }], usage,
+      check: body => latestCatalog(body, ['bash']) },
   ]);
   scenario.state.count = measure;
   await patch(scenario, { instructions: initial, tools: ['time'], workspace: true });
@@ -305,14 +308,45 @@ export async function runDynamicContextStaleJourney(context) {
       tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-local-return');
     assert.equal(final.value.status, 'completed');
     assert.equal(final.headers.get('x-agents-session'), id);
-    const effects = (await session(scenario, id)).messages.filter(message => message.role === 'tool');
+    const malformed = await scenario.invoke({ previous_response_id: final.value.id,
+      input: 'Observe the original malformed provider decision without retrying it.',
+      tools: [local], tool_choice: 'auto', max_output_tokens: 256 }, 200, 'dynamic-malformed-provider');
+    assert.equal(malformed.value.status, 'failed');
+    assert.equal(malformed.value.agents_error_code, 'invalid_registered_tool_invocation',
+      'A malformed known response has a precise diagnostic, not an invented unknown provider outcome');
+    assert.equal(malformed.value.usage.input_tokens, measure(scenario.state.requests[6]));
+    assert.equal(malformed.value.usage.output_tokens, 1, 'Known provider usage survives logical projection failure');
+    const failedSession = await session(scenario, id);
+    assert.equal(failedSession.last_error, 'invalid_registered_tool_invocation');
+    assert.equal(failedSession.run_id ?? null, null);
+    const effects = failedSession.messages.filter(message => message.role === 'tool');
     assert.equal(effects.filter(message => JSON.stringify(message.content).includes('unix_ms')).length, 0,
       'Neither stale nor revoked decisions can execute the old clock');
-    assert.equal(scenario.state.calls, 6);
-    return { provider_calls: 6, actual_clock_calls: 0, actual_workspace_starts: 0,
+    assert.ok(!failedSession.messages.flatMap(message => message.tool_calls ?? []).some(call => call.id === 'dynamic_malformed_gateway'),
+      'A malformed gateway decision never becomes an executable logical tool call');
+    const db = await scenario.mf.getD1Database('DB');
+    const model = (await db.prepare(`SELECT r.state,l.quantity,l.price_version FROM usage_reservations r
+      JOIN usage_ledger l ON l.reservation_id=r.id WHERE r.account_id=? AND r.idempotency_key=? AND l.resource='model'`)
+      .bind(scenario.principal.owner, `completion:${malformed.value.id}:round:0`).all()).results;
+    assert.equal(model.length, 1); assert.equal(model[0].state, 'settled');
+    assert.equal(model[0].quantity, malformed.value.usage.total_tokens); assert.equal(model[0].price_version, 'byok');
+    let open;
+    const deadline = Date.now() + 2000;
+    do {
+      open = await db.prepare(`SELECT
+        (SELECT COUNT(*) FROM usage_reservations WHERE account_id=? AND session_id=? AND state='reserved') AS reservations,
+        (SELECT COUNT(*) FROM resource_observations WHERE account_id=? AND session_id=? AND status='pending') AS observations`)
+        .bind(scenario.principal.owner, id, scenario.principal.owner, id).first();
+      if (!open.reservations && !open.observations) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    } while (Date.now() < deadline);
+    assert.deepEqual(open, { reservations: 0, observations: 0 }, 'Known malformed output cannot leave a funded unknown-outcome hold');
+    assert.equal(scenario.state.calls, 7);
+    return { provider_calls: 7, actual_clock_calls: 0, actual_workspace_starts: 0,
       stale_catalog_closed_with_current_revision: true, removed_tool_closed_without_effect: true,
       inner_schema_enforced: true, caller_local_callback_preserved: true,
-      model_ledger_rows: await modelRows(scenario, 6), external_network_calls: 0 };
+      malformed_known_usage_settled_before_projection: true, malformed_no_effect_or_unknown_hold: true,
+      model_ledger_rows: await modelRows(scenario, 7), external_network_calls: 0 };
   } finally { release.resolve(); releaseRemoval.resolve(); await pending.catch(() => {}); }
 }
 
