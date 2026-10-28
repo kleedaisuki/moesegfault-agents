@@ -14,11 +14,23 @@ impl ActiveTurn {
     // Native input must already exclude storage-owned configuration/runtime
     // positions. Their user role is transport, not a new user exchange.
     pub(super) fn capture(messages: &[Message], native: Option<&[Value]>) -> Self {
-        let begin = messages.iter().rposition(|message| message.role == "user");
-        let messages = begin.map_or_else(Vec::new, |begin| messages[begin..].to_vec());
+        // This boundary has drained issued calls. Keep the current request
+        // exact, but let the summary carry resolved work so long tasks shrink.
+        let messages = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .cloned()
+            .into_iter()
+            .collect();
         let native = native.map(|items| {
-            let begin = items.iter().rposition(|item| item["role"] == "user");
-            begin.map_or_else(Vec::new, |begin| items[begin..].to_vec())
+            items
+                .iter()
+                .rev()
+                .find(|item| item["role"] == "user")
+                .cloned()
+                .into_iter()
+                .collect()
         });
         Self { messages, native }
     }
@@ -43,12 +55,18 @@ pub(super) fn policy(data: &PersistedSession) -> Result<Policy> {
 
 pub(super) fn triggered(data: &PersistedSession, measured: Option<u64>) -> Result<bool> {
     let policy = policy(data)?;
-    if policy.emits_item()
-        && data
-            .run
-            .as_ref()
-            .and_then(|run| run.response.as_ref())
-            .is_some_and(|response| response.compaction_source_end == Some(data.journal.len()))
+    // Retaining the live turn can leave the input above the threshold. Only
+    // real journal progress makes another paid summary useful, in every mode.
+    if data
+        .run
+        .as_ref()
+        .is_some_and(|run| run.compaction_source_end == Some(data.journal.len()))
+        || policy.emits_item()
+            && data
+                .run
+                .as_ref()
+                .and_then(|run| run.response.as_ref())
+                .is_some_and(|response| response.compaction_source_end == Some(data.journal.len()))
     {
         return Ok(false);
     }
@@ -236,9 +254,27 @@ mod tests {
             json!({"type":"function_call_output","call_id":"call_current","output":"verified current result"}),
         ];
         let active = ActiveTurn::capture(&messages, Some(&native));
-        assert_eq!(active.messages.len(), 3);
+        assert_eq!(active.messages.len(), 1);
         assert_eq!(active.messages[0].content, messages[2].content);
-        assert_eq!(active.native.as_deref(), Some(&native[1..]));
+        assert_eq!(
+            active.native.as_deref(),
+            Some(std::slice::from_ref(&current))
+        );
+        let mut long_task = native.clone();
+        for index in 0..512 {
+            long_task.push(
+                json!({"type":"function_call","call_id":format!("call_{index}"),
+                "name":"__agents_call_tool","arguments":"{}"}),
+            );
+            long_task.push(
+                json!({"type":"function_call_output","call_id":format!("call_{index}"),
+                "output":"previous resolved evidence"}),
+            );
+        }
+        assert_eq!(
+            ActiveTurn::capture(&messages, Some(&long_task)).native,
+            active.native
+        );
         let recovered: ActiveTurn =
             serde_json::from_slice(&serde_json::to_vec(&active).unwrap()).unwrap();
         assert_eq!(recovered.native, active.native);
@@ -274,11 +310,13 @@ mod tests {
         .unwrap();
         assert_eq!(expanded.items, sealed_native[1..]);
         assert_eq!(expanded.items[1], current);
-        assert_eq!(
-            expanded.items[2]["encrypted_content"],
-            "opaque-current-fact"
+        assert_eq!(expanded.items.len(), 2);
+        assert!(
+            !expanded
+                .items
+                .iter()
+                .any(|item| item.get("call_id").is_some())
         );
-        assert_eq!(expanded.items[4]["call_id"], "call_current");
         assert!(ActiveTurn::capture(&[], None).messages.is_empty());
         assert!(
             ActiveTurn::capture(&[Message::text("assistant", "no user")], Some(&[]))
@@ -286,6 +324,22 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+
+        for explicit in [false, true] {
+            let mut data = explicit_state();
+            if !explicit {
+                data.run.as_mut().unwrap().response = None;
+            }
+            assert!(triggered(&data, Some(u64::MAX)).unwrap());
+            data.run.as_mut().unwrap().compaction_source_end = Some(data.journal.len());
+            let recovered: PersistedSession =
+                serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
+            assert!(!triggered(&recovered, Some(u64::MAX)).unwrap());
+            assert!(!triggered(&recovered, None).unwrap());
+            data.journal
+                .push(Message::tool_result("call_new", "New evidence"));
+            assert!(triggered(&data, Some(u64::MAX)).unwrap());
+        }
     }
 
     fn explicit_state() -> PersistedSession {

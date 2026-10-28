@@ -118,6 +118,8 @@ struct RunState {
     pending_compaction: Option<Completion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     compaction_tail: Option<context_management::ActiveTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compaction_source_end: Option<usize>,
     #[serde(default)]
     terminal: Option<Value>,
     #[serde(default)]
@@ -1172,6 +1174,7 @@ impl SessionInner {
             compaction_in_flight: false,
             pending_compaction: None,
             compaction_tail: None,
+            compaction_source_end: None,
             terminal: None,
             terminal_error: None,
             ended_at_ms: None,
@@ -1386,6 +1389,7 @@ impl SessionInner {
                 current.input_tokens = 0;
                 current.measured_messages = 0;
                 current.compact_count += 1;
+                current.run.as_mut().unwrap().compaction_source_end = Some(data.journal.len());
             }
             self.replace_native_after_compaction(&run, active.native.as_deref())
                 .await?;
@@ -2359,6 +2363,7 @@ impl SessionInner {
             let run = current.as_mut().unwrap().run.as_mut().unwrap();
             run.compaction_in_flight = true;
             run.compaction_tail = Some(active);
+            run.compaction_source_end = Some(data.journal.len());
             if explicit {
                 run.response.as_mut().unwrap().compaction_source_end = Some(data.journal.len());
             }
@@ -3614,6 +3619,7 @@ mod tests {
             compaction_in_flight: false,
             pending_compaction: None,
             compaction_tail: None,
+            compaction_source_end: None,
             terminal: Some(result.clone()),
             terminal_error: None,
             ended_at_ms: Some(12),
