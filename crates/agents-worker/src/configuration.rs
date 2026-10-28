@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 pub(crate) struct History {
     pub revision: u64,
     pub updates: Vec<usize>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub active: std::collections::BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_digest: Option<String>,
 }
 
 impl History {
@@ -16,6 +22,17 @@ impl History {
             && !self.updates.is_empty()
             && self.updates.iter().all(|index| *index < end)
             && self.updates.windows(2).all(|pair| pair[0] < pair[1])
+            && self
+                .active
+                .values()
+                .all(|index| self.updates.binary_search(index).is_ok())
+    }
+    pub(crate) fn live_positions(&self) -> Vec<usize> {
+        if self.active.is_empty() {
+            self.updates.last().copied().into_iter().collect()
+        } else {
+            self.active.values().copied().collect()
+        }
     }
     pub(crate) fn rebased(&self, indices: &[usize]) -> Self {
         Self {
@@ -25,8 +42,56 @@ impl History {
                 .enumerate()
                 .filter_map(|(new, old)| self.updates.binary_search(old).is_ok().then_some(new))
                 .collect(),
+            active: self
+                .active
+                .iter()
+                .filter_map(|(name, old)| {
+                    indices
+                        .iter()
+                        .position(|index| index == old)
+                        .map(|new| (name.clone(), new))
+                })
+                .collect(),
+            guidance_digest: self.guidance_digest.clone(),
+            catalog_digest: self.catalog_digest.clone(),
         }
     }
+}
+
+pub(crate) fn guidance_digest(configuration: &SessionConfiguration) -> String {
+    crate::prompt_context::digest(&json!(configuration.instructions))
+}
+
+pub(crate) fn dynamic_items(
+    pinned: &PinnedContext,
+    configuration: &SessionConfiguration,
+    previous: Option<&History>,
+) -> Vec<(&'static str, Value)> {
+    let mut items = vec![];
+    let digest = guidance_digest(configuration);
+    if previous.and_then(|history| history.guidance_digest.as_deref()) != Some(digest.as_str())
+        && (!configuration.instructions.is_empty() || previous.is_some())
+    {
+        items.push(("instructions", json!({"type":"message","role":"system","content":[{"type":"input_text",
+            "text":format!("Current Agent instructions (replace only earlier Agent instructions, not platform policy or an active response-specific override):\n{}", configuration.instructions)}]})));
+    }
+    if !pinned.skills.is_empty()
+        && previous.is_none_or(|history| !history.active.contains_key("skills"))
+    {
+        items.push(("skills", json!({"type":"message","role":"user","content":[{"type":"input_text",
+            "text":format!("<agents_skill_references>\n{}\n</agents_skill_references>", json!(pinned.skills))}]})));
+    }
+    let revision = crate::registered_tools::revision(configuration);
+    if previous.and_then(|history| history.catalog_digest.as_deref()) != Some(revision.as_str()) {
+        let catalog = json!({"revision":revision,"tools":configuration.tools,
+            "unavailable_tools":configuration.unavailable_tools});
+        items.push((
+            "catalog",
+            json!({"type":"message","role":"user","content":[{"type":"input_text",
+            "text":format!("<agents_tool_catalog>\n{catalog}\n</agents_tool_catalog>")}]}),
+        ));
+    }
+    items
 }
 
 pub(crate) fn for_session(
@@ -230,6 +295,7 @@ mod tests {
             input_revision: 0,
             pinned: pin.clone(),
             configuration: Some(configuration),
+            context_layout: None,
             workspace_snapshot: None,
             runtime_profile: Default::default(),
         };
@@ -241,7 +307,10 @@ mod tests {
         assert_eq!(
             History {
                 revision: 2,
-                updates: vec![1, 4, 7]
+                updates: vec![1, 4, 7],
+                active: Default::default(),
+                guidance_digest: None,
+                catalog_digest: None,
             }
             .rebased(&[0, 1, 3, 7])
             .updates,

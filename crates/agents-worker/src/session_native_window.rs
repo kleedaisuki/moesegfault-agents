@@ -76,11 +76,13 @@ impl SessionInner {
             return Err(Error::RustError("native_context_window_invalid".into()));
         }
         let begin = indices[cut - 1];
-        let kept = crate::native_window::kept_indices_with_revisions(
-            input,
-            cut,
-            &super::native::obsolete_positions(expected)?,
-        )?;
+        let obsolete = super::native::obsolete_positions(expected)?;
+        let required = super::native::context_positions(expected)?
+            .into_iter()
+            .filter(|index| !obsolete.contains(index))
+            .collect::<Vec<_>>();
+        let kept =
+            crate::native_window::kept_indices_with_transitions(input, cut, &obsolete, &required)?;
         let protected = kept
             .iter()
             .copied()

@@ -140,6 +140,19 @@ pub(crate) async fn select(
         let initial = crate::configuration::initial(&pinned);
         configuration = Some(initial.clone());
         configurations.push(initial);
+    } else if pinned.model.protocol == Some(agents_core::ProviderProtocol::Responses)
+        && previous
+            .as_ref()
+            .map(|context| context.record.context_layout)
+            .or_else(|| root_session.map(|session| session.context_layout))
+            .flatten()
+            != Some(agents_core::PromptLayout::DynamicV2)
+    {
+        let initial = configuration
+            .clone()
+            .unwrap_or_else(|| crate::configuration::initial(&pinned));
+        configuration = Some(initial.clone());
+        configurations.push(initial);
     }
     if previous.is_some() || root_session.is_some() {
         let cursor = configuration

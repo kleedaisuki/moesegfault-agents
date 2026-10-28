@@ -313,8 +313,9 @@ fn expand_items(
         let mut state = CompactionState::open(key, owner, item, agent, prefix_hash)?;
         instructions = state.instructions;
         if state.messages.first().is_some_and(|message| {
-            message.role == "system"
-                && base.is_some_and(|base| message.content.as_str() == Some(base))
+            // The authenticated sealed state owns this prefix slot. A live
+            // rendering upgrade must not revive its old Agent guidance.
+            message.role == "system" && base.is_some()
         }) {
             state.messages.remove(0);
         }

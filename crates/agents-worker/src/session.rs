@@ -128,6 +128,10 @@ struct RunState {
     native_input: Option<native::NativeInputBatch>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     tool_dispatches: std::collections::BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registered_catalog: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    registered_calls: std::collections::BTreeMap<String, String>,
 }
 
 impl RunState {
@@ -1131,6 +1135,8 @@ impl SessionInner {
             response: None,
             native_input: None,
             tool_dispatches: Default::default(),
+            registered_catalog: None,
+            registered_calls: Default::default(),
         });
         Ok(id)
     }
@@ -1355,6 +1361,46 @@ impl SessionInner {
                     &record.pinned.model.model,
                 )
                 .await?;
+            let logical = if crate::registered_tools::enabled(record) {
+                let projected = crate::registered_tools::completion(
+                    completion,
+                    record,
+                    run.response.as_ref().map(|response| &response.request),
+                    run.registered_catalog.as_deref().unwrap_or_default(),
+                );
+                let (logical, calls) = match projected {
+                    Ok(projected) => projected,
+                    Err(code) => {
+                        {
+                            let mut current = self.data.borrow_mut();
+                            let run = current.as_mut().unwrap().run.as_mut().unwrap();
+                            run.accumulate_usage(&completion.usage);
+                            run.pending_completion = None;
+                            run.round += 1;
+                        }
+                        util::emit(
+                            "tool.failed",
+                            json!({"session_id":record.id,"run_id":run.id,
+                            "transport_alias":crate::registered_tools::ALIAS,"stage":"registered_projection",
+                            "error_code":code,"outcome":"invalid_provider_output"}),
+                        );
+                        self.persist().await?;
+                        return Err(Error::RustError(code));
+                    }
+                };
+                self.data
+                    .borrow_mut()
+                    .as_mut()
+                    .unwrap()
+                    .run
+                    .as_mut()
+                    .unwrap()
+                    .registered_calls = calls;
+                logical
+            } else {
+                completion.clone()
+            };
+            let completion = &logical;
             self.accept_native_turn(&run, completion).await?;
             {
                 let mut current = self.data.borrow_mut();
@@ -1459,7 +1505,9 @@ impl SessionInner {
             return Ok(None);
         }
         if let Some(call) = next_tool(&data.messages, run.response.as_ref()) {
-            if self.local_tool_pending(&call.function.name) {
+            if self.local_tool_pending(&call.function.name)
+                && !run.registered_calls.contains_key(&call.id)
+            {
                 let value = self.completion_value(
                     data.messages
                         .iter()
@@ -1694,6 +1742,20 @@ impl SessionInner {
             .unwrap()
             .provider_in_flight = true;
         self.reserve_response_events();
+        if crate::registered_tools::enabled(record) {
+            let configuration = record
+                .configuration
+                .clone()
+                .unwrap_or_else(|| crate::configuration::initial(&record.pinned));
+            self.data
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .run
+                .as_mut()
+                .unwrap()
+                .registered_catalog = Some(crate::registered_tools::revision(&configuration));
+        }
         self.persist().await?;
         self.state
             .storage()
@@ -2030,6 +2092,38 @@ impl SessionInner {
         execution_id: &str,
         call: &provider::ToolCall,
     ) -> Result<hosted_publication::HostedDispatch> {
+        let observed = self
+            .snapshot()?
+            .run
+            .as_ref()
+            .and_then(|run| run.registered_calls.get(&call.id))
+            .cloned();
+        if let Some(observed) = observed {
+            if let Some(error) = crate::registered_tools::check(
+                record,
+                &call.function.name,
+                &call.function.arguments,
+                &observed,
+            ) {
+                let current = record
+                    .configuration
+                    .clone()
+                    .unwrap_or_else(|| crate::configuration::initial(&record.pinned));
+                util::emit(
+                    "tool.failed",
+                    json!({"session_id":record.id,
+                    "run_id":self.snapshot()?.run.as_ref().map(|run| &run.id),
+                    "tool_call_id":call.id,"tool_name":call.function.name,
+                    "transport_alias":crate::registered_tools::ALIAS,"stage":"registered_catalog",
+                    "observed_catalog_revision":observed,
+                    "current_catalog_revision":crate::registered_tools::revision(&current),
+                    "error_code":error["error"]["code"],"outcome":"correctable"}),
+                );
+                return Ok(hosted_publication::HostedDispatch::Ready(
+                    error.to_string().into(),
+                ));
+            }
+        }
         if tools::tool_kind(&call.function.name).is_some()
             && !record
                 .tools()
@@ -2579,7 +2673,11 @@ fn tool_definitions(record: &SessionRecord) -> Vec<tools::ToolDefinition> {
     crate::context_prefix::registered_definitions(record.tools())
 }
 fn system_prefix(record: &SessionRecord) -> String {
-    crate::context_prefix::prefix(&record.pinned)
+    if crate::registered_tools::enabled(record) {
+        crate::context_prefix::dynamic_prefix()
+    } else {
+        crate::context_prefix::prefix(&record.pinned)
+    }
 }
 fn openai_usage(usage: &Usage) -> Value {
     json!({"prompt_tokens":usage.prompt_tokens,"completion_tokens":usage.completion_tokens,"total_tokens":usage.total_tokens,"prompt_tokens_details":{"cached_tokens":usage.cached_tokens}})
@@ -2676,6 +2774,8 @@ fn safe_error_code(error: &Error) -> String {
         "token_count_media_unsupported",
         "token_count_model_profile_unavailable",
         "invalid_function_arguments",
+        "invalid_registered_tool_invocation",
+        "registered_tool_projection_missing",
         "invalid_structured_output",
         "provider_parallel_tool_policy_violation",
         "provider_tool_choice_policy_violation",
@@ -3020,6 +3120,7 @@ mod tests {
                 input_revision: 0,
                 pinned: agents_core::PinnedContext::resolve(&agent, vec![], vec![]),
                 configuration: None,
+                context_layout: None,
                 workspace_snapshot: None,
                 runtime_profile: agents_core::RuntimeProfile::Basic1g,
             },
@@ -3370,6 +3471,8 @@ mod tests {
             response: None,
             native_input: None,
             tool_dispatches: Default::default(),
+            registered_catalog: None,
+            registered_calls: Default::default(),
         };
         let restored: RunState =
             serde_json::from_slice(&serde_json::to_vec(&run).unwrap()).unwrap();

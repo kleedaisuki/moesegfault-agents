@@ -1059,6 +1059,7 @@ async fn create_session_inner_at_pinned(
         input_revision: 0,
         pinned,
         configuration: None,
+        context_layout: None,
         workspace_snapshot: None,
         runtime_profile,
     };

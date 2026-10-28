@@ -45,9 +45,14 @@ pub(crate) async fn prepare(
             configuration.tools.as_slice()
         });
     let config = provider::resolve_config(env, owner, &pinned.model).await?;
+    let dynamic = config.protocol == agents_core::ProviderProtocol::Responses;
     let item_context =
         crate::session::native_items::ItemContext::new(owner, &request.model, &pinned, &config)?;
-    let base = context_prefix::prefix(&pinned);
+    let base = if dynamic {
+        context_prefix::dynamic_prefix()
+    } else {
+        context_prefix::prefix(&pinned)
+    };
     let mut prior_messages = vec![];
     let mut prior_native = vec![];
     let mut instructions = None;
@@ -57,6 +62,8 @@ pub(crate) async fn prepare(
     let mut context_updates = vec![];
     let mut configuration_positions = vec![];
     let mut obsolete_updates = vec![];
+    let mut configuration_state = None;
+    let mut context_state = None;
     let requested_profile =
         crate::runtime_profiles::requested_tools_for(&request.tools, &pinned.tool_services)?;
     let mut profile = selected
@@ -64,6 +71,7 @@ pub(crate) async fn prepare(
         .or(requested_profile)
         .unwrap_or_default();
     if let Some(context) = source {
+        let cross_agent = context.record.agent_id != request.model;
         if context
             .native_provider_binding
             .as_ref()
@@ -81,6 +89,8 @@ pub(crate) async fn prepare(
         context_updates = context.context_updates;
         configuration_positions = context.configuration_positions;
         obsolete_updates = context.obsolete_updates;
+        configuration_state = context.configuration_state;
+        context_state = context.context_state;
         inherited_discovery = context.discovery;
         pending_search = context
             .general_pending_calls
@@ -95,7 +105,7 @@ pub(crate) async fn prepare(
             None => provider::responses::message_items(&prior_messages)
                 .map_err(|_| fail("response_context_unavailable"))?,
         };
-        if compact {
+        if compact || cross_agent {
             prior_native = prior_native
                 .into_iter()
                 .enumerate()
@@ -109,7 +119,12 @@ pub(crate) async fn prepare(
             context_updates.clear();
             configuration_positions.clear();
             obsolete_updates.clear();
-            instructions = context.response_instructions;
+            configuration_state = None;
+            context_state = None;
+            context_revision = None;
+            if compact {
+                instructions = context.response_instructions;
+            }
         }
     }
     if let Some(conversation) = selected.conversation {
@@ -181,19 +196,18 @@ pub(crate) async fn prepare(
     let mut prefix = base.clone();
     if let Some(instructions) = instructions
         .as_ref()
-        .filter(|_| !crate::prompt_context::enabled(&pinned, &config))
+        .filter(|_| !dynamic && !crate::prompt_context::enabled(&pinned, &config))
     {
         prefix.push_str("\n\nUser-provided instructions for this response:\n");
         prefix.push_str(instructions);
     }
-    let protected_bytes =
-        prefix
-            .len()
-            .saturating_add(if crate::prompt_context::enabled(&pinned, &config) {
-                instructions.as_ref().map_or(0, String::len)
-            } else {
-                0
-            });
+    let protected_bytes = prefix.len().saturating_add(
+        if dynamic || crate::prompt_context::enabled(&pinned, &config) {
+            instructions.as_ref().map_or(0, String::len)
+        } else {
+            0
+        },
+    );
     if protected_bytes > 256 * 1024 {
         return Err(fail("invalid_auxiliary_request"));
     }
@@ -263,14 +277,62 @@ pub(crate) async fn prepare(
         .map(|index| index + 1)
         .filter(|index| configuration_positions.binary_search(index).is_err())
         .collect::<Vec<_>>();
+    if let Some(history) = configuration_state.as_mut() {
+        for position in &mut history.updates {
+            *position += 1;
+        }
+        for position in history.active.values_mut() {
+            *position += 1;
+        }
+    }
+    if let Some(history) = context_state.as_mut() {
+        for position in &mut history.updates {
+            *position += 1;
+        }
+        for position in history.active.values_mut() {
+            *position += 1;
+        }
+    }
     native.extend(native_input);
     if !compact {
         for configuration in &configurations {
-            if let Some(position) = configuration_positions.last() {
-                obsolete_positions.push(*position);
+            let prior = configuration_state.take();
+            let items = if dynamic {
+                crate::configuration::dynamic_items(&pinned, configuration, prior.as_ref())
+            } else {
+                vec![("legacy", crate::configuration::item(configuration))]
+            };
+            let mut updates = prior
+                .as_ref()
+                .map(|history| history.updates.clone())
+                .unwrap_or_else(|| configuration_positions.clone());
+            let mut active = prior
+                .as_ref()
+                .map(|history| history.active.clone())
+                .unwrap_or_default();
+            for (name, item) in items {
+                let index = native.len();
+                updates.push(index);
+                active.insert(name.into(), index);
+                native.push(item);
             }
-            configuration_positions.push(native.len());
-            native.push(crate::configuration::item(configuration));
+            let state = crate::configuration::History {
+                revision: configuration.agent_revision,
+                updates,
+                active,
+                guidance_digest: Some(crate::configuration::guidance_digest(configuration)),
+                catalog_digest: Some(crate::registered_tools::revision(configuration)),
+            };
+            let live = state.live_positions();
+            obsolete_positions.extend(
+                state
+                    .updates
+                    .iter()
+                    .copied()
+                    .filter(|index| !live.contains(index)),
+            );
+            configuration_positions = state.updates.clone();
+            configuration_state = Some(state);
         }
     }
     let mut messages = vec![Message::text("system", prefix)];
@@ -333,32 +395,92 @@ pub(crate) async fn prepare(
         true,
         registered.iter().any(|tool| tool.name == "time"),
     )?);
+    if dynamic {
+        tools = crate::registered_tools::render(tools, registered);
+    }
     let mut controls = request.native_controls();
     if let Some(choice) = controls.get_mut("tool_choice") {
         *choice = bindings.rewrite_choice(choice.clone(), true)?;
+        if dynamic {
+            *choice = crate::registered_tools::choice(choice.clone(), registered);
+        }
     }
     if let Some(personality) = personality {
         controls["personality"] = personality;
     }
-    if !compact && crate::prompt_context::enabled(&pinned, &config) {
-        let snapshot =
-            crate::prompt_context::snapshot(&pinned, profile, instructions.as_deref(), &tools);
+    if !compact && (dynamic || crate::prompt_context::enabled(&pinned, &config)) {
+        let available = registered
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>();
+        let snapshot = if dynamic {
+            crate::prompt_context::dynamic_snapshot(
+                &pinned,
+                profile,
+                instructions.as_deref(),
+                request.tool_choice.as_ref(),
+                &available,
+            )
+        } else {
+            crate::prompt_context::snapshot(&pinned, profile, instructions.as_deref(), &tools)
+        };
         if let Some((_, item)) =
             crate::prompt_context::update(context_revision.as_deref(), &snapshot)
         {
-            if let Some(position) = response_positions.last() {
-                obsolete_positions.push(*position);
+            let prior = context_state.take();
+            let items = if dynamic {
+                crate::prompt_context::dynamic_items(&snapshot, prior.as_ref())
+            } else {
+                vec![("legacy", item)]
+            };
+            let mut updates = prior
+                .as_ref()
+                .map(|history| history.updates.clone())
+                .unwrap_or(response_positions);
+            let mut active = prior
+                .as_ref()
+                .map(|history| history.active.clone())
+                .unwrap_or_default();
+            for (name, item) in items {
+                let index = native.len();
+                updates.push(index);
+                active.insert(name.into(), index);
+                native.push(item);
             }
-            native.push(item);
+            let state = crate::prompt_context::Revision {
+                digest: crate::prompt_context::digest(&snapshot),
+                updates,
+                active,
+                guidance_digest: Some(crate::prompt_context::digest(&snapshot["instructions"])),
+            };
+            let live = state.live_positions();
+            obsolete_positions.extend(
+                state
+                    .updates
+                    .iter()
+                    .copied()
+                    .filter(|index| !live.contains(index)),
+            );
+            context_state = Some(state);
         }
     }
     obsolete_positions.sort_unstable();
     obsolete_positions.dedup();
+    let mut required = configuration_state
+        .as_ref()
+        .map(|state| state.live_positions())
+        .unwrap_or_default();
+    required.extend(
+        context_state
+            .as_ref()
+            .map(|state| state.live_positions())
+            .unwrap_or_default(),
+    );
     let (prepared, measured_input_tokens) = if controls["truncation"] == "auto" {
         let fitted = crate::responses_auxiliary::resource_count(
             env,
             owner,
-            crate::native_window::fit_with_revisions(
+            crate::native_window::fit_with_transitions(
                 &config,
                 &native,
                 &tools,
@@ -372,6 +494,7 @@ pub(crate) async fn prepare(
                     ..Default::default()
                 },
                 &obsolete_positions,
+                &required,
             ),
         )
         .await?;

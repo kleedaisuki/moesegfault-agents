@@ -154,6 +154,28 @@ impl SessionInner {
             if !native_output::complete_call(raw, turn.status) {
                 continue;
             }
+            if crate::registered_tools::enabled(&data.as_ref().unwrap().record)
+                && raw["type"] == "function_call"
+                && raw["name"] == crate::registered_tools::ALIAS
+            {
+                if !crate::registered_tools::complete_invocation(raw, turn.status) {
+                    continue;
+                }
+                let choice = crate::registered_tools::restore(raw).map_err(Error::RustError)?;
+                let id = raw["call_id"]
+                    .as_str()
+                    .ok_or_else(|| Error::RustError("invalid_registered_tool_invocation".into()))?;
+                choices.insert(
+                    id.into(),
+                    crate::tool_rendering::ServerChoice {
+                        kind: "function_call",
+                        alias: crate::registered_tools::ALIAS.into(),
+                        namespace: None,
+                        choice,
+                    },
+                );
+                continue;
+            }
             if let Some(policy) = bindings.policy_call(raw) {
                 let id = raw["call_id"]
                     .as_str()
@@ -204,6 +226,9 @@ impl SessionInner {
             .as_ref()
             .ok_or_else(|| Error::RustError("native_turn_missing".into()))?;
         let mut data = self.data.borrow_mut();
+        let dynamic = data
+            .as_ref()
+            .is_some_and(|data| crate::registered_tools::enabled(&data.record));
         let response = data
             .as_mut()
             .and_then(|data| data.run.as_mut())
@@ -212,6 +237,16 @@ impl SessionInner {
         let choice = effective_choice(response.request.tool_choice.as_ref(), first_round);
         let mut calls = Vec::new();
         for raw in &turn.output {
+            if dynamic
+                && raw["type"] == "function_call"
+                && raw["name"] == crate::registered_tools::ALIAS
+            {
+                if crate::registered_tools::complete_invocation(raw, turn.status) {
+                    crate::registered_tools::restore(raw).map_err(Error::RustError)?;
+                    calls.push(raw.clone());
+                }
+                continue;
+            }
             if let Some(registry) = response.discovery.as_mut() {
                 registry.observe_output(raw).map_err(Error::RustError)?;
             }

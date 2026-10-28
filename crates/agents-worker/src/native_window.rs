@@ -110,10 +110,20 @@ pub(crate) fn kept_indices_with_context(
     kept_indices_with_revisions(input, cut, &updates[..updates.len().saturating_sub(1)])
 }
 
+#[cfg(test)]
 pub(crate) fn kept_indices_with_revisions(
     input: &[Value],
     cut: usize,
     obsolete: &[usize],
+) -> Result<Vec<usize>> {
+    kept_indices_with_transitions(input, cut, obsolete, &[])
+}
+
+pub(crate) fn kept_indices_with_transitions(
+    input: &[Value],
+    cut: usize,
+    obsolete: &[usize],
+    required: &[usize],
 ) -> Result<Vec<usize>> {
     if input.is_empty() || cut == 0 || cut > input.len() {
         return Err(fault("native_context_window_invalid"));
@@ -128,7 +138,10 @@ pub(crate) fn kept_indices_with_revisions(
     Ok((0..input.len())
         .filter(|index| {
             obsolete.binary_search(index).is_err()
-                && (*index == 0 || *index >= cut || protected(&input[*index]))
+                && (*index == 0
+                    || *index >= cut
+                    || protected(&input[*index])
+                    || required.contains(index))
         })
         .collect())
 }
@@ -236,7 +249,32 @@ pub(crate) async fn fit_with_context(
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn fit_with_revisions(
+    config: &ProviderConfig,
+    input: &[Value],
+    tools: &[Value],
+    controls: &Value,
+    context_window: u32,
+    output_budget: u32,
+    effects: HarnessControlEffects,
+    obsolete: &[usize],
+) -> Result<Fitted> {
+    fit_with_transitions(
+        config,
+        input,
+        tools,
+        controls,
+        context_window,
+        output_budget,
+        effects,
+        obsolete,
+        &[],
+    )
+    .await
+}
+
+pub(crate) async fn fit_with_transitions(
     config: &ProviderConfig,
     input: &[Value],
     tools: &[Value],
@@ -245,6 +283,7 @@ pub(crate) async fn fit_with_revisions(
     output_budget: u32,
     mut effects: HarnessControlEffects,
     obsolete: &[usize],
+    required: &[usize],
 ) -> Result<Fitted> {
     if input.is_empty() || !protected(&input[0]) {
         return Err(fault("native_context_window_invalid"));
@@ -260,7 +299,7 @@ pub(crate) async fn fit_with_revisions(
             .map_err(Error::RustError)
     };
     let selected = |cut| {
-        kept_indices_with_revisions(input, cut, obsolete).map(|indices| {
+        kept_indices_with_transitions(input, cut, obsolete, required).map(|indices| {
             indices
                 .into_iter()
                 .map(|index| input[index].clone())

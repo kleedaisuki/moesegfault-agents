@@ -594,11 +594,11 @@ impl SessionInner {
         if let Some(existing) = self.read_response(&create.response_id).await? {
             return self.existing_response(existing, &request).await;
         }
+        self.prepare_conversation_execution(&request, &create.response_id, &mut create.execution)
+            .await?;
         if self.snapshot()?.run.is_none() {
             self.refresh_configuration().await?;
         }
-        self.prepare_conversation_execution(&request, &create.response_id, &mut create.execution)
-            .await?;
         if self.branch_dispatched(&create.response_id).await? {
             return util::json_error(
                 409,
@@ -924,6 +924,7 @@ impl SessionInner {
         if discovery.is_none() || config.protocol != agents_core::ProviderProtocol::Responses {
             if let Err(error) = Self::validate_native_generation(
                 &config,
+                &data.record,
                 &request,
                 &crate::tool_rendering::ToolBindings {
                     hosted: &bound_tools,
@@ -1157,6 +1158,7 @@ impl SessionInner {
                 options = request.generation_options();
                 if let Err(error) = Self::validate_native_generation(
                     &config,
+                    &data.record,
                     &request,
                     &crate::tool_rendering::ToolBindings {
                         hosted: &bound_tools,

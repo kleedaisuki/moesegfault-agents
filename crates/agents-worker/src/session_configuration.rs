@@ -12,6 +12,42 @@ fn boundary(run: &RunState) -> bool {
 }
 
 impl SessionInner {
+    async fn adopt_dynamic_context(&self) -> Result<()> {
+        let before = self.snapshot()?;
+        if before.record.pinned.model.protocol != Some(agents_core::ProviderProtocol::Responses)
+            || crate::registered_tools::enabled(&before.record)
+            || before.run.as_ref().is_some_and(|run| !boundary(run))
+            || self.issued_configuration_effect(&before).await?
+        {
+            return Ok(());
+        }
+        let _guard = self.persistence.lock().await;
+        let mut data = self.snapshot()?;
+        if data.run.as_ref().is_some_and(|run| !boundary(run))
+            || crate::registered_tools::enabled(&data.record)
+            || self.issued_configuration_effect(&data).await?
+        {
+            return Ok(());
+        }
+        let configuration = data
+            .record
+            .configuration
+            .clone()
+            .unwrap_or_else(|| crate::configuration::initial(&data.record.pinned));
+        if !data
+            .pending_configurations
+            .iter()
+            .any(|change| change.agent_revision == configuration.agent_revision)
+        {
+            data.pending_configurations.insert(0, configuration.clone());
+        }
+        data.record.configuration = Some(configuration);
+        data.record.context_layout = Some(agents_core::PromptLayout::DynamicV2);
+        data.messages[0] = Message::text("system", crate::context_prefix::dynamic_prefix());
+        save_state(&self.state.storage(), &mut data).await?;
+        *self.data.borrow_mut() = Some(data);
+        Ok(())
+    }
     async fn issued_configuration_effect(&self, data: &PersistedSession) -> Result<bool> {
         let Some(run) = &data.run else {
             return Ok(false);
@@ -46,6 +82,7 @@ impl SessionInner {
     }
 
     pub(super) async fn refresh_configuration(&self) -> Result<()> {
+        self.adopt_dynamic_context().await?;
         loop {
             let before = self.snapshot()?;
             if before.run.as_ref().is_some_and(|run| !boundary(run)) {

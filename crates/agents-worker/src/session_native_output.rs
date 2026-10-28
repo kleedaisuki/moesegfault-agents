@@ -460,8 +460,13 @@ pub(super) fn validate_policy_routes(
         if matches!(choice["type"].as_str(), Some("function" | "custom")) {
             return calls.is_empty()
                 || calls.iter().any(|call| {
-                    call["name"] != choice["name"]
-                        || call.get("namespace") != choice.get("namespace")
+                    let policy = call["call_id"]
+                        .as_str()
+                        .and_then(|id| server_choices.get(id))
+                        .filter(|route| route.matches(call))
+                        .map_or(*call, |route| &route.choice);
+                    policy["name"] != choice["name"]
+                        || policy.get("namespace") != choice.get("namespace")
                 });
         }
         if let Some(family) = choice["type"]
@@ -857,6 +862,9 @@ impl SessionInner {
         };
         let mut streams = vec![];
         for (ordinal, raw) in turn.output.iter().enumerate() {
+            if raw["type"] == "function_call" && raw["name"] == crate::registered_tools::ALIAS {
+                continue;
+            }
             if self.discovery_complete_identity(raw) && !complete_call(raw, turn.status) {
                 continue;
             }

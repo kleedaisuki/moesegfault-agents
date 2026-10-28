@@ -64,6 +64,7 @@ mod provider;
 mod provider_response_receipt;
 mod public_image_input;
 mod reconcile;
+mod registered_tools;
 mod resources;
 mod response_execution;
 mod response_image_projection;

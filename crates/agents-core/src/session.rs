@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PinnedContext, RegisteredTool, SESSION_IDLE_TIMEOUT_MS, SessionConfiguration};
+use crate::{
+    PinnedContext, PromptLayout, RegisteredTool, SESSION_IDLE_TIMEOUT_MS, SessionConfiguration,
+};
 
 /// The deployed Container application is selected once, before Session admission.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +70,8 @@ pub struct SessionRecord {
     pub pinned: PinnedContext,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub configuration: Option<SessionConfiguration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_layout: Option<PromptLayout>,
     pub workspace_snapshot: Option<WorkspaceSnapshot>,
     #[serde(default)]
     pub runtime_profile: RuntimeProfile,
@@ -179,6 +183,7 @@ mod tests {
             input_revision: 0,
             pinned: PinnedContext::resolve(&agent, vec![], vec![]),
             configuration: None,
+            context_layout: None,
             workspace_snapshot: None,
             runtime_profile: RuntimeProfile::Basic1g,
         }
