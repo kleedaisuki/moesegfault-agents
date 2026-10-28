@@ -92,3 +92,31 @@ response-scoped instructions, and never automatically retries paid POSTs.
 
 Compilation, controlled journeys and real-provider acceptance are pending until
 their actual results are recorded here. Prepared code is not a passing result.
+
+## Controlled incremental checkpoints
+
+Normal CI `40546096194`, source `3707c88f776ef2947919b5ecaef1c1b1b41fd560`,
+retains its failed aggregate. Its Worker build (`12753008991`), six new Rust
+guards and historical configuration-fork journey passed; native and tooling
+jobs also passed. The lifecycle and busy-revocation fixtures incorrectly parsed
+native tool-result content parts as a JSON string. The issued-operation fixture
+correctly preserved uncertainty and the original authority, but revealed that
+its precise unknown-outcome code was collapsed to `run_failed`.
+
+Normal CI `40550908238`, source `bf0fd027ff685ae501593295a8a77304c14d8455`,
+also remains failed overall. Actual downloaded receipts confirm the new pure
+unknown-error guard, busy revocation and issued-operation recovery all passed;
+the isolated tool-result decoder checks passed in its tooling job. Its successful
+build produced Worker artifact `12756000291`; `verification-worker` is
+`12755671681`. Neither the accepted historical fork nor the earlier six Rust
+guards were replayed.
+
+The remaining lifecycle failure was another fixture expectation: native
+compaction deliberately strips trusted runtime/configuration updates from the
+summarizer input and seals them independently. Its summary request therefore
+contains the fixed summary guide and real conversation source, not an executable
+Agent-configuration update. The repaired assertion checks that boundary while
+keeping the subsequent latest-configuration, same-Session, exact-count and cold
+continuation assertions intact. That lifecycle remains the sole unresolved
+controlled journey until its actual selected result passes. This is not a claim
+of real-provider staging acceptance.

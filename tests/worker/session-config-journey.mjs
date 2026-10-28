@@ -120,9 +120,14 @@ export async function runSessionConfigLifecycleJourney(context) {
     } },
     { output: [{ ...answer('summary'), content: [{ type: 'output_text', text: compacted, annotations: [], logprobs: [] }] }], usage,
       check: body => {
-        const event = configurations(body).at(-1);
-        assert.equal(event.value.agent_revision, agentC.revision);
-        assert.equal(event.value.instructions, latest, 'Compaction is planned against the current effective Agent instructions');
+        // Trusted configuration is sealed separately, never executed as summary
+        // guidance. The next real generation below must restore latest C itself.
+        assert.equal(configurations(body).length, 0);
+        assert.deepEqual(body.tools, []);
+        assert.match(text(body.input[0]), /^Summarize this agent session for continuation\./);
+        assert.ok(JSON.stringify(body.input).includes('SESSION-CONFIG-INITIAL-USER'),
+          'Compaction receives the actual conversation source rather than a fabricated current-policy prompt');
+        assert.ok(body.input.some(item => item.type === 'function_call_output' && item.call_id === 'config_added_time'));
       } },
     { output: [answer('compacted')], usage, check: body => {
       currentConfiguration(body, agentC, 1);
