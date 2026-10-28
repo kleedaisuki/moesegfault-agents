@@ -11474,5 +11474,135 @@
       ],
       "unresolved_checks": []
     }
+  },
+  {
+    "source_sha": "bf0fd027ff685ae501593295a8a77304c14d8455",
+    "run_id": "40550908238",
+    "components": [
+      "worker"
+    ],
+    "status": "partial_verified",
+    "artifact_id": 12756000291,
+    "verified_phases": [
+      "wasm_build",
+      "rust_lib"
+    ],
+    "verified_steps": [
+      "Run cargo check --locked -p agents-worker --target wasm32-unknown-unknown",
+      "Compile changed Worker tests without replaying accepted cases",
+      "Run node scripts/incremental-checks.mjs run worker-rust",
+      "Run worker-build --release",
+      "Run node scripts/bundle-worker.mjs"
+    ],
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12755671681,
+    "verified_checks": [
+      {
+        "id": "journey:Busy Agent revisions revoke queued tools only at safe execution boundaries",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Busy Agent revisions revoke queued tools only at safe execution boundaries"
+        },
+        "status": "passed_current",
+        "executed_tests": 2,
+        "duration_ms": 3694,
+        "input_fingerprint": "cedbd59d8b371fb3fd4fd7cfb5c7b249b9efd49dbe6677485cf600ae7a3a5c82",
+        "receipt_path": "worker-journeys.json"
+      },
+      {
+        "id": "journey:Issued workspace effects remain unknown instead of revoked or replayed after Agent edits",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Issued workspace effects remain unknown instead of revoked or replayed after Agent edits"
+        },
+        "status": "passed_current",
+        "executed_tests": 2,
+        "duration_ms": 6560,
+        "input_fingerprint": "28d27cf00cc6c8d30bd49d9d7e29e7c3fb2bd0a2c78ccd0c69ede39dfc92a8c3",
+        "receipt_path": "worker-journeys.json"
+      },
+      {
+        "id": "rust:agents-worker:session_configuration_issued_preflight_preserves_unknown_error_identity",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "session_configuration_issued_preflight_preserves_unknown_error_identity",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "status": "passed_current",
+        "executed_tests": 1,
+        "duration_ms": 243,
+        "input_fingerprint": "e5fa28f8e3eb254c44e1bcae265365b7a49954594069c995b682bfade299e6c6",
+        "receipt_path": "worker-rust.json"
+      }
+    ],
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "4b29c77ca782e6b27eb18f96ef10fcb0439e3379",
+      "receipts": [
+        {
+          "source_sha": "3799809521a64a287aa10a037e017760228e9422",
+          "run_id": "40517024757",
+          "reference": "docs/prompt-cache-engineering.md",
+          "scope": "Preserved accepted cache/product baseline; no old business regression replay"
+        },
+        {
+          "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+          "run_id": "40546096194",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Failed aggregate retained. Wasm, six new Rust guards, three tooling assertions and historical configuration fork passed. Only native output test decoder and issued-preflight error classification changed afterward; the explicit three failed leaves plus new error guard below remain required."
+        },
+        {
+          "source_sha": "bf0fd027ff685ae501593295a8a77304c14d8455",
+          "run_id": "40550908238",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Failed aggregate retained. Actual downloaded receipts prove busy revocation, issued-operation unknown preservation, one new pure error guard and two decoder checks passed. Successful Worker build artifact12756000291 is reused unchanged; only the lifecycle fixture expectation was repaired afterward."
+        },
+        {
+          "source_sha": "4b29c77ca782e6b27eb18f96ef10fcb0439e3379",
+          "run_id": "40617982649",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Normal successful CI40617982649 reused exact Worker12756000291 from bf0fd027/40550908238 and executed only the previously failing lifecycle; downloaded verification-worker12785862611 records passed_current/executed_tests2. All preceding configuration/cache/business positives were retained without replay; complete controlled configuration increment, not a claim of real-provider staging acceptance."
+        }
+      ],
+      "unresolved_checks": []
+    }
+  },
+  {
+    "source_sha": "4b29c77ca782e6b27eb18f96ef10fcb0439e3379",
+    "run_id": "40617982649",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "4b29c77ca782e6b27eb18f96ef10fcb0439e3379",
+      "receipts": [
+        {
+          "source_sha": "4b29c77ca782e6b27eb18f96ef10fcb0439e3379",
+          "run_id": "40617982649",
+          "reference": "docs/session-config-updates.md",
+          "scope": "The normal tooling job succeeded with no selected tests; prior actual selector/decoder receipts remain preserved. Metadata/documentation updates must not replay those accepted tests."
+        }
+      ],
+      "unresolved_checks": []
+    }
   }
 ]
