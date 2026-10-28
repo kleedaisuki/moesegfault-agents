@@ -12015,5 +12015,167 @@
       ],
       "unresolved_checks": []
     }
+  },
+  {
+    "source_sha": "4e5e9ab0204880da08ab53140884b4db81719001",
+    "run_id": "40658272878",
+    "components": [
+      "worker"
+    ],
+    "status": "verified",
+    "artifact_id": 12803292814,
+    "receipt_artifact": "verification-worker",
+    "receipt_artifact_id": 12803153098,
+    "verified_checks": [
+      {
+        "id": "rust:agents-worker:dynamic_context_item_handles_preserve_raw_ordinals_and_effective_positions",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "agents-worker",
+          "--lib",
+          "dynamic_context_item_handles_preserve_raw_ordinals_and_effective_positions",
+          "--",
+          "--nocapture"
+        ],
+        "env": {},
+        "status": "passed_current",
+        "executed_tests": 1,
+        "duration_ms": 648,
+        "input_fingerprint": "7afb1638fd69903992a8e58a425458a047145d02191519fe276253d42bde0b91",
+        "receipt_path": "worker-rust.json"
+      },
+      {
+        "id": "journey:Dynamic Session catalog revisions close stale calls and preserve caller tool ownership",
+        "argv": [
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "tests/worker/http.test.mjs"
+        ],
+        "env": {
+          "MAGENTS_WORKER_CASE": "Dynamic Session catalog revisions close stale calls and preserve caller tool ownership"
+        },
+        "status": "passed_current",
+        "executed_tests": 2,
+        "duration_ms": 7235,
+        "input_fingerprint": "b06b301d04d2da6348eb7e61f0bd79c36ee0a5998829a73cb1a717cec4fcb9bd",
+        "receipt_path": "worker-journeys.json"
+      }
+    ],
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "19e9bb83c628db1e65a1cfe909e61993da3cac9b",
+      "receipts": [
+        {
+          "source_sha": "3799809521a64a287aa10a037e017760228e9422",
+          "run_id": "40517024757",
+          "reference": "docs/prompt-cache-engineering.md",
+          "scope": "Preserved accepted cache/product baseline; no old business regression replay"
+        },
+        {
+          "source_sha": "3707c88f776ef2947919b5ecaef1c1b1b41fd560",
+          "run_id": "40546096194",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Failed aggregate retained. Wasm, six new Rust guards, three tooling assertions and historical configuration fork passed. Only native output test decoder and issued-preflight error classification changed afterward; the explicit three failed leaves plus new error guard below remain required."
+        },
+        {
+          "source_sha": "bf0fd027ff685ae501593295a8a77304c14d8455",
+          "run_id": "40550908238",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Failed aggregate retained. Actual downloaded receipts prove busy revocation, issued-operation unknown preservation, one new pure error guard and two decoder checks passed. Successful Worker build artifact12756000291 is reused unchanged; only the lifecycle fixture expectation was repaired afterward."
+        },
+        {
+          "source_sha": "4b29c77ca782e6b27eb18f96ef10fcb0439e3379",
+          "run_id": "40617982649",
+          "reference": "docs/session-config-updates.md",
+          "scope": "Normal successful CI40617982649 reused exact Worker12756000291 from bf0fd027/40550908238 and executed only the previously failing lifecycle; downloaded verification-worker12785862611 records passed_current/executed_tests2. All preceding configuration/cache/business positives were retained without replay; complete controlled configuration increment, not a claim of real-provider staging acceptance."
+        },
+        {
+          "source_sha": "63e5360a04e7e084fac5cc1d03c991e85b8b465f",
+          "run_id": "40647641984",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Failed aggregate retained. Exact Worker artifact12798234412 compiled/bundled; three NEW dynamic Rust guards, native Core clippy and eight NEW selector assertions passed. All three NEW controlled journeys failed before provider dispatch and remain explicit unresolved requirements. No old business/cache checks were replayed."
+        },
+        {
+          "source_sha": "5b2a5935713649a3b24653a724a4fae1ed8e90bd",
+          "run_id": "40650889172",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Failed aggregate retained. Worker12799584371 and the one NEW diagnostic guard passed; prior three dynamic pure guards/native/eight selector checks were not replayed. All three controlled leaves failed because workspace:true fixtures omitted native Container binding; the test-only stopped-proxy repair must pass them on this identical Worker before acceptance."
+        },
+        {
+          "source_sha": "bec2a8619acc0684143c1fca67730913cff8ab8e",
+          "run_id": "40653880540",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Failed aggregate retained. On exact Worker12799584371 lifecycle/prefix/realclock/legacyadoption and compact/cold/historicalmemory passed. Only busy negative tail failed because its assertion misclassified exact active maintenance funding; this fixture scope is repaired. Those two successful leaves are unchanged. The subsequent narrow physical-item mapping repair preserves all-kept output semantics; its NEW property guard plus the single failed busy/partial-item leaf remain mandatory, not previously accepted behavior."
+        },
+        {
+          "source_sha": "4e5e9ab0204880da08ab53140884b4db81719001",
+          "run_id": "40658272878",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Successful normal CI. Exact Worker12803292814 compiled/bundled; only previously failed busy/stale/financial/partial-item journey and NEW physical-index property guard ran and passed. Prior successful lifecycle/compact and prior pure/native/tooling receipts retained, not replayed. Real staging subsequently identified current-user-turn loss during compact; its new targeted fix/guard/compact leaf remains a new increment rather than accepted behavior."
+        },
+        {
+          "source_sha": "4e5e9ab0204880da08ab53140884b4db81719001",
+          "run_id": "40658272878",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Preserve all previously accepted scopes. The selection boundary includes only the new bounded compact-tail implementation and modified compact fixture, which are NOT accepted yet: both are explicitly mandatory below. Compile-only compaction_tail:None addition to existing terminal fixture is not a changed business assertion."
+        }
+      ],
+      "unresolved_checks": [
+        {
+          "id": "rust:agents-worker:dynamic_compaction_retains_current_turn_and_exact_native_facts",
+          "argv": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "agents-worker",
+            "--lib",
+            "dynamic_compaction_retains_current_turn_and_exact_native_facts",
+            "--",
+            "--nocapture"
+          ],
+          "env": {},
+          "reason": "NEW active-user tail capture/durable/sealed/native guard; no passed old pure guards"
+        },
+        {
+          "id": "journey:Dynamic Session catalogs retain concrete tool memory through compaction cold recovery and historical forks",
+          "argv": [
+            "node",
+            "--test",
+            "--test-reporter=tap",
+            "tests/worker/http.test.mjs"
+          ],
+          "env": {
+            "MAGENTS_WORKER_CASE": "Dynamic Session catalogs retain concrete tool memory through compaction cold recovery and historical forks"
+          },
+          "reason": "Real-provider evidence found exact current user request loss, despite preserved summary facts; modified only compact leaf adds request-only native sentinel, no lifecycle/busy replays"
+        }
+      ]
+    }
+  },
+  {
+    "source_sha": "4e5e9ab0204880da08ab53140884b4db81719001",
+    "run_id": "40658272878",
+    "components": [
+      "tooling"
+    ],
+    "status": "verified",
+    "selection_base": {
+      "status": "composed_accepted",
+      "source_sha": "4e5e9ab0204880da08ab53140884b4db81719001",
+      "receipts": [
+        {
+          "source_sha": "4e5e9ab0204880da08ab53140884b4db81719001",
+          "run_id": "40658272878",
+          "reference": "docs/dynamic-tool-context.md",
+          "scope": "Actual tooling job successful with no selected tests; earlier eight selector assertions retain their original receipts."
+        }
+      ],
+      "unresolved_checks": []
+    }
   }
 ]
