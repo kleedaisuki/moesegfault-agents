@@ -163,11 +163,19 @@ try {
     session = await request(`/v1/sessions/${report.session_id}`);
     assertEffective(session, removed.revision, report.final_label, []);
     const before = { revision: session.input_revision, messages_sha256: sha(session.messages) };
-    const rejected = await fetch(`${origin}/v1/responses/input_tokens`, { method: 'POST', headers, redirect: 'error',
+    // Token counting is not an execution-permission probe. This request must fail before admission.
+    report.pending = { kind: 'revoked_execution_probe', key: randomUUID() }; save();
+    const rejected = await fetch(`${origin}/v1/responses`, { method: 'POST',
+      headers: { ...headers, 'Idempotency-Key': report.pending.key }, redirect: 'error',
+      signal: AbortSignal.timeout(30_000),
       body: JSON.stringify({ model: report.agent_id, previous_response_id: final.response_id,
-        input: 'Inspect whether bash is callable.', tool_choice: { type: 'function', name: 'bash' }, reasoning: { effort: 'none' } }) });
-    report.retired_tool_probe = { status: rejected.status, error: (await rejected.json()).error };
+        input: 'Inspect whether bash is callable.', tool_choice: { type: 'function', name: 'bash' },
+        reasoning: { effort: 'none' }, max_output_tokens: 1, stream: false }) });
+    const denial = await rejected.json();
+    report.revoked_execution_probe = { status: rejected.status, error: denial.error, response_id: denial.id ?? null };
+    report.pending = null; save();
     assert.equal(rejected.status, 400, 'A removed registered tool cannot be forced into a new execution');
+    assert.equal(denial.error.code, 'tool_not_enabled');
     const after = await request(`/v1/sessions/${report.session_id}`);
     assert.equal(after.input_revision, before.revision); assert.equal(sha(after.messages), before.messages_sha256);
     assert.equal(sha(await client.responses.retrieve(report.responses[0].response_id)), report.original_response_sha256);
