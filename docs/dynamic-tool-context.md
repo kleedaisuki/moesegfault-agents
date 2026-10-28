@@ -61,10 +61,16 @@ concrete earlier tool result after compaction. This is a local design-informed
 test selection, not a claim to reproduce BFCL scores or run its benchmark.
 
 The provider sees one reserved server dispatcher with a stable name, description
-and JSON schema. Its arguments identify the logical tool, its input object and
-the catalog revision observed by the model. The revision must be a value, not an
-enum embedded in the provider schema. Do not put names, inventories or changing
+and JSON schema. Its arguments identify the logical tool and its input object.
+The provider decision boundary records the observed catalog digest as trusted
+server provenance; the model does not need to copy a hash into every call. This
+avoids treating model-written version text as authority or causing needless
+argument errors. Do not put revisions, names, inventories or changing
 descriptions in the outer schema or description.
+
+Compute the catalog revision from effective tool schemas/availability, not the
+overall Agent revision: an instructions-only edit must not stale an otherwise
+valid tool call. The current execution grant is still checked independently.
 
 For a free-form `arguments` object, leave vendor `strict` unset/false. DeepSeek's
 [strict-mode guide](https://api-docs.deepseek.com/guides/tool_calls/) requires
@@ -74,14 +80,15 @@ could satisfy a closed outer schema but adds escaping/parsing burden. Backend
 validation of the real inner schema is required in either representation.
 
 ```text
-stable provider declaration: call_registered_tool(name, arguments, catalog_revision)
+stable provider declaration: call_registered_tool(name, arguments)
 
 history:
   ordinary user/task messages and actual tool results
   server-owned Agent configuration revision N:
     instructions, tool descriptions/schemas, additions, replacements, removals
   subsequent model call:
-    call_registered_tool("bash", {"command": "..."}, N)
+    call_registered_tool("bash", {"command": "..."})
+  server-owned call provenance: observed catalog N
 ```
 
 This is analogous to MCP's separation of
@@ -114,9 +121,12 @@ Required invariants:
    not every obsolete version or only a textual promise to remember them.
 7. One dispatch is one logical tool operation: no extra model discovery round,
    no double tool-budget charge and no second execution identity for the wrapper.
-8. Preserve public logical tool names, arguments, call IDs, result pairing and
+8. Preserve logical tool names, arguments, call IDs, result pairing and
    diagnostics. Private provider envelopes remain in native replay history. Do
    not rewrite the provider's historical call into a different wire operation.
+   Server-owned calls remain absent from standard caller-local function-call
+   items/events; their logical calls remain in Session journals/exports. Actual
+   caller-local tool calls and continuations retain their public SDK contract.
 
 Changing instructions/tool authority does not implicitly authorize moving model
 credentials, reallocating an existing workspace or changing a user-owned history
