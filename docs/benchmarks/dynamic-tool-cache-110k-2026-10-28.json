@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-28",
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "sdk": "openai-node@7.43.0",
+  "build": "4e5e9ab0204880da08ab53140884b4db81719001",
+  "staging_deployment_run": "40660068028",
+  "ci_run": "40658272878",
+  "initial_history": {
+    "type": "owned sealed reference history",
+    "imported_messages": 65,
+    "input_tokens": 109992,
+    "paid_historical_turns": false
+  },
+  "method": {
+    "tool_choice": "auto",
+    "actual_bash_effects": 1,
+    "independent_instruction_and_catalog_digests": true,
+    "metrics": "actual provider cached input / total input; multi-round rows aggregate paid model operations"
+  },
+  "cache_boundary": "passed",
+  "original_compact_boundary": "failed_current_user_request_lost",
+  "post_compact_memory": {
+    "filename_recalled": true,
+    "contents_recalled": true,
+    "tool_effects": 0
+  },
+  "rows": [
+    {
+      "phase": "long_fork_establish",
+      "status": "completed",
+      "input_tokens": 110501,
+      "cached_tokens": 0,
+      "output_tokens": 3,
+      "cache_hit_rate": 0,
+      "compaction_items": 0,
+      "first_text_ms": 11440.972499999998,
+      "duration_ms": 14999.6863,
+      "model_operations": 1,
+      "model_cost_microusd": 33154,
+      "response_id": "resp_7f83c70204964a4496e920371b67e881",
+      "provider_request_ids": [
+        "e0ec39c8-6e45-4984-860e-ca1db7238cc4"
+      ]
+    },
+    {
+      "phase": "long_warm_control",
+      "status": "completed",
+      "input_tokens": 110519,
+      "cached_tokens": 110336,
+      "output_tokens": 3,
+      "cache_hit_rate": 0.9983441761145142,
+      "compaction_items": 0,
+      "first_text_ms": 4560.041999999994,
+      "duration_ms": 7537.524899999997,
+      "model_operations": 1,
+      "model_cost_microusd": 721,
+      "response_id": "resp_96e48dcd4e5e4558b574301ae5e2e42f",
+      "provider_request_ids": [
+        "6d9482d0-4aba-4ec4-8f13-8a3053905506"
+      ]
+    },
+    {
+      "phase": "instructions_changed",
+      "status": "completed",
+      "input_tokens": 110622,
+      "cached_tokens": 110464,
+      "output_tokens": 2,
+      "cache_hit_rate": 0.9985717126792139,
+      "compaction_items": 0,
+      "first_text_ms": 4467.197499999995,
+      "duration_ms": 7646.904399999999,
+      "model_operations": 1,
+      "model_cost_microusd": 713,
+      "response_id": "resp_e45163ac59184f328a1912544afe3e29",
+      "provider_request_ids": [
+        "43367fc0-1264-4e56-b95c-896876a1f391"
+      ]
+    },
+    {
+      "phase": "tools_changed_actual_bash",
+      "status": "completed",
+      "input_tokens": 222134,
+      "cached_tokens": 221568,
+      "output_tokens": 225,
+      "cache_hit_rate": 0.9974519884394104,
+      "compaction_items": 0,
+      "first_text_ms": 17506.784100000004,
+      "duration_ms": 24879.98120000001,
+      "model_operations": 2,
+      "model_cost_microusd": 1770,
+      "response_id": "resp_ed9e3917b1fd4f308f6f9da5ed39f801",
+      "provider_request_ids": [
+        "4520c4f5-6bc0-4b06-8cdc-9cf5922078ed",
+        "16d6f9bf-4802-47a4-84a8-32a29314eb00"
+      ]
+    },
+    {
+      "phase": "tools_changed_followup",
+      "status": "completed",
+      "input_tokens": 111360,
+      "cached_tokens": 111104,
+      "output_tokens": 2,
+      "cache_hit_rate": 0.9977011494252873,
+      "compaction_items": 0,
+      "first_text_ms": 7588.4175000000105,
+      "duration_ms": 11726.488200000007,
+      "model_operations": 1,
+      "model_cost_microusd": 746,
+      "response_id": "resp_e987cf3ca19243cdb094a3857d1b1b61",
+      "provider_request_ids": [
+        "4bc7bec4-b3b0-42d7-b26e-0974457e0fd8"
+      ]
+    },
+    {
+      "phase": "tools_removed",
+      "status": "completed",
+      "input_tokens": 111571,
+      "cached_tokens": 111232,
+      "output_tokens": 2,
+      "cache_hit_rate": 0.9969615760367837,
+      "compaction_items": 0,
+      "first_text_ms": 6134.708399999989,
+      "duration_ms": 10194.4715,
+      "model_operations": 1,
+      "model_cost_microusd": 772,
+      "response_id": "resp_4295812de50146199e163e7e4e126de5",
+      "provider_request_ids": [
+        "9c43e4c1-bde2-4e87-bfb3-ad8c0debc82c"
+      ]
+    },
+    {
+      "phase": "compact_with_verified_file",
+      "status": "completed",
+      "input_tokens": 117614,
+      "cached_tokens": 256,
+      "output_tokens": 89,
+      "cache_hit_rate": 0.002176611627867431,
+      "compaction_items": 1,
+      "first_text_ms": 15025.343599999993,
+      "duration_ms": 18654.50570000001,
+      "model_operations": 2,
+      "model_cost_microusd": 35317,
+      "response_id": "resp_3e3ddbf771f54cd8960c27781f5277ee",
+      "provider_request_ids": [
+        "02889e1c-7b95-4e4a-ab1e-c37cce80ae25",
+        "ec1c2b24-11f2-4507-b7a6-3fb7d4fa0d78"
+      ]
+    },
+    {
+      "phase": "post_compact_recall",
+      "status": "completed",
+      "input_tokens": 755,
+      "cached_tokens": 512,
+      "output_tokens": 76,
+      "cache_hit_rate": 0.6781456953642384,
+      "compaction_items": 0,
+      "first_text_ms": 4667.0547,
+      "duration_ms": 8377.6148,
+      "model_operations": 1,
+      "model_cost_microusd": 168,
+      "response_id": "resp_abdb27d42f154abda4a75d1619b54090",
+      "provider_request_ids": [
+        "d8e0efe5-61c5-435c-9966-a6d2cf36f182"
+      ]
+    }
+  ],
+  "finance": {
+    "known_model_operations": 12,
+    "model_cost_microusd": 73889,
+    "all_model_operations_settled": true,
+    "reserved_session_rows": 0,
+    "unobserved_resource_rows": 0,
+    "unknown_outcomes": 0
+  },
+  "compact_tail_recovery": {
+    "build": "4ababff69904cfc21be970f2412519500c33e640",
+    "ci_run": "40666360901",
+    "staging_deployment_run": "40667117597",
+    "same_session": true,
+    "resumed_after_archive": true,
+    "new_responses": 1,
+    "model_operations": 2,
+    "repeated_bash_effects": 0,
+    "previous_successes_replayed": false,
+    "counted_input_tokens": 888,
+    "response_id": "resp_e8db7587212847de87d0b4a6fab528ec",
+    "provider_request_ids": [
+      "49039452-7abf-4302-9902-e5df598c68f9",
+      "9832cf4d-00ec-47aa-8414-6c4b5e02c286"
+    ],
+    "usage": {
+      "input_tokens": 1286,
+      "input_tokens_details": {
+        "cache_write_tokens": null,
+        "cached_tokens": 256
+      },
+      "output_tokens": 181,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 1467
+    },
+    "first_text_ms": 8658.0845,
+    "duration_ms": 12120.786100000001,
+    "model_cost_microusd": 528,
+    "compaction_items": 1,
+    "current_policy_verified": true,
+    "remembered_filename_verified": true,
+    "remembered_contents_verified": true,
+    "current_request_only_nonce_verified": true,
+    "source_response_sha256_before_and_after": "06da60274aeff144821e4336e97cc32dd6e2535125341cbdb305d18c51ff1cd2",
+    "source_unchanged_during_tail": true,
+    "cleanup": "session_closed_agent_deleted",
+    "scope": "Failed compact tail only, on already compacted history; not a repeated 110K sweep or a second Bash effect"
+  },
+  "experiment_session_id": "branch_c28e0a96d72aecba6c2eb2589961bf1de919803cfdc9fbbc98f07251da39cba6",
+  "source_response_id": "resp_8d57093b25fc4c53b609adebc8a8d1b1",
+  "actual_bash_execution_id": "7a2ab743ef452e7b5efa2439e87e0553f89438dfa07ee960f20605480895faab",
+  "feature_acceptance": "passed_with_targeted_compact_recovery"
+}

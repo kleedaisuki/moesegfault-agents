@@ -1,8 +1,9 @@
 # Dynamic Agent context and stable tool dispatch
 
-Protocol investigation, 2026-10-28. This note supports replacing the frozen-Agent
-pin invariant with versioned, effective Session configuration. It is not a claim
-that a new runtime or provider capability has already been deployed.
+Implementation and protocol record, 2026-10-28. Effective Session configuration
+replaces the frozen-Agent prompt invariant while retaining the original snapshot
+for provenance and backward-compatible sealed state. Exact staged acceptance,
+real-provider measurements and the targeted compact repair are recorded below.
 
 ## Decision
 
@@ -330,3 +331,53 @@ summaries without progress; the repair must bound retained execution history
 and fence repeat compaction at the same journal boundary for every mode.
 Previously successful lifecycle/busy checks and paid Bash/configuration calls
 must not be replayed. Resume the same child Session for the failed compact tail.
+
+### Bounded compact correction accepted
+
+Normal CI [40666360901](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40666360901)
+built exact source `4ababff69904cfc21be970f2412519500c33e640`, Worker
+`12806393028` (SHA-256 `15b444178f450c1cb24e47b090a9a25fe5bb773aa1f0e3f1dd0d50671cb11f1a`).
+Only the new current-request/native/sealed/progress guard (270 ms) and evidenced
+compact/cold/fork leaf (5,874 ms) ran and passed. Old successful lifecycle,
+busy/stale, physical-index and pure checks were not replayed. Source-only
+[review](reviews/compact-active-turn-2026-10-28.md) caught and resolved the
+unbounded tool-history retention and repeat paid-summary risk before promotion.
+
+The repair keeps only the exact latest real user message outside the summary,
+including its raw native multipart/media structure. Already settled opaque/tool
+history is summarized, not retained as an unbounded execution suffix. A durable
+RunState journal-progress fence prevents every mode from compacting the same
+source twice without progress. The new guard includes 512 settled tool pairs.
+
+Earlier CI `40665749494` remains failed: its newly written durable guard
+incorrectly deserialized `PersistedSession` without restoring the separately
+stored journal chunks. Correcting the guard to roundtrip the actual RunState
+required no production change. Its failure was not counted as an accepted check.
+
+[Staging 40667117597](https://github.com/kleedaisuki/moesegfault-agents/actions/runs/40667117597)
+deployed the corrected exact artifact. The original experiment Session had
+archived normally during the repair. Explicitly resuming that same Session,
+then issuing **one** new forced-compact Response, verified all of:
+
+- Latest policy label and removed-tool configuration remained effective.
+- Exact previously verified random filename and contents were recalled.
+- A fresh nonce present only in the current user question was emitted exactly.
+- One compact item, canonical SDK events, no caller-local function or private
+  dispatcher leak, and **zero** repeated Bash effects.
+- Source Response hash unchanged during this targeted continuation; no claim is
+  made about a missing hash from before the initial experiment.
+- Session closed and owned Agent deleted after the test.
+
+The failed tail recovery started from 888 counted input tokens, after the
+original long history had already been summarized; it is intentionally not a
+second 110K sweep. It consumed two model operations, 1,286 input + 181 output
+tokens, cost 528 micro-USD and completed in 12.12 s (first text 8.66 s).
+Scoped D1 reconciliation matched all nine Responses' actual aggregate usage to
+12 known settled model operations (73,889 micro-USD total). There were no
+reserved rows, unobserved resource rows or unknown outcomes for this Session.
+
+Machine-readable [benchmark](benchmarks/dynamic-tool-cache-110k-2026-10-28.json)
+retains both the original semantic failure and its targeted recovery. A compact
+summary uses a different task prefix and replaces the long working history;
+its aggregate cache percentage is not comparable to ordinary-turn 110K hit
+rates. The first short post-compact recall used 755 input / 512 cached tokens.
