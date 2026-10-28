@@ -1105,11 +1105,14 @@ impl SessionInner {
         };
         // The raw paid receipt remains intact. An unissued incomplete private
         // dispatcher call is not a pending tool obligation in effective context.
-        let output = if crate::registered_tools::enabled(&self.snapshot()?.record) {
-            crate::registered_tools::effective_output(turn)
-        } else {
-            turn.output.clone()
-        };
+        let indices = super::native_items::effective_output_indices(
+            turn,
+            crate::registered_tools::enabled(&self.snapshot()?.record),
+        )?;
+        let output = indices
+            .into_iter()
+            .map(|index| turn.output[index].clone())
+            .collect::<Vec<_>>();
         context.history = mutate_history(
             &self.state.storage(),
             &session,
