@@ -36,6 +36,8 @@ import { runPromptCacheInstructionsJourney, runPromptCacheToolForkJourney, runPr
   runPromptCacheExplicitSessionCountJourney } from './prompt-cache-journey.mjs';
 import { runSessionConfigLifecycleJourney, runSessionConfigBusyRevocationJourney,
   runSessionConfigHistoricalForkJourney, runSessionConfigIssuedRecoveryJourney } from './session-config-journey.mjs';
+import { runDynamicContextLifecycleJourney, runDynamicContextStaleJourney,
+  runDynamicContextCompactJourney } from './dynamic-context-journey.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const build = path.resolve(root, process.env.WORKER_BUILD_DIR ?? 'crates/agents-worker/build');
@@ -571,6 +573,12 @@ test('compiled Rust Worker: authenticated D1 and session DO user journey', { tim
     t.diagnostic(JSON.stringify(await runSessionConfigHistoricalForkJourney(promptCacheContext()))));
   await selected(t, 'Issued workspace effects remain unknown instead of revoked or replayed after Agent edits', { timeout: 60000 }, async () =>
     t.diagnostic(JSON.stringify(await runSessionConfigIssuedRecoveryJourney(promptCacheContext()))));
+  await selected(t, 'Dynamic Session catalogs preserve provider prefixes across callable tool and instruction revisions', { timeout: 90000 }, async () =>
+    t.diagnostic(JSON.stringify(await runDynamicContextLifecycleJourney(promptCacheContext()))));
+  await selected(t, 'Dynamic Session catalog revisions close stale calls and preserve caller tool ownership', { timeout: 90000 }, async () =>
+    t.diagnostic(JSON.stringify(await runDynamicContextStaleJourney(promptCacheContext()))));
+  await selected(t, 'Dynamic Session catalogs retain concrete tool memory through compaction cold recovery and historical forks', { timeout: 90000 }, async () =>
+    t.diagnostic(JSON.stringify(await runDynamicContextCompactJourney(promptCacheContext()))));
   const compactBindings = Object.fromEntries(['MODEL_REGISTRY_JSON', 'MODEL_PRICING_JSON', 'DEEPSEEK_API_KEY']
     .map(name => [name, mfOptions.workers[0].config.env[name]]));
   const configureCompact = async values => {

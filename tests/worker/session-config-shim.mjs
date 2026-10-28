@@ -37,6 +37,34 @@ export class Session extends FixtureSession {
 
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    if (path === '/__test/dynamic-legacy-seed') {
+      const state = await read(this.fixtureStorage, 'session.v1');
+      if (state.run || state.journal_count || !state.record.pinned.tools.some(tool => tool.name === 'time'))
+        throw Error('Legacy migration fixture requires its own empty initialized clock Session');
+      delete state.record.context_layout;
+      delete state.record.configuration;
+      delete state.record.pinned.prompt_layout;
+      state.native_context = null;
+      state.pending_configurations = [];
+      state.history_instructions = [];
+      const callId = 'legacy_public_clock_17';
+      const result = { utc: '2023-11-14T22:13:20.017Z', unix_ms: 1700000000017 };
+      const journal = [
+        { role: 'user', content: 'LEGACY-DYNAMIC-SOURCE: observe the clock once.' },
+        { role: 'assistant', content: '', tool_calls: [{ id: callId, type: 'function', function: { name: 'time', arguments: '{}' } }] },
+        { role: 'tool', content: JSON.stringify(result), tool_call_id: callId },
+        { role: 'assistant', content: 'LEGACY-DYNAMIC-COMPLETED-CLOCK' },
+      ];
+      const prefix = `You are an agent running in moeSegFault Agents. Tools and skills below are pinned for this session.\n${state.record.pinned.instructions}`;
+      state.messages = [{ role: 'system', content: prefix }, ...journal];
+      state.journal_count = journal.length;
+      state.input_tokens = 0;
+      state.measured_messages = 0;
+      for (const [index, message] of journal.entries()) await write(this.fixtureStorage, `journal:${index}`, message);
+      await this.fixtureStorage.put('journal:count', journal.length);
+      await write(this.fixtureStorage, 'session.v1', state);
+      return Response.json({ record: state.record, call_id: callId, result, legacy_prefix: prefix });
+    }
     if (path === '/__test/configuration-issued-inspect') {
       const state = await read(this.fixtureStorage, 'session.v1');
       const fences = Object.fromEntries(await this.fixtureStorage.list({ prefix: 'workspace:dispatch:' }));

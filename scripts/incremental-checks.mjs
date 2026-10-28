@@ -41,8 +41,22 @@ function changed(source, base) {
 
 function changedLines(source, base, file) {
   const diff = git('diff', '--unified=0', base, source, '--', file);
-  return [...diff.matchAll(/^@@ .* \+(\d+)(?:,(\d+))? @@/gm)]
-    .map(match => [Number(match[1]), Number(match[1]) + Number(match[2] ?? 1)]);
+  return dynamicContextChangedLines(file, diff);
+}
+
+export function dynamicContextChangedLines(file, diff) {
+  const ranges = [];
+  const optionalLayout = /^crates\/(?:agents-core|agents-worker)\/src\/.*\.rs$/.test(file);
+  const hunks = [...diff.matchAll(/^@@ .* \+(\d+)(?:,(\d+))? @@.*$/gm)];
+  for (const [index, hunk] of hunks.entries()) {
+    const body = diff.slice(hunk.index + hunk[0].length, hunks[index + 1]?.index ?? diff.length);
+    const changes = body.split('\n').filter(line => /^[+-]/.test(line) && !/^(?:---|\+\+\+)/.test(line));
+    // Old fixtures still compile under --lib --no-run; adding only the optional
+    // legacy-default field does not justify replaying their accepted behavior.
+    if (optionalLayout && changes.length && changes.every(line => /^\+\s*context_layout:\s*None,\s*$/.test(line))) continue;
+    ranges.push([Number(hunk[1]), Number(hunk[1]) + Number(hunk[2] ?? 1)]);
+  }
+  return ranges;
 }
 
 export function sessionConfigurationFixtureOnly(file, diff) {
@@ -167,6 +181,9 @@ export function selections(source, base, files) {
   }
   const executionLease = files.some(file => /execution[-_]lease/.test(file));
   const journeys = [
+    [/^tests\/worker\/dynamic-context-journey\.mjs$/, 'Dynamic Session catalogs preserve provider prefixes across callable tool and instruction revisions'],
+    [/^tests\/worker\/dynamic-context-journey\.mjs$/, 'Dynamic Session catalog revisions close stale calls and preserve caller tool ownership'],
+    [/^tests\/worker\/dynamic-context-journey\.mjs$/, 'Dynamic Session catalogs retain concrete tool memory through compaction cold recovery and historical forks'],
     [/^tests\/worker\/session-config-journey\.mjs$/, 'Agent revisions append to an existing Session and survive compaction and cold recovery'],
     [/^tests\/worker\/session-config-journey\.mjs$/, 'Busy Agent revisions revoke queued tools only at safe execution boundaries'],
     [/^tests\/worker\/session-config-journey\.mjs$/, 'Agent revision historical forks preserve sealed context before adopting new configuration'],
