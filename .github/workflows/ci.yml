@@ -233,7 +233,7 @@ jobs:
           name: worker
           path: crates/agents-worker/build
           retention-days: 7
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: ${{ !cancelled() && (steps.worker_bundle.outcome == 'success' || steps.worker_reuse.outcome == 'success') }}
         with:
           python-version: '3.13'
@@ -305,7 +305,7 @@ jobs:
         run: |
           node --input-type=module -e 'import { loadImageArtifact } from "./scripts/container-artifact.mjs"; await loadImageArtifact(".temp/container-release", process.env.REUSED_SOURCE_SHA)'
           docker image tag "magents-workspace:${REUSED_SOURCE_SHA}" magents-workspace:acceptance
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
           cache: pip
@@ -362,7 +362,7 @@ jobs:
         if: inputs.verification_scope != 'operator-usage'
       - run: npm audit --audit-level=high
         if: inputs.verification_scope != 'operator-usage'
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
           cache: pip
@@ -419,7 +419,7 @@ jobs:
           test -s .cache/worker-diagnostic/build/index.js
           find .cache/worker-diagnostic/build -type f -name '*.wasm' -size +0c | grep -q .
       - run: npm ci --ignore-scripts
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
           cache: pip

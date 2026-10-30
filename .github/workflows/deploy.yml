@@ -79,7 +79,7 @@ jobs:
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: test -n "$DEEPSEEK_API_KEY" || { echo 'Missing existing direct-DeepSeek secret'; exit 1; }
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.13'
       - name: Persist the single authorized operator-probe intent before dispatch
@@ -262,7 +262,7 @@ jobs:
           if [ "$DEPLOY_ENVIRONMENT" = staging ]; then host=agents-staging.moesegfault.dev; else host=agents.moesegfault.dev; fi
           curl --fail --retry 5 --retry-delay 5 "https://${host}/healthz" > .temp/deployed-health.json
           jq --exit-status --arg build "$WORKER_SOURCE_SHA" '.status == "ok" and .build_id == $build' .temp/deployed-health.json
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         if: inputs.environment == 'staging' && inputs.acceptance_profile == 'responses-increment'
         with:
           python-version: '3.13'
