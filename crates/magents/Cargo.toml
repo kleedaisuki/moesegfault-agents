@@ -27,4 +27,4 @@ uuid = { version = "1", features = ["v4"] }
 webbrowser = "1"
 subtle = "2"
 rpassword = "7"
-zstd = "0.13"
+zstd = "0.14"
